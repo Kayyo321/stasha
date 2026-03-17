@@ -5,10 +5,10 @@
 
 enum { ArenaInitCap = 64 };
 
-static heap_t *arena_entries = Null;
+static heap_t *arena_entries = 0;
 static usize_t arena_count   = 0;
 static usize_t arena_cap     = 0;
-static heap_t  arena_heap    = {.pointer = Null, .size = 0, .priv = Null};
+static heap_t  arena_heap    = {0};
 
 static void arena_track(heap_t h) {
     if (arena_count >= arena_cap) {

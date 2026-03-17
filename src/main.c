@@ -6,6 +6,8 @@
 #include "parser/parser.h"
 #include "codegen/codegen.h"
 
+static heap_t source_heap = {0};
+
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file) {
@@ -17,8 +19,8 @@ static char *read_file(const char *path) {
     long size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    heap_t h = allocate((usize_t)size + 1, sizeof(char));
-    char *buf = h.pointer;
+    source_heap = allocate((usize_t)size + 1, sizeof(char));
+    char *buf = source_heap.pointer;
     fread(buf, 1, (size_t)size, file);
     buf[size] = '\0';
     fclose(file);
@@ -73,6 +75,9 @@ int main(int argc, char **argv) {
     }
 
     log_msg("compiled '%s' -> '%s'", input_path, output_path);
-    close_logger();
-    return Ok;
+
+    ast_free_all();
+    deallocate(source_heap);
+
+    quit(Ok);
 }
