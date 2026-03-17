@@ -20,6 +20,7 @@ fn buffer_t.new(i32 size): buffer_t {
 
 // Destructor — auto-called when buffer_t leaves scope
 fn buffer_t.rem(void): void {
+    debug 'destructor called by default!';
     rem.(buffer_t.(data));
 }
 

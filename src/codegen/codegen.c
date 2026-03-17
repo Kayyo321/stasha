@@ -243,6 +243,8 @@ static void add_dtor_var(cg_t *cg, LLVMValueRef alloca_val, const char *struct_n
 }
 
 static void emit_dtor_calls(cg_t *cg, dtor_scope_t *scope) {
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+        return;
     for (usize_t i = scope->count; i > 0; i--) {
         dtor_var_t *dv = &scope->vars[i - 1];
         struct_reg_t *sr = find_struct(cg, dv->struct_name);
@@ -843,6 +845,36 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             }
             return rhs;
         }
+
+        if (obj->kind == NodeMemberExpr) {
+            /* obj.field[idx] = rhs: e.g. b.data[i] = val */
+            node_t *mobj = obj->as.member_expr.object;
+            char   *mfield = obj->as.member_expr.field;
+            if (mobj->kind == NodeIdentExpr) {
+                symbol_t *sym = cg_lookup(cg, mobj->as.ident.name);
+                if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
+                    struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
+                    if (sr) {
+                        for (usize_t fi = 0; fi < sr->field_count; fi++) {
+                            if (strcmp(sr->fields[fi].name, mfield) != 0) continue;
+                            LLVMValueRef field_gep = LLVMBuildStructGEP2(
+                                cg->builder, sr->llvm_type, sym->value,
+                                (unsigned)sr->fields[fi].index, mfield);
+                            LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
+                            LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
+                            type_info_t elem_ti = sr->fields[fi].type;
+                            elem_ti.is_pointer = False;
+                            LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
+                            index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "midx");
+                            rhs = coerce_int(cg, rhs, elem_type);
+                            LLVMBuildStore(cg->builder, rhs, gep);
+                            return rhs;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (target->kind == NodeMemberExpr) {
@@ -897,6 +929,34 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
             index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
             LLVMValueRef gep = LLVMBuildGEP2(cg->builder, i8ty, ptr, &index_val, 1, "pidx");
             return LLVMBuildLoad2(cg->builder, i8ty, gep, "pelem");
+        }
+    }
+
+    /* member pointer indexing: obj.field[idx], e.g. b.data[i] */
+    if (obj->kind == NodeMemberExpr) {
+        node_t *mobj = obj->as.member_expr.object;
+        char   *mfield = obj->as.member_expr.field;
+        if (mobj->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, mobj->as.ident.name);
+            if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
+                struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
+                if (sr) {
+                    for (usize_t fi = 0; fi < sr->field_count; fi++) {
+                        if (strcmp(sr->fields[fi].name, mfield) != 0) continue;
+                        LLVMValueRef field_gep = LLVMBuildStructGEP2(
+                            cg->builder, sr->llvm_type, sym->value,
+                            (unsigned)sr->fields[fi].index, mfield);
+                        LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
+                        LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
+                        type_info_t elem_ti = sr->fields[fi].type;
+                        elem_ti.is_pointer = False;
+                        LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
+                        index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "midx");
+                        return LLVMBuildLoad2(cg->builder, elem_type, gep, "melem");
+                    }
+                }
+            }
         }
     }
 
@@ -1525,17 +1585,22 @@ result_t codegen(node_t *ast, const char *obj_output) {
     symtab_init(&cg.locals);
 
     /* declare C runtime functions */
+    type_info_t rt_dummy = {TypeVoid, Null, False, PtrNone};
+
     LLVMTypeRef printf_param[] = { LLVMPointerTypeInContext(cg.ctx, 0) };
     cg.printf_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), printf_param, 1, 1);
     cg.printf_fn = LLVMAddFunction(cg.module, "printf", cg.printf_type);
+    symtab_add(&cg.globals, "printf", cg.printf_fn, Null, rt_dummy, False);
 
     LLVMTypeRef malloc_param[] = { LLVMInt64TypeInContext(cg.ctx) };
     cg.malloc_type = LLVMFunctionType(LLVMPointerTypeInContext(cg.ctx, 0), malloc_param, 1, 0);
     cg.malloc_fn = LLVMAddFunction(cg.module, "malloc", cg.malloc_type);
+    symtab_add(&cg.globals, "malloc", cg.malloc_fn, Null, rt_dummy, False);
 
     LLVMTypeRef free_param[] = { LLVMPointerTypeInContext(cg.ctx, 0) };
     cg.free_type = LLVMFunctionType(LLVMVoidTypeInContext(cg.ctx), free_param, 1, 0);
     cg.free_fn = LLVMAddFunction(cg.module, "free", cg.free_type);
+    symtab_add(&cg.globals, "free", cg.free_fn, Null, rt_dummy, False);
 
     /* pass 0: register type declarations, cincludes */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
@@ -1856,6 +1921,7 @@ result_t codegen(node_t *ast, const char *obj_output) {
     }
 
     /* verify */
+    LLVMPrintModuleToFile(cg.module, "/tmp/stasha_debug.ll", Null);
     char *error = Null;
     if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
         log_err("LLVM verify: %s", error);

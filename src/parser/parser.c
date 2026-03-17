@@ -141,6 +141,19 @@ static boolean_t can_start_type(parser_t *p) {
     return is_builtin_type_token(p->current.kind) || check(p, TokIdent);
 }
 
+/* In a parameter list, a bare identifier is only a type if followed by
+   another identifier or '*' (i.e. "Type name" or "Type * name").
+   If followed by ',' or ')', it must be a grouped parameter name. */
+static boolean_t can_start_param_type(parser_t *p) {
+    if (is_builtin_type_token(p->current.kind)) return True;
+    if (!check(p, TokIdent)) return False;
+    parser_state_t snap = save_state(p);
+    advance_parser(p);
+    boolean_t result = check(p, TokIdent) || check(p, TokStar);
+    restore_state(p, snap);
+    return result;
+}
+
 static boolean_t can_start_var_decl(parser_t *p) {
     return check(p, TokStack) || check(p, TokHeap) || check(p, TokAtomic)
         || check(p, TokConst)  || check(p, TokFinal)
@@ -997,7 +1010,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             if (!check(p, TokRParen) && !check(p, TokVoid)) {
                 type_info_t ptype;
                 do {
-                    if (can_start_type(p))
+                    if (can_start_param_type(p))
                         ptype = parse_type(p);
                     token_t pname = consume(p, TokIdent, "parameter name");
                     node_t *param = make_node(NodeVarDecl, pname.line);
@@ -1212,7 +1225,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     if (!check(p, TokRParen) && !check(p, TokVoid)) {
         type_info_t last_type = NO_TYPE;
         do {
-            if (can_start_type(p))
+            if (can_start_param_type(p))
                 last_type = parse_type(p);
             token_t pname = consume(p, TokIdent, "parameter name");
             node_t *param = make_node(NodeVarDecl, pname.line);
