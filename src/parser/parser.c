@@ -362,7 +362,8 @@ static node_t *parse_primary(parser_t *p) {
     log_err("line %lu: expected expression, got '%.*s'",
             p->current.line, (int)p->current.length, p->current.start);
     p->had_error = True;
-    return make_node(NodeIntLitExpr, p->current.line);
+    advance_parser(p); /* skip the bad token so we don't loop forever */
+    return make_node(NodeIntLitExpr, p->previous.line);
 }
 
 /* ── postfix: calls, indexing, member access, ++/-- ── */
