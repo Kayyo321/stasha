@@ -1,0 +1,3 @@
+[submodule "extlib/llvm"]
+	path = extlib/llvm
+	url = https://github.com/llvm/llvm-project.git
