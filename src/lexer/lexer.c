@@ -67,17 +67,24 @@ static void skip_whitespace(lexer_t *lex) {
                 lex->line++;
                 advance(lex);
                 break;
-            case '(':
+            case '/':
+                if (peek_next(lex) == '/') {
+                    /* line comment: skip to end of line */
+                    advance(lex); advance(lex);
+                    while (!is_at_end(lex) && peek(lex) != '\n')
+                        advance(lex);
+                    break;
+                }
                 if (peek_next(lex) == '*') {
-                    advance(lex);
-                    advance(lex);
+                    /* block comment: supports nesting */
+                    advance(lex); advance(lex);
                     int depth = 1;
                     while (!is_at_end(lex) && depth > 0) {
-                        if (peek(lex) == '(' && peek_next(lex) == '*') {
+                        if (peek(lex) == '/' && peek_next(lex) == '*') {
                             advance(lex); advance(lex);
                             depth++;
-                        } else if (peek(lex) == ')') {
-                            advance(lex);
+                        } else if (peek(lex) == '*' && peek_next(lex) == '/') {
+                            advance(lex); advance(lex);
                             depth--;
                         } else {
                             if (peek(lex) == '\n') lex->line++;
@@ -95,7 +102,9 @@ static void skip_whitespace(lexer_t *lex) {
 
 static token_kind_t identifier_kind(const char *start, usize_t len) {
     #define KW(s, k) if (len == sizeof(s) - 1 && memcmp(start, s, sizeof(s) - 1) == 0) return k
+
     KW("mod", TokMod);
+    KW("imp", TokImp);
     KW("int", TokInt);
     KW("ext", TokExt);
     KW("fn", TokFn);
@@ -103,20 +112,42 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("if", TokIf);
     KW("else", TokElse);
     KW("while", TokWhile);
+    KW("do", TokDo);
+    KW("inf", TokInf);
     KW("ret", TokRet);
+    KW("break", TokBreak);
+    KW("continue", TokContinue);
     KW("stack", TokStack);
     KW("heap", TokHeap);
     KW("atomic", TokAtomic);
+    KW("const", TokConst);
+    KW("final", TokFinal);
     KW("gpu", TokGpu);
     KW("cpu", TokCpu);
     KW("debug", TokDebug);
     KW("void", TokVoid);
+    KW("true", TokTrue);
+    KW("false", TokFalse);
+    KW("type", TokType);
+    KW("struct", TokStruct);
+    KW("enum", TokEnum);
+    KW("cinclude", TokCinclude);
+    KW("new", TokNew);
+    KW("sizeof", TokSizeof);
+    KW("rem", TokRem);
+
     KW("i8", TokI8);
     KW("i16", TokI16);
     KW("i32", TokI32);
     KW("i64", TokI64);
-    KW("str", TokStr);
+    KW("u8", TokU8);
+    KW("u16", TokU16);
+    KW("u32", TokU32);
+    KW("u64", TokU64);
+    KW("f32", TokF32);
+    KW("f64", TokF64);
     KW("bool", TokBool);
+
     #undef KW
     return TokIdent;
 }
@@ -129,17 +160,44 @@ static token_t scan_identifier(lexer_t *lex) {
 
 static token_t scan_number(lexer_t *lex) {
     while (is_digit(peek(lex))) advance(lex);
+
+    /* check for float: digits followed by '.' and more digits */
+    if (peek(lex) == '.' && is_digit(peek_next(lex))) {
+        advance(lex); /* consume '.' */
+        while (is_digit(peek(lex))) advance(lex);
+        return make_token(lex, TokFloatLit);
+    }
+
     return make_token(lex, TokIntLit);
 }
 
 static token_t scan_string(lexer_t *lex, char quote) {
     while (peek(lex) != quote && !is_at_end(lex)) {
+        if (peek(lex) == '\\') {
+            advance(lex); /* skip backslash */
+            if (!is_at_end(lex)) advance(lex); /* skip escaped char */
+            continue;
+        }
         if (peek(lex) == '\n') lex->line++;
         advance(lex);
     }
     if (is_at_end(lex)) return error_token(lex, "unterminated string");
     advance(lex);
     return make_token(lex, quote == '\'' ? TokStackStr : TokHeapStr);
+}
+
+static token_t scan_char_lit(lexer_t *lex) {
+    if (peek(lex) == '\\') {
+        advance(lex);
+        if (is_at_end(lex)) return error_token(lex, "unterminated char literal");
+        advance(lex);
+    } else {
+        if (is_at_end(lex)) return error_token(lex, "unterminated char literal");
+        advance(lex);
+    }
+    if (peek(lex) != '`') return error_token(lex, "unterminated char literal");
+    advance(lex);
+    return make_token(lex, TokCharLit);
 }
 
 void init_lexer(lexer_t *lex, const char *source) {
@@ -164,10 +222,15 @@ token_t next_token(lexer_t *lex) {
         case ')': return make_token(lex, TokRParen);
         case '{': return make_token(lex, TokLBrace);
         case '}': return make_token(lex, TokRBrace);
+        case '[': return make_token(lex, TokLBracket);
+        case ']': return make_token(lex, TokRBracket);
         case ';': return make_token(lex, TokSemicolon);
         case ':': return make_token(lex, TokColon);
         case ',': return make_token(lex, TokComma);
         case '.': return make_token(lex, TokDot);
+        case '?': return make_token(lex, TokQuestion);
+        case '~': return make_token(lex, TokTilde);
+
         case '+':
             if (match(lex, '+')) return make_token(lex, TokPlusPlus);
             if (match(lex, '=')) return make_token(lex, TokPlusEq);
@@ -176,22 +239,53 @@ token_t next_token(lexer_t *lex) {
             if (match(lex, '-')) return make_token(lex, TokMinusMinus);
             if (match(lex, '=')) return make_token(lex, TokMinusEq);
             return make_token(lex, TokMinus);
-        case '*': return make_token(lex, TokStar);
-        case '/': return make_token(lex, TokSlash);
+        case '*':
+            if (match(lex, '=')) return make_token(lex, TokStarEq);
+            return make_token(lex, TokStar);
+        case '/':
+            if (match(lex, '=')) return make_token(lex, TokSlashEq);
+            return make_token(lex, TokSlash);
+        case '%':
+            if (match(lex, '=')) return make_token(lex, TokPercentEq);
+            return make_token(lex, TokPercent);
+
+        case '&':
+            if (match(lex, '&')) return make_token(lex, TokAmpAmp);
+            if (match(lex, '=')) return make_token(lex, TokAmpEq);
+            return make_token(lex, TokAmp);
+        case '|':
+            if (match(lex, '|')) return make_token(lex, TokPipePipe);
+            if (match(lex, '=')) return make_token(lex, TokPipeEq);
+            return make_token(lex, TokPipe);
+        case '^':
+            if (match(lex, '=')) return make_token(lex, TokCaretEq);
+            return make_token(lex, TokCaret);
+
         case '=':
             if (match(lex, '=')) return make_token(lex, TokEqEq);
             return make_token(lex, TokEq);
         case '!':
             if (match(lex, '=')) return make_token(lex, TokBangEq);
             return make_token(lex, TokBang);
+
         case '<':
+            if (match(lex, '<')) {
+                if (match(lex, '=')) return make_token(lex, TokLtLtEq);
+                return make_token(lex, TokLtLt);
+            }
             if (match(lex, '=')) return make_token(lex, TokLtEq);
             return make_token(lex, TokLt);
         case '>':
+            if (match(lex, '>')) {
+                if (match(lex, '=')) return make_token(lex, TokGtGtEq);
+                return make_token(lex, TokGtGt);
+            }
             if (match(lex, '=')) return make_token(lex, TokGtEq);
             return make_token(lex, TokGt);
+
         case '\'': return scan_string(lex, '\'');
-        case '"': return scan_string(lex, '"');
+        case '"':  return scan_string(lex, '"');
+        case '`':  return scan_char_lit(lex);
     }
 
     return error_token(lex, "unexpected character");

@@ -4,15 +4,45 @@
 #include "../common/common.h"
 #include "../lexer/lexer.h"
 
+/* ── base type kinds ── */
+
 typedef enum {
     TypeVoid,
+    TypeBool,
     TypeI8,
     TypeI16,
     TypeI32,
     TypeI64,
-    TypeStr,
-    TypeBool,
+    TypeU8,
+    TypeU16,
+    TypeU32,
+    TypeU64,
+    TypeF32,
+    TypeF64,
+    TypeUser,       /* struct, enum, or alias — name stored in type_info_t */
 } type_kind_t;
+
+/* ── pointer permissions ── */
+
+typedef enum {
+    PtrNone,
+    PtrRead,        /* *r  */
+    PtrWrite,       /* *w  */
+    PtrReadWrite,   /* *rw or just * */
+} ptr_perm_t;
+
+/* ── rich type descriptor ── */
+
+typedef struct {
+    type_kind_t base;
+    char *user_name;        /* non-null when base == TypeUser */
+    boolean_t is_pointer;
+    ptr_perm_t ptr_perm;
+} type_info_t;
+
+#define NO_TYPE ((type_info_t){TypeVoid, Null, False, PtrNone})
+
+/* ── storage / linkage ── */
 
 typedef enum {
     StorageDefault,
@@ -22,30 +52,66 @@ typedef enum {
 
 typedef enum {
     LinkageNone,
-    LinkageInternal,
-    LinkageExternal,
+    LinkageInternal,    /* int */
+    LinkageExternal,    /* ext */
 } linkage_t;
 
+/* ── type declaration flavours ── */
+
+enum { TypeDeclStruct = 0, TypeDeclEnum = 1, TypeDeclAlias = 2 };
+
+/* ── node kinds ── */
+
 typedef enum {
+    /* top-level */
     NodeModule,
     NodeFnDecl,
     NodeVarDecl,
+    NodeTypeDecl,
+    NodeEnumVariant,
+    NodeCinclude,
+    NodeImpDecl,
+
+    /* statements */
     NodeBlock,
     NodeForStmt,
+    NodeWhileStmt,
+    NodeDoWhileStmt,
+    NodeInfLoop,
+    NodeIfStmt,
     NodeRetStmt,
+    NodeBreakStmt,
+    NodeContinueStmt,
     NodeDebugStmt,
     NodeExprStmt,
+    NodeRemStmt,
+
+    /* expressions */
     NodeBinaryExpr,
     NodeUnaryPrefixExpr,
     NodeUnaryPostfixExpr,
     NodeCallExpr,
+    NodeMethodCall,
     NodeParallelCall,
     NodeCompoundAssign,
     NodeAssignExpr,
+    NodeMultiAssign,
     NodeIdentExpr,
     NodeIntLitExpr,
+    NodeFloatLitExpr,
     NodeStrLitExpr,
+    NodeCharLitExpr,
+    NodeBoolLitExpr,
+    NodeIndexExpr,
+    NodeMemberExpr,
+    NodeSelfMemberExpr,
+    NodeTernaryExpr,
+    NodeCastExpr,
+    NodeNewExpr,
+    NodeSizeofExpr,
 } node_kind_t;
+
+/* ── node list ── */
 
 typedef struct node node_t;
 
@@ -56,34 +122,103 @@ typedef struct {
     heap_t heap;
 } node_list_t;
 
+/* ── AST node ── */
+
 struct node {
     node_kind_t kind;
     usize_t line;
 
     union {
+        /* ── top-level ── */
         struct { char *name; node_list_t decls; } module;
-        struct { char *name; linkage_t linkage; type_kind_t return_type; node_list_t params; node_t *body; } fn_decl;
-        struct { char *name; type_kind_t type; storage_t storage; linkage_t linkage; boolean_t is_atomic; node_t *init; } var_decl;
+
+        struct {
+            char *name;
+            linkage_t linkage;
+            type_info_t *return_types;  /* arena-allocated array */
+            usize_t return_count;       /* 1 = single, >1 = multi */
+            node_list_t params;         /* VarDecl nodes */
+            node_t *body;               /* Block */
+            boolean_t is_method;        /* fn Type.method(...) */
+            char *struct_name;          /* the Type part (null if !is_method) */
+        } fn_decl;
+
+        struct {
+            char *name;
+            type_info_t type;
+            storage_t storage;
+            linkage_t linkage;
+            boolean_t is_atomic;
+            boolean_t is_const;
+            boolean_t is_final;
+            boolean_t is_array;
+            long array_size;
+            node_t *init;
+        } var_decl;
+
+        struct {
+            char *name;
+            linkage_t linkage;
+            int decl_kind;              /* TypeDeclStruct / TypeDeclEnum / TypeDeclAlias */
+            node_list_t fields;         /* VarDecl nodes (struct fields) */
+            node_list_t methods;        /* FnDecl nodes (inline methods) */
+            node_list_t variants;       /* EnumVariant nodes */
+            type_info_t alias_type;     /* for TypeDeclAlias */
+        } type_decl;
+
+        struct {
+            char *name;
+            boolean_t has_payload;
+            type_info_t payload_type;
+        } enum_variant;
+
+        struct { char *header; char *alias; } cinclude;
+        struct { char *module_name; } imp_decl;
+
+        /* ── statements ── */
         struct { node_list_t stmts; } block;
         struct { node_t *init; node_t *cond; node_t *update; node_t *body; } for_stmt;
-        struct { node_t *value; } ret_stmt;
+        struct { node_t *cond; node_t *body; } while_stmt;
+        struct { node_t *body; node_t *cond; } do_while_stmt;
+        struct { node_t *body; } inf_loop;
+        struct { node_t *cond; node_t *then_block; node_t *else_block; } if_stmt;
+        struct { node_list_t values; } ret_stmt;
         struct { node_t *value; } debug_stmt;
         struct { node_t *expr; } expr_stmt;
+        struct { node_t *ptr; } rem_stmt;
+
+        /* ── expressions ── */
         struct { token_kind_t op; node_t *left; node_t *right; } binary;
         struct { token_kind_t op; node_t *operand; } unary;
         struct { char *callee; node_list_t args; } call;
+        struct { node_t *object; char *method; node_list_t args; } method_call;
         struct { boolean_t is_gpu; char *callee; node_list_t args; } parallel_call;
         struct { token_kind_t op; node_t *target; node_t *value; } compound_assign;
         struct { node_t *target; node_t *value; } assign;
+        struct { node_list_t targets; node_list_t values; } multi_assign;
         struct { char *name; } ident;
         struct { long value; } int_lit;
-        struct { char *value; boolean_t is_heap; } str_lit;
+        struct { double value; } float_lit;
+        struct { char *value; boolean_t is_heap; usize_t len; } str_lit;
+        struct { char value; } char_lit;
+        struct { boolean_t value; } bool_lit;
+        struct { node_t *object; node_t *index; } index_expr;
+        struct { node_t *object; char *field; } member_expr;
+        struct { char *type_name; char *field; } self_member;
+        struct { node_t *cond; node_t *then_expr; node_t *else_expr; } ternary;
+        struct { type_info_t target; node_t *expr; } cast_expr;
+        struct { node_t *size; } new_expr;
+        struct { type_info_t type; } sizeof_expr;
     } as;
 };
+
+/* ── API ── */
 
 node_t *make_node(node_kind_t kind, usize_t line);
 char *copy_token_text(token_t tok);
 char *ast_strdup(const char *src, usize_t len);
+char *ast_strdup_escape(const char *src, usize_t len, usize_t *out_len);
+type_info_t *alloc_type_array(usize_t count);
 
 void node_list_init(node_list_t *list);
 void node_list_push(node_list_t *list, node_t *node);

@@ -66,6 +66,72 @@ char *ast_strdup(const char *src, usize_t len) {
     return s;
 }
 
+/* ── escape-processing string copy ── */
+
+static char decode_escape(char c) {
+    switch (c) {
+        case 'n':  return '\n';
+        case 't':  return '\t';
+        case 'r':  return '\r';
+        case '0':  return '\0';
+        case '\\': return '\\';
+        case '\'': return '\'';
+        case '"':  return '"';
+        case 'a':  return '\a';
+        case 'b':  return '\b';
+        case 'f':  return '\f';
+        case 'v':  return '\v';
+        default:   return c;
+    }
+}
+
+static int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return -1;
+}
+
+char *ast_strdup_escape(const char *src, usize_t len, usize_t *out_len) {
+    /* worst case: no expansion, same length */
+    heap_t h = allocate(len + 1, sizeof(char));
+    arena_track(h);
+    char *dst = h.pointer;
+    usize_t j = 0;
+
+    for (usize_t i = 0; i < len; i++) {
+        if (src[i] == '\\' && i + 1 < len) {
+            i++;
+            if (src[i] == 'x' && i + 2 < len) {
+                int hi = hex_val(src[i + 1]);
+                int lo = hex_val(src[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    dst[j++] = (char)(hi * 16 + lo);
+                    i += 2;
+                    continue;
+                }
+            }
+            dst[j++] = decode_escape(src[i]);
+        } else {
+            dst[j++] = src[i];
+        }
+    }
+    dst[j] = '\0';
+    if (out_len) *out_len = j;
+    return dst;
+}
+
+/* ── type array allocation ── */
+
+type_info_t *alloc_type_array(usize_t count) {
+    heap_t h = allocate(count, sizeof(type_info_t));
+    arena_track(h);
+    type_info_t *arr = h.pointer;
+    for (usize_t i = 0; i < count; i++)
+        arr[i] = NO_TYPE;
+    return arr;
+}
+
 /* ── node list ── */
 
 void node_list_init(node_list_t *list) {

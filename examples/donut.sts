@@ -35,10 +35,11 @@ fn main(void): i16 {
                 stack i32 N = 8 * ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n);
                 if (22 > y && y > 0 && x > 0 && 80 > x && D > z[o]) {
                     z[o] = D;
-                    b[o] = '.,-~:;=!*#$@\'[N > 0 ? N : 0];
+                    b[o] = '.,-~:;=!*#$@'[N > 0 ? N : 0];
                 }
             }
         }
+
         cio.printf('\\x1b[H');
         for (k = 0; k < 1760; ++k) {
             cio.printf(\"%c\", b[k]);
