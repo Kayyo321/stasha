@@ -34,7 +34,5 @@ fn main(void): i16 {
         debug b.data[i];
     }
 
-    ret 0;
-
-    (* buffer_t destructor called here)
+    ret 0; (* buffer_t destructor called here)
 }

@@ -1,0 +1,20 @@
+mod ex_enum;
+
+type day_of_week_t: enum {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+type token_t: enum {
+    Identifier(i8 *id),
+    LParen,
+    RParen,
+    IntLiteral(i32 lit),
+    FltLiteral(f32 lit),
+    Eoi,
+}
