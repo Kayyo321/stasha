@@ -4,9 +4,9 @@ mod ex5_mem;
 
 type buffer_t: struct {
 stack:
-    int i32 size;
+    ext i32 size;
 heap:
-    int i32 *data;
+    ext i32 *data;
 }
 
 (* Static function)
@@ -18,7 +18,7 @@ fn buffer_t.new(i32 size): buffer_t {
     return b;
 }
 
-fn ~buffer_t(void): void {
+fn buffer_t.rem(void): void {
     rem.(buffer_t.(data)); (* Remove allocated data)
 }
 

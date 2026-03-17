@@ -165,13 +165,17 @@ fn MyType.new(...): MyType {}
 
 - Destructors:
 
-fn ~MyType(void): void
+fn MyType.rem(void): void
 
 - Automatic destructor invocation on scope exit
 
 - Parameter grouping:
 
 fn foo(i32 x, y, z)
+
+- Field hiding
+`int` internal fields are basically just private
+`ext` external fields are basically just public
 
 ---
 
@@ -293,13 +297,14 @@ Planned:
 - [ ] Return statements
 
 ### Types
-- [ ] `i16`, `i32`
+- [ ] `i8`, `i16`, `i32`, `i64`
+- [ ] `u8`, `u16`, `u32`, `u64`
 - [ ] `f32`, `f64`
-- [ ] `str`
 - [ ] `void`
 
 ### Memory & Storage
-- [ ] `stack`, `heap`, `atomic`
+- [ ] `stack`, `heap`, `atomic`, `const`, `final` (like java's final vs. const)
+      (if it's const or final, you can't derive a writable pointer from it)
 - [ ] String literal allocation rules
 
 ### Functions
