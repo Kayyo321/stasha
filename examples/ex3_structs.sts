@@ -5,29 +5,29 @@ stack:
     int i32 x, y, z;
 
     ext fn write(void): void {
-        stack i32 [lx, ly, lz] = vec3_t.(x), vec3_t.(y), vec3_t.(z);
-        (* basically: this.x, this.y etc.)
+        // vec3_t.(field) accesses this->field
+        stack i32 lx = vec3_t.(x);
+        stack i32 ly = vec3_t.(y);
+        stack i32 lz = vec3_t.(z);
 
         debug lx;
         debug ly;
         debug lz;
     }
-
-heap:
-    int str vec_name;
 }
 
-(* can access internal functions because of its vec3_t.static_function context)
-ext fn vec3_t.new(i32 x, y, z, str name) {
+// static constructor — no implicit this pointer
+ext fn vec3_t.new(i32 x, y, z): vec3_t {
     stack vec3_t v3;
-    [v3.x, v3.y, v3.z] = x, y, z;
-    v3.vec_name = name;
+    v3.x = x;
+    v3.y = y;
+    v3.z = z;
 
-    return v3;
+    ret v3;
 }
 
 fn main(void): i16 {
-    stack vec3_t vec3 = vec3_t.new(1, 2, 3, 'my-vector3');
+    stack vec3_t vec3 = vec3_t.new(1, 2, 3);
     vec3.write();
 
     ret 0;

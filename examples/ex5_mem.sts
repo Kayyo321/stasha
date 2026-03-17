@@ -1,25 +1,26 @@
 mod ex5_mem;
 
-(* Memory management in Stasha)
+// Memory management in Stasha
 
 type buffer_t: struct {
 stack:
     ext i32 size;
 heap:
-    ext i32 *data;
+    ext i32 *rw data;
 }
 
-(* Static function)
+// Static constructor
 fn buffer_t.new(i32 size): buffer_t {
     stack buffer_t b;
     b.size = size;
     b.data = new.(sizeof.(i32) * size);
 
-    return b;
+    ret b;
 }
 
+// Destructor — auto-called when buffer_t leaves scope
 fn buffer_t.rem(void): void {
-    rem.(buffer_t.(data)); (* Remove allocated data)
+    rem.(buffer_t.(data));
 }
 
 fn main(void): i16 {
@@ -34,5 +35,5 @@ fn main(void): i16 {
         debug b.data[i];
     }
 
-    ret 0; (* buffer_t destructor called here)
+    ret 0; // buffer_t destructor called here
 }

@@ -11,7 +11,7 @@ type day_of_week_t: enum {
 }
 
 type token_t: enum {
-    Identifier(i8 *id),
+    Identifier(i8 *r id),
     LParen,
     RParen,
     IntLiteral(i32 lit),

@@ -1,9 +1,9 @@
 mod ex;
 
-cinclude "stdio" = cio;
-cinclude "math" = cmath;
-cinclude "string" = cstring;
-cinclude "unistd" = custd;
+cinclude 'stdio' = cio;
+cinclude 'math' = cmath;
+cinclude 'string' = cstring;
+cinclude 'unistd' = custd;
 
 fn main(void): i16 {
     stack f32 A = 0, B = 0;
@@ -11,6 +11,9 @@ fn main(void): i16 {
     stack i32 k;
     stack f32 z[176];
     stack i8 b[1760];
+
+    // lookup table for shading characters
+    stack i8 *r chars = '.,-~:;=!*#$@';
 
     inf {
         for (k = 0; k < 176; ++k) {
@@ -35,15 +38,17 @@ fn main(void): i16 {
                 stack i32 N = 8 * ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n);
                 if (22 > y && y > 0 && x > 0 && 80 > x && D > z[o]) {
                     z[o] = D;
-                    b[o] = '.,-~:;=!*#$@'[N > 0 ? N : 0];
+                    b[o] = chars[N > 0 ? N : 0];
                 }
             }
         }
 
-        cio.printf('\\x1b[H');
+        cio.printf('\x1b[H');
         for (k = 0; k < 1760; ++k) {
-            cio.printf(\"%c\", b[k]);
-            if (k % 80 == 79) cio.printf(\"\\n\");
+            cio.printf('%c', b[k]);
+            if (k % 80 == 79) {
+                cio.printf('\n');
+            }
         }
         A += 0.04;
         B += 0.02;

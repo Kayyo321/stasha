@@ -234,12 +234,12 @@ Parallelism is explicit and controlled by the programmer.
 
 ### Importing Headers
 
-cinclude "stdio.h";
-cinclude "stdio.h" = io;
+    cinclude 'stdio' = io;
+    cinclude 'assert';
 
 ### Calling C Functions
 
-io.printf(...);
+    io.printf('Hello, %s!\n', 'world');
 
 ---
 
@@ -264,75 +264,94 @@ imp other_module;
 
 ## Debugging
 
-Planned:
+    debug expr;
 
-debug expr;
-
-
-Used for inspecting values during execution.
+Prints the value of any expression with type-aware formatting (supports i32, i64, f32/f64, char, pointers).
 
 ---
 
-## Comments (Planned Change)
+## Comments
 
-Current:
-
-(* Comment)
-
-
-Planned:
-- Replace with a more intuitive syntax
-- Can't use this because deref syntax is the same
-- Still retain parenthesis-based style
+- `// line comment`
+- `/* block comment */` (supports nesting)
 
 ---
 
 ## Feature Roadmap
 
 ### Language Core
-- [ ] Module declarations (`mod`)
-- [ ] Import system (`imp`)
-- [ ] Comments redesign
-- [ ] Debug statement
-- [ ] Return statements
+- [x] Module declarations (`mod`)
+- [x] Import system (`imp`)
+- [x] Comments (`//` line, `/* */` nested block)
+- [x] Debug statement
+- [x] Return statements (`ret`)
 
 ### Types
-- [ ] `i8`, `i16`, `i32`, `i64`
-- [ ] `u8`, `u16`, `u32`, `u64`
-- [ ] `f32`, `f64`
-- [ ] `void`
+- [x] `i8`, `i16`, `i32`, `i64`
+- [x] `u8`, `u16`, `u32`, `u64`
+- [x] `f32`, `f64`
+- [x] `bool`
+- [x] `void`
+- [x] User-defined types (struct, enum, alias)
 
 ### Memory & Storage
-- [ ] `stack`, `heap`, `atomic`, `const`, `final` (like java's final vs. const)
+- [x] `stack`, `heap`, `atomic`, `const`, `final`
       (if it's const or final, you can't derive a writable pointer from it)
-- [ ] String literal allocation rules
+- [x] String literal allocation rules (`'...'` = stack, `"..."` = heap)
 
 ### Functions
-- [ ] Internal vs external functions
-- [ ] Multiple return values
-- [ ] Multiple assignment
+- [x] Internal vs external functions (`int fn`, `ext fn`)
+- [x] Multiple return values (`fn foo(): [i32, i32]`)
+- [x] Multiple assignment (`stack i32 [x, y] = foo();`)
+- [x] Parameter grouping (`fn bar(i32 x, y, z)`)
 
 ### Structs
-- [ ] Full struct system
-- [ ] Methods, statics, constructors
-- [ ] Destructors + auto cleanup
-- [ ] Memory partitioning
+- [x] Full struct system (`type Name: struct { ... }`)
+- [x] Methods, statics, constructors (`fn Type.method()`, `fn Type.new()`)
+- [x] Destructors + auto cleanup (`fn Type.rem()` — auto-called on scope exit)
+- [x] Memory partitioning (`stack:` / `heap:` sections)
+- [x] Field visibility (`int` / `ext`)
+
+### Enums
+- [x] Basic enums (`type Name: enum { A, B, C }`)
+- [x] Tagged payloads (`Variant(type)`)
+
+### Type Aliases
+- [x] `type Name: existing_type;`
 
 ### Pointers & Allocation
-- [ ] Permissioned pointers (`*r`, `*w`, `*rw`)
-- [ ] `new`, `rem`, `sizeof`
+- [x] Permissioned pointers (`*r`, `*w`, `*rw`)
+- [x] `new.(size)`, `rem.(ptr)`, `sizeof.(type)`
+- [x] Arrays (`type name[size]`)
 
 ### Control Flow
-- [ ] Full loop support
-- [ ] Operator completeness
+- [x] `for` loop
+- [x] `while` loop
+- [x] `do`-`while` loop
+- [x] `inf` infinite loop
+- [x] `if` / `else` / else-if chaining
+- [x] `break`, `continue`
+- [x] Ternary (`cond ? then : else`)
+- [x] Full operator set (arithmetic, bitwise, logical, compound assign)
 
 ### Parallelism
-- [ ] CPU dispatch
-- [ ] GPU dispatch
+- [x] CPU dispatch (`cpu.(fn)()`)
+- [x] GPU dispatch (`gpu.(fn)()`)
 
 ### Interop
-- [ ] C header inclusion
-- [ ] Function binding
+- [x] C header inclusion (`cinclude 'header' = alias;`)
+- [x] Function binding (auto-declared varargs externs)
+
+### Expressions
+- [x] Cast expressions (`(type)expr`)
+- [x] Character literals (`` `c` ``)
+- [x] Float literals (`3.14`)
+- [x] Boolean literals (`true`, `false`)
+- [x] Index expressions (`arr[i]`)
+- [x] Member access (`obj.field`)
+- [x] Self-member access (`Type.(field)`)
+- [x] Method calls (`obj.method()`, `Type.static()`)
+- [x] Increment/decrement (`++x`, `x++`, `--x`, `x--`)
 
 ---
 

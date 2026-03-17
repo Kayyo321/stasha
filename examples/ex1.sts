@@ -2,26 +2,26 @@ mod ex1;
 
 int stack atomic i32 counter = 0;
 
-(* internal function)
+// internal function
 int fn do_stuff_in_parallel(void): void {
     counter += 8;
 }
 
-(* external function)
+// external function
 ext fn main(void): i16 {
     for (stack i32 i = 0; i < 10; ++i) {
         debug i;
     }
 
-    stack str s = 'String on stack'; (* '' == stack)
-    heap str hs = "String on heap"; (* "" == heap)
+    stack i8 *r s = 'String on stack';   // '' == stack
+    heap i8 *r hs = "String on heap";    // "" == heap
 
-    (* this is a comment)
+    // this is a comment
 
-    (* gpu parallel)
+    // gpu parallel
     gpu.(do_stuff_in_parallel)();
 
-    (* cpu parallel)
+    // cpu parallel
     cpu.(do_stuff_in_parallel)();
 
     ret 0;

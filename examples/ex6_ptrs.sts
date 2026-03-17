@@ -1,16 +1,17 @@
 mod ex6_ptrs;
 
-int fn get_vid_mem(void): i8 *rw { (* returns a read-write pointer)
-    return (i8 *rw)0xb0000;
+// returns a read-write pointer
+int fn get_vid_mem(void): i8 *rw {
+    ret (i8 *rw)0xb0000;
 }
 
 fn main(void): i16 {
     stack i8 *w vid_mem = get_vid_mem();
-    (* Even though it returned a read-write pointer, we can conform it to a write
-       pointer because it accepts it. If it returned only a read pointer and we 
-       tried to turn it into a write pointer this would throw an error)
+    // Even though it returned a read-write pointer, we can conform it to a write
+    // pointer because it accepts it. If it returned only a read pointer and we
+    // tried to turn it into a write pointer this would throw an error.
 
-    vid_mem[0] = `$`; (* Character literal)
-    
+    vid_mem[0] = `$`;  // character literal
+
     ret 0;
 }
