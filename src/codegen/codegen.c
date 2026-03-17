@@ -261,6 +261,22 @@ static void emit_all_dtor_calls(cg_t *cg) {
         emit_dtor_calls(cg, &cg->dtor_stack[i - 1]);
 }
 
+/* Remove a variable from all dtor scopes so its destructor isn't called.
+   Used when a struct is returned by value (moved to caller). */
+static void remove_from_dtor_scopes(cg_t *cg, LLVMValueRef alloca_val) {
+    for (usize_t d = 0; d < cg->dtor_depth; d++) {
+        dtor_scope_t *scope = &cg->dtor_stack[d];
+        for (usize_t i = 0; i < scope->count; i++) {
+            if (scope->vars[i].alloca_val == alloca_val) {
+                for (usize_t j = i; j + 1 < scope->count; j++)
+                    scope->vars[j] = scope->vars[j + 1];
+                scope->count--;
+                return;
+            }
+        }
+    }
+}
+
 static void pop_dtor_scope(cg_t *cg) {
     if (cg->dtor_depth == 0) return;
     dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
@@ -1344,6 +1360,17 @@ static void gen_if(cg_t *cg, node_t *node) {
 }
 
 static void gen_ret(cg_t *cg, node_t *node) {
+    /* If returning a named struct variable, move it out of dtor scopes so
+       the destructor isn't called — the caller takes ownership. */
+    if (node->as.ret_stmt.values.count == 1) {
+        node_t *rv = node->as.ret_stmt.values.items[0];
+        if (rv->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, rv->as.ident.name);
+            if (sym && sym->stype.base == TypeUser && !sym->stype.is_pointer)
+                remove_from_dtor_scopes(cg, sym->value);
+        }
+    }
+
     /* call destructors for all active scopes before returning */
     emit_all_dtor_calls(cg);
 
@@ -1921,7 +1948,6 @@ result_t codegen(node_t *ast, const char *obj_output) {
     }
 
     /* verify */
-    LLVMPrintModuleToFile(cg.module, "/tmp/stasha_debug.ll", Null);
     char *error = Null;
     if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
         log_err("LLVM verify: %s", error);
