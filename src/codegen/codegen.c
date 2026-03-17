@@ -4,6 +4,7 @@
 #include <llvm-c/TargetMachine.h>
 
 #include <string.h>
+#include <stdio.h>
 #include "codegen.h"
 
 /* ── symbol table ── */
@@ -1667,7 +1668,7 @@ result_t codegen(node_t *ast, const char *obj_output) {
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
             type_info_t dummy = {TypeVoid, Null, False, PtrNone};
-            symtab_add(&cg.globals, fn_name, fn, Null, dummy, False);
+            symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
 
             if (total_params > 0) deallocate(ptypes_heap);
 
@@ -1726,7 +1727,7 @@ result_t codegen(node_t *ast, const char *obj_output) {
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
             type_info_t dummy = {TypeVoid, Null, False, PtrNone};
-            symtab_add(&cg.globals, fn_name, fn, Null, dummy, False);
+            symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
             deallocate(ptypes_heap);
 
             if (strcmp(method->as.fn_decl.name, "rem") == 0) {

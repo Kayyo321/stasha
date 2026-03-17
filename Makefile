@@ -58,7 +58,6 @@ $(LLVM_CFG):
 	      -DLLVM_ENABLE_TERMINFO=OFF                       \
 	      -DLLVM_ENABLE_ZSTD=OFF
 	cmake --build $(LLVM_BUILD) -- -j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
-	cmake --build $(LLVM_BUILD) --target llvm-config
 
 # ── housekeeping ───────────────────────────────────────────────
 clean:
