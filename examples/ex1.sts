@@ -3,7 +3,7 @@ mod ex1;
 int stack atomic i32 counter = 0;
 
 (* internal function)
-int fn do_stuff_in_parrallel(void): void {
+int fn do_stuff_in_parallel(void): void {
     counter += 8;
 }
 
@@ -18,11 +18,11 @@ ext fn main(void): i16 {
 
     (* this is a comment)
 
-    (* gpu parrallel)
-    gpu.(do_stuff_in_parrallel)();
-    
-    (* cpu parrallel)
-    cpu.(do_stuff_in_parrallel)();
+    (* gpu parallel)
+    gpu.(do_stuff_in_parallel)();
+
+    (* cpu parallel)
+    cpu.(do_stuff_in_parallel)();
 
     ret 0;
 }

@@ -17,7 +17,7 @@ heap:
     int str vec_name;
 }
 
-(* can access internal functions because of it's vec3_t.static_function context)
+(* can access internal functions because of its vec3_t.static_function context)
 ext fn vec3_t.new(i32 x, y, z, str name) {
     stack vec3_t v3;
     [v3.x, v3.y, v3.z] = x, y, z;

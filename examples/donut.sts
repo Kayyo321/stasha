@@ -1,0 +1,53 @@
+mod ex;
+
+cinclude "stdio" = cio;
+cinclude "math" = cmath;
+cinclude "string" = cstring;
+cinclude "unistd" = custd;
+
+fn main(void): i16 {
+    stack f32 A = 0, B = 0;
+    stack f32 i, j;
+    stack i32 k;
+    stack f32 z[176];
+    stack i8 b[1760];
+
+    inf {
+        for (k = 0; k < 176; ++k) {
+            z[k] = 0;
+        }
+        for (j = 0; j < 6.28; j += 0.07) {
+            for (i = 0; i < 6.28; i += 0.02) {
+                stack f32 c = cmath.sin(i);
+                stack f32 d = cmath.cos(j);
+                stack f32 e = cmath.sin(A);
+                stack f32 f = cmath.sin(j);
+                stack f32 g = cmath.cos(A);
+                stack f32 h = d + 2;
+                stack f32 D = 1 / (c * h * e + f * g + 5);
+                stack f32 l = cmath.cos(i);
+                stack f32 m = cmath.cos(B);
+                stack f32 n = cmath.sin(B);
+                stack f32 t = c * h * g - f * e;
+                stack i32 x = 40 + 30 * D * (l * h * m - t * n);
+                stack i32 y = 12 + 15 * D * (l * h * n + t * m);
+                stack i32 o = x + 80 * y;
+                stack i32 N = 8 * ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n);
+                if (22 > y && y > 0 && x > 0 && 80 > x && D > z[o]) {
+                    z[o] = D;
+                    b[o] = \".,-~:;=!*#$@\"[N > 0 ? N : 0];
+                }
+            }
+        }
+        cio.printf('\\x1b[H');
+        for (k = 0; k < 1760; ++k) {
+            cio.printf(\"%c\", b[k]);
+            if (k % 80 == 79) cio.printf(\"\\n\");
+        }
+        A += 0.04;
+        B += 0.02;
+
+        custd.usleep(30000);
+    }
+    ret 0;
+}
