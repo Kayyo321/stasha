@@ -352,6 +352,10 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Self-member access (`Type.(field)`)
 - [x] Method calls (`obj.method()`, `Type.static()`)
 - [x] Increment/decrement (`++x`, `x++`, `--x`, `x--`)
+  
+### Enums
+- [x] Basic C style enums
+- [ ] Rust style struct-based enums
 
 ---
 
