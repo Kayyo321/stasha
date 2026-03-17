@@ -1,17 +1,50 @@
 mod ex6_ptrs;
 
-// returns a read-write pointer
-int fn get_vid_mem(void): i8 *rw {
-    ret (i8 *rw)0xb0000;
+// Pointer permissions in Stasha
+//   *rw (or just *)  — read-write (default)
+//   *r               — read-only
+//   *w               — write-only
+//
+// A wider permission can narrow: *rw -> *r is fine, *r -> *rw is an error.
+
+// Fills a buffer through a write-only pointer
+int fn fill(i32 *w buf, i32 count): void {
+    for (stack i32 i = 0; i < count; ++i) {
+        buf[i] = (i + 1) * 10;
+    }
+}
+
+// Sums a buffer through a read-only pointer
+int fn sum(i32 *r buf, i32 count): i32 {
+    stack i32 total = 0;
+    for (stack i32 i = 0; i < count; ++i) {
+        total += buf[i];
+    }
+    ret total;
 }
 
 fn main(void): i16 {
-    stack i8 *w vid_mem = get_vid_mem();
-    // Even though it returned a read-write pointer, we can conform it to a write
-    // pointer because it accepts it. If it returned only a read pointer and we
-    // tried to turn it into a write pointer this would throw an error.
+    stack i32 count = 8;
 
-    vid_mem[0] = `$`;  // character literal
+    // Heap-allocate an array — returns a read-write pointer
+    heap i32 *rw data = new.(sizeof.(i32) * count);
 
+    // *rw narrows to *w — fill() only needs write access
+    fill(data, count);
+
+    // *rw narrows to *r — sum() only needs read access
+    stack i32 total = sum(data, count);
+
+    debug 'sum:';
+    debug total; // 10 + 20 + 30 + ... + 80 = 360
+
+    // Read back individual elements through a read-only view
+    heap i32 *r view = data;
+    for (stack i32 i = 0; i < count; ++i) {
+        stack i32 val = view[i];
+        debug val;
+    }
+
+    rem.(data);
     ret 0;
 }

@@ -164,6 +164,17 @@ static boolean_t can_start_var_decl(parser_t *p) {
 
 static long parse_int_value(token_t t) {
     long val = 0;
+    if (t.length > 2 && t.start[0] == '0' && (t.start[1] == 'x' || t.start[1] == 'X')) {
+        for (usize_t i = 2; i < t.length; i++) {
+            char c = t.start[i];
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = 10 + c - 'a';
+            else d = 10 + c - 'A';
+            val = val * 16 + d;
+        }
+        return val;
+    }
     for (usize_t i = 0; i < t.length; i++)
         val = val * 10 + (t.start[i] - '0');
     return val;

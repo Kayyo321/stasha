@@ -9,6 +9,10 @@ static boolean_t is_digit(char c) {
     return c >= '0' && c <= '9';
 }
 
+static boolean_t is_hex_digit(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 static boolean_t is_alnum(char c) {
     return is_alpha(c) || is_digit(c);
 }
@@ -159,6 +163,13 @@ static token_t scan_identifier(lexer_t *lex) {
 }
 
 static token_t scan_number(lexer_t *lex) {
+    /* hex literal: 0x... */
+    if (lex->start[0] == '0' && (peek(lex) == 'x' || peek(lex) == 'X')) {
+        advance(lex); /* consume 'x' */
+        while (is_hex_digit(peek(lex))) advance(lex);
+        return make_token(lex, TokIntLit);
+    }
+
     while (is_digit(peek(lex))) advance(lex);
 
     /* check for float: digits followed by '.' and more digits */
