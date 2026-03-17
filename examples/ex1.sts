@@ -1,0 +1,28 @@
+mod ex1;
+
+int stack atomic i32 counter = 0;
+
+(* internal function)
+int fn do_stuff_in_parrallel(void): void {
+    counter += 8;
+}
+
+(* external function)
+ext fn main(void): i16 {
+    for (stack i32 i = 0; i < 10; ++i) {
+        debug i;
+    }
+
+    stack str s = 'String on stack'; (* '' == stack)
+    heap str hs = "String on heap"; (* "" == heap)
+
+    (* this is a comment)
+
+    (* gpu parrallel)
+    gpu.(do_stuff_in_parrallel)();
+    
+    (* cpu parrallel)
+    cpu.(do_stuff_in_parrallel)();
+
+    ret 0;
+}
