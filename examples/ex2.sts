@@ -1,0 +1,14 @@
+mod ex2;
+
+fn multi(i32 a, i32 b): [i32, i32] {
+    return a + b, a * b;
+}
+
+fn main(void): i16 {
+    stack i32 [x, y] = multi(10, 20);
+
+    debug x;
+    debug y; 
+
+    ret 0;
+}

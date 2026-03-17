@@ -1,0 +1,10 @@
+mod ex4_c;
+
+cinclude "stdio" = io;
+cinclude "assert";
+
+fn main(void): i16 {
+    io.printf('Hello, %s!\n', 'Sully!')
+
+    ret 0;
+}

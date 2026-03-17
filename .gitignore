@@ -1,0 +1,6 @@
+/build/llvm
+
+*.o
+
+/bin/
+/logs/
