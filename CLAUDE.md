@@ -73,7 +73,7 @@ Examples:
 ### String Allocation
 
 - `'...'` → stack-allocated string
-- `"..."` → heap-allocated string
+- `"..."` → stack-allocated string (same as `'...'`)
 
 ### Pointer Safety Rules
 
@@ -286,7 +286,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Comments (`//` line, `/* */` nested block)
 - [x] Debug statement
 - [x] Return statements (`ret`)
-- [ ] `defer` statement — executes a statement/block at scope exit regardless of control flow
+- [x] `defer` statement — executes a statement/block at scope exit regardless of control flow
 
 ### Types
 - [x] `i8`, `i16`, `i32`, `i64`
@@ -295,17 +295,17 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] `bool`
 - [x] `void`
 - [x] User-defined types (struct, enum, alias)
-- [ ] `nil` keyword — null pointer literal
+- [x] `nil` keyword — null pointer literal
 
 ### Memory & Storage
 - [x] `stack`, `heap`, `atomic`, `const`, `final`
       (if it's const or final, you can't derive a writable pointer from it)
-- [x] String literal allocation rules (`'...'` = stack, `"..."` = heap)
-- [ ] Storage qualifiers required on function parameters (`fn foo(stack i32 x)`)
-- [ ] Storage qualifiers required on tagged enum payloads (`Circle(stack f64)`)
-- [ ] Storage group blocks (`stack ( i32 x = 0; i32 y = 1; )`)
-- [ ] Cross-domain pointer conversion rejected by compiler (`stack` addr → `heap` ptr forbidden)
-- [ ] `heap` primitive variables auto-allocate via `malloc` and are auto-`free`'d at scope exit (unless already `rem.()`'d by the user) — currently `heap` storage qualifier is parsed but ignored in codegen; `heap i32 x` is treated the same as `stack i32 x`
+- [x] String literal allocation rules (`'...'` = stack, `"..."` = stack — both identical)
+- [x] Storage qualifiers required on function parameters (`fn foo(stack i32 x)`)
+- [x] Storage qualifiers required on tagged enum payloads (`Circle(stack f64)`)
+- [x] Storage group blocks (`stack ( i32 x = 0; i32 y = 1; )`)
+- [x] Cross-domain pointer conversion rejected by compiler (`stack` addr → `heap` ptr forbidden)
+- [x] `heap` primitive variables auto-allocate via `malloc` and are auto-`free`'d at scope exit (unless already `rem.()`'d by the user)
 
 ### Functions
 - [x] Internal vs external functions (`int fn`, `ext fn`)
@@ -330,7 +330,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 ### Pointers & Allocation
 - [x] Permissioned pointers (`*r`, `*w`, `*rw`)
 - [x] `new.(size)`, `rem.(ptr)`, `sizeof.(type)`
-- [ ] `mov.(ptr, new_size)` — realloc
+- [x] `mov.(ptr, new_size)` — realloc
 - [x] Arrays (`type name[size]`)
 
 ### Control Flow

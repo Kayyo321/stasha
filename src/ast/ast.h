@@ -87,6 +87,7 @@ typedef enum {
     NodeRemStmt,
     NodeMatchStmt,
     NodeMatchArm,
+    NodeDeferStmt,
 
     /* expressions */
     NodeBinaryExpr,
@@ -111,6 +112,9 @@ typedef enum {
     NodeCastExpr,
     NodeNewExpr,
     NodeSizeofExpr,
+    NodeNilExpr,
+    NodeMovExpr,
+    NodeAddrOf,
 } node_kind_t;
 
 /* ── node list ── */
@@ -172,6 +176,7 @@ struct node {
             char *name;
             boolean_t has_payload;
             type_info_t payload_type;
+            storage_t payload_storage;
         } enum_variant;
 
         struct { char *header; char *alias; } cinclude;
@@ -188,6 +193,7 @@ struct node {
         struct { node_t *value; } debug_stmt;
         struct { node_t *expr; } expr_stmt;
         struct { node_t *ptr; } rem_stmt;
+        struct { node_t *body; } defer_stmt;
         struct { node_t *expr; node_list_t arms; } match_stmt;
         struct {
             boolean_t is_wildcard;
@@ -219,6 +225,8 @@ struct node {
         struct { type_info_t target; node_t *expr; } cast_expr;
         struct { node_t *size; } new_expr;
         struct { type_info_t type; } sizeof_expr;
+        struct { node_t *ptr; node_t *size; } mov_expr;
+        struct { node_t *operand; } addr_of;
     } as;
 };
 

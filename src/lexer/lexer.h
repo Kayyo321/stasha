@@ -46,6 +46,9 @@ typedef enum {
     TokRem,
     TokSizeof,
     TokMatch,
+    TokDefer,
+    TokNil,
+    TokMov,
 
     /* type keywords */
     TokI8,

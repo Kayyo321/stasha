@@ -7,6 +7,7 @@ typedef struct {
     token_t current;
     token_t previous;
     boolean_t had_error;
+    storage_t group_storage; /* current storage-group qualifier, StorageDefault = none */
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
@@ -137,6 +138,8 @@ static node_t *parse_block(parser_t *p);
 static node_t *parse_statement(parser_t *p);
 static node_t *parse_match_stmt(parser_t *p);
 static node_t *parse_var_decl(parser_t *p, linkage_t linkage);
+static node_t *parse_defer_stmt(parser_t *p);
+static node_t *parse_storage_group(parser_t *p, storage_t storage);
 
 static boolean_t can_start_type(parser_t *p) {
     return is_builtin_type_token(p->current.kind) || check(p, TokIdent);
@@ -292,6 +295,29 @@ static node_t *parse_primary(parser_t *p) {
         consume(p, TokRParen, "')'");
         node_t *n = make_node(NodeRemStmt, line);
         n->as.rem_stmt.ptr = ptr;
+        return n;
+    }
+
+    /* nil — null pointer literal */
+    if (check(p, TokNil)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        return make_node(NodeNilExpr, line);
+    }
+
+    /* mov.(ptr, new_size) — realloc */
+    if (check(p, TokMov)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *ptr = parse_expr(p);
+        consume(p, TokComma, "','");
+        node_t *sz = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeMovExpr, line);
+        n->as.mov_expr.ptr = ptr;
+        n->as.mov_expr.size = sz;
         return n;
     }
 
@@ -485,6 +511,15 @@ static node_t *parse_postfix(parser_t *p) {
 /* ── unary prefix: ++ -- ! - ~ ── */
 
 static node_t *parse_unary(parser_t *p) {
+    /* address-of: &expr (unary prefix, distinct from binary &) */
+    if (check(p, TokAmp)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        node_t *operand = parse_unary(p);
+        node_t *n = make_node(NodeAddrOf, line);
+        n->as.addr_of.operand = operand;
+        return n;
+    }
     if (check(p, TokPlusPlus) || check(p, TokMinusMinus)
         || check(p, TokBang) || check(p, TokMinus) || check(p, TokTilde)) {
         token_kind_t op = p->current.kind;
@@ -883,6 +918,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
 
     if (match_tok(p, TokStack))      storage = StorageStack;
     else if (match_tok(p, TokHeap))  storage = StorageHeap;
+    else if (p->group_storage != StorageDefault) storage = p->group_storage;
 
     if (match_tok(p, TokAtomic)) is_atomic = True;
     if (match_tok(p, TokConst))  is_const = True;
@@ -962,6 +998,37 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     return n;
 }
 
+static node_t *parse_defer_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'defer' */
+    node_t *body;
+    if (check(p, TokLBrace))
+        body = parse_block(p);
+    else
+        body = parse_statement(p);
+    node_t *n = make_node(NodeDeferStmt, line);
+    n->as.defer_stmt.body = body;
+    return n;
+}
+
+/* parse the body of a storage-group block: stack ( ... ) / heap ( ... )
+   Called after consuming the opening '('. Returns a NodeBlock. */
+static node_t *parse_storage_group(parser_t *p, storage_t storage) {
+    usize_t line = p->current.line;
+    storage_t prev = p->group_storage;
+    p->group_storage = storage;
+    node_list_t stmts;
+    node_list_init(&stmts);
+    while (!check(p, TokRParen) && !check(p, TokEof)) {
+        node_list_push(&stmts, parse_statement(p));
+    }
+    consume(p, TokRParen, "')'");
+    p->group_storage = prev;
+    node_t *n = make_node(NodeBlock, line);
+    n->as.block.stmts = stmts;
+    return n;
+}
+
 static node_t *parse_statement(parser_t *p) {
     if (check(p, TokFor))       return parse_for_stmt(p);
     if (check(p, TokWhile))     return parse_while_stmt(p);
@@ -971,6 +1038,7 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokRet))       return parse_ret_stmt(p);
     if (check(p, TokDebug))     return parse_debug_stmt(p);
     if (check(p, TokMatch))     return parse_match_stmt(p);
+    if (check(p, TokDefer))     return parse_defer_stmt(p);
 
     if (check(p, TokBreak)) {
         usize_t line = p->current.line;
@@ -983,6 +1051,18 @@ static node_t *parse_statement(parser_t *p) {
         advance_parser(p);
         consume(p, TokSemicolon, "';'");
         return make_node(NodeContinueStmt, line);
+    }
+
+    /* storage group block: stack ( ... ) or heap ( ... ) */
+    if (check(p, TokStack) || check(p, TokHeap)) {
+        storage_t grp = check(p, TokStack) ? StorageStack : StorageHeap;
+        parser_state_t saved = save_state(p);
+        advance_parser(p);
+        if (check(p, TokLParen)) {
+            advance_parser(p); /* consume '(' */
+            return parse_storage_group(p, grp);
+        }
+        restore_state(p, saved);
     }
 
     if (can_start_var_decl(p)) return parse_var_decl(p, LinkageNone);
@@ -1023,13 +1103,20 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             node_list_init(&params);
             if (!check(p, TokRParen) && !check(p, TokVoid)) {
                 type_info_t ptype;
+                storage_t last_ps = StorageDefault;
                 do {
+                    storage_t ps = StorageDefault;
+                    if (check(p, TokStack))      { ps = StorageStack; advance_parser(p); }
+                    else if (check(p, TokHeap)) { ps = StorageHeap;  advance_parser(p); }
+                    if (ps != StorageDefault) last_ps = ps;
+                    else ps = last_ps;
                     if (can_start_param_type(p))
                         ptype = parse_type(p);
                     token_t pname = consume(p, TokIdent, "parameter name");
                     node_t *param = make_node(NodeVarDecl, pname.line);
                     param->as.var_decl.name = copy_token_text(pname);
                     param->as.var_decl.type = ptype;
+                    param->as.var_decl.storage = ps;
                     node_list_push(&params, param);
                 } while (match_tok(p, TokComma));
             } else if (check(p, TokVoid)) {
@@ -1158,9 +1245,13 @@ static void parse_enum_body(parser_t *p, node_t *decl) {
         v->as.enum_variant.name = copy_token_text(vname);
         v->as.enum_variant.has_payload = False;
 
-        /* tagged variant: Variant(type) */
+        /* tagged variant: Variant(type) or Variant(stack type) / Variant(heap type) */
         if (match_tok(p, TokLParen)) {
             v->as.enum_variant.has_payload = True;
+            storage_t ps = StorageDefault;
+            if (check(p, TokStack))      { ps = StorageStack; advance_parser(p); }
+            else if (check(p, TokHeap)) { ps = StorageHeap;  advance_parser(p); }
+            v->as.enum_variant.payload_storage = ps;
             v->as.enum_variant.payload_type = parse_type(p);
             /* consume optional field name */
             if (check(p, TokIdent)) advance_parser(p);
@@ -1288,13 +1379,21 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     node_list_init(&params);
     if (!check(p, TokRParen) && !check(p, TokVoid)) {
         type_info_t last_type = NO_TYPE;
+        storage_t last_storage = StorageDefault;
         do {
+            /* optional storage qualifier on parameter */
+            storage_t param_storage = StorageDefault;
+            if (check(p, TokStack))      { param_storage = StorageStack;  advance_parser(p); }
+            else if (check(p, TokHeap)) { param_storage = StorageHeap;   advance_parser(p); }
+            if (param_storage != StorageDefault) last_storage = param_storage;
+            else param_storage = last_storage;
             if (can_start_param_type(p))
                 last_type = parse_type(p);
             token_t pname = consume(p, TokIdent, "parameter name");
             node_t *param = make_node(NodeVarDecl, pname.line);
             param->as.var_decl.name = copy_token_text(pname);
             param->as.var_decl.type = last_type;
+            param->as.var_decl.storage = param_storage;
             node_list_push(&params, param);
         } while (match_tok(p, TokComma));
     } else if (check(p, TokVoid)) {
@@ -1373,6 +1472,7 @@ node_t *parse(const char *source) {
     parser_t p;
     init_lexer(&p.lexer, source);
     p.had_error = False;
+    p.group_storage = StorageDefault;
     advance_parser(&p);
 
     consume(&p, TokMod, "'mod'");

@@ -140,6 +140,9 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("sizeof", TokSizeof);
     KW("rem", TokRem);
     KW("match", TokMatch);
+    KW("defer", TokDefer);
+    KW("nil", TokNil);
+    KW("mov", TokMov);
 
     KW("i8", TokI8);
     KW("i16", TokI16);
@@ -195,7 +198,7 @@ static token_t scan_string(lexer_t *lex, char quote) {
     }
     if (is_at_end(lex)) return error_token(lex, "unterminated string");
     advance(lex);
-    return make_token(lex, quote == '\'' ? TokStackStr : TokHeapStr);
+    return make_token(lex, TokStackStr); /* both '' and "" produce stack strings */
 }
 
 static token_t scan_char_lit(lexer_t *lex) {

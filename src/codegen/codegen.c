@@ -15,6 +15,8 @@ typedef struct {
     LLVMTypeRef type;
     type_info_t stype;
     boolean_t is_atomic;
+    storage_t storage;      /* storage domain of the variable */
+    boolean_t is_heap_var;  /* heap primitive: value lives behind a malloc'd pointer */
 } symbol_t;
 
 typedef struct {
@@ -72,7 +74,8 @@ typedef struct {
 
 typedef struct {
     LLVMValueRef alloca_val;
-    char *struct_name;
+    char *struct_name;      /* non-null for struct dtors */
+    boolean_t is_heap_alloc; /* True for heap primitive auto-free */
 } dtor_var_t;
 
 typedef struct {
@@ -80,6 +83,11 @@ typedef struct {
     usize_t count;
     usize_t capacity;
     heap_t heap;
+    /* deferred statements (run in LIFO at scope exit) */
+    node_t **deferred;
+    usize_t deferred_count;
+    usize_t deferred_cap;
+    heap_t deferred_heap;
 } dtor_scope_t;
 
 /* ── type alias registry ── */
@@ -102,6 +110,8 @@ typedef struct {
     LLVMTypeRef malloc_type;
     LLVMValueRef free_fn;
     LLVMTypeRef free_type;
+    LLVMValueRef realloc_fn;
+    LLVMTypeRef realloc_type;
 
     symtab_t globals;
     symtab_t locals;
@@ -178,6 +188,13 @@ static symbol_t *cg_lookup(cg_t *cg, const char *name) {
     return symtab_lookup(&cg->globals, name);
 }
 
+static void symtab_set_last_storage(symtab_t *st, storage_t storage, boolean_t is_heap_var) {
+    if (st->count > 0) {
+        st->entries[st->count - 1].storage = storage;
+        st->entries[st->count - 1].is_heap_var = is_heap_var;
+    }
+}
+
 /* ── struct / enum / alias lookup ── */
 
 static struct_reg_t *find_struct(cg_t *cg, const char *name) {
@@ -209,6 +226,9 @@ static const char *find_cinclude_alias(cg_t *cg, const char *alias) {
     return Null;
 }
 
+/* gen_stmt forward declaration (emit_dtor_calls calls it for deferred stmts) */
+static void gen_stmt(cg_t *cg, node_t *node);
+
 /* ── destructor scope helpers ── */
 
 static void push_dtor_scope(cg_t *cg) {
@@ -226,6 +246,25 @@ static void push_dtor_scope(cg_t *cg) {
     scope->count = 0;
     scope->capacity = 0;
     scope->heap = NullHeap;
+    scope->deferred = Null;
+    scope->deferred_count = 0;
+    scope->deferred_cap = 0;
+    scope->deferred_heap = NullHeap;
+}
+
+static void add_deferred_stmt(cg_t *cg, node_t *stmt) {
+    if (cg->dtor_depth == 0) return;
+    dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
+    if (scope->deferred_count >= scope->deferred_cap) {
+        usize_t new_cap = scope->deferred_cap < 4 ? 4 : scope->deferred_cap * 2;
+        if (scope->deferred_heap.pointer == Null)
+            scope->deferred_heap = allocate(new_cap, sizeof(node_t *));
+        else
+            scope->deferred_heap = reallocate(scope->deferred_heap, new_cap * sizeof(node_t *));
+        scope->deferred = scope->deferred_heap.pointer;
+        scope->deferred_cap = new_cap;
+    }
+    scope->deferred[scope->deferred_count++] = stmt;
 }
 
 static void add_dtor_var(cg_t *cg, LLVMValueRef alloca_val, const char *struct_name) {
@@ -242,19 +281,54 @@ static void add_dtor_var(cg_t *cg, LLVMValueRef alloca_val, const char *struct_n
     }
     scope->vars[scope->count].alloca_val = alloca_val;
     scope->vars[scope->count].struct_name = (char *)struct_name;
+    scope->vars[scope->count].is_heap_alloc = False;
+    scope->count++;
+}
+
+static void add_heap_var(cg_t *cg, LLVMValueRef alloca_val) {
+    if (cg->dtor_depth == 0) return;
+    dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
+    if (scope->count >= scope->capacity) {
+        usize_t new_cap = scope->capacity < 4 ? 4 : scope->capacity * 2;
+        if (scope->heap.pointer == Null)
+            scope->heap = allocate(new_cap, sizeof(dtor_var_t));
+        else
+            scope->heap = reallocate(scope->heap, new_cap * sizeof(dtor_var_t));
+        scope->vars = scope->heap.pointer;
+        scope->capacity = new_cap;
+    }
+    scope->vars[scope->count].alloca_val = alloca_val;
+    scope->vars[scope->count].struct_name = Null;
+    scope->vars[scope->count].is_heap_alloc = True;
     scope->count++;
 }
 
 static void emit_dtor_calls(cg_t *cg, dtor_scope_t *scope) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
+    /* run deferred statements in LIFO order first */
+    for (usize_t i = scope->deferred_count; i > 0; i--) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder))) break;
+        gen_stmt(cg, scope->deferred[i - 1]);
+    }
+    /* then run destructors / heap-var frees in LIFO order */
     for (usize_t i = scope->count; i > 0; i--) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder))) break;
         dtor_var_t *dv = &scope->vars[i - 1];
-        struct_reg_t *sr = find_struct(cg, dv->struct_name);
-        if (sr && sr->destructor) {
-            LLVMTypeRef fn_type = LLVMGlobalGetValueType(sr->destructor);
-            LLVMValueRef args[1] = { dv->alloca_val };
-            LLVMBuildCall2(cg->builder, fn_type, sr->destructor, args, 1, "");
+        if (dv->is_heap_alloc) {
+            /* free heap-allocated primitive (free(null) is safe, no branch needed) */
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
+                                                    dv->alloca_val, "hptr");
+            LLVMValueRef args[1] = { heap_ptr };
+            LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
+        } else if (dv->struct_name) {
+            struct_reg_t *sr = find_struct(cg, dv->struct_name);
+            if (sr && sr->destructor) {
+                LLVMTypeRef fn_type = LLVMGlobalGetValueType(sr->destructor);
+                LLVMValueRef args[1] = { dv->alloca_val };
+                LLVMBuildCall2(cg->builder, fn_type, sr->destructor, args, 1, "");
+            }
         }
     }
 }
@@ -285,6 +359,7 @@ static void pop_dtor_scope(cg_t *cg) {
     dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
     emit_dtor_calls(cg, scope);
     if (scope->heap.pointer != Null) deallocate(scope->heap);
+    if (scope->deferred_heap.pointer != Null) deallocate(scope->deferred_heap);
     cg->dtor_depth--;
 }
 
@@ -435,6 +510,12 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
     if (!sym) {
         log_err("undefined variable '%s'", node->as.ident.name);
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    if (sym->is_heap_var) {
+        /* heap primitive: alloca holds the malloc ptr; do double-load */
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
+        return LLVMBuildLoad2(cg->builder, sym->type, heap_ptr, node->as.ident.name);
     }
     LLVMValueRef load = LLVMBuildLoad2(cg->builder, sym->type, sym->value,
                                         node->as.ident.name);
@@ -587,12 +668,21 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
             log_err("undefined variable '%s'", operand->as.ident.name);
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
-        LLVMValueRef val = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "");
+        LLVMValueRef store_ptr;
+        LLVMValueRef val;
+        if (sym->is_heap_var) {
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            store_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
+            val = LLVMBuildLoad2(cg->builder, sym->type, store_ptr, "");
+        } else {
+            store_ptr = sym->value;
+            val = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "");
+        }
         LLVMValueRef one = LLVMConstInt(sym->type, 1, 0);
         LLVMValueRef result = (node->as.unary.op == TokPlusPlus)
             ? LLVMBuildAdd(cg->builder, val, one, "inc")
             : LLVMBuildSub(cg->builder, val, one, "dec");
-        LLVMBuildStore(cg->builder, result, sym->value);
+        LLVMBuildStore(cg->builder, result, store_ptr);
         return result;
     }
     if (node->as.unary.op == TokMinus) {
@@ -626,12 +716,21 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
         log_err("undefined variable '%s'", operand->as.ident.name);
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
-    LLVMValueRef val = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "");
+    LLVMValueRef store_ptr;
+    LLVMValueRef val;
+    if (sym->is_heap_var) {
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        store_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
+        val = LLVMBuildLoad2(cg->builder, sym->type, store_ptr, "");
+    } else {
+        store_ptr = sym->value;
+        val = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "");
+    }
     LLVMValueRef one = LLVMConstInt(sym->type, 1, 0);
     LLVMValueRef result = (node->as.unary.op == TokPlusPlus)
         ? LLVMBuildAdd(cg->builder, val, one, "inc")
         : LLVMBuildSub(cg->builder, val, one, "dec");
-    LLVMBuildStore(cg->builder, result, sym->value);
+    LLVMBuildStore(cg->builder, result, store_ptr);
     return val;
 }
 
@@ -841,7 +940,12 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
             log_err("undefined variable '%s'", target->as.ident.name);
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
-        store_ptr = sym->value;
+        if (sym->is_heap_var) {
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            store_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
+        } else {
+            store_ptr = sym->value;
+        }
         store_type = sym->type;
         atomic = sym->is_atomic;
     } else if (target->kind == NodeIndexExpr) {
@@ -911,18 +1015,44 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     node_t *target = node->as.assign.target;
-    LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
 
     if (target->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, target->as.ident.name);
         if (!sym) {
             log_err("undefined variable '%s'", target->as.ident.name);
-            return rhs;
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
+
+        /* cross-domain check when assigning address-of */
+        if (node->as.assign.value->kind == NodeAddrOf && sym->stype.is_pointer) {
+            node_t *addr_op = node->as.assign.value->as.addr_of.operand;
+            if (addr_op->kind == NodeIdentExpr) {
+                symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
+                if (src) {
+                    if (sym->storage == StorageHeap && src->storage == StorageStack)
+                        log_err("line %lu: cannot assign stack address to heap pointer",
+                                node->line);
+                    else if (sym->storage == StorageStack && src->storage == StorageHeap)
+                        log_err("line %lu: cannot assign heap address to stack pointer",
+                                node->line);
+                }
+            }
+        }
+
+        LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
         rhs = coerce_int(cg, rhs, sym->type);
-        LLVMBuildStore(cg->builder, rhs, sym->value);
+        if (sym->is_heap_var) {
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
+                                                    sym->value, "hptr");
+            LLVMBuildStore(cg->builder, rhs, heap_ptr);
+        } else {
+            LLVMBuildStore(cg->builder, rhs, sym->value);
+        }
         return rhs;
     }
+
+    LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
 
     if (target->kind == NodeIndexExpr) {
         node_t *obj = target->as.index_expr.object;
@@ -1222,6 +1352,37 @@ static LLVMValueRef gen_sizeof(cg_t *cg, node_t *node) {
     return LLVMSizeOf(ty);
 }
 
+static LLVMValueRef gen_nil(cg_t *cg) {
+    return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+}
+
+static LLVMValueRef gen_mov(cg_t *cg, node_t *node) {
+    LLVMValueRef ptr = gen_expr(cg, node->as.mov_expr.ptr);
+    LLVMValueRef sz  = gen_expr(cg, node->as.mov_expr.size);
+    sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
+    LLVMValueRef args[2] = { ptr, sz };
+    return LLVMBuildCall2(cg->builder, cg->realloc_type, cg->realloc_fn, args, 2, "realloc");
+}
+
+static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
+    node_t *operand = node->as.addr_of.operand;
+    if (operand->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, operand->as.ident.name);
+        if (!sym) {
+            log_err("undefined variable '%s'", operand->as.ident.name);
+            return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+        }
+        if (sym->is_heap_var) {
+            /* heap var: address is the malloc'd pointer */
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            return LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
+        }
+        return sym->value; /* alloca = address of the stack variable */
+    }
+    log_err("address-of requires an lvalue");
+    return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+}
+
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
     switch (node->kind) {
         case NodeIntLitExpr:       return gen_int_lit(cg, node);
@@ -1245,8 +1406,25 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeCastExpr:         return gen_cast(cg, node);
         case NodeNewExpr:          return gen_new(cg, node);
         case NodeSizeofExpr:       return gen_sizeof(cg, node);
+        case NodeNilExpr:          return gen_nil(cg);
+        case NodeMovExpr:          return gen_mov(cg, node);
+        case NodeAddrOf:           return gen_addr_of(cg, node);
         case NodeRemStmt: {
-            LLVMValueRef ptr = gen_expr(cg, node->as.rem_stmt.ptr);
+            node_t *ptr_node = node->as.rem_stmt.ptr;
+            /* for heap primitive vars: free the heap ptr and null the alloca */
+            if (ptr_node->kind == NodeIdentExpr) {
+                symbol_t *hsym = cg_lookup(cg, ptr_node->as.ident.name);
+                if (hsym && hsym->is_heap_var) {
+                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                    LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
+                                                            hsym->value, "hptr");
+                    LLVMValueRef fargs[1] = { heap_ptr };
+                    LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, fargs, 1, "");
+                    LLVMBuildStore(cg->builder, LLVMConstNull(ptr_ty), hsym->value);
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+            }
+            LLVMValueRef ptr = gen_expr(cg, ptr_node);
             LLVMValueRef args[1] = { ptr };
             LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
@@ -1259,6 +1437,13 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
 
 /* ── statements ── */
 
+/* Returns True if type_info is a primitive (non-struct, non-enum) that can be heap-allocated */
+static boolean_t is_primitive_type(type_info_t ti) {
+    if (ti.is_pointer || ti.base == TypeVoid) return False;
+    if (ti.base == TypeUser) return False;
+    return True;
+}
+
 static void gen_local_var(cg_t *cg, node_t *node) {
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
     LLVMTypeRef type;
@@ -1268,6 +1453,48 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         type = LLVMArrayType2(elem, (unsigned long long)node->as.var_decl.array_size);
     } else {
         type = get_llvm_type(cg, ti);
+    }
+
+    /* heap primitive: allocate via malloc, register for auto-free */
+    boolean_t is_heap = (node->as.var_decl.storage == StorageHeap)
+                        && is_primitive_type(ti)
+                        && !node->as.var_decl.is_array;
+
+    if (is_heap) {
+        /* alloca holds the heap pointer (alloca of ptr type, in entry block) */
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMValueRef alloca_val = alloc_in_entry(cg, ptr_ty, node->as.var_decl.name);
+
+        /* check cross-domain: if init is addr-of a stack variable, error */
+        if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeAddrOf) {
+            node_t *addr_op = node->as.var_decl.init->as.addr_of.operand;
+            if (addr_op->kind == NodeIdentExpr) {
+                symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
+                if (src && src->storage == StorageStack)
+                    log_err("line %lu: cannot assign stack address to heap pointer",
+                            node->line);
+            }
+        }
+
+        /* call malloc(sizeof(type)) */
+        LLVMValueRef sz = LLVMSizeOf(type);
+        sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
+        LLVMValueRef args[1] = { sz };
+        LLVMValueRef heap_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
+                                                cg->malloc_fn, args, 1, "hmalloc");
+        LLVMBuildStore(cg->builder, heap_ptr, alloca_val);
+
+        if (node->as.var_decl.init) {
+            LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
+            init = coerce_int(cg, init, type);
+            LLVMBuildStore(cg->builder, init, heap_ptr);
+        }
+
+        symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
+                   ti, node->as.var_decl.is_atomic);
+        symtab_set_last_storage(&cg->locals, StorageHeap, True);
+        add_heap_var(cg, alloca_val);
+        return;
     }
 
     /* emit alloca in the entry block so loop variables get a fixed slot */
@@ -1281,6 +1508,23 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     LLVMValueRef alloca_val = LLVMBuildAlloca(cg->builder, type, node->as.var_decl.name);
     LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 
+    /* cross-domain check for stack pointer assigned a heap address (and vice-versa) */
+    if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeAddrOf && ti.is_pointer) {
+        node_t *addr_op = node->as.var_decl.init->as.addr_of.operand;
+        if (addr_op->kind == NodeIdentExpr) {
+            symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
+            if (src) {
+                storage_t ptr_domain = node->as.var_decl.storage;
+                if (ptr_domain == StorageHeap && src->storage == StorageStack)
+                    log_err("line %lu: cannot assign stack address to heap pointer",
+                            node->line);
+                else if (ptr_domain == StorageStack && src->storage == StorageHeap)
+                    log_err("line %lu: cannot assign heap address to stack pointer",
+                            node->line);
+            }
+        }
+    }
+
     if (node->as.var_decl.init) {
         LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
         if (!node->as.var_decl.is_array)
@@ -1290,6 +1534,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 
     symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
                ti, node->as.var_decl.is_atomic);
+    symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
 
     /* track struct variables for destructor auto-call */
     if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
@@ -1348,6 +1593,7 @@ static void gen_for(cg_t *cg, node_t *node) {
     if (cg->dtor_depth > 0) {
         dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
         if (scope->heap.pointer != Null) deallocate(scope->heap);
+        if (scope->deferred_heap.pointer != Null) deallocate(scope->deferred_heap);
         cg->dtor_depth--;
     }
 }
@@ -1739,6 +1985,12 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             else
                 log_err("continue outside of loop");
             break;
+        case NodeDeferStmt:
+            add_deferred_stmt(cg, node->as.defer_stmt.body);
+            break;
+        case NodeBlock:
+            gen_block(cg, node);
+            break;
         default:
             log_err("unexpected statement kind %d", node->kind);
             break;
@@ -1901,6 +2153,13 @@ result_t codegen(node_t *ast, const char *obj_output) {
     cg.free_type = LLVMFunctionType(LLVMVoidTypeInContext(cg.ctx), free_param, 1, 0);
     cg.free_fn = LLVMAddFunction(cg.module, "free", cg.free_type);
     symtab_add(&cg.globals, "free", cg.free_fn, Null, rt_dummy, False);
+
+    LLVMTypeRef realloc_params[] = { LLVMPointerTypeInContext(cg.ctx, 0),
+                                      LLVMInt64TypeInContext(cg.ctx) };
+    cg.realloc_type = LLVMFunctionType(LLVMPointerTypeInContext(cg.ctx, 0),
+                                        realloc_params, 2, 0);
+    cg.realloc_fn = LLVMAddFunction(cg.module, "realloc", cg.realloc_type);
+    symtab_add(&cg.globals, "realloc", cg.realloc_fn, Null, rt_dummy, False);
 
     /* pass 0: register type declarations, cincludes */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
