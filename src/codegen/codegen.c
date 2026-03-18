@@ -48,11 +48,14 @@ typedef struct {
 typedef struct {
     char *name;
     long value;
+    boolean_t has_payload;
+    type_info_t payload_type;
 } variant_info_t;
 
 typedef struct {
     char *name;
-    LLVMTypeRef llvm_type;
+    LLVMTypeRef llvm_type;   /* i32 for C-style; { i32, [N x i8] } for tagged */
+    boolean_t is_tagged;     /* True if any variant carries a payload */
     variant_info_t *variants;
     usize_t variant_count;
     heap_t variants_heap;
@@ -369,6 +372,34 @@ static boolean_t llvm_is_ptr(LLVMTypeRef t) {
     return LLVMGetTypeKind(t) == LLVMPointerTypeKind;
 }
 
+/* ── payload size helper ── */
+
+static usize_t payload_type_size(type_info_t ti) {
+    if (ti.is_pointer) return 8;
+    switch (ti.base) {
+        case TypeBool: case TypeI8:  case TypeU8:  return 1;
+        case TypeI16:  case TypeU16:               return 2;
+        case TypeI32:  case TypeU32: case TypeF32: return 4;
+        case TypeI64:  case TypeU64: case TypeF64: return 8;
+        default: return 8; /* conservative default for user types */
+    }
+}
+
+/* ── alloca in entry block helper ── */
+
+static LLVMValueRef alloc_in_entry(cg_t *cg, LLVMTypeRef type, const char *name) {
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
+    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cg->current_fn);
+    LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_bb);
+    if (first_instr)
+        LLVMPositionBuilderBefore(cg->builder, first_instr);
+    else
+        LLVMPositionBuilderAtEnd(cg->builder, entry_bb);
+    LLVMValueRef a = LLVMBuildAlloca(cg->builder, type, name);
+    LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
+    return a;
+}
+
 /* ── forward declarations ── */
 
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node);
@@ -629,6 +660,40 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
     node_t *obj = node->as.method_call.object;
     char *method = node->as.method_call.method;
+
+    /* tagged enum variant construction: Enum.Variant(payload) */
+    if (obj->kind == NodeIdentExpr) {
+        enum_reg_t *er = find_enum(cg, obj->as.ident.name);
+        if (er && er->is_tagged) {
+            for (usize_t i = 0; i < er->variant_count; i++) {
+                if (strcmp(er->variants[i].name, method) == 0) {
+                    LLVMValueRef tmp = alloc_in_entry(cg, er->llvm_type, "enum_tmp");
+
+                    /* store discriminant */
+                    LLVMValueRef disc_ptr = LLVMBuildStructGEP2(
+                        cg->builder, er->llvm_type, tmp, 0, "disc_ptr");
+                    LLVMBuildStore(cg->builder,
+                        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)i, 0),
+                        disc_ptr);
+
+                    /* store payload if variant carries one */
+                    if (er->variants[i].has_payload &&
+                            node->as.method_call.args.count > 0) {
+                        LLVMValueRef payload_val =
+                            gen_expr(cg, node->as.method_call.args.items[0]);
+                        LLVMTypeRef payload_lltype =
+                            get_llvm_type(cg, er->variants[i].payload_type);
+                        payload_val = coerce_int(cg, payload_val, payload_lltype);
+                        LLVMValueRef payload_ptr = LLVMBuildStructGEP2(
+                            cg->builder, er->llvm_type, tmp, 1, "payload_ptr");
+                        LLVMBuildStore(cg->builder, payload_val, payload_ptr);
+                    }
+
+                    return LLVMBuildLoad2(cg->builder, er->llvm_type, tmp, "enum_val");
+                }
+            }
+        }
+    }
 
     /* check if object is a cinclude alias: alias.func(args) */
     if (obj->kind == NodeIdentExpr) {
@@ -1042,8 +1107,19 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
         enum_reg_t *er = find_enum(cg, obj->as.ident.name);
         if (er) {
             for (usize_t i = 0; i < er->variant_count; i++) {
-                if (strcmp(er->variants[i].name, field) == 0)
-                    return LLVMConstInt(er->llvm_type, (unsigned long long)er->variants[i].value, 0);
+                if (strcmp(er->variants[i].name, field) == 0) {
+                    if (!er->is_tagged) {
+                        /* C-style: return i32 constant */
+                        return LLVMConstInt(er->llvm_type,
+                                           (unsigned long long)er->variants[i].value, 0);
+                    } else {
+                        /* tagged enum: build { i32, [N x i8] } with discriminant set */
+                        LLVMValueRef disc = LLVMConstInt(
+                            LLVMInt32TypeInContext(cg->ctx), (unsigned long long)i, 0);
+                        LLVMValueRef val = LLVMGetUndef(er->llvm_type);
+                        return LLVMBuildInsertValue(cg->builder, val, disc, 0, "enum_disc");
+                    }
+                }
             }
         }
     }
@@ -1499,6 +1575,142 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
     }
 }
 
+static void gen_match(cg_t *cg, node_t *node) {
+    node_t *subject_node = node->as.match_stmt.expr;
+    usize_t arm_count = node->as.match_stmt.arms.count;
+    if (arm_count == 0) return;
+
+    /* find enum registry from the first non-wildcard arm */
+    enum_reg_t *er = Null;
+    for (usize_t i = 0; i < arm_count; i++) {
+        node_t *arm = node->as.match_stmt.arms.items[i];
+        if (!arm->as.match_arm.is_wildcard && arm->as.match_arm.enum_name) {
+            er = find_enum(cg, arm->as.match_arm.enum_name);
+            break;
+        }
+    }
+
+    /* get subject alloca pointer (for payload extraction in tagged enums) */
+    LLVMValueRef subject_alloca = Null;
+    LLVMValueRef discriminant;
+
+    if (er && er->is_tagged) {
+        if (subject_node->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, subject_node->as.ident.name);
+            if (sym) subject_alloca = sym->value;
+        }
+        if (!subject_alloca) {
+            /* expression result: store into temp alloca for GEP access */
+            LLVMValueRef val = gen_expr(cg, subject_node);
+            subject_alloca = alloc_in_entry(cg, er->llvm_type, "match_subj");
+            LLVMBuildStore(cg->builder, val, subject_alloca);
+        }
+        LLVMValueRef disc_ptr = LLVMBuildStructGEP2(
+            cg->builder, er->llvm_type, subject_alloca, 0, "disc_ptr");
+        discriminant = LLVMBuildLoad2(
+            cg->builder, LLVMInt32TypeInContext(cg->ctx), disc_ptr, "disc");
+    } else {
+        /* C-style enum or unknown: subject is already an integer discriminant */
+        discriminant = gen_expr(cg, subject_node);
+        discriminant = coerce_int(cg, discriminant, LLVMInt32TypeInContext(cg->ctx));
+    }
+
+    /* collect wildcard arm and count cases */
+    node_t *wildcard_arm = Null;
+    unsigned case_count = 0;
+    for (usize_t i = 0; i < arm_count; i++) {
+        node_t *arm = node->as.match_stmt.arms.items[i];
+        if (arm->as.match_arm.is_wildcard)
+            wildcard_arm = arm;
+        else
+            case_count++;
+    }
+
+    LLVMBasicBlockRef end_bb =
+        LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.end");
+    LLVMBasicBlockRef default_bb = end_bb;
+
+    if (wildcard_arm) {
+        default_bb = LLVMAppendBasicBlockInContext(
+            cg->ctx, cg->current_fn, "match.default");
+    }
+
+    LLVMValueRef sw = LLVMBuildSwitch(cg->builder, discriminant, default_bb, case_count);
+
+    /* generate each non-wildcard arm */
+    for (usize_t i = 0; i < arm_count; i++) {
+        node_t *arm = node->as.match_stmt.arms.items[i];
+        if (arm->as.match_arm.is_wildcard) continue;
+
+        /* find variant discriminant value */
+        long disc_val = -1;
+        variant_info_t *vi = Null;
+        enum_reg_t *arm_er = er ? er : find_enum(cg, arm->as.match_arm.enum_name);
+        if (arm_er) {
+            for (usize_t j = 0; j < arm_er->variant_count; j++) {
+                if (strcmp(arm_er->variants[j].name, arm->as.match_arm.variant_name) == 0) {
+                    disc_val = arm_er->variants[j].value;
+                    vi = &arm_er->variants[j];
+                    break;
+                }
+            }
+        }
+        if (disc_val < 0) {
+            log_err("line %lu: unknown variant '%s'",
+                    arm->line, arm->as.match_arm.variant_name);
+            continue;
+        }
+
+        LLVMBasicBlockRef arm_bb =
+            LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.arm");
+        LLVMAddCase(sw,
+            LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+                         (unsigned long long)disc_val, 0),
+            arm_bb);
+        LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
+
+        /* scope: save locals count so binding is invisible after this arm */
+        usize_t saved_locals = cg->locals.count;
+
+        /* bind payload value if requested */
+        if (arm->as.match_arm.bind_name && vi && vi->has_payload && subject_alloca) {
+            LLVMValueRef payload_ptr = LLVMBuildStructGEP2(
+                cg->builder, arm_er->llvm_type, subject_alloca, 1, "payload_ptr");
+            LLVMTypeRef payload_lltype = get_llvm_type(cg, vi->payload_type);
+            LLVMValueRef payload_val = LLVMBuildLoad2(
+                cg->builder, payload_lltype, payload_ptr, arm->as.match_arm.bind_name);
+            LLVMValueRef bind_alloca =
+                alloc_in_entry(cg, payload_lltype, arm->as.match_arm.bind_name);
+            LLVMBuildStore(cg->builder, payload_val, bind_alloca);
+            symtab_add(&cg->locals, arm->as.match_arm.bind_name,
+                       bind_alloca, payload_lltype, vi->payload_type, False);
+        }
+
+        push_dtor_scope(cg);
+        for (usize_t s = 0; s < arm->as.match_arm.body->as.block.stmts.count; s++)
+            gen_stmt(cg, arm->as.match_arm.body->as.block.stmts.items[s]);
+        pop_dtor_scope(cg);
+
+        cg->locals.count = saved_locals;
+
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+            LLVMBuildBr(cg->builder, end_bb);
+    }
+
+    /* generate wildcard / default arm */
+    if (wildcard_arm) {
+        LLVMPositionBuilderAtEnd(cg->builder, default_bb);
+        push_dtor_scope(cg);
+        for (usize_t s = 0; s < wildcard_arm->as.match_arm.body->as.block.stmts.count; s++)
+            gen_stmt(cg, wildcard_arm->as.match_arm.body->as.block.stmts.items[s]);
+        pop_dtor_scope(cg);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+            LLVMBuildBr(cg->builder, end_bb);
+    }
+
+    LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+}
+
 static void gen_stmt(cg_t *cg, node_t *node) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
@@ -1514,6 +1726,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeDebugStmt:    gen_debug(cg, node); break;
         case NodeExprStmt:     gen_expr(cg, node->as.expr_stmt.expr); break;
         case NodeRemStmt:      gen_expr(cg, node); break;
+        case NodeMatchStmt:    gen_match(cg, node); break;
         case NodeBreakStmt:
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);
@@ -1579,8 +1792,7 @@ static void struct_add_field(struct_reg_t *sr, const char *name, type_info_t typ
     sr->field_count++;
 }
 
-static void register_enum(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
-                           node_list_t *variants) {
+static void register_enum(cg_t *cg, const char *name, node_list_t *variants) {
     if (cg->enum_count >= cg->enum_cap) {
         usize_t new_cap = cg->enum_cap < 8 ? 8 : cg->enum_cap * 2;
         if (cg->enums_heap.pointer == Null)
@@ -1592,18 +1804,41 @@ static void register_enum(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
     }
     enum_reg_t *er = &cg->enums[cg->enum_count++];
     er->name = (char *)name;
-    er->llvm_type = llvm_type;
+    er->is_tagged = False;
     er->variant_count = variants->count;
+
     if (variants->count > 0) {
         er->variants_heap = allocate(variants->count, sizeof(variant_info_t));
         er->variants = er->variants_heap.pointer;
+
+        /* determine if any variant has a payload (tagged enum) */
+        usize_t max_payload = 0;
         for (usize_t i = 0; i < variants->count; i++) {
-            er->variants[i].name = variants->items[i]->as.enum_variant.name;
+            node_t *v = variants->items[i];
+            er->variants[i].name = v->as.enum_variant.name;
             er->variants[i].value = (long)i;
+            er->variants[i].has_payload = v->as.enum_variant.has_payload;
+            er->variants[i].payload_type = v->as.enum_variant.payload_type;
+            if (v->as.enum_variant.has_payload) {
+                er->is_tagged = True;
+                usize_t sz = payload_type_size(v->as.enum_variant.payload_type);
+                if (sz > max_payload) max_payload = sz;
+            }
+        }
+
+        if (er->is_tagged) {
+            /* tagged union: { i32, [max_payload x i8] } */
+            LLVMTypeRef byte_arr = LLVMArrayType2(
+                LLVMInt8TypeInContext(cg->ctx), (unsigned long long)max_payload);
+            LLVMTypeRef fields[2] = { LLVMInt32TypeInContext(cg->ctx), byte_arr };
+            er->llvm_type = LLVMStructTypeInContext(cg->ctx, fields, 2, 0);
+        } else {
+            er->llvm_type = LLVMInt32TypeInContext(cg->ctx);
         }
     } else {
         er->variants_heap = NullHeap;
         er->variants = Null;
+        er->llvm_type = LLVMInt32TypeInContext(cg->ctx);
     }
 }
 
@@ -1681,8 +1916,7 @@ result_t codegen(node_t *ast, const char *obj_output) {
                 LLVMTypeRef stype = LLVMStructCreateNamed(cg.ctx, decl->as.type_decl.name);
                 register_struct(&cg, decl->as.type_decl.name, stype);
             } else if (decl->as.type_decl.decl_kind == TypeDeclEnum) {
-                LLVMTypeRef etype = LLVMInt32TypeInContext(cg.ctx);
-                register_enum(&cg, decl->as.type_decl.name, etype,
+                register_enum(&cg, decl->as.type_decl.name,
                               &decl->as.type_decl.variants);
             } else if (decl->as.type_decl.decl_kind == TypeDeclAlias) {
                 register_alias(&cg, decl->as.type_decl.name, decl->as.type_decl.alias_type);

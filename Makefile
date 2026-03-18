@@ -9,17 +9,9 @@ LLVM_LDFLAGS = $(shell $(LLVM_CFG) --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
                objcarcopts textapi --system-libs 2>/dev/null)
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-  LLD_LIBS = -llldMachO -llldCommon
-else
-  LLD_LIBS = -llldELF -llldCommon
-endif
-
 CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
-CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) \
-           -Iextlib/llvm/lld/include
-LDFLAGS  = $(LLD_LIBS) $(LLVM_LDFLAGS) -lc++
+CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS)
+LDFLAGS  = $(LLVM_LDFLAGS) -lc++
 
 SRCS = src/main.c         \
        src/common/common.c \

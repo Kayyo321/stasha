@@ -139,6 +139,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("new", TokNew);
     KW("sizeof", TokSizeof);
     KW("rem", TokRem);
+    KW("match", TokMatch);
 
     KW("i8", TokI8);
     KW("i16", TokI16);
@@ -273,6 +274,7 @@ token_t next_token(lexer_t *lex) {
             return make_token(lex, TokCaret);
 
         case '=':
+            if (match(lex, '>')) return make_token(lex, TokFatArrow);
             if (match(lex, '=')) return make_token(lex, TokEqEq);
             return make_token(lex, TokEq);
         case '!':

@@ -85,6 +85,8 @@ typedef enum {
     NodeDebugStmt,
     NodeExprStmt,
     NodeRemStmt,
+    NodeMatchStmt,
+    NodeMatchArm,
 
     /* expressions */
     NodeBinaryExpr,
@@ -186,6 +188,14 @@ struct node {
         struct { node_t *value; } debug_stmt;
         struct { node_t *expr; } expr_stmt;
         struct { node_t *ptr; } rem_stmt;
+        struct { node_t *expr; node_list_t arms; } match_stmt;
+        struct {
+            boolean_t is_wildcard;
+            char *enum_name;    /* null for wildcard */
+            char *variant_name; /* null for wildcard */
+            char *bind_name;    /* payload binding name, null if none */
+            node_t *body;
+        } match_arm;
 
         /* ── expressions ── */
         struct { token_kind_t op; node_t *left; node_t *right; } binary;

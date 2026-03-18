@@ -135,6 +135,7 @@ static type_info_t parse_type(parser_t *p) {
 static node_t *parse_expr(parser_t *p);
 static node_t *parse_block(parser_t *p);
 static node_t *parse_statement(parser_t *p);
+static node_t *parse_match_stmt(parser_t *p);
 static node_t *parse_var_decl(parser_t *p, linkage_t linkage);
 
 static boolean_t can_start_type(parser_t *p) {
@@ -969,6 +970,7 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokIf))        return parse_if_stmt(p);
     if (check(p, TokRet))       return parse_ret_stmt(p);
     if (check(p, TokDebug))     return parse_debug_stmt(p);
+    if (check(p, TokMatch))     return parse_match_stmt(p);
 
     if (check(p, TokBreak)) {
         usize_t line = p->current.line;
@@ -1094,6 +1096,56 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
         consume(p, TokSemicolon, "';'");
     }
     consume(p, TokRBrace, "'}'");
+}
+
+/* ── match statement ── */
+
+static node_t *parse_match_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'match' */
+
+    node_t *subject = parse_expr(p);
+    consume(p, TokLBrace, "'{'");
+
+    node_t *n = make_node(NodeMatchStmt, line);
+    n->as.match_stmt.expr = subject;
+    node_list_init(&n->as.match_stmt.arms);
+
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        node_t *arm = make_node(NodeMatchArm, p->current.line);
+
+        /* wildcard arm: _ => { ... } */
+        if (check(p, TokIdent) &&
+                p->current.length == 1 && p->current.start[0] == '_') {
+            advance_parser(p);
+            arm->as.match_arm.is_wildcard = True;
+            arm->as.match_arm.enum_name    = Null;
+            arm->as.match_arm.variant_name = Null;
+            arm->as.match_arm.bind_name    = Null;
+        } else {
+            /* pattern: EnumName.Variant  or  EnumName.Variant(bind) */
+            arm->as.match_arm.is_wildcard = False;
+            token_t etok = consume(p, TokIdent, "enum name");
+            arm->as.match_arm.enum_name = copy_token_text(etok);
+            consume(p, TokDot, "'.'");
+            token_t vtok = consume(p, TokIdent, "variant name");
+            arm->as.match_arm.variant_name = copy_token_text(vtok);
+            arm->as.match_arm.bind_name = Null;
+            if (match_tok(p, TokLParen)) {
+                token_t btok = consume(p, TokIdent, "binding name");
+                arm->as.match_arm.bind_name = copy_token_text(btok);
+                consume(p, TokRParen, "')'");
+            }
+        }
+
+        consume(p, TokFatArrow, "'=>'");
+        arm->as.match_arm.body = parse_block(p);
+        node_list_push(&n->as.match_stmt.arms, arm);
+        match_tok(p, TokComma); /* optional trailing comma */
+    }
+
+    consume(p, TokRBrace, "'}'");
+    return n;
 }
 
 /* ── enum body parsing ── */

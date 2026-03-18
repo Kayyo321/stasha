@@ -355,7 +355,52 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
   
 ### Enums
 - [x] Basic C style enums
-- [ ] Rust style struct-based enums
+- [x] Rust style tagged enums (`Variant(type)` payloads, `match` statement)
+
+---
+
+## Design Notes & Planned Changes
+
+### Storage Qualifiers — Wider Coverage
+
+Storage qualifiers (`stack`/`heap`) need to be required everywhere data is created, not just in local variable declarations. Currently underspecified contexts include:
+
+- **Function parameters:** `fn foo(i32 x)` should become `fn foo(stack i32 x)` — the caller must declare where the argument lives.
+- **Tagged enum payloads:** `Circle(f64)` should become `Circle(stack f64)` or `Circle(heap f64)` — the payload's memory domain must be explicit.
+
+Goal: no implicit allocation anywhere. Every piece of data has a declared home.
+
+---
+
+### Pointer Domain Safety — Cross-Region Conversion Must Be Forbidden
+
+Stack pointers and heap pointers must never be interchangeable. The compiler should reject any assignment or cast that moves a pointer across memory domains:
+
+```
+stack i32 x = 5;
+heap  i32 *p = &x;   // ERROR: stack address assigned to heap pointer
+```
+
+This must be enforced at the type-checker / codegen level. Currently the pointer permission system exists but cross-domain conversion is not validated.
+
+---
+
+### Storage Group Blocks
+
+Repeating `stack` or `heap` on every line is verbose. A Go-style grouping syntax should be supported:
+
+```
+stack (
+    i32 v = 0;
+    i32 [x, y] = 10, 20;
+)
+
+heap (
+    MyStruct s = MyStruct.new();
+)
+```
+
+All declarations inside a block inherit the block's storage qualifier. This is purely syntactic sugar — semantics are identical to writing the qualifier on each line individually.
 
 ---
 

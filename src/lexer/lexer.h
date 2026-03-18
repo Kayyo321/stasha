@@ -45,6 +45,7 @@ typedef enum {
     TokNew,
     TokRem,
     TokSizeof,
+    TokMatch,
 
     /* type keywords */
     TokI8,
@@ -118,6 +119,8 @@ typedef enum {
     TokComma,
     TokDot,
     TokQuestion,
+
+    TokFatArrow,    /* => */
 
     TokEof,
     TokError,
