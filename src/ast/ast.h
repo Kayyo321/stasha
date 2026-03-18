@@ -23,14 +23,16 @@ typedef enum {
     TypeError,      /* built-in error type: nil or message */
 } type_kind_t;
 
-/* ── pointer permissions ── */
+/* ── pointer permissions (bit flags) ── */
 
-typedef enum {
-    PtrNone,
-    PtrRead,        /* *r  */
-    PtrWrite,       /* *w  */
-    PtrReadWrite,   /* *rw or just * */
-} ptr_perm_t;
+typedef int ptr_perm_t;
+enum {
+    PtrNone = 0,
+    PtrRead = (1 << 0),                  // readable
+    PtrWrite = (1 << 1),                 // writable
+    PtrArith = (1 << 2),                 // pointer arithmic
+    PtrReadWrite = (PtrRead | PtrWrite), // rw
+};
 
 /* ── rich type descriptor ── */
 
