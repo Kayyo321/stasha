@@ -815,9 +815,7 @@ static node_t *parse_for_stmt(parser_t *p) {
 static node_t *parse_while_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
-    consume(p, TokLParen, "'('");
     node_t *cond = parse_expr(p);
-    consume(p, TokRParen, "')'");
     node_t *body = parse_block(p);
 
     node_t *n = make_node(NodeWhileStmt, line);
@@ -854,9 +852,7 @@ static node_t *parse_inf_loop(parser_t *p) {
 static node_t *parse_if_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
-    consume(p, TokLParen, "'('");
     node_t *cond = parse_expr(p);
-    consume(p, TokRParen, "')'");
     node_t *then_block = parse_block(p);
     node_t *else_block = Null;
     if (match_tok(p, TokElse)) {
@@ -927,6 +923,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     if (!can_start_type(p)) {
         log_err("line %lu: expected type", p->current.line);
         p->had_error = True;
+        advance_parser(p); /* skip bad token to avoid infinite loop */
         return make_node(NodeVarDecl, line);
     }
     type_info_t type = parse_type(p);
@@ -1035,6 +1032,7 @@ static node_t *parse_storage_group(parser_t *p, storage_t storage) {
 }
 
 static node_t *parse_statement(parser_t *p) {
+    if (check(p, TokLBrace))    return parse_block(p);
     if (check(p, TokFor))       return parse_for_stmt(p);
     if (check(p, TokWhile))     return parse_while_stmt(p);
     if (check(p, TokDo))        return parse_do_while_stmt(p);

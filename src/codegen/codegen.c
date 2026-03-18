@@ -517,6 +517,9 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
         return LLVMBuildLoad2(cg->builder, sym->type, heap_ptr, node->as.ident.name);
     }
+    /* arrays decay to a pointer (C semantics): return the alloca directly */
+    if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind)
+        return sym->value;
     LLVMValueRef load = LLVMBuildLoad2(cg->builder, sym->type, sym->value,
                                         node->as.ident.name);
     if (sym->is_atomic)
@@ -1075,12 +1078,14 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                 rhs = coerce_int(cg, rhs, elem_type);
                 LLVMBuildStore(cg->builder, rhs, gep);
             } else if (llvm_is_ptr(sym->type)) {
-                /* pointer indexing: load pointer, then GEP */
+                /* pointer indexing: load pointer, then GEP with element type */
                 LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-                LLVMTypeRef i8ty = LLVMInt8TypeInContext(cg->ctx);
+                type_info_t elem_ti = sym->stype;
+                elem_ti.is_pointer = False;
+                LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
                 index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, i8ty, ptr, &index_val, 1, "pidx");
-                rhs = coerce_int(cg, rhs, i8ty);
+                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
+                rhs = coerce_int(cg, rhs, elem_ty);
                 LLVMBuildStore(cg->builder, rhs, gep);
             }
             return rhs;
@@ -1165,10 +1170,13 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
         }
         if (llvm_is_ptr(sym->type)) {
             LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-            LLVMTypeRef i8ty = LLVMInt8TypeInContext(cg->ctx);
+            /* use the declared element type for correct stride */
+            type_info_t elem_ti = sym->stype;
+            elem_ti.is_pointer = False;
+            LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
             index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, i8ty, ptr, &index_val, 1, "pidx");
-            return LLVMBuildLoad2(cg->builder, i8ty, gep, "pelem");
+            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
+            return LLVMBuildLoad2(cg->builder, elem_ty, gep, "pelem");
         }
     }
 
