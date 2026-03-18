@@ -21,7 +21,11 @@ typedef enum {
     TypeF64,
     TypeUser,       /* struct, enum, or alias — name stored in type_info_t */
     TypeError,      /* built-in error type: nil or message */
+    TypeFnPtr,      /* function pointer with domain-tagged parameters */
 } type_kind_t;
+
+/* ── forward declaration for fn_ptr_desc_t used inside type_info_t ── */
+typedef struct fn_ptr_desc fn_ptr_desc_t;
 
 /* ── pointer permissions (bit flags) ── */
 
@@ -38,12 +42,11 @@ enum {
 
 typedef struct {
     type_kind_t base;
-    char *user_name;        /* non-null when base == TypeUser */
+    char *user_name;            /* non-null when base == TypeUser */
     boolean_t is_pointer;
     ptr_perm_t ptr_perm;
+    fn_ptr_desc_t *fn_ptr_desc; /* non-null when base == TypeFnPtr */
 } type_info_t;
-
-#define NO_TYPE ((type_info_t){TypeVoid, Null, False, PtrNone})
 
 /* ── storage / linkage ── */
 
@@ -52,6 +55,21 @@ typedef enum {
     StorageStack,
     StorageHeap,
 } storage_t;
+
+/* ── function pointer descriptor (domain-tagged parameter list) ── */
+
+typedef struct {
+    storage_t storage;  /* storage domain of the parameter */
+    type_info_t type;
+} fn_ptr_param_t;
+
+struct fn_ptr_desc {
+    fn_ptr_param_t *params;
+    usize_t param_count;
+    type_info_t ret_type;
+};
+
+#define NO_TYPE ((type_info_t){TypeVoid, Null, False, PtrNone, Null})
 
 typedef enum {
     LinkageNone,
@@ -259,6 +277,7 @@ char *copy_token_text(token_t tok);
 char *ast_strdup(const char *src, usize_t len);
 char *ast_strdup_escape(const char *src, usize_t len, usize_t *out_len);
 type_info_t *alloc_type_array(usize_t count);
+fn_ptr_desc_t *alloc_fn_ptr_desc(usize_t param_count);
 
 void node_list_init(node_list_t *list);
 void node_list_push(node_list_t *list, node_t *node);

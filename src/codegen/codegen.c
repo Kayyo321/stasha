@@ -44,6 +44,7 @@ typedef struct {
     type_info_t type;
     usize_t index;
     linkage_t linkage;
+    storage_t storage;  /* StorageStack or StorageHeap — from struct memory section */
 } field_info_t;
 
 typedef struct {
@@ -376,6 +377,10 @@ static const char *find_cinclude_alias(cg_t *cg, const char *alias) {
 /* gen_stmt forward declaration (emit_dtor_calls calls it for deferred stmts) */
 static void gen_stmt(cg_t *cg, node_t *node);
 
+/* forward declarations for mutual recursion in struct cleanup */
+static void emit_struct_cleanup(cg_t *cg, struct_reg_t *sr, LLVMValueRef alloca_val);
+static void emit_struct_field_cleanup(cg_t *cg, struct_reg_t *sr, LLVMValueRef alloca_val);
+
 /* ── destructor scope helpers ── */
 
 static void push_dtor_scope(cg_t *cg) {
@@ -450,6 +455,50 @@ static void add_heap_var(cg_t *cg, LLVMValueRef alloca_val) {
     scope->count++;
 }
 
+/* ── struct auto-cleanup helpers ── */
+
+/* Recursively free heap pointer fields and call nested struct destructors.
+   This runs AFTER the user-defined rem() (if any).  Heap pointer fields are
+   freed with free() — safe if null (user should null after manual rem.()).
+   Nested struct-typed fields are fully cleaned up recursively. */
+static void emit_struct_field_cleanup(cg_t *cg, struct_reg_t *sr, LLVMValueRef alloca_val) {
+    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+    for (usize_t i = 0; i < sr->field_count; i++) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder))) return;
+        field_info_t *f = &sr->fields[i];
+
+        /* auto-free heap pointer fields (free(NULL) is a no-op) */
+        if (f->storage == StorageHeap && f->type.is_pointer) {
+            LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
+                                                    alloca_val, (unsigned)f->index, "hfld.gep");
+            LLVMValueRef hptr = LLVMBuildLoad2(cg->builder, ptr_ty, gep, "hfld.ptr");
+            LLVMValueRef fargs[1] = { hptr };
+            LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, fargs, 1, "");
+        }
+
+        /* recursively clean up nested struct-typed (non-pointer) fields */
+        if (f->type.base == TypeUser && !f->type.is_pointer && f->type.user_name) {
+            struct_reg_t *nested = find_struct(cg, f->type.user_name);
+            if (nested) {
+                LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
+                                                        alloca_val, (unsigned)f->index, "sfld.gep");
+                emit_struct_cleanup(cg, nested, gep);
+            }
+        }
+    }
+}
+
+/* Call the user's rem() destructor (if any), then auto-clean all fields. */
+static void emit_struct_cleanup(cg_t *cg, struct_reg_t *sr, LLVMValueRef alloca_val) {
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder))) return;
+    if (sr->destructor) {
+        LLVMTypeRef fn_type = LLVMGlobalGetValueType(sr->destructor);
+        LLVMValueRef args[1] = { alloca_val };
+        LLVMBuildCall2(cg->builder, fn_type, sr->destructor, args, 1, "");
+    }
+    emit_struct_field_cleanup(cg, sr, alloca_val);
+}
+
 static void emit_dtor_calls(cg_t *cg, dtor_scope_t *scope) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
@@ -471,11 +520,9 @@ static void emit_dtor_calls(cg_t *cg, dtor_scope_t *scope) {
             LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
         } else if (dv->struct_name) {
             struct_reg_t *sr = find_struct(cg, dv->struct_name);
-            if (sr && sr->destructor) {
-                LLVMTypeRef fn_type = LLVMGlobalGetValueType(sr->destructor);
-                LLVMValueRef args[1] = { dv->alloca_val };
-                LLVMBuildCall2(cg->builder, fn_type, sr->destructor, args, 1, "");
-            }
+            /* emit_struct_cleanup calls rem() then auto-frees heap fields
+               and recursively destroys nested struct-typed fields */
+            if (sr) emit_struct_cleanup(cg, sr, dv->alloca_val);
         }
     }
 }
@@ -547,12 +594,32 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         }
         case TypeError:
             return cg->error_type;
+        case TypeFnPtr:
+            /* function pointers are opaque pointers in LLVM's opaque pointer model */
+            return LLVMPointerTypeInContext(cg->ctx, 0);
     }
     return LLVMVoidTypeInContext(cg->ctx);
 }
 
 static LLVMTypeRef get_llvm_type(cg_t *cg, type_info_t ti) {
     return get_llvm_base_type(cg, ti);
+}
+
+/* Build the LLVM function type for a TypeFnPtr descriptor. */
+static LLVMTypeRef build_fn_ptr_llvm_type(cg_t *cg, fn_ptr_desc_t *desc) {
+    LLVMTypeRef ret_ty = get_llvm_type(cg, desc->ret_type);
+    LLVMTypeRef *param_types = Null;
+    heap_t pt_heap = NullHeap;
+    if (desc->param_count > 0) {
+        pt_heap = allocate(desc->param_count, sizeof(LLVMTypeRef));
+        param_types = pt_heap.pointer;
+        for (usize_t i = 0; i < desc->param_count; i++)
+            param_types[i] = get_llvm_type(cg, desc->params[i].type);
+    }
+    LLVMTypeRef fn_ty = LLVMFunctionType(ret_ty, param_types,
+                                          (unsigned)desc->param_count, 0);
+    if (desc->param_count > 0) deallocate(pt_heap);
+    return fn_ty;
 }
 
 static LLVMValueRef coerce_int(cg_t *cg, LLVMValueRef val, LLVMTypeRef target) {
@@ -922,7 +989,7 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
     symbol_t *sym = cg_lookup(cg, node->as.call.callee);
     if (!sym) {
-        log_err("undefined function '%s'", node->as.call.callee);
+        log_err("undefined function or function pointer '%s'", node->as.call.callee);
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     usize_t argc = node->as.call.args.count;
@@ -934,8 +1001,48 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         for (usize_t i = 0; i < argc; i++)
             args[i] = gen_expr(cg, node->as.call.args.items[i]);
     }
-    LLVMTypeRef fn_type = LLVMGlobalGetValueType(sym->value);
-    LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, sym->value,
+
+    LLVMTypeRef fn_type;
+    LLVMValueRef fn_val;
+
+    if (sym->stype.base == TypeFnPtr && sym->stype.fn_ptr_desc) {
+        /* ── indirect call through a domain-tagged function pointer variable ── */
+        fn_ptr_desc_t *desc = sym->stype.fn_ptr_desc;
+
+        /* domain check: actual argument storage must match declared parameter domain */
+        for (usize_t i = 0; i < argc && i < desc->param_count; i++) {
+            node_t *arg_node = node->as.call.args.items[i];
+            if (arg_node->kind == NodeIdentExpr) {
+                symbol_t *asym = cg_lookup(cg, arg_node->as.ident.name);
+                if (asym) {
+                    storage_t declared = desc->params[i].storage;
+                    storage_t actual   = asym->storage;
+                    if (declared != StorageDefault && actual != StorageDefault
+                            && declared != actual) {
+                        const char *exp_s = (declared == StorageStack) ? "stack" : "heap";
+                        const char *got_s = (actual   == StorageStack) ? "stack" : "heap";
+                        log_err("line %lu: argument %lu to function pointer '%s' has "
+                                "wrong storage domain (expected %s, got %s)",
+                                node->line, (unsigned long)(i + 1),
+                                sym->name, exp_s, got_s);
+                    }
+                }
+            }
+        }
+
+        /* build the LLVM function type from the descriptor */
+        fn_type = build_fn_ptr_llvm_type(cg, desc);
+
+        /* load the actual function pointer value from the variable's alloca */
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        fn_val = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "fnptr");
+    } else {
+        /* ── direct call to a named function ── */
+        fn_type = LLVMGlobalGetValueType(sym->value);
+        fn_val  = sym->value;
+    }
+
+    LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_val,
                                        args, (unsigned)argc, "");
     if (argc > 0) deallocate(args_heap);
     return ret;
@@ -1026,7 +1133,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 LLVMTypeRef ftype = LLVMFunctionType(ret_type, param_types,
                                                       param_count, is_varargs);
                 LLVMValueRef fn = LLVMAddFunction(cg->module, method, ftype);
-                type_info_t dummy = {TypeI32, Null, False, PtrNone};
+                type_info_t dummy = {TypeI32, Null, False, PtrNone, Null};
                 symtab_add(&cg->globals, method, fn, Null, dummy, False);
                 fn_sym = cg_lookup(cg, method);
                 if (ptypes_heap.pointer) deallocate(ptypes_heap);
@@ -1770,7 +1877,8 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
 /* Returns True if type_info is a primitive (non-struct, non-enum) that can be heap-allocated */
 static boolean_t is_primitive_type(type_info_t ti) {
     if (ti.is_pointer || ti.base == TypeVoid) return False;
-    if (ti.base == TypeUser) return False;
+    if (ti.base == TypeUser)   return False;
+    if (ti.base == TypeFnPtr)  return False; /* function pointers are not heap primitives */
     return True;
 }
 
@@ -2415,7 +2523,7 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type) {
 }
 
 static void struct_add_field(struct_reg_t *sr, const char *name, type_info_t type,
-                             usize_t index, linkage_t linkage) {
+                             usize_t index, linkage_t linkage, storage_t storage) {
     if (sr->field_count >= sr->field_capacity) {
         usize_t new_cap = sr->field_capacity < 8 ? 8 : sr->field_capacity * 2;
         if (sr->fields_heap.pointer == Null)
@@ -2425,8 +2533,9 @@ static void struct_add_field(struct_reg_t *sr, const char *name, type_info_t typ
         sr->fields = sr->fields_heap.pointer;
         sr->field_capacity = new_cap;
     }
-    sr->fields[sr->field_count].name = (char *)name;
-    sr->fields[sr->field_count].type = type;
+    sr->fields[sr->field_count].name    = (char *)name;
+    sr->fields[sr->field_count].type    = type;
+    sr->fields[sr->field_count].storage = storage;
     sr->fields[sr->field_count].index = index;
     sr->fields[sr->field_count].linkage = linkage;
     sr->field_count++;
@@ -2526,7 +2635,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
     symtab_init(&cg.locals);
 
     /* declare C runtime functions */
-    type_info_t rt_dummy = {TypeVoid, Null, False, PtrNone};
+    type_info_t rt_dummy = {TypeVoid, Null, False, PtrNone, Null};
 
     LLVMTypeRef printf_param[] = { LLVMPointerTypeInContext(cg.ctx, 0) };
     cg.printf_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), printf_param, 1, 1);
@@ -2609,7 +2718,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
                 type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
                 field_types[j] = get_llvm_type(&cg, fti);
                 struct_add_field(sr, field->as.var_decl.name, fti, j,
-                                 field->as.var_decl.linkage);
+                                 field->as.var_decl.linkage,
+                                 field->as.var_decl.storage);
             }
         }
         LLVMStructSetBody(sr->llvm_type, field_types, (unsigned)fc, 0);
@@ -2723,7 +2833,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             if (decl->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
-            type_info_t dummy = {TypeVoid, Null, False, PtrNone};
+            type_info_t dummy = {TypeVoid, Null, False, PtrNone, Null};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
 
             if (total_params > 0) deallocate(ptypes_heap);
@@ -2782,7 +2892,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             if (method->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
-            type_info_t dummy = {TypeVoid, Null, False, PtrNone};
+            type_info_t dummy = {TypeVoid, Null, False, PtrNone, Null};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
             deallocate(ptypes_heap);
 
@@ -2829,7 +2939,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
                                        : LLVMPointerTypeInContext(cg.ctx, 0);
             LLVMValueRef this_alloca = LLVMBuildAlloca(cg.builder, this_type, "this");
             LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, 0), this_alloca);
-            type_info_t this_ti = {TypeUser, decl->as.fn_decl.struct_name, True, PtrReadWrite};
+            type_info_t this_ti = {TypeUser, decl->as.fn_decl.struct_name, True, PtrReadWrite, Null};
             symtab_add(&cg.locals, "this", this_alloca, this_type, this_ti, False);
             param_offset = 1;
         }
@@ -2885,7 +2995,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             LLVMTypeRef this_type = LLVMPointerTypeInContext(cg.ctx, 0);
             LLVMValueRef this_alloca = LLVMBuildAlloca(cg.builder, this_type, "this");
             LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, 0), this_alloca);
-            type_info_t this_ti = {TypeUser, decl->as.type_decl.name, True, PtrReadWrite};
+            type_info_t this_ti = {TypeUser, decl->as.type_decl.name, True, PtrReadWrite, Null};
             symtab_add(&cg.locals, "this", this_alloca, this_type, this_ti, False);
             (void)sr;
 

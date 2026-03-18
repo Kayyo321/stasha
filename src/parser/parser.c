@@ -94,6 +94,58 @@ static type_kind_t token_to_type(token_kind_t k) {
 static type_info_t parse_type(parser_t *p) {
     type_info_t info = NO_TYPE;
 
+    /* function pointer type: fn*(params): ret_type */
+    if (check(p, TokFn)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'fn' */
+
+        if (!check(p, TokStar)) {
+            log_err("line %lu: expected '*' after 'fn' in function pointer type", line);
+            p->had_error = True;
+            return info;
+        }
+        advance_parser(p); /* consume '*' */
+
+        consume(p, TokLParen, "'(' in function pointer type");
+
+        /* collect up to 32 parameters (stack-allocated temp buffer) */
+        fn_ptr_param_t tmp_params[32];
+        usize_t param_count = 0;
+
+        if (!check(p, TokRParen) && !check(p, TokVoid)) {
+            do {
+                if (param_count >= 32) {
+                    log_err("line %lu: function pointer type exceeds maximum of 32 parameters", line);
+                    p->had_error = True;
+                    break;
+                }
+                storage_t ps = StorageStack; /* default */
+                if (match_tok(p, TokStack))      ps = StorageStack;
+                else if (match_tok(p, TokHeap)) ps = StorageHeap;
+
+                type_info_t ptype = parse_type(p);
+                tmp_params[param_count].storage = ps;
+                tmp_params[param_count].type    = ptype;
+                param_count++;
+            } while (match_tok(p, TokComma));
+        } else if (check(p, TokVoid)) {
+            advance_parser(p); /* void = no params */
+        }
+
+        consume(p, TokRParen, "')'");
+        consume(p, TokColon, "':'");
+        type_info_t ret_type = parse_type(p);
+
+        fn_ptr_desc_t *desc = alloc_fn_ptr_desc(param_count);
+        desc->ret_type = ret_type;
+        for (usize_t i = 0; i < param_count; i++)
+            desc->params[i] = tmp_params[i];
+
+        info.base         = TypeFnPtr;
+        info.fn_ptr_desc  = desc;
+        return info;
+    }
+
     if (is_builtin_type_token(p->current.kind)) {
         info.base = token_to_type(p->current.kind);
         advance_parser(p);
@@ -149,7 +201,7 @@ static node_t *parse_defer_stmt(parser_t *p);
 static node_t *parse_storage_group(parser_t *p, storage_t storage);
 
 static boolean_t can_start_type(parser_t *p) {
-    return is_builtin_type_token(p->current.kind) || check(p, TokIdent);
+    return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn);
 }
 
 /* In a parameter list, a bare identifier is only a type if followed by
@@ -157,6 +209,7 @@ static boolean_t can_start_type(parser_t *p) {
    If followed by ',' or ')', it must be a grouped parameter name. */
 static boolean_t can_start_param_type(parser_t *p) {
     if (is_builtin_type_token(p->current.kind)) return True;
+    if (check(p, TokFn)) return True; /* fn* function pointer type */
     if (!check(p, TokIdent)) return False;
     parser_state_t snap = save_state(p);
     advance_parser(p);

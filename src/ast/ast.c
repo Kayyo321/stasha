@@ -132,6 +132,27 @@ type_info_t *alloc_type_array(usize_t count) {
     return arr;
 }
 
+/* ── function pointer descriptor allocation ── */
+
+fn_ptr_desc_t *alloc_fn_ptr_desc(usize_t param_count) {
+    heap_t h = allocate(1, sizeof(fn_ptr_desc_t));
+    arena_track(h);
+    fn_ptr_desc_t *desc = h.pointer;
+    desc->params = Null;
+    desc->param_count = param_count;
+    desc->ret_type = NO_TYPE;
+    if (param_count > 0) {
+        heap_t ph = allocate(param_count, sizeof(fn_ptr_param_t));
+        arena_track(ph);
+        desc->params = ph.pointer;
+        for (usize_t i = 0; i < param_count; i++) {
+            desc->params[i].storage = StorageDefault;
+            desc->params[i].type = NO_TYPE;
+        }
+    }
+    return desc;
+}
+
 /* ── node list ── */
 
 void node_list_init(node_list_t *list) {

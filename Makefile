@@ -7,12 +7,13 @@ LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config
 LLVM_CFLAGS  = $(shell $(LLVM_CFG) --cflags  2>/dev/null)
 LLVM_LDFLAGS = $(shell $(LLVM_CFG) --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
-               objcarcopts textapi --system-libs 2>/dev/null)
+               objcarcopts textapi --system-libs 2>/dev/null) \
+               -lLLVMDTLTO
 
 # If LLD libraries are available, enable embedded LLD support
 LLD_LIBS     = $(wildcard $(LLVM_BUILD)/lib/liblldCommon.a)
 ifneq ($(LLD_LIBS),)
-  LLD_CFLAGS  = -DSTASHA_HAS_LLD -I$(shell dirname $(LLVM_BUILD))/extlib/llvm/lld/include
+  LLD_CFLAGS  = -DSTASHA_HAS_LLD -Iextlib/llvm/lld/include
   LLD_LDLIBS  = -llldMachO -llldELF -llldCommon -llldCOFF -llldMinGW -llldWasm
 else
   LLD_CFLAGS  =
@@ -35,18 +36,18 @@ LINKER_OBJ = build/obj/linker/linker.o
 
 TARGET = bin/stasha
 
-.PHONY: all clean llvm
+.PHONY: all clean clean-llvm llvm
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
 
-build/obj/%.o: src/%.c | $(LLVM_CFG)
+build/obj/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(LINKER_OBJ): src/linker/linker.cpp | $(LLVM_CFG)
+$(LINKER_OBJ): src/linker/linker.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -61,7 +62,24 @@ else
   LLVM_TARGETS = X86
 endif
 
-llvm: $(LLVM_CFG)
+LLD_LIB = $(LLVM_BUILD)/lib/liblldCommon.a
+
+llvm: $(LLD_LIB)
+
+$(LLD_LIB): $(LLVM_CFG)
+	cmake -S extlib/llvm/llvm -B $(LLVM_BUILD)            \
+	      -DCMAKE_BUILD_TYPE=Release                       \
+	      -DLLVM_ENABLE_PROJECTS="lld"                     \
+	      -DLLVM_TARGETS_TO_BUILD="$(LLVM_TARGETS)"       \
+	      -DLLVM_BUILD_TOOLS=OFF                           \
+	      -DLLVM_BUILD_UTILS=OFF                           \
+	      -DLLVM_BUILD_EXAMPLES=OFF                        \
+	      -DLLVM_INCLUDE_TESTS=OFF                         \
+	      -DLLVM_INCLUDE_BENCHMARKS=OFF                    \
+	      -DLLVM_ENABLE_ZLIB=OFF                           \
+	      -DLLVM_ENABLE_TERMINFO=OFF                       \
+	      -DLLVM_ENABLE_ZSTD=OFF
+	cmake --build $(LLVM_BUILD) -- -j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
 
 $(LLVM_CFG):
 	cmake -S extlib/llvm/llvm -B $(LLVM_BUILD)            \
@@ -81,6 +99,9 @@ $(LLVM_CFG):
 # ── housekeeping ───────────────────────────────────────────────
 clean:
 	rm -rf build/obj bin
+
+clean-llvm:
+	rm -rf build/llvm
 
 distclean: clean
 	rm -rf build

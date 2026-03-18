@@ -402,7 +402,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] No `int` global pointer export — an `ext` function in another module cannot receive or return a pointer whose provenance is an `int` global of a foreign module
 - [x] Pointer arithmetic bounds enforcement — for stack-allocated arrays whose size is statically known, the compiler rejects pointer arithmetic that provably exceeds the allocation bounds
 - [x] Null dereference detection — dereferencing a pointer that is statically known to be `nil` (e.g., never assigned after `p = nil`) is a compile error
-- [ ] Function pointer domain tags — a function pointer type must encode the storage domain of its parameters so that calling through a pointer cannot silently violate domain rules
+- [x] Function pointer domain tags — `fn*(params): ret_type` type syntax; storage domain of each parameter encoded; compiler rejects calls through a function pointer when actual argument storage mismatches the declared domain
 
 ### Control Flow
 - [x] `for` loop
@@ -625,3 +625,27 @@ Stasha is intended to be:
 - Safer through explicit constraints
 - More modern in syntax and structure
 - Built for parallel and systems-level programming from the ground up
+
+---
+
+## TODO
+
+### Struct Destructor Improvements
+
+- [x] Heap fields in structs are automatically freed during auto-destruction — after the user's `rem()` runs (if any), `free()` is called on every `heap`-qualified pointer field (safe: `free(NULL)` is a no-op; user should null fields they free manually)
+- [x] Destructors of struct-typed fields are called recursively when the parent struct is destroyed — `emit_struct_cleanup` calls `rem()` then `emit_struct_field_cleanup`, which recurses into every nested struct-typed field; recursive cleanup is guaranteed
+
+### Linker
+
+- [x] Fully relies on the bundled LLVM LLD linker — the clang fallback has been removed; `#ifndef STASHA_HAS_LLD` is now a compile error; the compiler produces executables using only LLD with no dependency on any external `ld`, `lld`, or MSVC linker
+
+### C Interop Rework
+
+- [ ] Consider replacing `cinclude` with a `lib` keyword for cleaner syntax:
+  - C stdlib: `lib "stdio" = io;`
+  - Custom C libraries: `lib "raylib" from "/path/to/lib.a";`
+  - Custom Stasha libraries should act the same: `lib "exlib" from "./stasha_exlib.a";
+
+### Module System
+
+- [ ] Support building Stasha modules (that import other modules from other `.sts` files) into static libraries

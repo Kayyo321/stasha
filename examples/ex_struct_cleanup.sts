@@ -1,0 +1,114 @@
+/* ── ex_struct_cleanup.sts ──────────────────────────────────────────────────
+   Struct destructor improvements:
+
+   1. Heap pointer fields in a struct are automatically freed when the struct
+      goes out of scope, even with no user-defined rem().
+
+   2. Nested struct-typed fields have their destructors called recursively —
+      the compiler guarantees cleanup propagates through the ownership tree.
+
+   IMPORTANT contract for user-defined rem():
+     • If your rem() manually frees a heap field, null it afterwards so the
+       automatic cleanup sees a null pointer (free(NULL) is always safe).
+     • Do NOT call nested field rem() manually — the compiler does it for you.
+   ───────────────────────────────────────────────────────────────────────── */
+
+mod struct_cleanup_example;
+
+cinclude 'stdio' = io;
+
+/* ── Inner struct with a heap buffer ───────────────────────────── */
+
+type Buffer: struct {
+heap:
+    u8 *rw data;
+    ext i32 size;
+};
+
+fn Buffer.new(stack i32 sz): Buffer {
+    stack Buffer b;
+    b.data = new.(sizeof.(u8) * (usize_t)sz);
+    b.size = sz;
+    ret b;
+}
+
+/* No rem() defined — the compiler automatically frees b.data on scope exit. */
+
+/* ── Outer struct that owns a Buffer field ─────────────────────── */
+
+type Container: struct {
+    ext Buffer inner;
+    ext i32    tag;
+};
+
+fn Container.new(stack i32 tag, stack i32 buf_size): Container {
+    stack Container c;
+    c.inner = Buffer.new(buf_size);
+    c.tag   = tag;
+    ret c;
+}
+
+/* No rem() here either — the compiler:
+     1. Calls inner.rem() if defined (none in this case).
+     2. Recursively auto-frees inner's heap fields (inner.data).
+   So Container cleanup cascades correctly with zero user-written code. */
+
+/* ── Struct WITH a user-defined rem() ─────────────────────────── */
+
+type Tracked: struct {
+heap:
+    u8 *rw buf;
+    ext i32 id;
+};
+
+fn Tracked.new(stack i32 id): Tracked {
+    stack Tracked t;
+    t.buf = new.(64);
+    t.id  = id;
+    ret t;
+}
+
+fn Tracked.rem(void): void {
+    /* Manually free buf and null it so the auto-cleanup is a no-op. */
+    rem.(Tracked.(buf));
+    Tracked.(buf) = nil;
+    io.printf('Tracked[%d].rem() called\n', Tracked.(id));
+}
+
+/* ── main ──────────────────────────────────────────────────────── */
+
+ext fn main(void): i32 {
+    io.printf('--- Auto-cleanup demo ---\n');
+
+    {
+        /* Buffer.data is auto-freed at scope exit (no rem() needed). */
+        stack Buffer b = Buffer.new(128);
+        b.data[0] = 42;
+        io.printf('buffer[0] = %d, size = %d\n', (i32)b.data[0], b.size);
+    } /* b.data freed here automatically */
+
+    io.printf('\n--- Nested cleanup demo ---\n');
+
+    {
+        /* Container owns a Buffer.  When c goes out of scope:
+             - Container field cleanup runs
+             - Buffer.data inside inner is freed
+           No rem() anywhere — fully automatic. */
+        stack Container c = Container.new(7, 256);
+        c.inner.data[0] = 99;
+        io.printf('c.inner.data[0] = %d, tag = %d\n',
+                  (i32)c.inner.data[0], c.tag);
+    } /* c.inner.data freed here automatically */
+
+    io.printf('\n--- User rem() + auto-cleanup demo ---\n');
+
+    {
+        /* Tracked.rem() is called first, which frees and nulls buf.
+           Then the compiler's auto-cleanup sees buf == nil → free(nil) = no-op. */
+        stack Tracked t = Tracked.new(42);
+        t.buf[0] = 55;
+        io.printf('t.buf[0] = %d\n', (i32)t.buf[0]);
+    } /* Tracked.rem() runs, then auto-cleanup (safe no-op) */
+
+    ret 0;
+}

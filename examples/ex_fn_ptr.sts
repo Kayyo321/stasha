@@ -1,0 +1,53 @@
+/* ── ex_fn_ptr.sts ──────────────────────────────────────────────────────────
+   Function pointer domain tags.
+
+   A function pointer type encodes the storage domain of each parameter:
+
+       fn*(stack i32, heap u8 *rw): i32
+
+   The compiler enforces that callers pass arguments whose storage matches
+   the declared domain.  Passing a heap variable where the pointer expects a
+   stack argument — or vice-versa — is a compile error.
+   ───────────────────────────────────────────────────────────────────────── */
+
+mod fn_ptr_example;
+
+cinclude 'stdio' = io;
+
+/* A simple function that adds two stack integers. */
+ext fn add(stack i32 a, stack i32 b): i32 {
+    ret a + b;
+}
+
+/* A function that works on a heap buffer. */
+ext fn fill_byte(heap u8 *rw buf, stack i32 val): void {
+    buf[0] = (u8)val;
+}
+
+ext fn main(void): i32 {
+    /* Declare a function pointer with domain-tagged parameters.
+       The type encodes: both parameters must be stack-allocated i32. */
+    stack fn*(stack i32, stack i32): i32 math_op = &add;
+
+    stack i32 x = 10;
+    stack i32 y = 32;
+
+    /* Direct call through the domain-tagged function pointer.
+       Both x and y are stack-allocated — matches the declared domains. */
+    stack i32 result = math_op(x, y);
+    io.printf('add(%d, %d) = %d\n', x, y, result);
+
+    /* Demonstrate reassigning a function pointer. */
+    stack fn*(stack i32, stack i32): i32 op2 = &add;
+    stack i32 r2 = op2(100, 200);
+    io.printf('op2(100, 200) = %d\n', r2);
+
+    /* Function pointer for heap buffer operations. */
+    stack u8 *rw buf = new.(16);
+    stack fn*(heap u8 *rw, stack i32): void buf_fn = &fill_byte;
+    buf_fn(buf, 42);
+    io.printf('buf[0] = %d\n', (i32)buf[0]);
+    rem.(buf);
+
+    ret 0;
+}

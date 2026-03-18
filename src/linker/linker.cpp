@@ -2,14 +2,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef STASHA_HAS_LLD
+/* LLD is required — build with 'make llvm' if this fails */
+#ifndef STASHA_HAS_LLD
+#error "Stasha requires the bundled LLD linker. Run 'make llvm' to build LLVM and LLD."
+#endif
+
 #include <vector>
-#include <string>
 #include <lld/Common/Driver.h>
 #include <llvm/Support/raw_ostream.h>
 LLD_HAS_DRIVER(macho)
 LLD_HAS_DRIVER(elf)
-#endif
 
 extern "C" {
 #include "linker.h"
@@ -35,18 +37,17 @@ static const char *get_sdk_path(void) {
 }
 #endif
 
-#ifdef STASHA_HAS_LLD
-static result_t try_lld(const char *obj_path, const char *output_path) {
+extern "C" result_t link_object(const char *obj_path, const char *output_path) {
     std::vector<const char *> args;
 
 #ifdef __APPLE__
     args.push_back("ld64.lld");
     args.push_back("-arch");
-  #if defined(__aarch64__) || defined(__arm64__)
+#if defined(__aarch64__) || defined(__arm64__)
     args.push_back("arm64");
-  #else
+#else
     args.push_back("x86_64");
-  #endif
+#endif
     args.push_back("-platform_version");
     args.push_back("macos");
     args.push_back("13.0");
@@ -57,12 +58,6 @@ static result_t try_lld(const char *obj_path, const char *output_path) {
     args.push_back(obj_path);
     args.push_back("-o");
     args.push_back(output_path);
-
-    llvm::raw_null_ostream null_os;
-    lld::Result res = lld::lldMain(args, null_os, llvm::errs(),
-                                    {{lld::Gnu, &lld::elf::link},
-                                     {lld::Darwin, &lld::macho::link}});
-    return res.retCode == 0 ? Ok : Err;
 #else
     args.push_back("ld.lld");
     args.push_back(obj_path);
@@ -72,36 +67,15 @@ static result_t try_lld(const char *obj_path, const char *output_path) {
     args.push_back("-lm");
     args.push_back("-dynamic-linker");
     args.push_back("/lib64/ld-linux-x86-64.so.2");
+#endif
 
     llvm::raw_null_ostream null_os;
     lld::Result res = lld::lldMain(args, null_os, llvm::errs(),
-                                    {{lld::Gnu, &lld::elf::link},
+                                    {{lld::Gnu,    &lld::elf::link},
                                      {lld::Darwin, &lld::macho::link}});
-    return res.retCode == 0 ? Ok : Err;
-#endif
-}
-#endif /* STASHA_HAS_LLD */
-
-extern "C" result_t link_object(const char *obj_path, const char *output_path) {
-#ifdef STASHA_HAS_LLD
-    if (try_lld(obj_path, output_path) == Ok)
-        return Ok;
-    log_warn("linker: LLD failed, falling back to clang");
-#endif
-
-    /* fallback: use clang as linker driver */
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd),
-#ifdef __APPLE__
-        "clang \"%s\" -o \"%s\" 2>&1",
-#else
-        "clang \"%s\" -o \"%s\" -lm 2>&1",
-#endif
-    obj_path, output_path);
-
-    int ret = system(cmd);
-    if (ret != 0)
-        log_err("linker: clang exited with code %d", ret);
-
-    return ret == 0 ? Ok : Err;
+    if (res.retCode != 0) {
+        log_err("linker: LLD failed with code %d", res.retCode);
+        return Err;
+    }
+    return Ok;
 }
