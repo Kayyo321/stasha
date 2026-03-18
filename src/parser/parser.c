@@ -193,6 +193,7 @@ static type_info_t parse_type(parser_t *p) {
 /* ── forward declarations ── */
 
 static node_t *parse_expr(parser_t *p);
+static node_t *parse_postfix(parser_t *p);
 static node_t *parse_block(parser_t *p);
 static node_t *parse_statement(parser_t *p);
 static node_t *parse_match_stmt(parser_t *p);
@@ -497,11 +498,12 @@ static node_t *parse_primary(parser_t *p) {
         advance_parser(p); /* consume '(' */
 
         if (is_builtin_type_token(p->current.kind)) {
+            boolean_t err_before_type = p->had_error;
             type_info_t cast_type = parse_type(p);
-            if (check(p, TokRParen) && !p->had_error) {
+            if (check(p, TokRParen) && p->had_error == err_before_type) {
                 usize_t line = p->previous.line;
                 advance_parser(p); /* consume ')' */
-                node_t *expr = parse_primary(p); /* cast binds tightly */
+                node_t *expr = parse_postfix(p); /* postfix (.field, [idx]) binds tighter than cast */
                 node_t *n = make_node(NodeCastExpr, line);
                 n->as.cast_expr.target = cast_type;
                 n->as.cast_expr.expr = expr;

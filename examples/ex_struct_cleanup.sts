@@ -27,7 +27,7 @@ heap:
 
 fn Buffer.new(stack i32 sz): Buffer {
     stack Buffer b;
-    b.data = new.(sizeof.(u8) * (usize_t)sz);
+    b.data = new.(sizeof.(u8) * (u64)sz);
     b.size = sz;
     ret b;
 }
