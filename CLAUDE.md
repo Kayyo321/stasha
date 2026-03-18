@@ -346,6 +346,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Debug statement
 - [x] Return statements (`ret`)
 - [x] `defer` statement — executes a statement/block at scope exit regardless of control flow
+- [ ] Built-in testing framework — `test 'name' { ... }` blocks with `expect.(expr)`, `expect_eq.(a, b)`, `test_fail.('msg')`; compiled only when running in test mode
 
 ### Types
 - [x] `i8`, `i16`, `i32`, `i64`
@@ -355,6 +356,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] `void`
 - [x] User-defined types (struct, enum, alias)
 - [x] `nil` keyword — null pointer literal
+- [ ] Built-in `error` type — Go-style; `nil` = no error; used as a second return value (`fn foo(): [i32, error]`); created with `error.('message')`; compared with `== nil`
 
 ### Memory & Storage
 - [x] `stack`, `heap`, `atomic`, `const`, `final`
@@ -365,6 +367,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Storage group blocks (`stack ( i32 x = 0; i32 y = 1; )`)
 - [x] Cross-domain pointer conversion rejected by compiler (`stack` addr → `heap` ptr forbidden)
 - [x] `heap` primitive variables auto-allocate via `malloc` and are auto-`free`'d at scope exit (unless already `rem.()`'d by the user)
+- [ ] Global variable semantics — module-level `var_decl` nodes: `int` globals are module-private static, `ext` globals are exported; `atomic` globals use atomic builtins; initialiser must be a constant expression
 
 ### Functions
 - [x] Internal vs external functions (`int fn`, `ext fn`)
@@ -391,6 +394,15 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] `new.(size)`, `rem.(ptr)`, `sizeof.(type)`
 - [x] `mov.(ptr, new_size)` — realloc
 - [x] Arrays (`type name[size]`)
+- [ ] No `ext` pointer to `int` data — `ext` functions/fields must not expose a pointer to a private (`int`) global variable or `int` struct field; doing so leaks internals across the module boundary
+- [ ] No stack pointer escape — returning a pointer to a local stack variable is a compile error; the pointed-to value dies when the function returns
+- [ ] Permission widening forbidden — a `*r` pointer cannot be cast or coerced to `*rw`/`*w`; a `*w` pointer cannot be widened to `*rw`; narrowing is always permitted
+- [ ] Pointer lifetime rule — a pointer stored in a longer-lived variable must not point to a shorter-lived variable; the compiler should reject assignments where the pointee's scope is narrower than the pointer's scope
+- [ ] No writable pointer from `const`/`final` — `&x` where `x` is `const` or `final` may only produce a `*r` pointer; a `*rw` or `*w` derivation is a compile error
+- [ ] No `int` global pointer export — an `ext` function in another module cannot receive or return a pointer whose provenance is an `int` global of a foreign module
+- [ ] Pointer arithmetic bounds enforcement — for stack-allocated arrays whose size is statically known, the compiler rejects pointer arithmetic that provably exceeds the allocation bounds
+- [ ] Null dereference detection — dereferencing a pointer that is statically known to be `nil` (e.g., never assigned after `p = nil`) is a compile error
+- [ ] Function pointer domain tags — a function pointer type must encode the storage domain of its parameters so that calling through a pointer cannot silently violate domain rules
 
 ### Control Flow
 - [x] `for` loop
@@ -424,6 +436,182 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 ### Enums
 - [x] Basic C style enums
 - [x] Rust style tagged enums (`Variant(stack type)` payloads, `match` statement)
+
+---
+
+## Design Notes & Future Work
+
+### Error Type
+
+A built-in `error` primitive modelled loosely on Go's `error` interface, adapted for a non-GC systems context.
+
+**Semantics:**
+- `error` is a built-in value type that is either `nil` (no error) or holds a stack string message.
+- Its zero value is `nil` — a function that returns `error` and falls off the end implicitly returns `nil`.
+- Created with `error.('message')`.
+- Compared with `== nil` or `!= nil`.
+
+**Typical usage:**
+
+```
+fn divide(stack i32 a, stack i32 b): [i32, error] {
+    if b == 0 {
+        ret 0, error.('division by zero');
+    }
+    ret a / b, nil;
+}
+
+stack i32 [result, err] = divide(10, 0);
+if err != nil {
+    debug err;
+}
+```
+
+**Open questions:**
+- Should `error` carry an integer code alongside the message (like `errno`)?
+- Should errors be propagatable with a `?` suffix operator like Rust/Zig, i.e. `stack i32 x = divide(a, b)?;` auto-returns the error?
+
+---
+
+### Testing Framework
+
+Zig-style inline tests: `test` blocks live alongside the code they test and are compiled only when the compiler is invoked in test mode.
+
+**Syntax:**
+
+```
+test 'division by zero returns error' {
+    stack i32 [r, err] = divide(10, 0);
+    expect.(err != nil);
+    expect_eq.(r, 0);
+}
+
+test 'normal division succeeds' {
+    stack i32 [r, err] = divide(10, 2);
+    expect.(err == nil);
+    expect_eq.(r, 5);
+}
+```
+
+**Builtins available inside `test` blocks:**
+- `expect.(expr)` — fail the test if `expr` is false; print the failing expression
+- `expect_eq.(a, b)` — fail if `a != b`; print both values on failure
+- `expect_neq.(a, b)` — fail if `a == b`
+- `test_fail.('message')` — unconditionally fail with a message
+
+**Compilation model:**
+- `test` blocks are stripped from normal builds; zero overhead in production.
+- Running `stasha test file.sts` compiles a test binary that executes every `test` block and reports pass/fail counts.
+- A test block that panics (e.g., null deref) counts as a failure, not a compiler crash.
+
+---
+
+### Global Variables
+
+Module-level variable declarations currently parse and appear in the AST but their codegen semantics need to be fully specified and verified.
+
+**Rules:**
+- Module-level variables are always statically allocated (neither stack nor heap in the local-variable sense). The `stack`/`heap` qualifier on a global is therefore meaningless and should be rejected; globals use static storage implicitly.
+- `int` globals are module-private (LLVM `internal` linkage).
+- `ext` globals are exported (LLVM `external` linkage) and visible to modules that `imp` this one.
+- `atomic` globals are declared with `_Atomic` / `__atomic` semantics for safe concurrent access.
+- Initialisers must be constant expressions (no function calls at global scope).
+
+**Verification needed:**
+- Confirm codegen emits correct LLVM global variables (not alloca).
+- Confirm `int`/`ext` linkage is applied correctly.
+- Confirm `atomic` globals use atomic load/store in codegen.
+- Confirm global struct-typed variables work (zero-init + field assignments).
+
+---
+
+### Expanded Pointer Safety Rules
+
+The current pointer system enforces storage-domain correctness and permission levels. The following additional rules are planned to close remaining safety gaps.
+
+#### No `ext` Pointer to `int` Data
+
+An `ext`-visible function must not return or expose a pointer whose provenance is an `int` (private) global variable or an `int` struct field. Doing so would let external modules read or write private state through the pointer, circumventing visibility rules entirely.
+
+```
+int stack i32 secret = 42;
+
+// ERROR: ext function exposes pointer to int global
+ext fn leak(): stack i32 *rw { ret &secret; }
+```
+
+The rule applies equally to `int` struct fields:
+
+```
+type Foo: struct {
+    int i32 priv;
+    ext fn get_priv_ptr(): stack i32 *rw { ret &Foo.(priv); }  // ERROR
+}
+```
+
+#### No Stack Pointer Escape
+
+A pointer to a local stack variable must not outlive that variable's scope. The most common case is returning a pointer to a local from a function — the variable is destroyed on return, leaving the caller with a dangling pointer.
+
+```
+fn bad(): stack i32 *rw {
+    stack i32 x = 5;
+    ret &x;   // ERROR: x dies here; returned pointer is immediately dangling
+}
+```
+
+The compiler should track pointer provenance through assignments and reject any path where a stack pointer is stored in a variable whose scope outlives the pointee:
+
+```
+stack i32 *rw outer = nil;
+{
+    stack i32 local = 10;
+    outer = &local;   // ERROR: local's scope ends before outer's
+}
+debug outer[0];   // would be dangling
+```
+
+#### Permission Widening Forbidden
+
+Pointer permissions are one-way: a `*rw` may narrow to `*r` or `*w`; a `*r` or `*w` may never widen back to `*rw`. This prevents a callee from silently upgrading a read-only view to a read-write one.
+
+```
+stack i32 x = 5;
+stack i32 *r  ro = &x;
+stack i32 *rw rw = ro;   // ERROR: *r widened to *rw
+```
+
+#### Pointer Lifetime Rule
+
+When assigning `&local` to a pointer variable, the pointer variable must not have a longer lifetime than `local`. The compiler should enforce this through static scope analysis.
+
+#### No Writable Pointer from `const`/`final`
+
+The address-of operator applied to a `const` or `final` variable may only produce a `*r` pointer. Requesting `*rw` or `*w` is a compile error regardless of whether the pointer is used for writes.
+
+```
+const i32 k = 99;
+stack i32 *r  ok  = &k;   // fine
+stack i32 *rw bad = &k;   // ERROR: *rw from const
+```
+
+#### Pointer Arithmetic Bounds
+
+For stack arrays with a statically known size, the compiler can reject pointer arithmetic that provably exceeds the bounds:
+
+```
+stack i32 arr[4];
+stack i32 *rw p = &arr;
+p = p + 10;   // ERROR: index 10 is out of bounds for arr[4]
+```
+
+#### Null Dereference Detection
+
+If a pointer is statically known to be `nil` (never reassigned after `p = nil`, or declared as `= nil` with no subsequent assignment), any dereference of that pointer should be a compile error.
+
+#### Function Pointer Domain Tags
+
+A function pointer type must encode the storage domains of its parameters so that indirect calls cannot silently violate domain rules. For example, a variable holding a pointer to `fn(heap i32 *rw)` must not be called with a stack pointer argument.
 
 ---
 
