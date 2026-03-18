@@ -1,6 +1,7 @@
 /build/
 
 *.o
+*.out
 
 /bin/
 /logs/
