@@ -422,6 +422,9 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] C header inclusion (`cinclude 'header' = alias;`)
 - [x] Function binding (auto-declared varargs externs)
 
+### Toolchain
+- [ ] Internal linker — bundle a linker (e.g. LLVM LLD) so users do not need one installed on their system; the compiler should produce a final executable without requiring an external `ld`, `lld`, or MSVC linker to be present
+
 ### Expressions
 - [x] Cast expressions (`(type)expr`)
 - [x] Character literals (`` `c` ``)
