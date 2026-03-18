@@ -9,20 +9,25 @@
 
 /* ── symbol table ── */
 
+/* symbol attribute flags */
+enum {
+    SymAtomic  = (1 << 0),  /* atomic qualifier            */
+    SymHeapVar = (1 << 1),  /* heap primitive (malloc'd)   */
+    SymConst   = (1 << 2),  /* const qualifier             */
+    SymFinal   = (1 << 3),  /* final qualifier             */
+    SymNil     = (1 << 4),  /* statically known to be nil  */
+};
+
 typedef struct {
     char *name;
     LLVMValueRef value;
     LLVMTypeRef type;
     type_info_t stype;
-    boolean_t is_atomic;
+    int flags;              /* SymAtomic | SymHeapVar | SymConst | SymFinal | SymNil */
     storage_t storage;      /* storage domain of the variable */
-    boolean_t is_heap_var;  /* heap primitive: value lives behind a malloc'd pointer */
-    boolean_t is_const;
-    boolean_t is_final;
     linkage_t linkage;
     usize_t scope_depth;    /* nesting level for lifetime checks */
     long array_size;        /* ≥0 for known-size arrays, -1 otherwise */
-    boolean_t is_nil;       /* statically known to be nil */
 } symbol_t;
 
 typedef struct {
@@ -170,7 +175,7 @@ static void symtab_free(symtab_t *st) {
     }
 }
 static void symtab_add(symtab_t *st, const char *name, LLVMValueRef value,
-                        LLVMTypeRef type, type_info_t stype, boolean_t is_atomic) {
+                        LLVMTypeRef type, type_info_t stype, int flags) {
     if (st->count >= st->capacity) {
         usize_t new_cap = st->capacity < 16 ? 16 : st->capacity * 2;
         if (st->heap.pointer == Null)
@@ -185,7 +190,7 @@ static void symtab_add(symtab_t *st, const char *name, LLVMValueRef value,
     sym.value = value;
     sym.type = type;
     sym.stype = stype;
-    sym.is_atomic = is_atomic;
+    sym.flags = flags;
     sym.array_size = -1; /* -1 = not an array / unknown size */
     st->entries[st->count++] = sym;
 }
@@ -205,24 +210,30 @@ static symbol_t *cg_lookup(cg_t *cg, const char *name) {
 static void symtab_set_last_storage(symtab_t *st, storage_t storage, boolean_t is_heap_var) {
     if (st->count > 0) {
         st->entries[st->count - 1].storage = storage;
-        st->entries[st->count - 1].is_heap_var = is_heap_var;
+        if (is_heap_var)
+            st->entries[st->count - 1].flags |= SymHeapVar;
+        else
+            st->entries[st->count - 1].flags &= ~SymHeapVar;
     }
 }
 
 static void symtab_set_last_extra(symtab_t *st, boolean_t is_const, boolean_t is_final,
                                    linkage_t linkage, usize_t scope_depth, long array_size) {
     if (st->count > 0) {
-        st->entries[st->count - 1].is_const = is_const;
-        st->entries[st->count - 1].is_final = is_final;
-        st->entries[st->count - 1].linkage = linkage;
-        st->entries[st->count - 1].scope_depth = scope_depth;
-        st->entries[st->count - 1].array_size = array_size;
+        symbol_t *s = &st->entries[st->count - 1];
+        if (is_const)  s->flags |= SymConst;  else s->flags &= ~SymConst;
+        if (is_final)  s->flags |= SymFinal;  else s->flags &= ~SymFinal;
+        s->linkage     = linkage;
+        s->scope_depth = scope_depth;
+        s->array_size  = array_size;
     }
 }
 
 static void symtab_set_last_nil(symtab_t *st, boolean_t is_nil) {
-    if (st->count > 0)
-        st->entries[st->count - 1].is_nil = is_nil;
+    if (st->count > 0) {
+        if (is_nil) st->entries[st->count - 1].flags |= SymNil;
+        else        st->entries[st->count - 1].flags &= ~SymNil;
+    }
 }
 
 /* ── pointer safety checks ── */
@@ -234,26 +245,29 @@ static void check_const_addr_of(cg_t *cg, node_t *init, type_info_t target_type,
     if (operand->kind != NodeIdentExpr) return;
     symbol_t *src = cg_lookup(cg, operand->as.ident.name);
     if (!src) return;
-    if ((src->is_const || src->is_final) && target_type.ptr_perm != PtrRead)
+    boolean_t src_const = (src->flags & SymConst) != 0;
+    boolean_t src_final = (src->flags & SymFinal) != 0;
+    if ((src_const || src_final) && (target_type.ptr_perm & (PtrWrite)))
         log_err("line %lu: cannot derive writable pointer from %s variable '%s'",
-                line, src->is_const ? "const" : "final", src->name);
+                line, src_const ? "const" : "final", src->name);
 }
 
 /* Check: permission widening forbidden (e.g. *r → *rw) */
 static void check_permission_widening(cg_t *cg, node_t *init, type_info_t target_type, usize_t line) {
     if (!init || !target_type.is_pointer) return;
-    /* source must be an identifier that is itself a pointer */
     if (init->kind == NodeIdentExpr) {
         symbol_t *src = cg_lookup(cg, init->as.ident.name);
         if (!src || !src->stype.is_pointer) return;
         ptr_perm_t sp = src->stype.ptr_perm;
         ptr_perm_t tp = target_type.ptr_perm;
-        /* narrowing is fine; widening is not */
-        if (sp == PtrRead && (tp == PtrWrite || tp == PtrReadWrite))
-            log_err("line %lu: cannot widen *r pointer to %s",
-                    line, tp == PtrReadWrite ? "*rw" : "*w");
-        if (sp == PtrWrite && tp == PtrReadWrite)
-            log_err("line %lu: cannot widen *w pointer to *rw", line);
+        /* a permission bit present in tp but absent in sp is a widening — forbidden */
+        if (tp & ~sp & (PtrRead | PtrWrite | PtrArith))
+            log_err("line %lu: cannot widen pointer permissions (source: %s%s%s → target: %s%s%s)",
+                    line,
+                    (sp & PtrRead)  ? "r" : "", (sp & PtrWrite) ? "w" : "",
+                    (sp & PtrArith) ? "+" : "",
+                    (tp & PtrRead)  ? "r" : "", (tp & PtrWrite) ? "w" : "",
+                    (tp & PtrArith) ? "+" : "");
     }
 }
 
@@ -303,19 +317,23 @@ static void check_pointer_lifetime(cg_t *cg, node_t *init, usize_t ptr_scope_dep
 /* Check: null dereference of a statically-nil pointer */
 static void check_null_deref(cg_t *cg, const char *name, usize_t line) {
     symbol_t *sym = cg_lookup(cg, name);
-    if (sym && sym->is_nil)
+    if (sym && (sym->flags & SymNil))
         log_err("line %lu: dereference of nil pointer '%s'", line, name);
 }
 
-/* Check: pointer arithmetic exceeds known array bounds */
+/* Check: pointer arithmetic permission and known array bounds */
 static void check_ptr_arith_bounds(cg_t *cg, node_t *node) {
     if (node->as.binary.op != TokPlus && node->as.binary.op != TokMinus) return;
-    /* check left = ident (pointer/array), right = int literal */
     node_t *ptr_node = node->as.binary.left;
     node_t *idx_node = node->as.binary.right;
-    if (ptr_node->kind != NodeIdentExpr || idx_node->kind != NodeIntLitExpr) return;
+    if (ptr_node->kind != NodeIdentExpr) return;
     symbol_t *sym = cg_lookup(cg, ptr_node->as.ident.name);
     if (!sym) return;
+    /* enforce + permission for pointer arithmetic */
+    if (sym->stype.is_pointer && !(sym->stype.ptr_perm & PtrArith))
+        log_err("line %lu: pointer arithmetic not permitted on '%s' (pointer lacks '+' permission)",
+                node->line, sym->name);
+    if (idx_node->kind != NodeIntLitExpr) return;
     if (sym->array_size < 0) return; /* unknown size */
     long offset = idx_node->as.int_lit.value;
     if (node->as.binary.op == TokMinus) offset = -offset;
@@ -652,7 +670,7 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         log_err("undefined variable '%s'", node->as.ident.name);
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
-    if (sym->is_heap_var) {
+    if (sym->flags & SymHeapVar) {
         /* heap primitive: alloca holds the malloc ptr; do double-load */
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
         LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
@@ -663,7 +681,7 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         return sym->value;
     LLVMValueRef load = LLVMBuildLoad2(cg->builder, sym->type, sym->value,
                                         node->as.ident.name);
-    if (sym->is_atomic)
+    if (sym->flags & SymAtomic)
         LLVMSetOrdering(load, LLVMAtomicOrderingSequentiallyConsistent);
     return load;
 }
@@ -837,7 +855,7 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         }
         LLVMValueRef store_ptr;
         LLVMValueRef val;
-        if (sym->is_heap_var) {
+        if (sym->flags & SymHeapVar) {
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             store_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
             val = LLVMBuildLoad2(cg->builder, sym->type, store_ptr, "");
@@ -885,7 +903,7 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
     }
     LLVMValueRef store_ptr;
     LLVMValueRef val;
-    if (sym->is_heap_var) {
+    if (sym->flags & SymHeapVar) {
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
         store_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
         val = LLVMBuildLoad2(cg->builder, sym->type, store_ptr, "");
@@ -1107,14 +1125,14 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
             log_err("undefined variable '%s'", target->as.ident.name);
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
-        if (sym->is_heap_var) {
+        if (sym->flags & SymHeapVar) {
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             store_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
         } else {
             store_ptr = sym->value;
         }
         store_type = sym->type;
-        atomic = sym->is_atomic;
+        atomic = (sym->flags & SymAtomic) != 0;
     } else if (target->kind == NodeIndexExpr) {
         /* arr[i] compound assign */
         node_t *obj = target->as.index_expr.object;
@@ -1213,13 +1231,13 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
 
         /* track nil state */
         if (node->as.assign.value->kind == NodeNilExpr)
-            sym->is_nil = True;
+            sym->flags |= SymNil;
         else
-            sym->is_nil = False;
+            sym->flags &= ~SymNil;
 
         LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
         rhs = coerce_int(cg, rhs, sym->type);
-        if (sym->is_heap_var) {
+        if (sym->flags & SymHeapVar) {
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
                                                     sym->value, "hptr");
@@ -1559,7 +1577,7 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
             log_err("undefined variable '%s'", operand->as.ident.name);
             return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
         }
-        if (sym->is_heap_var) {
+        if (sym->flags & SymHeapVar) {
             /* heap var: address is the malloc'd pointer */
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             return LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
@@ -1726,7 +1744,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             /* for heap primitive vars: free the heap ptr and null the alloca */
             if (ptr_node->kind == NodeIdentExpr) {
                 symbol_t *hsym = cg_lookup(cg, ptr_node->as.ident.name);
-                if (hsym && hsym->is_heap_var) {
+                if (hsym && (hsym->flags & SymHeapVar)) {
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
                     LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
                                                             hsym->value, "hptr");
@@ -1760,7 +1778,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
     LLVMTypeRef type;
 
-    if (node->as.var_decl.is_array) {
+    if (node->as.var_decl.flags & VdeclArray) {
         LLVMTypeRef elem = get_llvm_type(cg, ti);
         unsigned long long array_len = (unsigned long long)node->as.var_decl.array_size;
         if (node->as.var_decl.array_size_name) {
@@ -1781,7 +1799,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     /* heap primitive: allocate via malloc, register for auto-free */
     boolean_t is_heap = (node->as.var_decl.storage == StorageHeap)
                         && is_primitive_type(ti)
-                        && !node->as.var_decl.is_array;
+                        && !(node->as.var_decl.flags & VdeclArray);
 
     if (is_heap) {
         /* alloca holds the heap pointer (alloca of ptr type, in entry block) */
@@ -1814,10 +1832,10 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         }
 
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
-                   ti, node->as.var_decl.is_atomic);
+                   ti, (node->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
         symtab_set_last_storage(&cg->locals, StorageHeap, True);
-        symtab_set_last_extra(&cg->locals, node->as.var_decl.is_const,
-                              node->as.var_decl.is_final, node->as.var_decl.linkage,
+        symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
+                              node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
                               cg->dtor_depth, -1);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
@@ -1860,19 +1878,19 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             init = make_nil_error(cg);
         } else {
             init = gen_expr(cg, node->as.var_decl.init);
-            if (!node->as.var_decl.is_array)
+            if (!(node->as.var_decl.flags & VdeclArray))
                 init = coerce_int(cg, init, type);
         }
         LLVMBuildStore(cg->builder, init, alloca_val);
     }
 
     symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
-               ti, node->as.var_decl.is_atomic);
+               ti, (node->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
     {
-        long arr_sz = node->as.var_decl.is_array ? node->as.var_decl.array_size : -1;
-        symtab_set_last_extra(&cg->locals, node->as.var_decl.is_const,
-                              node->as.var_decl.is_final, node->as.var_decl.linkage,
+        long arr_sz = (node->as.var_decl.flags & VdeclArray) ? node->as.var_decl.array_size : -1;
+        symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
+                              node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
                               cg->dtor_depth, arr_sz);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
@@ -2612,7 +2630,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
                 LLVMSetLinkage(global, LLVMInternalLinkage);
 
             /* const/final globals are LLVM-constant */
-            if (decl->as.var_decl.is_const || decl->as.var_decl.is_final)
+            if (decl->as.var_decl.flags & (VdeclConst | VdeclFinal))
                 LLVMSetGlobalConstant(global, 1);
 
             /* initializer — must be a constant expression */
@@ -2636,10 +2654,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             LLVMSetInitializer(global, init_val);
 
             symtab_add(&cg.globals, decl->as.var_decl.name, global, type,
-                       ti, decl->as.var_decl.is_atomic);
+                       ti, (decl->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
             symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
-            symtab_set_last_extra(&cg.globals, decl->as.var_decl.is_const,
-                                  decl->as.var_decl.is_final, decl->as.var_decl.linkage,
+            symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
+                                  decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
                                   0, -1); /* scope_depth 0 = global lifetime */
         }
 

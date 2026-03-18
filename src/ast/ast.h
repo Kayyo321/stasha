@@ -59,6 +59,15 @@ typedef enum {
     LinkageExternal,    /* ext */
 } linkage_t;
 
+/* ── var_decl attribute flags ── */
+
+enum {
+    VdeclAtomic = (1 << 0),  /* atomic qualifier */
+    VdeclConst  = (1 << 1),  /* const qualifier  */
+    VdeclFinal  = (1 << 2),  /* final qualifier  */
+    VdeclArray  = (1 << 3),  /* array declaration */
+};
+
 /* ── type declaration flavours ── */
 
 enum { TypeDeclStruct = 0, TypeDeclEnum = 1, TypeDeclAlias = 2 };
@@ -163,10 +172,7 @@ struct node {
             type_info_t type;
             storage_t storage;
             linkage_t linkage;
-            boolean_t is_atomic;
-            boolean_t is_const;
-            boolean_t is_final;
-            boolean_t is_array;
+            int flags;             /* VdeclAtomic | VdeclConst | VdeclFinal | VdeclArray */
             long array_size;
             char *array_size_name; /* non-null when size is a named const */
             node_t *init;

@@ -91,15 +91,13 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path) {
 
     /* fallback: use clang as linker driver */
     char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
 #ifdef __APPLE__
-    snprintf(cmd, sizeof(cmd),
-             "clang \"%s\" -o \"%s\" 2>&1",
-             obj_path, output_path);
+        "clang \"%s\" -o \"%s\" 2>&1",
 #else
-    snprintf(cmd, sizeof(cmd),
-             "clang \"%s\" -o \"%s\" -lm 2>&1",
-             obj_path, output_path);
+        "clang \"%s\" -o \"%s\" -lm 2>&1",
 #endif
+    obj_path, output_path);
 
     int ret = system(cmd);
     if (ret != 0)

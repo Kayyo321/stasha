@@ -27,8 +27,9 @@ int fn show_consts(void): void {
     debug p[0];   // 10
 
     // The following would be compile errors:
-    // limit = 20;          // ERROR: assignment to const
-    // stack i32 *rw w = &limit;  // ERROR: *rw pointer from const
+    // limit = 20;           // ERROR: assignment to const
+    // stack i32 *rw  w = &limit;  // ERROR: writable pointer from const
+    // stack i32 *rw+ w = &limit;  // ERROR: writable pointer from const
 }
 
 // ── final ─────────────────────────────────────────────────────────────────

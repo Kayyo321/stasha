@@ -107,11 +107,11 @@ static type_info_t parse_type(parser_t *p) {
         return info;
     }
 
-    /* pointer: * or *r or *w or *rw */
+    /* pointer: * or *r or *w or *rw, optionally followed by + for arith */
     if (check(p, TokStar)) {
         advance_parser(p);
         info.is_pointer = True;
-        info.ptr_perm = PtrReadWrite; /* default */
+        info.ptr_perm = PtrRead | PtrWrite | PtrArith; /* bare * = rw+ */
 
         if (check(p, TokIdent)) {
             const char *s = p->current.start;
@@ -126,6 +126,12 @@ static type_info_t parse_type(parser_t *p) {
                 info.ptr_perm = PtrReadWrite;
                 advance_parser(p);
             }
+        }
+
+        /* optional + suffix grants pointer arithmetic */
+        if (check(p, TokPlus)) {
+            info.ptr_perm |= PtrArith;
+            advance_parser(p);
         }
     }
 
@@ -980,17 +986,15 @@ static node_t *parse_expr_stmt(parser_t *p) {
 static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     usize_t line = p->current.line;
     storage_t storage = StorageDefault;
-    boolean_t is_atomic = False;
-    boolean_t is_const = False;
-    boolean_t is_final = False;
+    int flags = 0;
 
     if (match_tok(p, TokStack))      storage = StorageStack;
     else if (match_tok(p, TokHeap))  storage = StorageHeap;
     else if (p->group_storage != StorageDefault) storage = p->group_storage;
 
-    if (match_tok(p, TokAtomic)) is_atomic = True;
-    if (match_tok(p, TokConst))  is_const = True;
-    if (match_tok(p, TokFinal)) is_final = True;
+    if (match_tok(p, TokAtomic)) flags |= VdeclAtomic;
+    if (match_tok(p, TokConst))  flags |= VdeclConst;
+    if (match_tok(p, TokFinal))  flags |= VdeclFinal;
 
     if (!can_start_type(p)) {
         log_err("line %lu: expected type", p->current.line);
@@ -1014,9 +1018,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
             var->as.var_decl.type = type;
             var->as.var_decl.storage = storage;
             var->as.var_decl.linkage = linkage;
-            var->as.var_decl.is_atomic = is_atomic;
-            var->as.var_decl.is_const = is_const;
-            var->as.var_decl.is_final = is_final;
+            var->as.var_decl.flags = flags;
             node_list_push(&targets, var);
         } while (match_tok(p, TokComma));
         consume(p, TokRBracket, "']'");
@@ -1038,11 +1040,10 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     char *name = copy_token_text(name_tok);
 
     /* array: type name[size] — size may be an int literal or a named const */
-    boolean_t is_array = False;
     long array_size = 0;
     char *array_size_name = Null;
     if (match_tok(p, TokLBracket)) {
-        is_array = True;
+        flags |= VdeclArray;
         if (check(p, TokIntLit)) {
             array_size = parse_int_value(p->current);
             advance_parser(p);
@@ -1062,10 +1063,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     n->as.var_decl.type = type;
     n->as.var_decl.storage = storage;
     n->as.var_decl.linkage = linkage;
-    n->as.var_decl.is_atomic = is_atomic;
-    n->as.var_decl.is_const = is_const;
-    n->as.var_decl.is_final = is_final;
-    n->as.var_decl.is_array = is_array;
+    n->as.var_decl.flags = flags;
     n->as.var_decl.array_size = array_size;
     n->as.var_decl.array_size_name = array_size_name;
     n->as.var_decl.init = init_expr;

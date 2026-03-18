@@ -7,6 +7,15 @@ cinclude 'stdio' = io;
 // Stasha enforces several compile-time pointer safety checks.
 // This file demonstrates the VALID patterns. Commented-out lines show
 // what the compiler would reject.
+//
+// Pointer permission quick reference:
+//   *      = *rw+  (read + write + arithmetic — bare star default)
+//   *rw    = read + write, no arithmetic
+//   *r     = read-only, no arithmetic
+//   *w     = write-only, no arithmetic
+//   *rw+   = read + write + arithmetic
+//   *r+    = read-only + arithmetic
+//   *w+    = write-only + arithmetic
 
 // --- No writable pointer from const/final ---
 //
@@ -28,8 +37,12 @@ int fn const_ptr_demo(void): void {
 
 // --- Permission narrowing (allowed) vs widening (forbidden) ---
 //
-// *rw → *r  is OK (narrowing)
-// *r  → *rw is REJECTED (widening)
+// Permissions can only narrow, never widen.
+// This applies to r, w, and + independently.
+//
+//   *rw+  → *r   is OK (narrowing: dropped w and +)
+//   *r    → *rw  is REJECTED (widening: adding w)
+//   *rw   → *rw+ is REJECTED (widening: adding +)
 
 int fn permission_demo(void): void {
     stack i32 x = 10;
@@ -38,11 +51,15 @@ int fn permission_demo(void): void {
     debug r_ptr[0];                   // 10
 
     // stack i32 *rw back = r_ptr;   // ERROR: widening *r → *rw
+    // stack i32 *rw+ wp  = rw_ptr;  // ERROR: widening *rw → *rw+ (adding +)
 }
 
 // --- Pointer arithmetic bounds ---
 //
-// For stack arrays with known size, out-of-bounds arithmetic is caught.
+// The + permission is required for explicit pointer arithmetic (p + n, p - n).
+// Array indexing (p[i]) is always allowed regardless of +.
+// For stack arrays with known size, out-of-bounds arithmetic is caught even
+// when + is present.
 
 int fn bounds_demo(void): void {
     stack i32 arr[4];
@@ -55,8 +72,14 @@ int fn bounds_demo(void): void {
         debug arr[i];
     }
 
-    // stack i32 *rw p = &arr;
-    // p = p + 10;   // ERROR: index 10 out of bounds for arr[4]
+    // Arithmetic requires + permission:
+    // stack i32 *rw  p = &arr; p = p + 1;   // ERROR: pointer lacks '+' permission
+    // stack i32 *rw+ p = &arr; p = p + 10;  // ERROR: index 10 out of bounds for arr[4]
+
+    // Valid: arithmetic within bounds
+    stack i32 *rw+ q = &arr;
+    q = q + 2;        // advance by 2 — within arr[4]
+    debug q[0];       // 30
 }
 
 // --- Cross-domain pointer rules ---
@@ -66,7 +89,7 @@ int fn bounds_demo(void): void {
 
 int fn domain_demo(void): void {
     stack i32 x = 5;
-    stack i32 *rw sp = &x;   // OK: stack addr → stack ptr
+    stack i32 *rw sp = &x;   // OK: stack addr → stack ptr (read-write, no arith needed)
     debug sp[0];
 
     // heap i32 *rw hp = &x;  // ERROR: stack addr → heap ptr

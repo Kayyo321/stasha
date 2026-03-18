@@ -1,11 +1,21 @@
 mod ex6_ptrs;
 
 // Pointer permissions in Stasha
-//   *rw (or just *)  — read-write (default)
-//   *r               — read-only
-//   *w               — write-only
 //
-// A wider permission can narrow: *rw -> *r is fine, *r -> *rw is an error.
+//   Syntax:  * [r][w][+]
+//
+//   *       — shorthand for *rw+ (read, write, and arithmetic — the default)
+//   *rw     — read-write, no arithmetic
+//   *r      — read-only, no arithmetic
+//   *w      — write-only, no arithmetic
+//   *rw+    — read-write with arithmetic
+//   *r+     — read-only with arithmetic
+//   *w+     — write-only with arithmetic
+//
+// The + flag permits explicit pointer arithmetic (p + n, p - n).
+// Array indexing (p[i]) is always allowed regardless of +.
+//
+// Permissions can only narrow: *rw -> *r is fine, *r -> *rw is an error.
 
 // Fills a buffer through a write-only pointer
 int fn fill(heap i32 *w buf, stack i32 count): void {
@@ -46,5 +56,14 @@ fn main(void): i16 {
     }
 
     rem.(data);
+
+    // Pointer arithmetic — requires the + permission.
+    // bare * is shorthand for *rw+, so arithmetic is allowed.
+    stack i32 arr[4];
+    arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4;
+    stack i32 *rw+ p = &arr;   // explicit *rw+ — read-write with arithmetic
+    p = p + 2;                  // now points at arr[2]
+    debug p[0];                 // 3
+
     ret 0;
 }
