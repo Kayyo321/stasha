@@ -49,6 +49,12 @@ typedef enum {
     TokDefer,
     TokNil,
     TokMov,
+    TokErrorType,   /* error (the type keyword) */
+    TokTest,        /* test 'name' { ... } */
+    TokExpect,      /* expect.(expr) */
+    TokExpectEq,    /* expect_eq.(a, b) */
+    TokExpectNeq,   /* expect_neq.(a, b) */
+    TokTestFail,    /* test_fail.('msg') */
 
     /* type keywords */
     TokI8,

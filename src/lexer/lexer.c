@@ -143,6 +143,12 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("defer", TokDefer);
     KW("nil", TokNil);
     KW("mov", TokMov);
+    KW("error", TokErrorType);
+    KW("test", TokTest);
+    KW("expect", TokExpect);
+    KW("expect_eq", TokExpectEq);
+    KW("expect_neq", TokExpectNeq);
+    KW("test_fail", TokTestFail);
 
     KW("i8", TokI8);
     KW("i16", TokI16);

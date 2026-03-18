@@ -1,0 +1,57 @@
+mod ex_test;
+
+// ── Testing framework ──────────────────────────────────────────────────
+//
+// test blocks are compiled only in test mode (stasha test ex_test.sts).
+// In a normal build they are stripped entirely — zero overhead.
+//
+// Available inside test blocks:
+//   expect.(expr)         — fail if expr is false
+//   expect_eq.(a, b)      — fail if a != b
+//   expect_neq.(a, b)     — fail if a == b
+//   test_fail.('message') — unconditionally fail
+
+int fn add(stack i32 a, stack i32 b): i32 {
+    ret a + b;
+}
+
+int fn factorial(stack i32 n): i32 {
+    if n <= 1 { ret 1; }
+    ret n * factorial(n - 1);
+}
+
+int fn abs(stack i32 x): i32 {
+    if x < 0 { ret 0 - x; }
+    ret x;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+test 'add basic' {
+    expect_eq.(add(2, 3), 5);
+    expect_eq.(add(0, 0), 0);
+    expect_eq.(add(-1, 1), 0);
+}
+
+test 'factorial' {
+    expect_eq.(factorial(0), 1);
+    expect_eq.(factorial(1), 1);
+    expect_eq.(factorial(5), 120);
+}
+
+test 'abs returns non-negative' {
+    expect.(abs(-42) >= 0);
+    expect.(abs(0) == 0);
+    expect_eq.(abs(7), 7);
+}
+
+test 'inequality checks' {
+    expect_neq.(add(1, 1), 3);
+    expect_neq.(factorial(3), 5);
+}
+
+// A normal main — only used in non-test builds
+fn main(void): i16 {
+    debug add(10, 20);
+    ret 0;
+}

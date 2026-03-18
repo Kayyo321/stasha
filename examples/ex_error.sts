@@ -1,0 +1,46 @@
+mod ex_error;
+
+cinclude 'stdio' = io;
+
+// ── Built-in error type ────────────────────────────────────────────────
+//
+// error is a built-in value type: nil means no error, otherwise it holds
+// a message string.  Used as a return value to signal failure.
+
+// Single-return error — just returns an error (or nil)
+int fn must_be_positive(stack i32 n): error {
+    if n <= 0 {
+        ret error.('value must be positive');
+    }
+    ret nil;
+}
+
+fn main(void): i16 {
+    // Calling a function that returns error
+    io.printf('--- must_be_positive(5) ---\n');
+    stack error ok = must_be_positive(5);
+    if ok == nil {
+        io.printf('5 is positive — no error\n');
+    }
+
+    io.printf('--- must_be_positive(-3) ---\n');
+    stack error bad = must_be_positive(-3);
+    if bad != nil {
+        io.printf('got error for -3\n');
+    }
+
+    // Creating an error directly
+    io.printf('--- direct error creation ---\n');
+    stack error e = error.('something went wrong');
+    if e != nil {
+        io.printf('error is not nil\n');
+    }
+
+    // nil error
+    stack error none = nil;
+    if none == nil {
+        io.printf('nil error is nil\n');
+    }
+
+    ret 0;
+}

@@ -17,6 +17,12 @@ typedef struct {
     boolean_t is_atomic;
     storage_t storage;      /* storage domain of the variable */
     boolean_t is_heap_var;  /* heap primitive: value lives behind a malloc'd pointer */
+    boolean_t is_const;
+    boolean_t is_final;
+    linkage_t linkage;
+    usize_t scope_depth;    /* nesting level for lifetime checks */
+    long array_size;        /* ≥0 for known-size arrays, -1 otherwise */
+    boolean_t is_nil;       /* statically known to be nil */
 } symbol_t;
 
 typedef struct {
@@ -143,6 +149,13 @@ typedef struct {
 
     LLVMBasicBlockRef break_target;
     LLVMBasicBlockRef continue_target;
+
+    linkage_t current_fn_linkage;   /* linkage of the function being compiled */
+
+    LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
+    boolean_t test_mode;            /* True when compiling in test mode */
+    LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
+    LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
 } cg_t;
 
 /* ── symtab ── */
@@ -173,6 +186,7 @@ static void symtab_add(symtab_t *st, const char *name, LLVMValueRef value,
     sym.type = type;
     sym.stype = stype;
     sym.is_atomic = is_atomic;
+    sym.array_size = -1; /* -1 = not an array / unknown size */
     st->entries[st->count++] = sym;
 }
 static symbol_t *symtab_lookup(symtab_t *st, const char *name) {
@@ -193,6 +207,121 @@ static void symtab_set_last_storage(symtab_t *st, storage_t storage, boolean_t i
         st->entries[st->count - 1].storage = storage;
         st->entries[st->count - 1].is_heap_var = is_heap_var;
     }
+}
+
+static void symtab_set_last_extra(symtab_t *st, boolean_t is_const, boolean_t is_final,
+                                   linkage_t linkage, usize_t scope_depth, long array_size) {
+    if (st->count > 0) {
+        st->entries[st->count - 1].is_const = is_const;
+        st->entries[st->count - 1].is_final = is_final;
+        st->entries[st->count - 1].linkage = linkage;
+        st->entries[st->count - 1].scope_depth = scope_depth;
+        st->entries[st->count - 1].array_size = array_size;
+    }
+}
+
+static void symtab_set_last_nil(symtab_t *st, boolean_t is_nil) {
+    if (st->count > 0)
+        st->entries[st->count - 1].is_nil = is_nil;
+}
+
+/* ── pointer safety checks ── */
+
+/* Check: no writable pointer from const/final variable */
+static void check_const_addr_of(cg_t *cg, node_t *init, type_info_t target_type, usize_t line) {
+    if (!init || init->kind != NodeAddrOf || !target_type.is_pointer) return;
+    node_t *operand = init->as.addr_of.operand;
+    if (operand->kind != NodeIdentExpr) return;
+    symbol_t *src = cg_lookup(cg, operand->as.ident.name);
+    if (!src) return;
+    if ((src->is_const || src->is_final) && target_type.ptr_perm != PtrRead)
+        log_err("line %lu: cannot derive writable pointer from %s variable '%s'",
+                line, src->is_const ? "const" : "final", src->name);
+}
+
+/* Check: permission widening forbidden (e.g. *r → *rw) */
+static void check_permission_widening(cg_t *cg, node_t *init, type_info_t target_type, usize_t line) {
+    if (!init || !target_type.is_pointer) return;
+    /* source must be an identifier that is itself a pointer */
+    if (init->kind == NodeIdentExpr) {
+        symbol_t *src = cg_lookup(cg, init->as.ident.name);
+        if (!src || !src->stype.is_pointer) return;
+        ptr_perm_t sp = src->stype.ptr_perm;
+        ptr_perm_t tp = target_type.ptr_perm;
+        /* narrowing is fine; widening is not */
+        if (sp == PtrRead && (tp == PtrWrite || tp == PtrReadWrite))
+            log_err("line %lu: cannot widen *r pointer to %s",
+                    line, tp == PtrReadWrite ? "*rw" : "*w");
+        if (sp == PtrWrite && tp == PtrReadWrite)
+            log_err("line %lu: cannot widen *w pointer to *rw", line);
+    }
+}
+
+/* Check: no stack pointer escape via ret */
+static void check_stack_escape(cg_t *cg, node_t *ret_val, usize_t line) {
+    if (!ret_val) return;
+    if (ret_val->kind == NodeAddrOf) {
+        node_t *operand = ret_val->as.addr_of.operand;
+        if (operand->kind == NodeIdentExpr) {
+            symbol_t *src = cg_lookup(cg, operand->as.ident.name);
+            /* locals are stack-allocated; returning their address is always wrong */
+            if (src && src->storage == StorageStack
+                && symtab_lookup(&cg->locals, operand->as.ident.name))
+                log_err("line %lu: cannot return pointer to local stack variable '%s'",
+                        line, operand->as.ident.name);
+        }
+    }
+}
+
+/* Check: no ext function returning pointer to int (private) global */
+static void check_ext_returns_int_ptr(cg_t *cg, node_t *ret_val, linkage_t fn_linkage, usize_t line) {
+    if (fn_linkage != LinkageExternal || !ret_val) return;
+    if (ret_val->kind == NodeAddrOf) {
+        node_t *operand = ret_val->as.addr_of.operand;
+        if (operand->kind == NodeIdentExpr) {
+            symbol_t *src = symtab_lookup(&cg->globals, operand->as.ident.name);
+            if (src && src->linkage == LinkageInternal)
+                log_err("line %lu: ext function cannot expose pointer to int global '%s'",
+                        line, operand->as.ident.name);
+        }
+    }
+}
+
+/* Check: pointer lifetime — pointee must outlive the pointer */
+static void check_pointer_lifetime(cg_t *cg, node_t *init, usize_t ptr_scope_depth, usize_t line) {
+    if (!init || init->kind != NodeAddrOf) return;
+    node_t *operand = init->as.addr_of.operand;
+    if (operand->kind != NodeIdentExpr) return;
+    symbol_t *src = cg_lookup(cg, operand->as.ident.name);
+    if (!src) return;
+    /* global variables live forever (scope_depth 0); no problem */
+    if (src->scope_depth > ptr_scope_depth)
+        log_err("line %lu: pointer outlives pointee '%s' (scope mismatch)",
+                line, src->name);
+}
+
+/* Check: null dereference of a statically-nil pointer */
+static void check_null_deref(cg_t *cg, const char *name, usize_t line) {
+    symbol_t *sym = cg_lookup(cg, name);
+    if (sym && sym->is_nil)
+        log_err("line %lu: dereference of nil pointer '%s'", line, name);
+}
+
+/* Check: pointer arithmetic exceeds known array bounds */
+static void check_ptr_arith_bounds(cg_t *cg, node_t *node) {
+    if (node->as.binary.op != TokPlus && node->as.binary.op != TokMinus) return;
+    /* check left = ident (pointer/array), right = int literal */
+    node_t *ptr_node = node->as.binary.left;
+    node_t *idx_node = node->as.binary.right;
+    if (ptr_node->kind != NodeIdentExpr || idx_node->kind != NodeIntLitExpr) return;
+    symbol_t *sym = cg_lookup(cg, ptr_node->as.ident.name);
+    if (!sym) return;
+    if (sym->array_size < 0) return; /* unknown size */
+    long offset = idx_node->as.int_lit.value;
+    if (node->as.binary.op == TokMinus) offset = -offset;
+    if (offset < 0 || offset >= sym->array_size)
+        log_err("line %lu: pointer arithmetic index %ld out of bounds for '%s[%ld]'",
+                node->line, offset, sym->name, sym->array_size);
 }
 
 /* ── struct / enum / alias lookup ── */
@@ -398,6 +527,8 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
             if (er) return er->llvm_type;
             return LLVMInt32TypeInContext(cg->ctx);
         }
+        case TypeError:
+            return cg->error_type;
     }
     return LLVMVoidTypeInContext(cg->ctx);
 }
@@ -432,6 +563,16 @@ static LLVMValueRef coerce_int(cg_t *cg, LLVMValueRef val, LLVMTypeRef target) {
             return LLVMBuildFPTrunc(cg->builder, val, target, "fptrunc");
     }
     return val;
+}
+
+/* Create a nil error value: {i1 false, ptr null} */
+static LLVMValueRef make_nil_error(cg_t *cg) {
+    LLVMValueRef err = LLVMGetUndef(cg->error_type);
+    err = LLVMBuildInsertValue(cg->builder, err,
+        LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0), 0, "nil_err.has");
+    err = LLVMBuildInsertValue(cg->builder, err,
+        LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0)), 1, "nil_err.msg");
+    return err;
 }
 
 static boolean_t llvm_is_float(LLVMTypeRef t) {
@@ -584,6 +725,29 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
         LLVMBasicBlockRef bbs[2] = { lhs_bb, rhs_bb };
         LLVMAddIncoming(phi, vals, bbs, 2);
         return phi;
+    }
+
+    /* pointer arithmetic bounds check */
+    check_ptr_arith_bounds(cg, node);
+
+    /* error == nil / error != nil: extract has_error flag */
+    if ((node->as.binary.op == TokEqEq || node->as.binary.op == TokBangEq)
+        && (node->as.binary.right->kind == NodeNilExpr
+            || node->as.binary.left->kind == NodeNilExpr)) {
+        /* figure out which side is the error value */
+        node_t *err_node = node->as.binary.left;
+        if (err_node->kind == NodeNilExpr) err_node = node->as.binary.right;
+        if (err_node->kind == NodeIdentExpr) {
+            symbol_t *esym = cg_lookup(cg, err_node->as.ident.name);
+            if (esym && esym->stype.base == TypeError) {
+                LLVMValueRef err_val = gen_expr(cg, err_node);
+                LLVMValueRef has_err = LLVMBuildExtractValue(cg->builder, err_val, 0, "has_err");
+                if (node->as.binary.op == TokEqEq)
+                    return LLVMBuildNot(cg->builder, has_err, "is_nil");
+                else
+                    return has_err;
+            }
+        }
     }
 
     LLVMValueRef left = gen_expr(cg, node->as.binary.left);
@@ -1042,6 +1206,17 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             }
         }
 
+        /* pointer safety checks on assignment */
+        check_const_addr_of(cg, node->as.assign.value, sym->stype, node->line);
+        check_permission_widening(cg, node->as.assign.value, sym->stype, node->line);
+        check_pointer_lifetime(cg, node->as.assign.value, sym->scope_depth, node->line);
+
+        /* track nil state */
+        if (node->as.assign.value->kind == NodeNilExpr)
+            sym->is_nil = True;
+        else
+            sym->is_nil = False;
+
         LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
         rhs = coerce_int(cg, rhs, sym->type);
         if (sym->is_heap_var) {
@@ -1153,6 +1328,10 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
     node_t *obj = node->as.index_expr.object;
     LLVMValueRef index_val = gen_expr(cg, node->as.index_expr.index);
+
+    /* null dereference check */
+    if (obj->kind == NodeIdentExpr)
+        check_null_deref(cg, obj->as.ident.name, node->line);
 
     if (obj->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
@@ -1417,6 +1596,131 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeNilExpr:          return gen_nil(cg);
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);
+        case NodeErrorExpr: {
+            /* error.('message') → {i1 true, ptr message} */
+            LLVMValueRef msg = gen_expr(cg, node->as.error_expr.message);
+            LLVMValueRef err = LLVMGetUndef(cg->error_type);
+            err = LLVMBuildInsertValue(cg->builder, err,
+                LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0), 0, "err.has");
+            err = LLVMBuildInsertValue(cg->builder, err, msg, 1, "err.msg");
+            return err;
+        }
+        case NodeExpectExpr: {
+            /* expect.(expr) — if !expr, print failure and increment fail count */
+            LLVMValueRef val = gen_expr(cg, node->as.expect_expr.expr);
+            if (LLVMTypeOf(val) != LLVMInt1TypeInContext(cg->ctx))
+                val = LLVMBuildICmp(cg->builder, LLVMIntNE, val,
+                    LLVMConstInt(LLVMTypeOf(val), 0, 0), "tobool");
+            LLVMBasicBlockRef pass_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expect.pass");
+            LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expect.fail");
+            LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expect.end");
+            LLVMBuildCondBr(cg->builder, val, pass_bb, fail_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, fail_bb);
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "  FAIL: expect at line %lu\n", node->line);
+                LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, msg, "efmt");
+                LLVMValueRef args[1] = { fmt };
+                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 1, "");
+                if (cg->test_fail_count) {
+                    LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
+                    cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
+                    LLVMBuildStore(cg->builder, cnt, cg->test_fail_count);
+                }
+            }
+            LLVMBuildBr(cg->builder, merge_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, pass_bb);
+            if (cg->test_pass_count) {
+                LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_pass_count, "pc");
+                cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "pi");
+                LLVMBuildStore(cg->builder, cnt, cg->test_pass_count);
+            }
+            LLVMBuildBr(cg->builder, merge_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        case NodeExpectEqExpr: {
+            LLVMValueRef left = gen_expr(cg, node->as.expect_eq.left);
+            LLVMValueRef right = gen_expr(cg, node->as.expect_eq.right);
+            right = coerce_int(cg, right, LLVMTypeOf(left));
+            LLVMValueRef eq = llvm_is_float(LLVMTypeOf(left))
+                ? LLVMBuildFCmp(cg->builder, LLVMRealOEQ, left, right, "feq")
+                : LLVMBuildICmp(cg->builder, LLVMIntEQ, left, right, "eq");
+            LLVMBasicBlockRef pass_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expeq.pass");
+            LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expeq.fail");
+            LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expeq.end");
+            LLVMBuildCondBr(cg->builder, eq, pass_bb, fail_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, fail_bb);
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "  FAIL: expect_eq at line %lu\n", node->line);
+                LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, msg, "eqfmt");
+                LLVMValueRef args[1] = { fmt };
+                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 1, "");
+                if (cg->test_fail_count) {
+                    LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
+                    cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
+                    LLVMBuildStore(cg->builder, cnt, cg->test_fail_count);
+                }
+            }
+            LLVMBuildBr(cg->builder, merge_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, pass_bb);
+            if (cg->test_pass_count) {
+                LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_pass_count, "pc");
+                cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "pi");
+                LLVMBuildStore(cg->builder, cnt, cg->test_pass_count);
+            }
+            LLVMBuildBr(cg->builder, merge_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        case NodeExpectNeqExpr: {
+            LLVMValueRef left = gen_expr(cg, node->as.expect_neq.left);
+            LLVMValueRef right = gen_expr(cg, node->as.expect_neq.right);
+            right = coerce_int(cg, right, LLVMTypeOf(left));
+            LLVMValueRef neq = llvm_is_float(LLVMTypeOf(left))
+                ? LLVMBuildFCmp(cg->builder, LLVMRealONE, left, right, "fne")
+                : LLVMBuildICmp(cg->builder, LLVMIntNE, left, right, "ne");
+            LLVMBasicBlockRef pass_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expneq.pass");
+            LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expneq.fail");
+            LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expneq.end");
+            LLVMBuildCondBr(cg->builder, neq, pass_bb, fail_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, fail_bb);
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "  FAIL: expect_neq at line %lu\n", node->line);
+                LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, msg, "neqfmt");
+                LLVMValueRef args[1] = { fmt };
+                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 1, "");
+                if (cg->test_fail_count) {
+                    LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
+                    cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
+                    LLVMBuildStore(cg->builder, cnt, cg->test_fail_count);
+                }
+            }
+            LLVMBuildBr(cg->builder, merge_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, pass_bb);
+            if (cg->test_pass_count) {
+                LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_pass_count, "pc");
+                cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "pi");
+                LLVMBuildStore(cg->builder, cnt, cg->test_pass_count);
+            }
+            LLVMBuildBr(cg->builder, merge_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        case NodeTestFailExpr: {
+            LLVMValueRef msg = gen_expr(cg, node->as.test_fail.message);
+            LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, "  FAIL: %s\n", "tffmt");
+            LLVMValueRef args[2] = { fmt, msg };
+            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 2, "");
+            if (cg->test_fail_count) {
+                LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
+                cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
+                LLVMBuildStore(cg->builder, cnt, cg->test_fail_count);
+            }
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
         case NodeRemStmt: {
             node_t *ptr_node = node->as.rem_stmt.ptr;
             /* for heap primitive vars: free the heap ptr and null the alloca */
@@ -1512,6 +1816,11 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
                    ti, node->as.var_decl.is_atomic);
         symtab_set_last_storage(&cg->locals, StorageHeap, True);
+        symtab_set_last_extra(&cg->locals, node->as.var_decl.is_const,
+                              node->as.var_decl.is_final, node->as.var_decl.linkage,
+                              cg->dtor_depth, -1);
+        if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
+            symtab_set_last_nil(&cg->locals, True);
         add_heap_var(cg, alloca_val);
         return;
     }
@@ -1545,15 +1854,36 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     }
 
     if (node->as.var_decl.init) {
-        LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
-        if (!node->as.var_decl.is_array)
-            init = coerce_int(cg, init, type);
+        LLVMValueRef init;
+        /* nil → error type produces a nil error struct */
+        if (node->as.var_decl.init->kind == NodeNilExpr && ti.base == TypeError) {
+            init = make_nil_error(cg);
+        } else {
+            init = gen_expr(cg, node->as.var_decl.init);
+            if (!node->as.var_decl.is_array)
+                init = coerce_int(cg, init, type);
+        }
         LLVMBuildStore(cg->builder, init, alloca_val);
     }
 
     symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
                ti, node->as.var_decl.is_atomic);
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
+    {
+        long arr_sz = node->as.var_decl.is_array ? node->as.var_decl.array_size : -1;
+        symtab_set_last_extra(&cg->locals, node->as.var_decl.is_const,
+                              node->as.var_decl.is_final, node->as.var_decl.linkage,
+                              cg->dtor_depth, arr_sz);
+        if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
+            symtab_set_last_nil(&cg->locals, True);
+    }
+
+    /* pointer safety checks on initializer */
+    if (node->as.var_decl.init) {
+        check_const_addr_of(cg, node->as.var_decl.init, ti, node->line);
+        check_permission_widening(cg, node->as.var_decl.init, ti, node->line);
+        check_pointer_lifetime(cg, node->as.var_decl.init, cg->dtor_depth, node->line);
+    }
 
     /* track struct variables for destructor auto-call */
     if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
@@ -1739,6 +2069,13 @@ static void gen_if(cg_t *cg, node_t *node) {
 }
 
 static void gen_ret(cg_t *cg, node_t *node) {
+    /* pointer safety: check each return value */
+    for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
+        node_t *rv = node->as.ret_stmt.values.items[i];
+        check_stack_escape(cg, rv, node->line);
+        check_ext_returns_int_ptr(cg, rv, cg->current_fn_linkage, node->line);
+    }
+
     /* If returning a named struct variable, move it out of dtor scopes so
        the destructor isn't called — the caller takes ownership. */
     if (node->as.ret_stmt.values.count == 1) {
@@ -1756,18 +2093,32 @@ static void gen_ret(cg_t *cg, node_t *node) {
     if (node->as.ret_stmt.values.count == 0) {
         LLVMBuildRetVoid(cg->builder);
     } else if (node->as.ret_stmt.values.count == 1) {
-        LLVMValueRef val = gen_expr(cg, node->as.ret_stmt.values.items[0]);
         LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
-        val = coerce_int(cg, val, ret_type);
+        LLVMValueRef val;
+        /* nil returning as error → {i1=0, ptr=null} */
+        if (node->as.ret_stmt.values.items[0]->kind == NodeNilExpr
+            && ret_type == cg->error_type) {
+            val = make_nil_error(cg);
+        } else {
+            val = gen_expr(cg, node->as.ret_stmt.values.items[0]);
+            val = coerce_int(cg, val, ret_type);
+        }
         LLVMBuildRet(cg->builder, val);
     } else {
         /* multi-return: pack into struct */
         LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
         LLVMValueRef agg = LLVMGetUndef(ret_type);
         for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
-            LLVMValueRef val = gen_expr(cg, node->as.ret_stmt.values.items[i]);
             LLVMTypeRef field_type = LLVMStructGetTypeAtIndex(ret_type, (unsigned)i);
-            val = coerce_int(cg, val, field_type);
+            LLVMValueRef val;
+            /* nil in an error slot → {i1=0, ptr=null} */
+            if (node->as.ret_stmt.values.items[i]->kind == NodeNilExpr
+                && field_type == cg->error_type) {
+                val = make_nil_error(cg);
+            } else {
+                val = gen_expr(cg, node->as.ret_stmt.values.items[i]);
+                val = coerce_int(cg, val, field_type);
+            }
             agg = LLVMBuildInsertValue(cg->builder, agg, val, (unsigned)i, "");
         }
         LLVMBuildRet(cg->builder, agg);
@@ -2145,9 +2496,10 @@ static void register_cinclude(cg_t *cg, const char *header, const char *alias) {
 
 /* ── top-level codegen ── */
 
-result_t codegen(node_t *ast, const char *obj_output) {
+result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
+    cg.test_mode = test_mode;
     cg.ctx = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     cg.builder = LLVMCreateBuilderInContext(cg.ctx);
@@ -2179,6 +2531,23 @@ result_t codegen(node_t *ast, const char *obj_output) {
                                         realloc_params, 2, 0);
     cg.realloc_fn = LLVMAddFunction(cg.module, "realloc", cg.realloc_type);
     symtab_add(&cg.globals, "realloc", cg.realloc_fn, Null, rt_dummy, False);
+
+    /* built-in error type: { i1 has_error, ptr message } */
+    {
+        LLVMTypeRef err_fields[2] = {
+            LLVMInt1TypeInContext(cg.ctx),
+            LLVMPointerTypeInContext(cg.ctx, 0)
+        };
+        cg.error_type = LLVMStructTypeInContext(cg.ctx, err_fields, 2, 0);
+    }
+
+    /* test mode: create global pass/fail counters */
+    if (cg.test_mode) {
+        cg.test_pass_count = LLVMAddGlobal(cg.module, LLVMInt32TypeInContext(cg.ctx), "__test_pass");
+        LLVMSetInitializer(cg.test_pass_count, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
+        cg.test_fail_count = LLVMAddGlobal(cg.module, LLVMInt32TypeInContext(cg.ctx), "__test_fail");
+        LLVMSetInitializer(cg.test_fail_count, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
+    }
 
     /* pass 0: register type declarations, cincludes */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
@@ -2237,17 +2606,41 @@ result_t codegen(node_t *ast, const char *obj_output) {
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
             LLVMTypeRef type = get_llvm_type(&cg, ti);
             LLVMValueRef global = LLVMAddGlobal(cg.module, type, decl->as.var_decl.name);
+
+            /* linkage: int → internal, ext → external (default) */
             if (decl->as.var_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(global, LLVMInternalLinkage);
 
+            /* const/final globals are LLVM-constant */
+            if (decl->as.var_decl.is_const || decl->as.var_decl.is_final)
+                LLVMSetGlobalConstant(global, 1);
+
+            /* initializer — must be a constant expression */
             LLVMValueRef init_val = LLVMConstNull(type);
-            if (decl->as.var_decl.init && decl->as.var_decl.init->kind == NodeIntLitExpr)
-                init_val = LLVMConstInt(type,
-                    (unsigned long long)decl->as.var_decl.init->as.int_lit.value, 1);
+            if (decl->as.var_decl.init) {
+                node_t *iv = decl->as.var_decl.init;
+                if (iv->kind == NodeIntLitExpr)
+                    init_val = LLVMConstInt(type,
+                        (unsigned long long)iv->as.int_lit.value, 1);
+                else if (iv->kind == NodeFloatLitExpr)
+                    init_val = LLVMConstReal(type, iv->as.float_lit.value);
+                else if (iv->kind == NodeBoolLitExpr)
+                    init_val = LLVMConstInt(type, iv->as.bool_lit.value, 0);
+                else if (iv->kind == NodeCharLitExpr)
+                    init_val = LLVMConstInt(type, (unsigned char)iv->as.char_lit.value, 0);
+                else if (iv->kind == NodeNilExpr)
+                    init_val = LLVMConstNull(type);
+                else if (iv->kind == NodeStrLitExpr)
+                    init_val = LLVMConstNull(type); /* string globals handled below */
+            }
             LLVMSetInitializer(global, init_val);
 
             symtab_add(&cg.globals, decl->as.var_decl.name, global, type,
                        ti, decl->as.var_decl.is_atomic);
+            symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
+            symtab_set_last_extra(&cg.globals, decl->as.var_decl.is_const,
+                                  decl->as.var_decl.is_final, decl->as.var_decl.linkage,
+                                  0, -1); /* scope_depth 0 = global lifetime */
         }
 
         if (decl->kind == NodeFnDecl) {
@@ -2258,6 +2651,9 @@ result_t codegen(node_t *ast, const char *obj_output) {
             } else {
                 snprintf(fn_name, sizeof(fn_name), "%s", decl->as.fn_decl.name);
             }
+
+            /* in test mode, skip the user's main — we generate our own */
+            if (cg.test_mode && strcmp(fn_name, "main") == 0) continue;
 
             /* build param types */
             usize_t pc = decl->as.fn_decl.params.count;
@@ -2391,8 +2787,12 @@ result_t codegen(node_t *ast, const char *obj_output) {
         else
             snprintf(fn_name, sizeof(fn_name), "%s", decl->as.fn_decl.name);
 
+        /* in test mode, skip the user's main — we generate our own */
+        if (cg.test_mode && strcmp(fn_name, "main") == 0) continue;
+
         symbol_t *sym = cg_lookup(&cg, fn_name);
         cg.current_fn = sym->value;
+        cg.current_fn_linkage = decl->as.fn_decl.linkage;
         cg.locals.count = 0;
         cg.dtor_depth = 0;
 
@@ -2494,6 +2894,125 @@ result_t codegen(node_t *ast, const char *obj_output) {
                     LLVMBuildRet(cg.builder,
                         LLVMConstNull(get_llvm_type(&cg, rti)));
             }
+        }
+    }
+
+    /* pass 3: generate test blocks (test mode only) */
+    if (cg.test_mode) {
+        /* count test blocks */
+        usize_t test_count = 0;
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++)
+            if (ast->as.module.decls.items[i]->kind == NodeTestBlock)
+                test_count++;
+
+        /* forward-declare test functions */
+        LLVMValueRef *test_fns = Null;
+        char **test_names = Null;
+        heap_t tf_heap = NullHeap, tn_heap = NullHeap;
+        if (test_count > 0) {
+            tf_heap = allocate(test_count, sizeof(LLVMValueRef));
+            test_fns = tf_heap.pointer;
+            tn_heap = allocate(test_count, sizeof(char *));
+            test_names = tn_heap.pointer;
+        }
+        usize_t ti = 0;
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *decl = ast->as.module.decls.items[i];
+            if (decl->kind != NodeTestBlock) continue;
+            char fn_name[256];
+            snprintf(fn_name, sizeof(fn_name), "__test_%lu", ti);
+            LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(cg.ctx), Null, 0, 0);
+            LLVMValueRef fn = LLVMAddFunction(cg.module, fn_name, fn_type);
+            LLVMSetLinkage(fn, LLVMInternalLinkage);
+            test_fns[ti] = fn;
+            test_names[ti] = decl->as.test_block.name;
+            ti++;
+        }
+
+        /* generate test function bodies */
+        ti = 0;
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *decl = ast->as.module.decls.items[i];
+            if (decl->kind != NodeTestBlock) continue;
+            cg.current_fn = test_fns[ti];
+            cg.locals.count = 0;
+            cg.dtor_depth = 0;
+            LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, cg.current_fn, "entry");
+            LLVMPositionBuilderAtEnd(cg.builder, entry);
+            gen_block(&cg, decl->as.test_block.body);
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg.builder)))
+                LLVMBuildRetVoid(cg.builder);
+            ti++;
+        }
+
+        /* generate test main: calls each test, prints results */
+        {
+            LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), Null, 0, 0);
+            LLVMValueRef main_fn = LLVMAddFunction(cg.module, "main", main_type);
+            LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, main_fn, "entry");
+            LLVMPositionBuilderAtEnd(cg.builder, entry);
+
+            for (usize_t t = 0; t < test_count; t++) {
+                /* print test name */
+                char banner[256];
+                snprintf(banner, sizeof(banner), "test '%s' ... ", test_names[t]);
+                LLVMValueRef bstr = LLVMBuildGlobalStringPtr(cg.builder, banner, "tbanner");
+                LLVMValueRef bargs[1] = { bstr };
+                LLVMBuildCall2(cg.builder, cg.printf_type, cg.printf_fn, bargs, 1, "");
+
+                /* save fail count before test */
+                LLVMValueRef pre_fail = LLVMBuildLoad2(cg.builder,
+                    LLVMInt32TypeInContext(cg.ctx), cg.test_fail_count, "pf");
+
+                /* call test function */
+                LLVMTypeRef test_ft = LLVMFunctionType(LLVMVoidTypeInContext(cg.ctx), Null, 0, 0);
+                LLVMBuildCall2(cg.builder, test_ft, test_fns[t], Null, 0, "");
+
+                /* check if fail count increased */
+                LLVMValueRef post_fail = LLVMBuildLoad2(cg.builder,
+                    LLVMInt32TypeInContext(cg.ctx), cg.test_fail_count, "qf");
+                LLVMValueRef passed = LLVMBuildICmp(cg.builder, LLVMIntEQ, pre_fail, post_fail, "ok");
+                LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(cg.ctx, main_fn, "tok");
+                LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(cg.ctx, main_fn, "tfail");
+                LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(cg.ctx, main_fn, "tnext");
+                LLVMBuildCondBr(cg.builder, passed, ok_bb, fail_bb);
+
+                LLVMPositionBuilderAtEnd(cg.builder, ok_bb);
+                LLVMValueRef ok_str = LLVMBuildGlobalStringPtr(cg.builder, "PASS\n", "pstr");
+                LLVMValueRef ok_args[1] = { ok_str };
+                LLVMBuildCall2(cg.builder, cg.printf_type, cg.printf_fn, ok_args, 1, "");
+                LLVMBuildBr(cg.builder, next_bb);
+
+                LLVMPositionBuilderAtEnd(cg.builder, fail_bb);
+                LLVMValueRef fl_str = LLVMBuildGlobalStringPtr(cg.builder, "FAIL\n", "fstr");
+                LLVMValueRef fl_args[1] = { fl_str };
+                LLVMBuildCall2(cg.builder, cg.printf_type, cg.printf_fn, fl_args, 1, "");
+                LLVMBuildBr(cg.builder, next_bb);
+
+                LLVMPositionBuilderAtEnd(cg.builder, next_bb);
+            }
+
+            /* print summary */
+            LLVMValueRef final_pass = LLVMBuildLoad2(cg.builder,
+                LLVMInt32TypeInContext(cg.ctx), cg.test_pass_count, "fp");
+            LLVMValueRef final_fail = LLVMBuildLoad2(cg.builder,
+                LLVMInt32TypeInContext(cg.ctx), cg.test_fail_count, "ff");
+            LLVMValueRef sum_fmt = LLVMBuildGlobalStringPtr(cg.builder,
+                "\n%d passed, %d failed\n", "sfmt");
+            LLVMValueRef sargs[3] = { sum_fmt, final_pass, final_fail };
+            LLVMBuildCall2(cg.builder, cg.printf_type, cg.printf_fn, sargs, 3, "");
+
+            /* return fail count (0 = success) */
+            LLVMValueRef exit_code = LLVMBuildICmp(cg.builder, LLVMIntNE, final_fail,
+                LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0), "hasf");
+            LLVMValueRef ret = LLVMBuildZExt(cg.builder, exit_code,
+                LLVMInt32TypeInContext(cg.ctx), "ec");
+            LLVMBuildRet(cg.builder, ret);
+        }
+
+        if (test_count > 0) {
+            deallocate(tf_heap);
+            deallocate(tn_heap);
         }
     }
 

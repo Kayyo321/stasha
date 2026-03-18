@@ -346,7 +346,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Debug statement
 - [x] Return statements (`ret`)
 - [x] `defer` statement — executes a statement/block at scope exit regardless of control flow
-- [ ] Built-in testing framework — `test 'name' { ... }` blocks with `expect.(expr)`, `expect_eq.(a, b)`, `test_fail.('msg')`; compiled only when running in test mode
+- [x] Built-in testing framework — `test 'name' { ... }` blocks with `expect.(expr)`, `expect_eq.(a, b)`, `test_fail.('msg')`; compiled only when running in test mode
 
 ### Types
 - [x] `i8`, `i16`, `i32`, `i64`
@@ -356,7 +356,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] `void`
 - [x] User-defined types (struct, enum, alias)
 - [x] `nil` keyword — null pointer literal
-- [ ] Built-in `error` type — Go-style; `nil` = no error; used as a second return value (`fn foo(): [i32, error]`); created with `error.('message')`; compared with `== nil`
+- [x] Built-in `error` type — Go-style; `nil` = no error; used as a second return value (`fn foo(): [i32, error]`); created with `error.('message')`; compared with `== nil`
 
 ### Memory & Storage
 - [x] `stack`, `heap`, `atomic`, `const`, `final`
@@ -367,7 +367,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Storage group blocks (`stack ( i32 x = 0; i32 y = 1; )`)
 - [x] Cross-domain pointer conversion rejected by compiler (`stack` addr → `heap` ptr forbidden)
 - [x] `heap` primitive variables auto-allocate via `malloc` and are auto-`free`'d at scope exit (unless already `rem.()`'d by the user)
-- [ ] Global variable semantics — module-level `var_decl` nodes: `int` globals are module-private static, `ext` globals are exported; `atomic` globals use atomic builtins; initialiser must be a constant expression
+- [x] Global variable semantics — module-level `var_decl` nodes: `int` globals are module-private static, `ext` globals are exported; `atomic` globals use atomic builtins; initialiser must be a constant expression
 
 ### Functions
 - [x] Internal vs external functions (`int fn`, `ext fn`)
@@ -394,14 +394,14 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] `new.(size)`, `rem.(ptr)`, `sizeof.(type)`
 - [x] `mov.(ptr, new_size)` — realloc
 - [x] Arrays (`type name[size]`)
-- [ ] No `ext` pointer to `int` data — `ext` functions/fields must not expose a pointer to a private (`int`) global variable or `int` struct field; doing so leaks internals across the module boundary
-- [ ] No stack pointer escape — returning a pointer to a local stack variable is a compile error; the pointed-to value dies when the function returns
-- [ ] Permission widening forbidden — a `*r` pointer cannot be cast or coerced to `*rw`/`*w`; a `*w` pointer cannot be widened to `*rw`; narrowing is always permitted
-- [ ] Pointer lifetime rule — a pointer stored in a longer-lived variable must not point to a shorter-lived variable; the compiler should reject assignments where the pointee's scope is narrower than the pointer's scope
-- [ ] No writable pointer from `const`/`final` — `&x` where `x` is `const` or `final` may only produce a `*r` pointer; a `*rw` or `*w` derivation is a compile error
-- [ ] No `int` global pointer export — an `ext` function in another module cannot receive or return a pointer whose provenance is an `int` global of a foreign module
-- [ ] Pointer arithmetic bounds enforcement — for stack-allocated arrays whose size is statically known, the compiler rejects pointer arithmetic that provably exceeds the allocation bounds
-- [ ] Null dereference detection — dereferencing a pointer that is statically known to be `nil` (e.g., never assigned after `p = nil`) is a compile error
+- [x] No `ext` pointer to `int` data — `ext` functions/fields must not expose a pointer to a private (`int`) global variable or `int` struct field; doing so leaks internals across the module boundary
+- [x] No stack pointer escape — returning a pointer to a local stack variable is a compile error; the pointed-to value dies when the function returns
+- [x] Permission widening forbidden — a `*r` pointer cannot be cast or coerced to `*rw`/`*w`; a `*w` pointer cannot be widened to `*rw`; narrowing is always permitted
+- [x] Pointer lifetime rule — a pointer stored in a longer-lived variable must not point to a shorter-lived variable; the compiler should reject assignments where the pointee's scope is narrower than the pointer's scope
+- [x] No writable pointer from `const`/`final` — `&x` where `x` is `const` or `final` may only produce a `*r` pointer; a `*rw` or `*w` derivation is a compile error
+- [x] No `int` global pointer export — an `ext` function in another module cannot receive or return a pointer whose provenance is an `int` global of a foreign module
+- [x] Pointer arithmetic bounds enforcement — for stack-allocated arrays whose size is statically known, the compiler rejects pointer arithmetic that provably exceeds the allocation bounds
+- [x] Null dereference detection — dereferencing a pointer that is statically known to be `nil` (e.g., never assigned after `p = nil`) is a compile error
 - [ ] Function pointer domain tags — a function pointer type must encode the storage domain of its parameters so that calling through a pointer cannot silently violate domain rules
 
 ### Control Flow
@@ -423,7 +423,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Function binding (auto-declared varargs externs)
 
 ### Toolchain
-- [ ] Internal linker — bundle a linker (e.g. LLVM LLD) so users do not need one installed on their system; the compiler should produce a final executable without requiring an external `ld`, `lld`, or MSVC linker to be present
+- [x] Internal linker — bundle a linker (e.g. LLVM LLD) so users do not need one installed on their system; the compiler should produce a final executable without requiring an external `ld`, `lld`, or MSVC linker to be present
 
 ### Expressions
 - [x] Cast expressions (`(type)expr`)

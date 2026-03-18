@@ -69,7 +69,7 @@ static boolean_t is_builtin_type_token(token_kind_t k) {
     return k == TokI8  || k == TokI16 || k == TokI32 || k == TokI64
         || k == TokU8  || k == TokU16 || k == TokU32 || k == TokU64
         || k == TokF32 || k == TokF64
-        || k == TokBool || k == TokVoid;
+        || k == TokBool || k == TokVoid || k == TokErrorType;
 }
 
 static type_kind_t token_to_type(token_kind_t k) {
@@ -86,6 +86,7 @@ static type_kind_t token_to_type(token_kind_t k) {
         case TokU64:  return TypeU64;
         case TokF32:  return TypeF32;
         case TokF64:  return TypeF64;
+        case TokErrorType: return TypeError;
         default:      return TypeVoid;
     }
 }
@@ -303,6 +304,77 @@ static node_t *parse_primary(parser_t *p) {
         usize_t line = p->current.line;
         advance_parser(p);
         return make_node(NodeNilExpr, line);
+    }
+
+    /* error.('message') — create an error value */
+    if (check(p, TokErrorType)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *msg = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeErrorExpr, line);
+        n->as.error_expr.message = msg;
+        return n;
+    }
+
+    /* expect.(expr) — test assertion */
+    if (check(p, TokExpect)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *expr = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeExpectExpr, line);
+        n->as.expect_expr.expr = expr;
+        return n;
+    }
+
+    /* expect_eq.(a, b) */
+    if (check(p, TokExpectEq)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *left = parse_expr(p);
+        consume(p, TokComma, "','");
+        node_t *right = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeExpectEqExpr, line);
+        n->as.expect_eq.left = left;
+        n->as.expect_eq.right = right;
+        return n;
+    }
+
+    /* expect_neq.(a, b) */
+    if (check(p, TokExpectNeq)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *left = parse_expr(p);
+        consume(p, TokComma, "','");
+        node_t *right = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeExpectNeqExpr, line);
+        n->as.expect_neq.left = left;
+        n->as.expect_neq.right = right;
+        return n;
+    }
+
+    /* test_fail.('msg') */
+    if (check(p, TokTestFail)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *msg = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeTestFailExpr, line);
+        n->as.test_fail.message = msg;
+        return n;
     }
 
     /* mov.(ptr, new_size) — realloc */
@@ -1446,12 +1518,34 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
 
 /* ── top-level declarations ── */
 
+static node_t *parse_test_block(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'test' */
+    /* test name is a string literal */
+    if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+        log_err("line %lu: expected test name string after 'test'", p->current.line);
+        p->had_error = True;
+        return make_node(NodeTestBlock, line);
+    }
+    advance_parser(p);
+    token_t name_tok = p->previous;
+    char *name = ast_strdup(name_tok.start + 1, name_tok.length - 2);
+    node_t *body = parse_block(p);
+    node_t *n = make_node(NodeTestBlock, line);
+    n->as.test_block.name = name;
+    n->as.test_block.body = body;
+    return n;
+}
+
 static node_t *parse_top_decl(parser_t *p) {
     /* cinclude */
     if (check(p, TokCinclude)) return parse_cinclude(p);
 
     /* imp */
     if (check(p, TokImp)) return parse_imp(p);
+
+    /* test block */
+    if (check(p, TokTest)) return parse_test_block(p);
 
     linkage_t linkage = LinkageNone;
     if (check(p, TokInt) || check(p, TokExt)) {

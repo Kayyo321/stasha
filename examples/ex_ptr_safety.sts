@@ -1,0 +1,89 @@
+mod ex_ptr_safety;
+
+cinclude 'stdio' = io;
+
+// ── Pointer safety rules ───────────────────────────────────────────────
+//
+// Stasha enforces several compile-time pointer safety checks.
+// This file demonstrates the VALID patterns. Commented-out lines show
+// what the compiler would reject.
+
+// --- No writable pointer from const/final ---
+//
+// Only *r pointers can be derived from const or final variables.
+
+int fn const_ptr_demo(void): void {
+    const i32 k = 42;
+    stack i32 *r ok = &k;   // fine: read-only pointer from const
+    debug ok[0];             // 42
+
+    // stack i32 *rw bad = &k;   // ERROR: *rw from const
+    // stack i32 *w  bad = &k;   // ERROR: *w from const
+
+    final i32 f = 99;
+    stack i32 *r fok = &f;  // fine
+    debug fok[0];            // 99
+    // stack i32 *rw fbad = &f;  // ERROR: *rw from final
+}
+
+// --- Permission narrowing (allowed) vs widening (forbidden) ---
+//
+// *rw → *r  is OK (narrowing)
+// *r  → *rw is REJECTED (widening)
+
+int fn permission_demo(void): void {
+    stack i32 x = 10;
+    stack i32 *rw rw_ptr = &x;
+    stack i32 *r  r_ptr  = rw_ptr;   // OK: narrowing *rw → *r
+    debug r_ptr[0];                   // 10
+
+    // stack i32 *rw back = r_ptr;   // ERROR: widening *r → *rw
+}
+
+// --- Pointer arithmetic bounds ---
+//
+// For stack arrays with known size, out-of-bounds arithmetic is caught.
+
+int fn bounds_demo(void): void {
+    stack i32 arr[4];
+    arr[0] = 10;
+    arr[1] = 20;
+    arr[2] = 30;
+    arr[3] = 40;
+
+    for (stack i32 i = 0; i < 4; ++i) {
+        debug arr[i];
+    }
+
+    // stack i32 *rw p = &arr;
+    // p = p + 10;   // ERROR: index 10 out of bounds for arr[4]
+}
+
+// --- Cross-domain pointer rules ---
+//
+// stack pointers can only point to stack memory;
+// heap pointers can only point to heap memory.
+
+int fn domain_demo(void): void {
+    stack i32 x = 5;
+    stack i32 *rw sp = &x;   // OK: stack addr → stack ptr
+    debug sp[0];
+
+    // heap i32 *rw hp = &x;  // ERROR: stack addr → heap ptr
+}
+
+fn main(void): i16 {
+    io.printf('--- const/final pointer rules ---\n');
+    const_ptr_demo();
+
+    io.printf('--- permission narrowing ---\n');
+    permission_demo();
+
+    io.printf('--- bounds ---\n');
+    bounds_demo();
+
+    io.printf('--- domain rules ---\n');
+    domain_demo();
+
+    ret 0;
+}

@@ -9,9 +9,19 @@ LLVM_LDFLAGS = $(shell $(LLVM_CFG) --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
                objcarcopts textapi --system-libs 2>/dev/null)
 
+# If LLD libraries are available, enable embedded LLD support
+LLD_LIBS     = $(wildcard $(LLVM_BUILD)/lib/liblldCommon.a)
+ifneq ($(LLD_LIBS),)
+  LLD_CFLAGS  = -DSTASHA_HAS_LLD -I$(shell dirname $(LLVM_BUILD))/extlib/llvm/lld/include
+  LLD_LDLIBS  = -llldMachO -llldELF -llldCommon -llldCOFF -llldMinGW -llldWasm
+else
+  LLD_CFLAGS  =
+  LLD_LDLIBS  =
+endif
+
 CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
-CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS)
-LDFLAGS  = $(LLVM_LDFLAGS) -lc++
+CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) $(LLD_CFLAGS)
+LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lc++
 
 SRCS = src/main.c         \
        src/common/common.c \

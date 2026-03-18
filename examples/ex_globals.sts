@@ -1,0 +1,57 @@
+mod ex_globals;
+
+cinclude 'stdio' = io;
+
+// ── Global variables ───────────────────────────────────────────────────
+//
+// Module-level variables use static storage. They are not stack or heap
+// in the local-variable sense.
+//
+// int globals — module-private (LLVM internal linkage)
+// ext globals — exported (LLVM external linkage)
+// const globals — immutable, no writable pointer derivable
+// atomic globals — concurrency-safe load/store
+
+// Private globals (internal linkage)
+int i32 counter = 0;
+int f64 scale   = 1.5;
+int bool verbose = true;
+
+// Exported global (external linkage)
+ext i32 public_count = 100;
+
+// Constant globals
+int const i32 MAX = 256;
+int const f64 PI  = 3.14159265;
+
+// Atomic global — safe for concurrent access
+int atomic i32 shared_counter = 0;
+
+int fn bump(void): void {
+    counter = counter + 1;
+    shared_counter = shared_counter + 1;
+}
+
+int fn show_globals(void): void {
+    io.printf('counter: %d\n', counter);
+    io.printf('scale:   %f\n', scale);
+    io.printf('verbose: %d\n', verbose);
+    io.printf('public:  %d\n', public_count);
+    io.printf('MAX:     %d\n', MAX);
+    io.printf('PI:      %f\n', PI);
+    io.printf('shared:  %d\n', shared_counter);
+}
+
+fn main(void): i16 {
+    io.printf('--- initial ---\n');
+    show_globals();
+
+    bump();
+    bump();
+    bump();
+
+    io.printf('--- after 3 bumps ---\n');
+    show_globals();
+
+    ret 0;
+}

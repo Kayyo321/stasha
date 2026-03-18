@@ -20,6 +20,7 @@ typedef enum {
     TypeF32,
     TypeF64,
     TypeUser,       /* struct, enum, or alias — name stored in type_info_t */
+    TypeError,      /* built-in error type: nil or message */
 } type_kind_t;
 
 /* ── pointer permissions ── */
@@ -115,6 +116,12 @@ typedef enum {
     NodeNilExpr,
     NodeMovExpr,
     NodeAddrOf,
+    NodeErrorExpr,      /* error.('message') */
+    NodeTestBlock,      /* test 'name' { ... } */
+    NodeExpectExpr,     /* expect.(expr) */
+    NodeExpectEqExpr,   /* expect_eq.(a, b) */
+    NodeExpectNeqExpr,  /* expect_neq.(a, b) */
+    NodeTestFailExpr,   /* test_fail.('msg') */
 } node_kind_t;
 
 /* ── node list ── */
@@ -228,6 +235,12 @@ struct node {
         struct { type_info_t type; } sizeof_expr;
         struct { node_t *ptr; node_t *size; } mov_expr;
         struct { node_t *operand; } addr_of;
+        struct { node_t *message; } error_expr;       /* error.('msg') */
+        struct { char *name; node_t *body; } test_block; /* test 'name' { ... } */
+        struct { node_t *expr; } expect_expr;         /* expect.(expr) */
+        struct { node_t *left; node_t *right; } expect_eq; /* expect_eq.(a,b) */
+        struct { node_t *left; node_t *right; } expect_neq; /* expect_neq.(a,b) */
+        struct { node_t *message; } test_fail;        /* test_fail.('msg') */
     } as;
 };
 

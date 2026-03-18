@@ -34,13 +34,26 @@ int main(int argc, char **argv) {
 
     if (argc < 2) {
         log_err("usage: stasha <input.sts> [-o <output>]");
+        log_err("       stasha test <input.sts> [-o <output>]");
         quit(Err);
     }
 
-    const char *input_path = argv[1];
-    const char *output_path = "a.out";
+    /* check for 'test' subcommand */
+    boolean_t test_mode = False;
+    int file_arg = 1;
+    if (strcmp(argv[1], "test") == 0) {
+        test_mode = True;
+        file_arg = 2;
+        if (argc < 3) {
+            log_err("usage: stasha test <input.sts> [-o <output>]");
+            quit(Err);
+        }
+    }
 
-    for (int i = 2; i < argc; i++) {
+    const char *input_path = argv[file_arg];
+    const char *output_path = test_mode ? "a.test" : "a.out";
+
+    for (int i = file_arg + 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
             output_path = argv[++i];
     }
@@ -58,8 +71,8 @@ int main(int argc, char **argv) {
     char obj_path[512];
     snprintf(obj_path, sizeof(obj_path), "%s.o", output_path);
 
-    log_msg("generating code");
-    if (codegen(ast, obj_path) != Ok) {
+    log_msg("generating code%s", test_mode ? " (test mode)" : "");
+    if (codegen(ast, obj_path, test_mode) != Ok) {
         log_err("code generation failed");
         quit(Err);
     }

@@ -3,6 +3,6 @@
 
 #include "../ast/ast.h"
 
-result_t codegen(node_t *ast, const char *obj_output);
+result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode);
 
 #endif
