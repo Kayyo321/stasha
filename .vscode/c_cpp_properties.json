@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Mac",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/extlib/llvm/lld/include",
+                "${workspaceFolder}/extlib/llvm/llvm/include",
+                "${workspaceFolder}/build/llvm/include"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/clang++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "macos-clang-arm64"
+        }
+    ],
+    "version": 4
+}

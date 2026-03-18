@@ -5,6 +5,7 @@
 #include "common/common.h"
 #include "parser/parser.h"
 #include "codegen/codegen.h"
+#include "linker/linker.h"
 
 static heap_t source_heap = {0};
 
@@ -64,15 +65,12 @@ int main(int argc, char **argv) {
     }
 
     log_msg("linking");
-    char link_cmd[1024];
-    snprintf(link_cmd, sizeof(link_cmd), "cc '%s' -o '%s'", obj_path, output_path);
-    int link_result = system(link_cmd);
-    remove(obj_path);
-
-    if (link_result != 0) {
+    if (link_object(obj_path, output_path) != Ok) {
+        remove(obj_path);
         log_err("linking failed");
         quit(Err);
     }
+    remove(obj_path);
 
     log_msg("compiled '%s' -> '%s'", input_path, output_path);
 
