@@ -167,7 +167,7 @@ static void symtab_add(symtab_t *st, const char *name, LLVMValueRef value,
         st->entries = st->heap.pointer;
         st->capacity = new_cap;
     }
-    symbol_t sym;
+    symbol_t sym = {0};
     sym.name = (char *)name;
     sym.value = value;
     sym.type = type;
@@ -1450,7 +1450,18 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 
     if (node->as.var_decl.is_array) {
         LLVMTypeRef elem = get_llvm_type(cg, ti);
-        type = LLVMArrayType2(elem, (unsigned long long)node->as.var_decl.array_size);
+        unsigned long long array_len = (unsigned long long)node->as.var_decl.array_size;
+        if (node->as.var_decl.array_size_name) {
+            symbol_t *sym = cg_lookup(cg, node->as.var_decl.array_size_name);
+            if (sym) {
+                LLVMValueRef init = LLVMGetInitializer(sym->value);
+                if (init) array_len = LLVMConstIntGetZExtValue(init);
+            } else {
+                log_err("line %lu: undefined constant '%s' used as array size",
+                        node->line, node->as.var_decl.array_size_name);
+            }
+        }
+        type = LLVMArrayType2(elem, array_len);
     } else {
         type = get_llvm_type(cg, ti);
     }

@@ -968,13 +968,17 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     token_t name_tok = consume(p, TokIdent, "variable name");
     char *name = copy_token_text(name_tok);
 
-    /* array: type name[size] */
+    /* array: type name[size] — size may be an int literal or a named const */
     boolean_t is_array = False;
     long array_size = 0;
+    char *array_size_name = Null;
     if (match_tok(p, TokLBracket)) {
         is_array = True;
         if (check(p, TokIntLit)) {
             array_size = parse_int_value(p->current);
+            advance_parser(p);
+        } else if (check(p, TokIdent)) {
+            array_size_name = copy_token_text(p->current);
             advance_parser(p);
         }
         consume(p, TokRBracket, "']'");
@@ -994,6 +998,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     n->as.var_decl.is_final = is_final;
     n->as.var_decl.is_array = is_array;
     n->as.var_decl.array_size = array_size;
+    n->as.var_decl.array_size_name = array_size_name;
     n->as.var_decl.init = init_expr;
     return n;
 }

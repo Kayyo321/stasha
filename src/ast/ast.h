@@ -159,6 +159,7 @@ struct node {
             boolean_t is_final;
             boolean_t is_array;
             long array_size;
+            char *array_size_name; /* non-null when size is a named const */
             node_t *init;
         } var_decl;
 
