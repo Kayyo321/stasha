@@ -10,7 +10,7 @@ heap:
 }
 
 // Static constructor
-fn buffer_t.new(i32 size): buffer_t {
+fn buffer_t.new(stack i32 size): buffer_t {
     stack buffer_t b;
     b.size = size;
     b.data = new.(sizeof.(i32) * size);

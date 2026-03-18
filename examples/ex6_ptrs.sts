@@ -8,14 +8,14 @@ mod ex6_ptrs;
 // A wider permission can narrow: *rw -> *r is fine, *r -> *rw is an error.
 
 // Fills a buffer through a write-only pointer
-int fn fill(i32 *w buf, i32 count): void {
+int fn fill(heap i32 *w buf, stack i32 count): void {
     for (stack i32 i = 0; i < count; ++i) {
         buf[i] = (i + 1) * 10;
     }
 }
 
 // Sums a buffer through a read-only pointer
-int fn sum(i32 *r buf, i32 count): i32 {
+int fn sum(heap i32 *r buf, stack i32 count): i32 {
     stack i32 total = 0;
     for (stack i32 i = 0; i < count; ++i) {
         total += buf[i];

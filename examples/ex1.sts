@@ -13,8 +13,8 @@ ext fn main(void): i16 {
         debug i;
     }
 
-    stack i8 *r s = 'String on stack';   // '' == stack
-    heap i8 *r hs = "String on heap";    // "" == heap
+    stack i8 *r s  = 'String on stack';   // '' == stack
+    stack i8 *r hs = "String on stack";  // "" == stack (same as '')
 
     // this is a comment
 

@@ -17,7 +17,7 @@ stack:
 }
 
 // static constructor — no implicit this pointer
-ext fn vec3_t.new(i32 x, y, z): vec3_t {
+ext fn vec3_t.new(stack i32 x, y, z): vec3_t {
     stack vec3_t v3;
     v3.x = x;
     v3.y = y;

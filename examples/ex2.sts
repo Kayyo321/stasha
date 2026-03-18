@@ -1,6 +1,6 @@
 mod ex2;
 
-fn multi(i32 a, i32 b): [i32, i32] {
+fn multi(stack i32 a, stack i32 b): [i32, i32] {
     ret a + b, a * b;
 }
 

@@ -10,7 +10,7 @@ type color_t: enum {
 }
 
 // Returns the number of components that are maxed out (255) for a color
-int fn bright_channels(color_t c): i32 {
+int fn bright_channels(stack color_t c): i32 {
     if (c == color_t.Yellow) {
         ret 2; // red + green
     }
@@ -18,7 +18,7 @@ int fn bright_channels(color_t c): i32 {
 }
 
 // Mixes two primary colors — returns the result
-int fn mix(color_t a, color_t b): color_t {
+int fn mix(stack color_t a, stack color_t b): color_t {
     // red + green = yellow
     if (a == color_t.Red && b == color_t.Green) { ret color_t.Yellow; }
     if (a == color_t.Green && b == color_t.Red) { ret color_t.Yellow; }

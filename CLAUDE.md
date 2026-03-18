@@ -52,13 +52,14 @@ Examples:
     };
 
 
-### Supported Type Categories (Planned)
+### Supported Type Categories
 
-- Integer types: `i8`, `i16`, `i32`
+- Integer types: `i8`, `i16`, `i32`, `i64`
+- Unsigned: `u8`, `u16`, `u32`, `u64`
 - Floating point: `f32`, `f64`
-- Boolean type
-- String type: `str`
+- Boolean: `bool`
 - `void` type
+- `nil` — null pointer literal, assignable to any pointer type
 
 ---
 
@@ -67,32 +68,63 @@ Examples:
 ### Storage Qualifiers
 
 - `stack` — stack allocation
-- `heap` — heap allocation
+- `heap` — heap allocation (primitives auto-`malloc`/`free`; pointers indicate the pointed-to domain)
 - `atomic` — concurrency-safe storage
+- `const` — immutable; no writable pointer may be derived
+- `final` — write-once; no writable pointer may be derived
+
+Storage qualifiers are required everywhere data is declared: local variables, function parameters, and tagged enum payloads.
 
 ### String Allocation
 
-- `'...'` → stack-allocated string
-- `"..."` → stack-allocated string (same as `'...'`)
+Both string literal forms are stack-allocated:
+
+- `'...'` → stack string
+- `"..."` → stack string (identical to `'...'`)
+
+### Heap Primitive Variables
+
+A `heap` primitive is automatically `malloc`'d on declaration and `free`'d when it leaves scope (unless `rem.()` is called first):
+
+    heap i32 x = 42;   // malloc'd; freed at scope exit
+
+### Storage Group Blocks
+
+Applying one storage qualifier to multiple declarations:
+
+    stack (
+        i32 x = 0;
+        i32 y = 1;
+    )
+
+    heap (
+        i32 count = 0;
+    )
+
+All declarations inside inherit the block's qualifier. Pure syntactic sugar.
 
 ### Pointer Safety Rules
 
-Pointers are annotated with memory and permission constraints.
+Pointers carry both a memory-domain tag and a permission.
 
 #### Memory Domain
 
-- Stack pointers must only reference stack memory.
-- Heap pointers must only reference heap memory.
+- A `stack` pointer must only reference stack memory.
+- A `heap` pointer must only reference heap memory.
+- Cross-domain assignment is a compile error:
+
+      stack i32 x = 5;
+      heap  i32 *p = &x;   // ERROR: stack address → heap pointer
 
 #### Permissions
 
-- `*r`  → read-only  
-- `*w`  → write-only  
-- `*rw` → read-write (default, can be written as `*`)
+- `*r`  → read-only
+- `*w`  → write-only
+- `*rw` → read-write (default; `*` is shorthand)
 
 Example:
 
-    stack i8 *w buf;
+    stack i8 *w buf;   // write-only pointer to stack memory
 
 ---
 
@@ -105,25 +137,30 @@ Example:
 
 ### Syntax
 
-    fn name(params): return_type
+    fn name(stack i32 x, heap u8 *buf): return_type
+
+Every parameter requires a storage qualifier.
 
 ### Features
 
+- Parameter grouping — adjacent params share a qualifier:
+
+      fn sum3(stack i32 x, y, z): i32
+
 - Multiple return values:
 
-    fn foo(): [i32, i32]
+      fn min_max(stack i32 a, stack i32 b): [i32, i32]
 
 - Multiple assignment:
 
-    stack i32 [x, y] = foo();
-    [x, y] = 10, 20;
+      stack i32 [lo, hi] = min_max(3, 7);
+      [lo, hi] = 0, 100;
 
 - Explicit no-parameter functions:
 
-    fn foo(void): void
+      fn foo(void): void
 
-- Return statements:
-  - `ret xyz;`
+- Return statements: `ret xyz;`
 
 ---
 
@@ -131,66 +168,88 @@ Example:
 
 ### Declaration
 
-type MyType: struct {
-...
-};
+    type MyType: struct {
+        ...
+    };
 
-### Features (Planned)
+### Features
 
 - Exported structs:
 
-    ext type MyType: struct { ... };
+      ext type MyType: struct { ... };
 
 - Memory partitioning inside structs:
 
-struct {
-stack:
-...
-heap:
-...
-}
+      struct {
+      stack:
+          ...
+      heap:
+          ...
+      }
 
-- Member functions (defined inside struct)
+- Member functions (defined inside struct body)
 - Static functions:
 
-fn MyType.method(...)
+      fn MyType.method(stack i32 x): void
 
 - Self-reference syntax:
 
-MyType.(field)
+      MyType.(field)
 
 - Constructors:
 
-fn MyType.new(...): MyType {}
+      fn MyType.new(stack i32 x): MyType {}
 
-- Destructors:
+- Destructors (auto-called on scope exit):
 
-fn MyType.rem(void): void
+      fn MyType.rem(void): void
 
-- Automatic destructor invocation on scope exit
+- Field visibility: `int` = private, `ext` = public
 
-- Parameter grouping:
+---
 
-fn foo(i32 x, y, z)
+## Enums
 
-- Field hiding
-`int` internal fields are basically just private
-`ext` external fields are basically just public
+### Basic Enums
+
+    type Direction: enum { North, South, East, West };
+
+    stack Direction d = Direction.North;
+
+### Tagged Enums
+
+Variants may carry a payload; the payload's storage domain must be explicit:
+
+    type Shape: enum {
+        Circle(stack f64),
+        Rect(stack f64, stack f64),
+        Blob(heap u8 *rw),
+    };
+
+    stack Shape s = Shape.Circle(3.14);
+
+    match s {
+        Shape.Circle(r) => { debug r; }
+        Shape.Rect(w, h) => { debug w; }
+        _ => {}
+    }
 
 ---
 
 ## Memory Management
 
-### Allocation
-
-new.(sizeof.(type) * count)
-
 ### Built-ins
 
-- `new.(byte_count)`
-- `sizeof.(type)`
-- `rem.(ptr)` — deallocation
-- `mov.(ptr, new_byte_count)` — reallocation (resize a heap allocation in place)
+- `new.(byte_count)` — allocate heap memory
+- `sizeof.(type)` — size of a type in bytes
+- `rem.(ptr)` — free heap memory
+- `mov.(ptr, new_byte_count)` — resize a heap allocation (realloc)
+
+### Allocation
+
+    stack u8 *rw buf = new.(sizeof.(u8) * 64);
+    buf = mov.(buf, 128);   // grow to 128 bytes
+    rem.(buf);
 
 ---
 
@@ -198,20 +257,25 @@ new.(sizeof.(type) * count)
 
 ### Supported Constructs
 
-- `for`
-- `while`
-- `do-while`
-- Infinite loop:
-  - `inf {...}`
+- `for`, `while`, `do`-`while`
+- Infinite loop: `inf {...}`
+- `if` / `else` / else-if chaining
+- `break`, `continue`
+- Ternary: `cond ? then : else`
+- `defer` — run a statement or block at scope exit (LIFO order):
 
+      stack u8 *rw buf = new.(256);
+      defer rem.(buf);   // freed on any exit path
 
 ### Operators
 
-- Arithmetic: `+`, `*`, etc.
-- Assignment: `+=`, etc.
-- Increment: `++i`
-- Comparison: `<`, `>`, etc.
-- Full C-style operator support (arithmetic, logical, bitwise)
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+- Increment/decrement: `++x`, `x++`, `--x`, `x--`
+- Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
+- Logical: `&&`, `||`, `!`
+- Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>`
+- Address-of: `&x`
 
 ---
 
@@ -219,13 +283,8 @@ new.(sizeof.(type) * count)
 
 ### Execution Model
 
-- GPU dispatch:
-
-gpu.(fn_name)()
-
-- CPU parallel dispatch:
-
-cpu.(fn_name)()
+- GPU dispatch: `gpu.(fn_name)()`
+- CPU parallel dispatch: `cpu.(fn_name)()`
 
 Parallelism is explicit and controlled by the programmer.
 
@@ -248,12 +307,12 @@ Parallelism is explicit and controlled by the programmer.
 
 ### Module Declaration
 (At the top of every file)
-> mod name;
+
+    mod name;
 
 ### Imports
 
-imp other_module;
-
+    imp other_module;
 
 ### Goals
 
@@ -267,7 +326,7 @@ imp other_module;
 
     debug expr;
 
-Prints the value of any expression with type-aware formatting (supports i32, i64, f32/f64, char, pointers).
+Prints the value of any expression with type-aware formatting (supports i32, i64, f32/f64, char, bool, pointers).
 
 ---
 
@@ -311,7 +370,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Internal vs external functions (`int fn`, `ext fn`)
 - [x] Multiple return values (`fn foo(): [i32, i32]`)
 - [x] Multiple assignment (`stack i32 [x, y] = foo();`)
-- [x] Parameter grouping (`fn bar(i32 x, y, z)`)
+- [x] Parameter grouping (`fn bar(stack i32 x, y, z)`)
 
 ### Structs
 - [x] Full struct system (`type Name: struct { ... }`)
@@ -322,7 +381,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 
 ### Enums
 - [x] Basic enums (`type Name: enum { A, B, C }`)
-- [x] Tagged payloads (`Variant(type)`)
+- [x] Tagged payloads (`Variant(stack type)` or `Variant(heap type)`)
 
 ### Type Aliases
 - [x] `type Name: existing_type;`
@@ -361,55 +420,10 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] Self-member access (`Type.(field)`)
 - [x] Method calls (`obj.method()`, `Type.static()`)
 - [x] Increment/decrement (`++x`, `x++`, `--x`, `x--`)
-  
+
 ### Enums
 - [x] Basic C style enums
-- [x] Rust style tagged enums (`Variant(type)` payloads, `match` statement)
-
----
-
-## Design Notes & Planned Changes
-
-### Storage Qualifiers — Wider Coverage
-
-Storage qualifiers (`stack`/`heap`) need to be required everywhere data is created, not just in local variable declarations. Currently underspecified contexts include:
-
-- **Function parameters:** `fn foo(i32 x)` should become `fn foo(stack i32 x)` — the caller must declare where the argument lives.
-- **Tagged enum payloads:** `Circle(f64)` should become `Circle(stack f64)` or `Circle(heap f64)` — the payload's memory domain must be explicit.
-
-Goal: no implicit allocation anywhere. Every piece of data has a declared home.
-
----
-
-### Pointer Domain Safety — Cross-Region Conversion Must Be Forbidden
-
-Stack pointers and heap pointers must never be interchangeable. The compiler should reject any assignment or cast that moves a pointer across memory domains:
-
-```
-stack i32 x = 5;
-heap  i32 *p = &x;   // ERROR: stack address assigned to heap pointer
-```
-
-This must be enforced at the type-checker / codegen level. Currently the pointer permission system exists but cross-domain conversion is not validated.
-
----
-
-### Storage Group Blocks
-
-Repeating `stack` or `heap` on every line is verbose. A Go-style grouping syntax should be supported:
-
-```
-stack (
-    i32 v = 0;
-    i32 [x, y] = 10, 20;
-)
-
-heap (
-    MyStruct s = MyStruct.new();
-)
-```
-
-All declarations inside a block inherit the block's storage qualifier. This is purely syntactic sugar — semantics are identical to writing the qualifier on each line individually.
+- [x] Rust style tagged enums (`Variant(stack type)` payloads, `match` statement)
 
 ---
 

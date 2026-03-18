@@ -1,0 +1,37 @@
+mod ex_heap_auto;
+
+// heap primitives: automatically malloc'd on declaration,
+// automatically free'd when they leave scope.
+
+// Accumulate uses a heap i32 internally; caller sees only the result
+int fn sum_to(stack i32 n): i32 {
+    heap i32 acc = 0;          // malloc'd here
+    for (stack i32 i = 1; i <= n; ++i) {
+        acc = acc + i;         // transparent read/write through heap pointer
+    }
+    stack i32 result = acc;
+    ret result;
+    // acc is free'd here at function scope exit
+}
+
+fn main(void): i16 {
+    // Multiple heap vars in one scope — all free'd at scope exit
+    heap i32 a = 10;
+    heap i32 b = 20;
+    heap i32 c = a + b;   // reads a and b through their heap pointers, then malloc's c
+    debug c;              // 30
+
+    // Calling a function that uses heap primitives internally
+    stack i32 s = sum_to(10);
+    debug s;   // 55
+
+    // Early manual free with rem.() — scope exit won't double-free
+    heap i32 x = 99;
+    debug x;   // 99
+    rem.(x);   // freed now; x is null after this
+    // x is NOT freed again at scope exit (rem. sets the internal pointer to null;
+    // the auto-free at scope exit calls free(null) which is a safe no-op)
+
+    // a, b, c are freed here at main scope exit
+    ret 0;
+}

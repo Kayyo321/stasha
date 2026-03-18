@@ -1,0 +1,59 @@
+mod ex_defer;
+
+cinclude 'stdio' = io;
+
+// defer guarantees cleanup even when a function exits early
+int fn process(stack i32 *rw data, stack i32 n): i32 {
+    stack i32 *rw tmp = new.(sizeof.(i32) * n);
+    defer rem.(tmp);   // registered here; fires on any exit path
+
+    if data == nil {
+        ret -1;        // tmp freed here too
+    }
+
+    for (stack i32 i = 0; i < n; ++i) {
+        tmp[i] = data[i] * 2;
+    }
+
+    stack i32 sum = 0;
+    for (stack i32 i = 0; i < n; ++i) {
+        sum += tmp[i];
+    }
+
+    ret sum;   // tmp freed here on normal exit
+}
+
+fn main(void): i16 {
+    // Basic defer with early-exit guarantee
+    stack i32 nums[5];
+    nums[0] = 1; nums[1] = 2; nums[2] = 3; nums[3] = 4; nums[4] = 5;
+
+    stack i32 result = process(nums, 5);
+    debug result;   // 30  (1+2+3+4+5)*2
+
+    stack i32 bad = process(nil, 5);
+    debug bad;      // -1
+
+    // defer with a block
+    {
+        stack i32 *rw buf = new.(64);
+        defer {
+            io.printf('block defer: freeing buf\n');
+            rem.(buf);
+        }
+        buf[0] = 42;
+        debug buf[0];
+        // buf freed here when inner block exits
+    }
+
+    // LIFO ordering — defers run in reverse registration order
+    io.printf('--- LIFO demo ---\n');
+    defer io.printf('1st registered — runs last\n');
+    defer io.printf('2nd registered — runs second\n');
+    defer io.printf('3rd registered — runs first\n');
+
+    io.printf('main body\n');
+
+    ret 0;
+    // output order at exit: '3rd', '2nd', '1st'
+}

@@ -2,14 +2,14 @@ mod ex_tagged_enum;
 
 cinclude 'stdio' = io;
 
-/* Rust-style tagged enum: each variant may carry a payload */
+/* Rust-style tagged enum: each variant carries a storage-qualified payload */
 type Shape: enum {
-    Circle(f64),
-    Rectangle(f64),
+    Circle(stack f64),
+    Rectangle(stack f64),
     Point,
 }
 
-fn describe(Shape s): void {
+fn describe(stack Shape s): void {
     match s {
         Shape.Circle(r)    => { io.printf('Circle with radius %f\n', r); }
         Shape.Rectangle(w) => { io.printf('Rectangle with width %f\n', w); }

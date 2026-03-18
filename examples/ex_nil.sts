@@ -1,0 +1,44 @@
+mod ex_nil;
+
+cinclude 'stdio' = io;
+
+// Returns 1 if buf is non-nil and was filled, 0 otherwise
+int fn fill_if_valid(stack i32 *rw buf, stack i32 n): i32 {
+    if buf == nil {
+        ret 0;
+    }
+    for (stack i32 i = 0; i < n; ++i) {
+        buf[i] = i * i;   // 0 1 4 9 16 ...
+    }
+    ret 1;
+}
+
+fn main(void): i16 {
+    // nil is the null pointer literal
+    stack i32 *rw p = nil;
+    io.printf('p is nil: %d\n', p == nil);   // 1
+
+    // Passing nil to a function — safe to null-check inside
+    stack i32 skipped = fill_if_valid(nil, 5);
+    io.printf('fill(nil): %d\n', skipped);   // 0
+
+    // Allocate, fill, use
+    p = new.(sizeof.(i32) * 5);
+    stack i32 ok = fill_if_valid(p, 5);
+    io.printf('fill(buf): %d\n', ok);        // 1
+
+    for (stack i32 i = 0; i < 5; ++i) {
+        debug p[i];   // 0 1 4 9 16
+    }
+
+    rem.(p);
+    p = nil;   // clear after free; rem.(nil) is safe (free(NULL) is a no-op)
+
+    // Address-of (&) — take the address of a stack variable
+    stack i32 x = 42;
+    stack i32 *rw xp = &x;   // xp points at x; both are stack domain
+    xp[0] = 100;
+    debug x;   // 100 — modification through the pointer is reflected in x
+
+    ret 0;
+}
