@@ -1,7 +1,7 @@
 mod ex4_c;
 
-cinclude 'stdio' = io;
-cinclude 'assert';
+lib "stdio" = io;
+lib "assert";
 
 fn main(void): i16 {
     io.printf('Hello, %s!\n', 'Sully!');

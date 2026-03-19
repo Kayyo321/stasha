@@ -1427,32 +1427,59 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
     return n;
 }
 
-/* ── cinclude ── */
-
-static node_t *parse_cinclude(parser_t *p) {
+/* ── lib ── */
+/*
+ * Syntax forms:
+ *   lib "name";                    — C stdlib header, no alias
+ *   lib "name" = alias;            — C stdlib header with alias
+ *   lib "name" from "path";        — custom .a library; alias defaults to name
+ *   lib "name" from "path" = alias; — custom .a library with explicit alias
+ */
+static node_t *parse_lib(parser_t *p) {
     usize_t line = p->current.line;
-    advance_parser(p); /* consume 'cinclude' */
+    advance_parser(p); /* consume 'lib' */
 
-    /* header name — accept string literal */
+    /* library name — accept string literal */
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-        log_err("line %lu: expected header string after cinclude", p->current.line);
+        log_err("line %lu: expected library name string after lib", p->current.line);
         p->had_error = True;
-        return make_node(NodeCinclude, line);
+        return make_node(NodeLib, line);
     }
     advance_parser(p);
-    token_t htok = p->previous;
-    char *header = ast_strdup(htok.start + 1, htok.length - 2);
+    token_t ntok = p->previous;
+    char *name = ast_strdup(ntok.start + 1, ntok.length - 2);
 
+    /* optional 'from "path"' clause */
+    char *path = Null;
+    if (check(p, TokFrom)) {
+        advance_parser(p); /* consume 'from' */
+        if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+            log_err("line %lu: expected path string after 'from'", p->current.line);
+            p->had_error = True;
+            return make_node(NodeLib, line);
+        }
+        advance_parser(p);
+        token_t ptok = p->previous;
+        path = ast_strdup(ptok.start + 1, ptok.length - 2);
+    }
+
+    /* optional '= alias' clause */
     char *alias = Null;
     if (match_tok(p, TokEq)) {
         token_t atok = consume(p, TokIdent, "alias name");
         alias = copy_token_text(atok);
     }
+
+    /* when 'from' is used without an explicit alias, default alias is the lib name */
+    if (path && !alias)
+        alias = name;
+
     consume(p, TokSemicolon, "';'");
 
-    node_t *n = make_node(NodeCinclude, line);
-    n->as.cinclude.header = header;
-    n->as.cinclude.alias = alias;
+    node_t *n = make_node(NodeLib, line);
+    n->as.lib_decl.name  = name;
+    n->as.lib_decl.alias = alias;
+    n->as.lib_decl.path  = path;
     return n;
 }
 
@@ -1591,8 +1618,8 @@ static node_t *parse_test_block(parser_t *p) {
 }
 
 static node_t *parse_top_decl(parser_t *p) {
-    /* cinclude */
-    if (check(p, TokCinclude)) return parse_cinclude(p);
+    /* lib */
+    if (check(p, TokLib)) return parse_lib(p);
 
     /* imp */
     if (check(p, TokImp)) return parse_imp(p);

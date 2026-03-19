@@ -1,6 +1,6 @@
 mod ex_ptr_safety;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // ── Pointer safety rules ───────────────────────────────────────────────
 //

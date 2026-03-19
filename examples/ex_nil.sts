@@ -1,6 +1,6 @@
 mod ex_nil;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // Returns 1 if buf is non-nil and was filled, 0 otherwise
 int fn fill_if_valid(stack i32 *rw buf, stack i32 n): i32 {

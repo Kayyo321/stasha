@@ -99,7 +99,7 @@ typedef enum {
     NodeVarDecl,
     NodeTypeDecl,
     NodeEnumVariant,
-    NodeCinclude,
+    NodeLib,
     NodeImpDecl,
 
     /* statements */
@@ -213,7 +213,8 @@ struct node {
             storage_t payload_storage;
         } enum_variant;
 
-        struct { char *header; char *alias; } cinclude;
+        /* lib "name" [from "path"] [= alias] */
+        struct { char *name; char *alias; char *path; } lib_decl;
         struct { char *module_name; } imp_decl;
 
         /* ── statements ── */

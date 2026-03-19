@@ -7,7 +7,7 @@ mod ex_modules_main;
 
 imp mathlib;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 fn main(void): i16 {
     // ── abs ────────────────────────────────────────────────────────────────

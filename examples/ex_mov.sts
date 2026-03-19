@@ -1,6 +1,6 @@
 mod ex_mov;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // mov.(ptr, new_size) is realloc — resizes a heap allocation in place.
 // The original pointer must not be used after the call.

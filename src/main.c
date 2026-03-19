@@ -81,7 +81,7 @@ static void free_imp_sources(void) {
 /*
  * resolve_imports — walk every NodeImpDecl in `ast`, find the corresponding
  * "<dir>/<modname>.sts" file, parse it, and splice all of its declarations
- * (types, functions, variables, cincludes) into `ast->as.module.decls`.
+ * (types, functions, variables, lib declarations) into `ast->as.module.decls`.
  *
  * All declarations from the imported module are merged, including `int`
  * (private) helpers, because `ext` functions may call them internally.
@@ -189,8 +189,20 @@ int main(int argc, char **argv) {
         quit(Err);
     }
 
+    /* collect custom library paths from `lib "name" from "path"` declarations */
+    const char *extra_lib_buf[64];
+    usize_t extra_lib_count = 0;
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *d = ast->as.module.decls.items[i];
+        if (d->kind == NodeLib && d->as.lib_decl.path
+                && extra_lib_count < 63)
+            extra_lib_buf[extra_lib_count++] = d->as.lib_decl.path;
+    }
+    extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
+
     log_msg("linking");
-    if (link_object(obj_path, output_path) != Ok) {
+    if (link_object(obj_path, output_path,
+                    extra_lib_count > 0 ? extra_lib_buf : Null) != Ok) {
         remove(obj_path);
         log_err("linking failed");
         quit(Err);

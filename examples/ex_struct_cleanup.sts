@@ -15,7 +15,7 @@
 
 mod struct_cleanup_example;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 /* ── Inner struct with a heap buffer ───────────────────────────── */
 

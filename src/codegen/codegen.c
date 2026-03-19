@@ -75,12 +75,13 @@ typedef struct {
     heap_t variants_heap;
 } enum_reg_t;
 
-/* ── cinclude registry ── */
+/* ── lib registry ── */
 
 typedef struct {
-    char *header;
-    char *alias;
-} cinclude_entry_t;
+    char *name;     /* library name, e.g. "stdio" or "raylib" */
+    char *alias;    /* namespace alias used in source, e.g. "io" */
+    char *path;     /* path to .a file for custom libs; null for C stdlib headers */
+} lib_entry_t;
 
 /* ── destructor scope tracking ── */
 
@@ -138,10 +139,10 @@ typedef struct {
     usize_t enum_cap;
     heap_t enums_heap;
 
-    cinclude_entry_t *cincludes;
-    usize_t cinclude_count;
-    usize_t cinclude_cap;
-    heap_t cincludes_heap;
+    lib_entry_t *libs;
+    usize_t lib_count;
+    usize_t lib_cap;
+    heap_t libs_heap;
 
     type_alias_t *aliases;
     usize_t alias_count;
@@ -367,10 +368,10 @@ static type_info_t resolve_alias(cg_t *cg, type_info_t ti) {
     return ti;
 }
 
-static const char *find_cinclude_alias(cg_t *cg, const char *alias) {
-    for (usize_t i = 0; i < cg->cinclude_count; i++)
-        if (cg->cincludes[i].alias && strcmp(cg->cincludes[i].alias, alias) == 0)
-            return cg->cincludes[i].header;
+static const char *find_lib_alias(cg_t *cg, const char *alias) {
+    for (usize_t i = 0; i < cg->lib_count; i++)
+        if (cg->libs[i].alias && strcmp(cg->libs[i].alias, alias) == 0)
+            return cg->libs[i].name;
     return Null;
 }
 
@@ -1086,9 +1087,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         }
     }
 
-    /* check if object is a cinclude alias: alias.func(args) */
+    /* check if object is a lib alias: alias.func(args) */
     if (obj->kind == NodeIdentExpr) {
-        const char *header = find_cinclude_alias(cg, obj->as.ident.name);
+        const char *header = find_lib_alias(cg, obj->as.ident.name);
         if (header) {
             /* generate args first so we can inspect their types */
             usize_t argc = node->as.method_call.args.count;
@@ -2727,19 +2728,21 @@ static void register_alias(cg_t *cg, const char *name, type_info_t actual) {
     cg->alias_count++;
 }
 
-static void register_cinclude(cg_t *cg, const char *header, const char *alias) {
-    if (cg->cinclude_count >= cg->cinclude_cap) {
-        usize_t new_cap = cg->cinclude_cap < 8 ? 8 : cg->cinclude_cap * 2;
-        if (cg->cincludes_heap.pointer == Null)
-            cg->cincludes_heap = allocate(new_cap, sizeof(cinclude_entry_t));
+static void register_lib(cg_t *cg, const char *name, const char *alias,
+                          const char *path) {
+    if (cg->lib_count >= cg->lib_cap) {
+        usize_t new_cap = cg->lib_cap < 8 ? 8 : cg->lib_cap * 2;
+        if (cg->libs_heap.pointer == Null)
+            cg->libs_heap = allocate(new_cap, sizeof(lib_entry_t));
         else
-            cg->cincludes_heap = reallocate(cg->cincludes_heap, new_cap * sizeof(cinclude_entry_t));
-        cg->cincludes = cg->cincludes_heap.pointer;
-        cg->cinclude_cap = new_cap;
+            cg->libs_heap = reallocate(cg->libs_heap, new_cap * sizeof(lib_entry_t));
+        cg->libs = cg->libs_heap.pointer;
+        cg->lib_cap = new_cap;
     }
-    cg->cincludes[cg->cinclude_count].header = (char *)header;
-    cg->cincludes[cg->cinclude_count].alias = (char *)alias;
-    cg->cinclude_count++;
+    cg->libs[cg->lib_count].name  = (char *)name;
+    cg->libs[cg->lib_count].alias = (char *)alias;
+    cg->libs[cg->lib_count].path  = (char *)path;
+    cg->lib_count++;
 }
 
 /* ── top-level codegen ── */
@@ -2797,12 +2800,13 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
         LLVMSetInitializer(cg.test_fail_count, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
     }
 
-    /* pass 0: register type declarations, cincludes */
+    /* pass 0: register type declarations, lib declarations */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
 
-        if (decl->kind == NodeCinclude) {
-            register_cinclude(&cg, decl->as.cinclude.header, decl->as.cinclude.alias);
+        if (decl->kind == NodeLib) {
+            register_lib(&cg, decl->as.lib_decl.name,
+                         decl->as.lib_decl.alias, decl->as.lib_decl.path);
             continue;
         }
 
@@ -3318,7 +3322,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
     for (usize_t i = 0; i < cg.enum_count; i++)
         if (cg.enums[i].variants_heap.pointer) deallocate(cg.enums[i].variants_heap);
     if (cg.enums_heap.pointer) deallocate(cg.enums_heap);
-    if (cg.cincludes_heap.pointer) deallocate(cg.cincludes_heap);
+    if (cg.libs_heap.pointer) deallocate(cg.libs_heap);
     if (cg.aliases_heap.pointer) deallocate(cg.aliases_heap);
     if (cg.dtor_stack_heap.pointer) deallocate(cg.dtor_stack_heap);
 

@@ -12,7 +12,7 @@
 
 mod fn_ptr_example;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 /* A simple function that adds two stack integers. */
 ext fn add(stack i32 a, stack i32 b): i32 {

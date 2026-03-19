@@ -1,9 +1,9 @@
 mod ex;
 
-cinclude 'stdio' = cio;
-cinclude 'math' = cmath;
-cinclude 'string' = cstring;
-cinclude 'unistd' = custd;
+lib "stdio"  = cio;
+lib "math"   = cmath;
+lib "string" = cstring;
+lib "unistd" = custd;
 
 fn main(void): i16 {
     stack f64 [A, B] = 0, 0;

@@ -1,6 +1,6 @@
 mod ex_error;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // ── Built-in error type ────────────────────────────────────────────────
 //

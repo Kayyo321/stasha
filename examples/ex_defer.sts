@@ -1,6 +1,6 @@
 mod ex_defer;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // defer guarantees cleanup even when a function exits early
 int fn process(stack i32 *rw data, stack i32 n): i32 {

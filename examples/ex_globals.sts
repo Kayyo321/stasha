@@ -1,6 +1,6 @@
 mod ex_globals;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // ── Global variables ───────────────────────────────────────────────────
 //

@@ -1,6 +1,6 @@
 mod ex_const_final;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 // Module-level const — compile-time constant; visible within this module
 int const i32 BUF_SIZE  = 128;

@@ -37,7 +37,8 @@ static const char *get_sdk_path(void) {
 }
 #endif
 
-extern "C" result_t link_object(const char *obj_path, const char *output_path) {
+extern "C" result_t link_object(const char *obj_path, const char *output_path,
+                                 const char **extra_libs) {
     std::vector<const char *> args;
 
 #ifdef __APPLE__
@@ -56,11 +57,21 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path) {
     args.push_back(get_sdk_path());
     args.push_back("-lSystem");
     args.push_back(obj_path);
+    /* custom .a libraries from `lib "name" from "path"` declarations */
+    if (extra_libs) {
+        for (const char **p = extra_libs; *p; p++)
+            args.push_back(*p);
+    }
     args.push_back("-o");
     args.push_back(output_path);
 #else
     args.push_back("ld.lld");
     args.push_back(obj_path);
+    /* custom .a libraries from `lib "name" from "path"` declarations */
+    if (extra_libs) {
+        for (const char **p = extra_libs; *p; p++)
+            args.push_back(*p);
+    }
     args.push_back("-o");
     args.push_back(output_path);
     args.push_back("-lc");

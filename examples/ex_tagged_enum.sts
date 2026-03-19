@@ -1,6 +1,6 @@
 mod ex_tagged_enum;
 
-cinclude 'stdio' = io;
+lib "stdio" = io;
 
 /* Rust-style tagged enum: each variant carries a storage-qualified payload */
 type Shape: enum {

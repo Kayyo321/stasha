@@ -135,7 +135,8 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("type", TokType);
     KW("struct", TokStruct);
     KW("enum", TokEnum);
-    KW("cinclude", TokCinclude);
+    KW("lib", TokLib);
+    KW("from", TokFrom);
     KW("new", TokNew);
     KW("sizeof", TokSizeof);
     KW("rem", TokRem);

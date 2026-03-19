@@ -292,14 +292,39 @@ Parallelism is explicit and controlled by the programmer.
 
 ## C Interoperability
 
-### Importing Headers
+The `lib` keyword is the single entry point for all external library access —
+C standard library headers, custom C static archives, and pre-compiled Stasha
+static archives are all declared the same way.
 
-    cinclude 'stdio' = io;
-    cinclude 'assert';
+### Syntax
 
-### Calling C Functions
+```
+lib "name";                        // C stdlib header, no alias
+lib "name" = alias;                // C stdlib header with namespace alias
+lib "name" from "path/to/lib.a";   // custom .a library; alias = lib name
+lib "name" from "path/to/lib.a" = alias;  // custom .a library, explicit alias
+```
 
-    io.printf('Hello, %s!\n', 'world');
+### Examples
+
+```
+// C standard library headers
+lib "stdio"  = io;       // maps the name 'io' → stdio functions
+lib "math"   = cmath;    // maps 'cmath' → math.h functions
+lib "assert";            // included but not aliased
+
+// Custom C static library
+lib "raylib" from "/usr/local/lib/libraylib.a" = rl;
+
+// Custom Stasha-compiled static library (same syntax)
+lib "mymath" from "./libs/libmymath.a";
+```
+
+### Calling Functions
+
+    io.printf("Hello, %s!\n", "world");
+    stack f64 c = cmath.sin(3.14);
+    rl.InitWindow(800, 600, "demo");
 
 ---
 
@@ -419,7 +444,7 @@ Prints the value of any expression with type-aware formatting (supports i32, i64
 - [x] GPU dispatch (`gpu.(fn)()`)
 
 ### Interop
-- [x] C header inclusion (`cinclude 'header' = alias;`)
+- [x] Library declarations (`lib "name" [from "path"] [= alias]`) — replaces `cinclude`; supports C stdlib headers and custom `.a` libraries; path is passed to LLD at link time
 - [x] Function binding (auto-declared varargs externs)
 
 ### Toolchain
@@ -641,10 +666,13 @@ Stasha is intended to be:
 
 ### C Interop Rework
 
-- [ ] Consider replacing `cinclude` with a `lib` keyword for cleaner syntax:
+- [x] Replaced `cinclude` with the `lib` keyword — unified syntax for all external libraries:
   - C stdlib: `lib "stdio" = io;`
-  - Custom C libraries: `lib "raylib" from "/path/to/lib.a";`
-  - Custom Stasha libraries should act the same: `lib "exlib" from "./stasha_exlib.a";
+  - Custom C libraries: `lib "raylib" from "/path/to/libraylib.a" = rl;`
+  - Custom Stasha static libraries: `lib "exlib" from "./stasha_exlib.a";`
+  - Alias defaults to the lib name when `from` is used without `= alias`
+  - Custom library `.a` paths are collected after codegen and passed to LLD as extra inputs
+  - All existing examples updated; `examples/ex_lib_custom.sts` added to demonstrate all four syntax forms
 
 ### Module System
 
