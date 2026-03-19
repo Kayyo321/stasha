@@ -7,7 +7,7 @@ LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config
 LLVM_CFLAGS  = $(shell $(LLVM_CFG) --cflags  2>/dev/null)
 LLVM_LDFLAGS = $(shell $(LLVM_CFG) --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
-               objcarcopts textapi --system-libs 2>/dev/null) \
+               objcarcopts textapi object --system-libs 2>/dev/null) \
                -lLLVMDTLTO
 
 # If LLD libraries are available, enable embedded LLD support

@@ -11,4 +11,10 @@
 result_t link_object(const char *obj_path, const char *output_path,
                      const char **extra_libs);
 
+/*
+ * Bundle a single object file into a static archive (.a).
+ * Uses the bundled LLVM archive writer — no external 'ar' required.
+ */
+result_t archive_object(const char *obj_path, const char *output_path);
+
 #endif

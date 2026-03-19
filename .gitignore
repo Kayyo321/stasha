@@ -4,4 +4,4 @@
 *.out
 
 /bin/
-/logs/
+**/logs/

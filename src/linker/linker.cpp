@@ -10,6 +10,8 @@
 #include <vector>
 #include <lld/Common/Driver.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Object/ArchiveWriter.h>
+#include <llvm/Support/Error.h>
 LLD_HAS_DRIVER(macho)
 LLD_HAS_DRIVER(elf)
 
@@ -86,6 +88,31 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
                                      {lld::Darwin, &lld::macho::link}});
     if (res.retCode != 0) {
         log_err("linker: LLD failed with code %d", res.retCode);
+        return Err;
+    }
+    return Ok;
+}
+
+extern "C" result_t archive_object(const char *obj_path, const char *output_path) {
+    using namespace llvm;
+    using namespace llvm::object;
+
+    auto member_or_err = NewArchiveMember::getFile(obj_path, /*Deterministic=*/true);
+    if (!member_or_err) {
+        llvm::errs() << "archiver: " << toString(member_or_err.takeError()) << "\n";
+        return Err;
+    }
+
+    std::vector<NewArchiveMember> members;
+    members.push_back(std::move(*member_or_err));
+
+    llvm::Error err = writeArchive(output_path, members,
+                                   SymtabWritingMode::NormalSymtab,
+                                   Archive::K_GNU,
+                                   /*Deterministic=*/true,
+                                   /*Thin=*/false);
+    if (err) {
+        llvm::errs() << "archiver: " << toString(std::move(err)) << "\n";
         return Err;
     }
     return Ok;

@@ -7,6 +7,8 @@
 #include "codegen/codegen.h"
 #include "linker/linker.h"
 
+#define STASHA_VERSION "0.1.0"
+
 static heap_t source_heap = {0};
 
 static char *read_file(const char *path) {
@@ -138,35 +140,129 @@ static void resolve_imports(node_t *ast, const char *input_path) {
     }
 }
 
+/* ── CLI helpers ── */
+
+typedef enum {
+    EmitExe,   /* stasha build  — link into executable  */
+    EmitLib,   /* stasha lib    — archive into .a        */
+    EmitTest,  /* stasha test   — executable in test mode */
+} emit_mode_t;
+
+static void print_version(void) {
+    printf("stasha %s\n", STASHA_VERSION);
+}
+
+static void print_help(void) {
+    printf(
+        "stasha %s\n"
+        "\n"
+        "Usage:\n"
+        "  stasha [build] <file.sts> [-o <output>]   Compile to executable\n"
+        "  stasha lib     <file.sts> [-o <output>]   Compile to static library\n"
+        "  stasha test    <file.sts> [-o <output>]   Compile and run tests\n"
+        "\n"
+        "Options:\n"
+        "  -o <output>    Set output path\n"
+        "                   build default: a.out\n"
+        "                   lib   default: lib<name>.a  (derived from filename)\n"
+        "                   test  default: a.test\n"
+        "  --version      Print version and exit\n"
+        "  -h, --help     Print this help and exit\n"
+        "\n"
+        "Examples:\n"
+        "  stasha main.sts                    # -> a.out\n"
+        "  stasha build main.sts -o myapp     # -> myapp\n"
+        "  stasha lib   mathlib.sts           # -> libmathlib.a\n"
+        "  stasha lib   mathlib.sts -o out.a  # -> out.a\n"
+        "  stasha test  main.sts              # run tests\n",
+        STASHA_VERSION
+    );
+}
+
+/*
+ * Derive a default library output name from the input filename.
+ * "path/to/mathlib.sts" -> "libmathlib.a"
+ */
+static void derive_lib_name(const char *input_path, char *out, usize_t out_size) {
+    const char *base = strrchr(input_path, '/');
+    if (!base) base = strrchr(input_path, '\\');
+    base = base ? base + 1 : input_path;
+
+    char stem[256];
+    strncpy(stem, base, sizeof(stem) - 1);
+    stem[sizeof(stem) - 1] = '\0';
+    char *dot = strrchr(stem, '.');
+    if (dot) *dot = '\0';
+
+    snprintf(out, out_size, "lib%s.a", stem);
+}
+
 int main(int argc, char **argv) {
     if (open_logger() != Ok) return 1;
 
-    if (argc < 2) {
-        log_err("usage: stasha <input.sts> [-o <output>]");
-        log_err("       stasha test <input.sts> [-o <output>]");
-        quit(Err);
-    }
-
-    /* check for 'test' subcommand */
-    boolean_t test_mode = False;
-    int file_arg = 1;
-    if (strcmp(argv[1], "test") == 0) {
-        test_mode = True;
-        file_arg = 2;
-        if (argc < 3) {
-            log_err("usage: stasha test <input.sts> [-o <output>]");
-            quit(Err);
+    /* ── early flags that don't need a file ── */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--version") == 0) {
+            print_version();
+            return 0;
+        }
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_help();
+            return 0;
         }
     }
 
-    const char *input_path = argv[file_arg];
-    const char *output_path = test_mode ? "a.test" : "a.out";
+    if (argc < 2) {
+        print_help();
+        quit(Err);
+    }
 
+    /* ── subcommand detection ── */
+    emit_mode_t mode = EmitExe;
+    int file_arg = 1;
+
+    if (strcmp(argv[1], "build") == 0) {
+        mode = EmitExe;
+        file_arg = 2;
+    } else if (strcmp(argv[1], "lib") == 0) {
+        mode = EmitLib;
+        file_arg = 2;
+    } else if (strcmp(argv[1], "test") == 0) {
+        mode = EmitTest;
+        file_arg = 2;
+    }
+    /* else: argv[1] is the file — default to EmitExe */
+
+    if (file_arg >= argc) {
+        log_err("expected <file.sts> after '%s'", argv[file_arg - 1]);
+        quit(Err);
+    }
+
+    const char *input_path = argv[file_arg];
+
+    /* ── default output path ── */
+    char lib_name_buf[300];
+    const char *output_path;
+    switch (mode) {
+        case EmitLib:
+            derive_lib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
+            output_path = lib_name_buf;
+            break;
+        case EmitTest:
+            output_path = "a.test";
+            break;
+        default:
+            output_path = "a.out";
+            break;
+    }
+
+    /* ── parse remaining options ── */
     for (int i = file_arg + 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
             output_path = argv[++i];
     }
 
+    /* ── compile ── */
     char *source = read_file(input_path);
     if (!source) quit(Err);
 
@@ -183,31 +279,42 @@ int main(int argc, char **argv) {
     char obj_path[512];
     snprintf(obj_path, sizeof(obj_path), "%s.o", output_path);
 
+    boolean_t test_mode = (mode == EmitTest) ? True : False;
     log_msg("generating code%s", test_mode ? " (test mode)" : "");
     if (codegen(ast, obj_path, test_mode) != Ok) {
         log_err("code generation failed");
         quit(Err);
     }
 
-    /* collect custom library paths from `lib "name" from "path"` declarations */
-    const char *extra_lib_buf[64];
-    usize_t extra_lib_count = 0;
-    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
-        node_t *d = ast->as.module.decls.items[i];
-        if (d->kind == NodeLib && d->as.lib_decl.path
-                && extra_lib_count < 63)
-            extra_lib_buf[extra_lib_count++] = d->as.lib_decl.path;
-    }
-    extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
-
-    log_msg("linking");
-    if (link_object(obj_path, output_path,
-                    extra_lib_count > 0 ? extra_lib_buf : Null) != Ok) {
+    if (mode == EmitLib) {
+        log_msg("archiving");
+        if (archive_object(obj_path, output_path) != Ok) {
+            remove(obj_path);
+            log_err("archiving failed");
+            quit(Err);
+        }
         remove(obj_path);
-        log_err("linking failed");
-        quit(Err);
+    } else {
+        /* collect custom library paths from `lib "name" from "path"` declarations */
+        const char *extra_lib_buf[64];
+        usize_t extra_lib_count = 0;
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *d = ast->as.module.decls.items[i];
+            if (d->kind == NodeLib && d->as.lib_decl.path
+                    && extra_lib_count < 63)
+                extra_lib_buf[extra_lib_count++] = d->as.lib_decl.path;
+        }
+        extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
+
+        log_msg("linking");
+        if (link_object(obj_path, output_path,
+                        extra_lib_count > 0 ? extra_lib_buf : Null) != Ok) {
+            remove(obj_path);
+            log_err("linking failed");
+            quit(Err);
+        }
+        remove(obj_path);
     }
-    remove(obj_path);
 
     log_msg("compiled '%s' -> '%s'", input_path, output_path);
 

@@ -1,0 +1,18 @@
+mod ex_mathlib_consumer;
+
+// Uses the pre-compiled Stasha static library libmathlib.a
+lib "stdio"   = io;
+lib "mathlib" from "libmathlib.a" = ml;
+
+fn main(void): i16 {
+    stack i32 a = ml.abs(-42);
+    io.printf("abs(-42)         = %d\n", a);        // 42
+
+    stack i32 p = ml.pow(2, 10);
+    io.printf("pow(2,10)        = %d\n", p);        // 1024
+
+    stack i32 c = ml.clamp_i32(150, 0, 100);
+    io.printf("clamp(150,0,100) = %d\n", c);        // 100
+
+    ret 0;
+}
