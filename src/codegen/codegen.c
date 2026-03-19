@@ -3789,6 +3789,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
 
         if (decl->kind == NodeVarDecl) {
+            /* library-backed internal globals live in the .a — skip */
+            if (decl->from_lib && decl->as.var_decl.linkage == LinkageInternal)
+                continue;
+
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
             LLVMTypeRef type = get_llvm_type(&cg, ti);
             LLVMValueRef global = LLVMAddGlobal(cg.module, type, decl->as.var_decl.name);
@@ -3812,25 +3816,30 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->as.var_decl.flags & VdeclTls)
                 LLVMSetThreadLocal(global, 1);
 
-            /* initializer — must be a constant expression */
-            LLVMValueRef init_val = LLVMConstNull(type);
-            if (decl->as.var_decl.init) {
-                node_t *iv = decl->as.var_decl.init;
-                if (iv->kind == NodeIntLitExpr)
-                    init_val = LLVMConstInt(type,
-                        (unsigned long long)iv->as.int_lit.value, 1);
-                else if (iv->kind == NodeFloatLitExpr)
-                    init_val = LLVMConstReal(type, iv->as.float_lit.value);
-                else if (iv->kind == NodeBoolLitExpr)
-                    init_val = LLVMConstInt(type, iv->as.bool_lit.value, 0);
-                else if (iv->kind == NodeCharLitExpr)
-                    init_val = LLVMConstInt(type, (unsigned char)iv->as.char_lit.value, 0);
-                else if (iv->kind == NodeNilExpr)
-                    init_val = LLVMConstNull(type);
-                else if (iv->kind == NodeStrLitExpr)
-                    init_val = LLVMConstNull(type); /* string globals handled below */
+            /* library-backed ext globals: no initializer — linker resolves from .a */
+            if (decl->from_lib) {
+                LLVMSetExternallyInitialized(global, 1);
+            } else {
+                /* initializer — must be a constant expression */
+                LLVMValueRef init_val = LLVMConstNull(type);
+                if (decl->as.var_decl.init) {
+                    node_t *iv = decl->as.var_decl.init;
+                    if (iv->kind == NodeIntLitExpr)
+                        init_val = LLVMConstInt(type,
+                            (unsigned long long)iv->as.int_lit.value, 1);
+                    else if (iv->kind == NodeFloatLitExpr)
+                        init_val = LLVMConstReal(type, iv->as.float_lit.value);
+                    else if (iv->kind == NodeBoolLitExpr)
+                        init_val = LLVMConstInt(type, iv->as.bool_lit.value, 0);
+                    else if (iv->kind == NodeCharLitExpr)
+                        init_val = LLVMConstInt(type, (unsigned char)iv->as.char_lit.value, 0);
+                    else if (iv->kind == NodeNilExpr)
+                        init_val = LLVMConstNull(type);
+                    else if (iv->kind == NodeStrLitExpr)
+                        init_val = LLVMConstNull(type); /* string globals handled below */
+                }
+                LLVMSetInitializer(global, init_val);
             }
-            LLVMSetInitializer(global, init_val);
 
             int sym_flags = 0;
             if (decl->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
@@ -3869,6 +3878,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
 
         if (decl->kind == NodeFnDecl) {
+            /* library-backed internal functions live in the .a — skip */
+            if (decl->from_lib && decl->as.fn_decl.linkage == LinkageInternal)
+                continue;
+
             char fn_name[256];
             if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name) {
                 snprintf(fn_name, sizeof(fn_name), "%s.%s",
@@ -3973,6 +3986,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
+
+            /* library-backed internal inline methods live in the .a — skip */
+            if (decl->from_lib && method->as.fn_decl.linkage == LinkageInternal)
+                continue;
             char fn_name[256];
             snprintf(fn_name, sizeof(fn_name), "%s.%s",
                      decl->as.type_decl.name, method->as.fn_decl.name);
@@ -4026,6 +4043,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
         if (decl->kind != NodeFnDecl) continue;
+
+        /* library-backed functions: body lives in the .a — skip codegen */
+        if (decl->from_lib) continue;
 
         char fn_name[256];
         if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name)
@@ -4180,6 +4200,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->as.type_decl.decl_kind != TypeDeclStruct
             && decl->as.type_decl.decl_kind != TypeDeclUnion)
             continue;
+
+        /* library-backed: all method bodies live in the .a — skip */
+        if (decl->from_lib) continue;
+
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
             char fn_name[256];

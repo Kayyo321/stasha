@@ -85,14 +85,31 @@ static void free_imp_sources(void) {
 }
 
 /*
+ * is_lib_backed — check whether `mod_name` matches any `lib "name" from "path"`
+ * declaration in the primary AST.  If so, the module's compiled code already
+ * lives in the .a and we should only import type/signature information.
+ */
+static boolean_t is_lib_backed(node_t *ast, const char *mod_name) {
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *d = ast->as.module.decls.items[i];
+        if (d->kind == NodeLib && d->as.lib_decl.path != Null
+            && strcmp(d->as.lib_decl.name, mod_name) == 0)
+            return True;
+    }
+    return False;
+}
+
+/*
  * resolve_imports — walk every NodeImpDecl in `ast`, find the corresponding
  * "<dir>/<modname>.sts" file, parse it, and splice all of its declarations
  * (types, functions, variables, lib declarations) into `ast->as.module.decls`.
  *
- * All declarations from the imported module are merged, including `int`
- * (private) helpers, because `ext` functions may call them internally.
- * The module boundary is enforced by the fact that the importing source
- * never names those symbols — if it tries to, the programmer made an error.
+ * When a module is also declared via `lib "name" from "path.a"`, the module
+ * is "library-backed": its compiled code already exists in the .a archive.
+ * In that case we still splice type declarations (structs, enums, aliases)
+ * so the compiler knows about layouts and signatures, but we tag every
+ * spliced node with `from_lib = True` so that codegen skips body/initializer
+ * generation and lets the linker resolve symbols from the archive instead.
  */
 static void resolve_imports(node_t *ast, const char *input_path) {
     /* derive the directory of the primary file */
@@ -120,7 +137,10 @@ static void resolve_imports(node_t *ast, const char *input_path) {
         char mod_path[1024];
         snprintf(mod_path, sizeof(mod_path), "%s/%s.sts", dir, mod_name);
 
-        log_msg("importing '%s'", mod_path);
+        boolean_t lib_backed = is_lib_backed(ast, mod_name);
+
+        log_msg("importing '%s'%s", mod_path,
+                lib_backed ? " (library-backed)" : "");
 
         char *src = read_imp_source(mod_path);
         if (!src) {
@@ -135,10 +155,14 @@ static void resolve_imports(node_t *ast, const char *input_path) {
             continue;
         }
 
-        /* splice every declaration from the imported module */
+        /* splice declarations from the imported module */
         for (usize_t j = 0; j < mod_ast->as.module.decls.count; j++) {
             node_t *d = mod_ast->as.module.decls.items[j];
             if (d->kind == NodeImpDecl) continue;  /* handled by outer loop */
+
+            if (lib_backed)
+                d->from_lib = True;
+
             node_list_push(&ast->as.module.decls, d);
         }
     }

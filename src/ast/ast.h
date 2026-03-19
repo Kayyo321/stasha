@@ -190,6 +190,7 @@ typedef struct {
 struct node {
     node_kind_t kind;
     usize_t line;
+    boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
 
     union {
         /* ── top-level ── */
