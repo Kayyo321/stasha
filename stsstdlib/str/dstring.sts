@@ -1,0 +1,42 @@
+mod dstring;
+
+type dstring_t: struct {
+heap:
+    ext i8 *characters;
+
+stack:
+    int i32 len, cap;
+}
+
+ext fn dstring_t.new(void): dstring_t {
+    return dstring_t{.characters = nil, .len = 0, .cap = 0};
+}
+
+ext fn dstring_t.from(stack i8 *r txt): dstring_t {
+    stack let [hchars, len] = cpy_str(txt);
+
+    return dstring_t{.characters = hchars, .len = len, .cap = len};
+}
+
+ext fn dstring_t.rem(void): void {
+    rem.(dstring_t.(characters))
+
+    dstring_t.len = dstring_t.cap = 0;
+}
+
+int fn byte_cnt_till_term(stack i8 *r bs): i32 {
+    stack i32 i = 0;
+    for (; bs && *bs != 0; ++bs) {}
+
+    return i;
+}
+
+int fn cpy_str(stack i8 *r s): [heap i8*, i32] {
+    stack const i32 slen = byte_cnt_till_term(s);
+    heap i8 *bs = new.(sizeof(i8) * slen);
+    for (stack i32 i = 0; i < slen; ++i) {
+        bs[i] = s[i];
+    }
+
+    ret bs, len;
+}

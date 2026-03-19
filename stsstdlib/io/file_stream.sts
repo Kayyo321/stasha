@@ -2,7 +2,7 @@ mod file_stream;
 
 lib "stdio" = cio;
 
-ext type f_stream: struct {
+ext type file_stream_t: struct {
 stack:
     int i32 fd, err, eof;
 
