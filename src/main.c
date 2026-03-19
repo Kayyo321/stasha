@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__APPLE__)
+#  include <unistd.h>
+#  include <sys/wait.h>
+#endif
 
 #include "common/common.h"
 #include "parser/parser.h"
@@ -169,6 +173,7 @@ static void print_help(void) {
         "                       lib   default: lib<name>.a  (derived from filename)\n"
         "                       dylib default: lib<name>.dylib / .so\n"
         "                       test  default: a.test\n"
+        "  -g                 Emit DWARF debug info (enables source-level debugging)\n"
         "  --target <triple>  Cross-compile for the given target triple\n"
         "  --version          Print version and exit\n"
         "  -h, --help         Print this help and exit\n"
@@ -176,6 +181,7 @@ static void print_help(void) {
         "Examples:\n"
         "  stasha main.sts                            # -> a.out\n"
         "  stasha build main.sts -o myapp             # -> myapp\n"
+        "  stasha build main.sts -g -o myapp          # -> myapp (with debug info)\n"
         "  stasha lib   mathlib.sts                   # -> libmathlib.a\n"
         "  stasha lib   mathlib.sts -o out.a          # -> out.a\n"
         "  stasha dylib mathlib.sts                   # -> libmathlib.dylib\n"
@@ -295,11 +301,14 @@ int main(int argc, char **argv) {
 
     /* ── parse remaining options ── */
     const char *target_triple = Null;
+    boolean_t debug_mode = False;
     for (int i = file_arg + 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
             output_path = argv[++i];
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
             target_triple = argv[++i];
+        else if (strcmp(argv[i], "-g") == 0)
+            debug_mode = True;
     }
 
     /* ── compile ── */
@@ -320,8 +329,9 @@ int main(int argc, char **argv) {
     snprintf(obj_path, sizeof(obj_path), "%s.o", output_path);
 
     boolean_t test_mode = (mode == EmitTest) ? True : False;
-    log_msg("generating code%s", test_mode ? " (test mode)" : "");
-    if (codegen(ast, obj_path, test_mode, target_triple) != Ok) {
+    log_msg("generating code%s%s", test_mode ? " (test mode)" : "",
+            debug_mode ? " (debug)" : "");
+    if (codegen(ast, obj_path, test_mode, target_triple, input_path, debug_mode) != Ok) {
         log_err("code generation failed");
         quit(Err);
     }
@@ -353,6 +363,22 @@ int main(int argc, char **argv) {
             log_err("dynamic linking failed");
             quit(Err);
         }
+#if defined(__APPLE__)
+        if (debug_mode) {
+            char dsym_path[600];
+            snprintf(dsym_path, sizeof(dsym_path), "%s.dSYM", output_path);
+            log_msg("extracting debug info -> '%s'", dsym_path);
+            pid_t pid = fork();
+            if (pid == 0) {
+                execlp("dsymutil", "dsymutil", output_path,
+                       "-o", dsym_path, (char *)Null);
+                _exit(1);
+            } else if (pid > 0) {
+                int status;
+                waitpid(pid, &status, 0);
+            }
+        }
+#endif
         remove(obj_path);
     } else {
         /* collect custom library paths from `lib "name" from "path"` declarations */
@@ -373,6 +399,24 @@ int main(int argc, char **argv) {
             log_err("linking failed");
             quit(Err);
         }
+#if defined(__APPLE__)
+        if (debug_mode) {
+            /* On macOS, DWARF lives in the .o file. Run dsymutil to aggregate
+               debug info into a .dSYM bundle next to the executable. */
+            char dsym_path[600];
+            snprintf(dsym_path, sizeof(dsym_path), "%s.dSYM", output_path);
+            log_msg("extracting debug info -> '%s'", dsym_path);
+            pid_t pid = fork();
+            if (pid == 0) {
+                execlp("dsymutil", "dsymutil", output_path,
+                       "-o", dsym_path, (char *)Null);
+                _exit(1);
+            } else if (pid > 0) {
+                int status;
+                waitpid(pid, &status, 0);
+            }
+        }
+#endif
         remove(obj_path);
     }
 

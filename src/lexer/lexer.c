@@ -160,6 +160,8 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("restrict", TokRestrict);
     KW("comptime_assert", TokComptimeAssert);
     KW("comptime_if", TokComptimeIf);
+    KW("let", TokLet);
+    KW("return", TokRet);  /* alias for ret */
 
     KW("i8", TokI8);
     KW("i16", TokI16);

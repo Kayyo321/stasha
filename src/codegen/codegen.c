@@ -2,10 +2,25 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
+#include <llvm-c/DebugInfo.h>
 
 #include <string.h>
 #include <stdio.h>
 #include "codegen.h"
+
+/* ── DI type cache ── */
+
+typedef struct {
+    char *name;
+    LLVMMetadataRef di_type;
+} di_type_entry_t;
+
+/* Raw DWARF type-encoding constants (DW_ATE_* from the DWARF spec).
+   The LLVM C API uses a plain typedef unsigned for LLVMDWARFTypeEncoding. */
+#define STS_DW_ATE_boolean  0x02u
+#define STS_DW_ATE_float    0x04u
+#define STS_DW_ATE_signed   0x05u
+#define STS_DW_ATE_unsigned 0x07u
 
 /* ── symbol table ── */
 
@@ -59,6 +74,7 @@ typedef struct {
     usize_t field_capacity;
     heap_t fields_heap;
     LLVMValueRef destructor;
+    boolean_t is_union;     /* True if this is a union type */
 } struct_reg_t;
 
 /* ── enum registry ── */
@@ -117,6 +133,7 @@ typedef struct {
 /* ── code generator state ── */
 
 typedef struct {
+    node_t *ast;            /* module root — kept for type-inference lookups */
     LLVMContextRef ctx;
     LLVMModuleRef module;
     LLVMBuilderRef builder;
@@ -167,6 +184,19 @@ typedef struct {
     boolean_t test_mode;            /* True when compiling in test mode */
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
+
+    /* ── DWARF debug info (active only when debug_mode is True) ── */
+    boolean_t debug_mode;
+    const char *source_file;        /* absolute/relative path to the source file */
+    LLVMDIBuilderRef di_builder;
+    LLVMMetadataRef di_file;        /* DIFile for the source file */
+    LLVMMetadataRef di_compile_unit;
+    LLVMMetadataRef di_scope;       /* current scope: CU at top-level, SP inside functions */
+    LLVMTargetDataRef di_data_layout; /* target data layout for size/offset queries */
+    di_type_entry_t *di_types;
+    usize_t di_type_count;
+    usize_t di_type_cap;
+    heap_t di_types_heap;
 } cg_t;
 
 /* ── symtab ── */
@@ -376,6 +406,30 @@ static const char *find_lib_alias(cg_t *cg, const char *alias) {
     for (usize_t i = 0; i < cg->lib_count; i++)
         if (cg->libs[i].alias && strcmp(cg->libs[i].alias, alias) == 0)
             return cg->libs[i].name;
+    return Null;
+}
+
+/* Walk the module's flat declaration list and return the NodeFnDecl whose
+   bare name matches `name` (ignoring method qualifications).  Used by
+   let-binding type inference. */
+static node_t *find_fn_decl(cg_t *cg, const char *name) {
+    if (!cg->ast) return Null;
+    node_list_t *decls = &cg->ast->as.module.decls;
+    for (usize_t i = 0; i < decls->count; i++) {
+        node_t *d = decls->items[i];
+        if (d->kind == NodeFnDecl && d->as.fn_decl.name
+                && strcmp(d->as.fn_decl.name, name) == 0)
+            return d;
+        /* also search inline struct methods */
+        if (d->kind == NodeTypeDecl) {
+            for (usize_t j = 0; j < d->as.type_decl.methods.count; j++) {
+                node_t *m = d->as.type_decl.methods.items[j];
+                if (m->kind == NodeFnDecl && m->as.fn_decl.name
+                        && strcmp(m->as.fn_decl.name, name) == 0)
+                    return m;
+            }
+        }
+    }
     return Null;
 }
 
@@ -711,6 +765,12 @@ static LLVMValueRef alloc_in_entry(cg_t *cg, LLVMTypeRef type, const char *name)
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node);
 static void gen_stmt(cg_t *cg, node_t *node);
 static void gen_block(cg_t *cg, node_t *node);
+
+/* DI helpers — defined after the registry helpers but called from gen_local_var
+   and gen_stmt which appear earlier in the file. */
+static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti);
+static LLVMMetadataRef di_make_location(cg_t *cg, usize_t line);
+static void             di_set_location(cg_t *cg, usize_t line);
 
 /* ── expressions ── */
 
@@ -1097,6 +1157,17 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         /* ── direct call to a named function ── */
         fn_type = LLVMGlobalGetValueType(sym->value);
         fn_val  = sym->value;
+    }
+
+    /* coerce arguments to the declared parameter types (e.g. i32 literal → f32) */
+    unsigned n_params = LLVMCountParamTypes(fn_type);
+    if (argc > 0 && n_params > 0) {
+        heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
+        LLVMTypeRef *param_types = pt_heap.pointer;
+        LLVMGetParamTypes(fn_type, param_types);
+        for (usize_t i = 0; i < argc && i < (usize_t)n_params; i++)
+            args[i] = coerce_int(cg, args[i], param_types[i]);
+        deallocate(pt_heap);
     }
 
     LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_val,
@@ -2128,6 +2199,10 @@ static boolean_t is_primitive_type(type_info_t ti) {
 }
 
 static void gen_local_var(cg_t *cg, node_t *node) {
+    /* blank identifier: silently skip — the value will be discarded */
+    if (node->as.var_decl.name && strcmp(node->as.var_decl.name, "_") == 0)
+        return;
+
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
     LLVMTypeRef type;
 
@@ -2192,6 +2267,23 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                               cg->dtor_depth, -1);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
+
+        /* DI: heap primitive — declare the alloca holding the heap ptr. */
+        if (cg->debug_mode && cg->di_builder && cg->di_scope && node->line > 0) {
+            LLVMMetadataRef di_pty = get_di_type(cg, ti);
+            LLVMMetadataRef di_var = LLVMDIBuilderCreateAutoVariable(
+                cg->di_builder, cg->di_scope,
+                node->as.var_decl.name, strlen(node->as.var_decl.name),
+                cg->di_file, (unsigned)node->line,
+                di_pty, /* alwaysPreserve= */ 0, LLVMDIFlagZero, /* alignInBits= */ 0);
+            LLVMMetadataRef di_expr =
+                LLVMDIBuilderCreateExpression(cg->di_builder, Null, 0);
+            LLVMMetadataRef di_loc = di_make_location(cg, node->line);
+            LLVMDIBuilderInsertDeclareRecordAtEnd(
+                cg->di_builder, alloca_val, di_var, di_expr, di_loc,
+                LLVMGetInsertBlock(cg->builder));
+        }
+
         add_heap_var(cg, alloca_val);
         return;
     }
@@ -2258,6 +2350,22 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         check_const_addr_of(cg, node->as.var_decl.init, ti, node->line);
         check_permission_widening(cg, node->as.var_decl.init, ti, node->line);
         check_pointer_lifetime(cg, node->as.var_decl.init, cg->dtor_depth, node->line);
+    }
+
+    /* ── DI: local variable declaration ── */
+    if (cg->debug_mode && cg->di_builder && cg->di_scope && node->line > 0) {
+        LLVMMetadataRef di_vty = get_di_type(cg, ti);
+        LLVMMetadataRef di_var = LLVMDIBuilderCreateAutoVariable(
+            cg->di_builder, cg->di_scope,
+            node->as.var_decl.name, strlen(node->as.var_decl.name),
+            cg->di_file, (unsigned)node->line,
+            di_vty, /* alwaysPreserve= */ 0, LLVMDIFlagZero, /* alignInBits= */ 0);
+        LLVMMetadataRef di_expr =
+            LLVMDIBuilderCreateExpression(cg->di_builder, Null, 0);
+        LLVMMetadataRef di_loc = di_make_location(cg, node->line);
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
+            cg->di_builder, alloca_val, di_var, di_expr, di_loc,
+            LLVMGetInsertBlock(cg->builder));
     }
 
     /* track struct variables for destructor auto-call */
@@ -2536,6 +2644,37 @@ static void gen_debug(cg_t *cg, node_t *node) {
 static void gen_multi_assign(cg_t *cg, node_t *node) {
     node_list_t *targets = &node->as.multi_assign.targets;
     node_list_t *values = &node->as.multi_assign.values;
+
+    /* let binding: infer types from the callee's return type list */
+    boolean_t is_let = (targets->count > 0)
+        && (targets->items[0]->as.var_decl.flags & VdeclLet);
+
+    if (is_let && values->count == 1) {
+        /* Extract the callee name from the single RHS expression */
+        node_t *rhs = values->items[0];
+        const char *callee = Null;
+        if (rhs->kind == NodeCallExpr)
+            callee = rhs->as.call.callee;
+
+        node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
+
+        if (!fn_decl || fn_decl->as.fn_decl.return_count < 1) {
+            log_err("line %lu: 'let' binding requires a multi-return function call",
+                    node->line);
+            return;
+        }
+
+        /* Assign inferred types to each non-blank target */
+        for (usize_t i = 0; i < targets->count; i++) {
+            node_t *tgt = targets->items[i];
+            if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
+                continue;
+            if (i < fn_decl->as.fn_decl.return_count)
+                tgt->as.var_decl.type = fn_decl->as.fn_decl.return_types[i];
+            else
+                tgt->as.var_decl.type = NO_TYPE;
+        }
+    }
 
     /* first, declare all target variables */
     for (usize_t i = 0; i < targets->count; i++)
@@ -2892,6 +3031,16 @@ static void gen_comptime_assert(cg_t *cg, node_t *node) {
 static void gen_stmt(cg_t *cg, node_t *node) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
+
+    /* Attach source-line location to every instruction emitted for this
+       statement.  Skipped for declarations handled by gen_local_var (which
+       sets its own location) and for pure compile-time nodes that emit no IR. */
+    if (cg->debug_mode && node->line > 0
+        && node->kind != NodeVarDecl
+        && node->kind != NodeComptimeIf
+        && node->kind != NodeComptimeAssert)
+        di_set_location(cg, node->line);
+
     switch (node->kind) {
         case NodeVarDecl:      gen_local_var(cg, node); break;
         case NodeMultiAssign:  gen_multi_assign(cg, node); break;
@@ -2942,7 +3091,8 @@ static void gen_block(cg_t *cg, node_t *node) {
 
 /* ── registry helpers ── */
 
-static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type) {
+static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
+                             boolean_t is_union) {
     if (cg->struct_count >= cg->struct_cap) {
         usize_t new_cap = cg->struct_cap < 8 ? 8 : cg->struct_cap * 2;
         if (cg->structs_heap.pointer == Null)
@@ -2960,6 +3110,7 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type) {
     sr->field_capacity = 0;
     sr->fields_heap = NullHeap;
     sr->destructor = Null;
+    sr->is_union = is_union;
 }
 
 static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t type,
@@ -3071,19 +3222,396 @@ static void register_lib(cg_t *cg, const char *name, const char *alias,
     cg->lib_count++;
 }
 
+/* ── DWARF debug info helpers ── */
+
+/* Look up a cached DI type by name. Returns Null if not found. */
+static LLVMMetadataRef di_cache_lookup(cg_t *cg, const char *name) {
+    for (usize_t i = 0; i < cg->di_type_count; i++)
+        if (strcmp(cg->di_types[i].name, name) == 0)
+            return cg->di_types[i].di_type;
+    return Null;
+}
+
+/* Insert or update a DI type in the cache. */
+static void di_cache_set(cg_t *cg, const char *name, LLVMMetadataRef di_type) {
+    for (usize_t i = 0; i < cg->di_type_count; i++) {
+        if (strcmp(cg->di_types[i].name, name) == 0) {
+            cg->di_types[i].di_type = di_type;
+            return;
+        }
+    }
+    if (cg->di_type_count >= cg->di_type_cap) {
+        usize_t new_cap = cg->di_type_cap < 8 ? 8 : cg->di_type_cap * 2;
+        if (cg->di_types_heap.pointer == Null)
+            cg->di_types_heap = allocate(new_cap, sizeof(di_type_entry_t));
+        else
+            cg->di_types_heap = reallocate(cg->di_types_heap,
+                                            new_cap * sizeof(di_type_entry_t));
+        cg->di_types = cg->di_types_heap.pointer;
+        cg->di_type_cap = new_cap;
+    }
+    cg->di_types[cg->di_type_count].name    = (char *)name;
+    cg->di_types[cg->di_type_count].di_type = di_type;
+    cg->di_type_count++;
+}
+
+/* Forward declaration so get_di_named_type can call get_di_type recursively. */
+static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti);
+
+/*
+ * Build (or retrieve from cache) the DWARF composite type for a named
+ * user-defined type (struct, union, or enum).
+ *
+ * To break potential circular references (e.g. a struct with a pointer
+ * field to itself), a sentinel unspecified-type is inserted into the cache
+ * before members are processed; cycles get the sentinel rather than crashing.
+ */
+static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
+    if (!name) return Null;
+
+    LLVMMetadataRef cached = di_cache_lookup(cg, name);
+    if (cached) return cached;
+
+    /* Sentinel: break cycles by inserting a placeholder immediately. */
+    LLVMMetadataRef sentinel =
+        LLVMDIBuilderCreateUnspecifiedType(cg->di_builder, name, strlen(name));
+    di_cache_set(cg, name, sentinel);
+
+    /* ── struct / union ── */
+    struct_reg_t *sr = find_struct(cg, name);
+    if (sr) {
+        uint64_t size_bits  = 0;
+        uint32_t align_bits = 0;
+        if (cg->di_data_layout) {
+            size_bits  = LLVMABISizeOfType(cg->di_data_layout, sr->llvm_type) * 8;
+            align_bits = (uint32_t)(LLVMABIAlignmentOfType(cg->di_data_layout,
+                                                            sr->llvm_type) * 8);
+        }
+
+        usize_t member_count = sr->field_count;
+        heap_t  members_heap = NullHeap;
+        LLVMMetadataRef *members = Null;
+
+        if (member_count > 0) {
+            members_heap = allocate(member_count, sizeof(LLVMMetadataRef));
+            members = members_heap.pointer;
+
+            for (usize_t m = 0; m < member_count; m++) {
+                field_info_t *f    = &sr->fields[m];
+                LLVMMetadataRef mty = get_di_type(cg, f->type);
+
+                if (f->bit_width > 0) {
+                    /* Bitfield: storage offset is the offset of the backing
+                       integer field; bit offset is position within that integer. */
+                    uint64_t storage_off_bits = 0;
+                    if (cg->di_data_layout)
+                        storage_off_bits =
+                            LLVMOffsetOfElement(cg->di_data_layout,
+                                                sr->llvm_type,
+                                                (unsigned)f->index) * 8;
+                    uint64_t field_off_bits =
+                        storage_off_bits + (uint64_t)f->bit_offset;
+
+                    members[m] = LLVMDIBuilderCreateBitFieldMemberType(
+                        cg->di_builder, cg->di_compile_unit,
+                        f->name, strlen(f->name),
+                        cg->di_file, 0,
+                        (uint64_t)f->bit_width,
+                        field_off_bits,
+                        storage_off_bits,
+                        LLVMDIFlagZero, mty);
+                } else {
+                    /* Normal field. */
+                    uint64_t offset_bits      = 0;
+                    uint64_t member_size_bits = 0;
+                    uint32_t member_align_bits = 0;
+                    if (cg->di_data_layout) {
+                        LLVMTypeRef mllvm = get_llvm_type(cg, f->type);
+                        offset_bits      = LLVMOffsetOfElement(cg->di_data_layout,
+                                                               sr->llvm_type,
+                                                               (unsigned)f->index) * 8;
+                        member_size_bits = LLVMABISizeOfType(cg->di_data_layout,
+                                                             mllvm) * 8;
+                        member_align_bits = (uint32_t)(
+                            LLVMABIAlignmentOfType(cg->di_data_layout, mllvm) * 8);
+                    }
+                    /* Unions: all fields start at offset 0. */
+                    if (sr->is_union) offset_bits = 0;
+
+                    members[m] = LLVMDIBuilderCreateMemberType(
+                        cg->di_builder, cg->di_compile_unit,
+                        f->name, strlen(f->name),
+                        cg->di_file, 0,
+                        member_size_bits, member_align_bits,
+                        offset_bits,
+                        LLVMDIFlagZero, mty);
+                }
+            }
+        }
+
+        LLVMMetadataRef di_composite;
+        if (sr->is_union) {
+            di_composite = LLVMDIBuilderCreateUnionType(
+                cg->di_builder, cg->di_compile_unit,
+                name, strlen(name),
+                cg->di_file, 0,
+                size_bits, align_bits,
+                LLVMDIFlagZero,
+                members, (unsigned)member_count,
+                0, "", 0);
+        } else {
+            di_composite = LLVMDIBuilderCreateStructType(
+                cg->di_builder, cg->di_compile_unit,
+                name, strlen(name),
+                cg->di_file, 0,
+                size_bits, align_bits,
+                LLVMDIFlagZero,
+                Null,  /* no base struct */
+                members, (unsigned)member_count,
+                0, Null, /* no runtime lang, no vtable */
+                "", 0);
+        }
+
+        if (member_count > 0) deallocate(members_heap);
+        di_cache_set(cg, name, di_composite);
+        return di_composite;
+    }
+
+    /* ── enum ── */
+    enum_reg_t *er = find_enum(cg, name);
+    if (er) {
+        usize_t var_count = er->variant_count;
+        heap_t  vars_heap = NullHeap;
+        LLVMMetadataRef *vars = Null;
+
+        if (var_count > 0) {
+            vars_heap = allocate(var_count, sizeof(LLVMMetadataRef));
+            vars = vars_heap.pointer;
+            for (usize_t v = 0; v < var_count; v++) {
+                variant_info_t *vi = &er->variants[v];
+                vars[v] = LLVMDIBuilderCreateEnumerator(
+                    cg->di_builder,
+                    vi->name, strlen(vi->name),
+                    vi->value, /* isUnsigned= */ 0);
+            }
+        }
+
+        uint64_t size_bits = 32; /* simple enums are i32 */
+        if (er->is_tagged && cg->di_data_layout)
+            size_bits = LLVMABISizeOfType(cg->di_data_layout, er->llvm_type) * 8;
+
+        /* Underlying integer type for the enum tag. */
+        LLVMMetadataRef di_base = LLVMDIBuilderCreateBasicType(
+            cg->di_builder, "i32", 3, 32,
+            STS_DW_ATE_signed, LLVMDIFlagZero);
+
+        LLVMMetadataRef di_enum = LLVMDIBuilderCreateEnumerationType(
+            cg->di_builder, cg->di_compile_unit,
+            name, strlen(name),
+            cg->di_file, 0,
+            size_bits, 32,
+            vars, (unsigned)var_count,
+            di_base);
+
+        if (var_count > 0) deallocate(vars_heap);
+        di_cache_set(cg, name, di_enum);
+        return di_enum;
+    }
+
+    /* Unknown user type: keep the sentinel unspecified type. */
+    return sentinel;
+}
+
+/*
+ * Convert a Stasha type_info_t to an LLVMMetadataRef DWARF type.
+ * Returns Null for void (which is how DWARF represents void).
+ */
+static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti) {
+    if (!cg->debug_mode) return Null;
+
+    type_info_t resolved = resolve_alias(cg, ti);
+
+    if (resolved.is_pointer) {
+        /* Pointee type (de-reference the pointer flag). */
+        type_info_t pointee   = resolved;
+        pointee.is_pointer    = False;
+        LLVMMetadataRef inner = get_di_type(cg, pointee);
+        /* Pointer width: 64-bit on all currently supported targets. */
+        return LLVMDIBuilderCreatePointerType(
+            cg->di_builder, inner, 64, 0, 0, "", 0);
+    }
+
+    switch (resolved.base) {
+        case TypeVoid:
+            return Null;
+        case TypeBool:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "bool", 4, 1,
+                STS_DW_ATE_boolean, LLVMDIFlagZero);
+        case TypeI8:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "i8",  2,  8,
+                STS_DW_ATE_signed, LLVMDIFlagZero);
+        case TypeI16:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "i16", 3, 16,
+                STS_DW_ATE_signed, LLVMDIFlagZero);
+        case TypeI32:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "i32", 3, 32,
+                STS_DW_ATE_signed, LLVMDIFlagZero);
+        case TypeI64:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "i64", 3, 64,
+                STS_DW_ATE_signed, LLVMDIFlagZero);
+        case TypeU8:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "u8",  2,  8,
+                STS_DW_ATE_unsigned, LLVMDIFlagZero);
+        case TypeU16:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "u16", 3, 16,
+                STS_DW_ATE_unsigned, LLVMDIFlagZero);
+        case TypeU32:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "u32", 3, 32,
+                STS_DW_ATE_unsigned, LLVMDIFlagZero);
+        case TypeU64:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "u64", 3, 64,
+                STS_DW_ATE_unsigned, LLVMDIFlagZero);
+        case TypeF32:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "f32", 3, 32,
+                STS_DW_ATE_float, LLVMDIFlagZero);
+        case TypeF64:
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "f64", 3, 64,
+                STS_DW_ATE_float, LLVMDIFlagZero);
+        case TypeError:
+            /* Built-in error: represent as an opaque struct. */
+            return LLVMDIBuilderCreateUnspecifiedType(
+                cg->di_builder, "error", 5);
+        case TypeFnPtr:
+            /* Function pointers are opaque pointers in LLVM's model. */
+            return LLVMDIBuilderCreatePointerType(
+                cg->di_builder, Null, 64, 0, 0, "", 0);
+        case TypeUser:
+            return get_di_named_type(cg, resolved.user_name);
+    }
+    return Null;
+}
+
+/*
+ * Build a DILocation metadata node for (line, col=0) in the current scope.
+ * Returns Null when debug info is disabled or no scope is set.
+ */
+static LLVMMetadataRef di_make_location(cg_t *cg, usize_t line) {
+    if (!cg->debug_mode || !cg->di_scope || line == 0) return Null;
+    return LLVMDIBuilderCreateDebugLocation(
+        cg->ctx, (unsigned)line, 0, cg->di_scope, Null);
+}
+
+/*
+ * Attach a debug location to the IR builder so that all subsequently
+ * emitted instructions carry source-line information.
+ */
+static void di_set_location(cg_t *cg, usize_t line) {
+    if (!cg->debug_mode || !cg->di_scope || line == 0) return;
+    LLVMMetadataRef loc = di_make_location(cg, line);
+    LLVMSetCurrentDebugLocation2(cg->builder, loc);
+}
+
 /* ── top-level codegen ── */
 
 result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
-                 const char *target_triple) {
+                 const char *target_triple, const char *source_file,
+                 boolean_t debug_mode) {
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
-    cg.test_mode = test_mode;
-    cg.ctx = LLVMContextCreate();
+    cg.ast         = ast;
+    cg.test_mode   = test_mode;
+    cg.debug_mode  = debug_mode;
+    cg.source_file = source_file;
+    cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
-    cg.builder = LLVMCreateBuilderInContext(cg.ctx);
-    cg.current_fn = Null;
+    cg.builder     = LLVMCreateBuilderInContext(cg.ctx);
+    cg.current_fn  = Null;
     symtab_init(&cg.globals);
     symtab_init(&cg.locals);
+
+    /* ── early target initialisation ──
+     * Done here (not at emit time) so the data layout is available for DWARF
+     * member offset/size queries during type-declaration passes. */
+    LLVMInitializeAllTargetInfos();
+    LLVMInitializeAllTargets();
+    LLVMInitializeAllTargetMCs();
+    LLVMInitializeAllAsmPrinters();
+    LLVMInitializeAllAsmParsers();
+
+    char *early_error = Null;
+    char *triple;
+    if (target_triple && target_triple[0] != '\0')
+        triple = LLVMCreateMessage(target_triple);
+    else
+        triple = LLVMGetDefaultTargetTriple();
+    LLVMSetTarget(cg.module, triple);
+
+    LLVMTargetRef early_target;
+    if (LLVMGetTargetFromTriple(triple, &early_target, &early_error)) {
+        log_err("target lookup failed: %s", early_error);
+        LLVMDisposeMessage(early_error);
+        LLVMDisposeMessage(triple);
+        LLVMContextDispose(cg.ctx);
+        return Err;
+    }
+    LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
+        early_target, triple, "generic", "",
+        LLVMCodeGenLevelDefault, LLVMRelocPIC, LLVMCodeModelDefault);
+
+    cg.di_data_layout = LLVMCreateTargetDataLayout(machine);
+    LLVMSetModuleDataLayout(cg.module, cg.di_data_layout);
+
+    /* ── DI builder initialisation ── */
+    if (cg.debug_mode && cg.source_file) {
+        /* Split the path into directory + basename. */
+        const char *fname = strrchr(cg.source_file, '/');
+        if (!fname) fname = strrchr(cg.source_file, '\\');
+        const char *basename = fname ? fname + 1 : cg.source_file;
+
+        char dir[512];
+        if (fname) {
+            usize_t dir_len = (usize_t)(fname - cg.source_file);
+            if (dir_len >= sizeof(dir)) dir_len = sizeof(dir) - 1;
+            memcpy(dir, cg.source_file, dir_len);
+            dir[dir_len] = '\0';
+        } else {
+            dir[0] = '.'; dir[1] = '\0';
+        }
+
+        cg.di_builder = LLVMCreateDIBuilder(cg.module);
+        cg.di_file    = LLVMDIBuilderCreateFile(
+            cg.di_builder,
+            basename, strlen(basename),
+            dir,      strlen(dir));
+
+        cg.di_compile_unit = LLVMDIBuilderCreateCompileUnit(
+            cg.di_builder,
+            LLVMDWARFSourceLanguageC,  /* closest standard language */
+            cg.di_file,
+            "Stasha 0.1.0", 12,
+            /* isOptimized= */ 0,
+            /* Flags= */       "", 0,
+            /* RuntimeVer= */  0,
+            /* SplitName= */   "", 0,
+            LLVMDWARFEmissionFull,
+            /* DWOId= */             0,
+            /* SplitDebugInlining= */ 0,
+            /* DebugInfoForProfiling= */ 0,
+            /* SysRoot= */ "", 0,
+            /* SDK= */     "", 0);
+
+        cg.di_scope = cg.di_compile_unit;
+
+        /* Required module-level flags for DWARF consumers. */
+        LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorWarning,
+            "Dwarf Version", 13,
+            LLVMValueAsMetadata(
+                LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 4, 0)));
+        LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorError,
+            "Debug Info Version", 18,
+            LLVMValueAsMetadata(
+                LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 3, 0)));
+    }
 
     /* declare C runtime functions */
     type_info_t rt_dummy = {TypeVoid, Null, False, PtrNone, Null};
@@ -3141,7 +3669,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->as.type_decl.decl_kind == TypeDeclStruct
                 || decl->as.type_decl.decl_kind == TypeDeclUnion) {
                 LLVMTypeRef stype = LLVMStructCreateNamed(cg.ctx, decl->as.type_decl.name);
-                register_struct(&cg, decl->as.type_decl.name, stype);
+                register_struct(&cg, decl->as.type_decl.name, stype,
+                                decl->as.type_decl.decl_kind == TypeDeclUnion);
             } else if (decl->as.type_decl.decl_kind == TypeDeclEnum) {
                 register_enum(&cg, decl->as.type_decl.name,
                               &decl->as.type_decl.variants);
@@ -3312,6 +3841,31 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
                                   0, -1); /* scope_depth 0 = global lifetime */
+
+            /* ── DI: global variable expression ── */
+            if (cg.debug_mode && cg.di_builder) {
+                LLVMMetadataRef di_gtype = get_di_type(&cg, ti);
+                LLVMMetadataRef di_expr  =
+                    LLVMDIBuilderCreateExpression(cg.di_builder, Null, 0);
+                boolean_t local_to_unit =
+                    (decl->as.var_decl.linkage == LinkageInternal);
+                LLVMMetadataRef gv_expr =
+                    LLVMDIBuilderCreateGlobalVariableExpression(
+                        cg.di_builder,
+                        cg.di_compile_unit,
+                        decl->as.var_decl.name,
+                        strlen(decl->as.var_decl.name),
+                        "", 0,          /* linkage name */
+                        cg.di_file,
+                        (unsigned)decl->line,
+                        di_gtype,
+                        local_to_unit,
+                        di_expr,
+                        Null, 0);       /* no declaration, no align override */
+                LLVMGlobalSetMetadata(global,
+                    LLVMGetMDKindIDInContext(cg.ctx, "dbg", 3),
+                    gv_expr);
+            }
         }
 
         if (decl->kind == NodeFnDecl) {
@@ -3497,6 +4051,57 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             && strcmp(decl->as.fn_decl.name, "new") != 0;
         usize_t param_offset = 0;
 
+        /* ── DI: create DISubprogram for this function ── */
+        if (cg.debug_mode && cg.di_builder) {
+            usize_t nparam = decl->as.fn_decl.params.count;
+            /* subroutine type: [return_type, param0_type, ...] */
+            usize_t total_di = nparam + 1 + (is_instance ? 1 : 0);
+            heap_t  di_pt_heap = allocate(total_di, sizeof(LLVMMetadataRef));
+            LLVMMetadataRef *di_ptypes = di_pt_heap.pointer;
+
+            /* index 0 = return type */
+            di_ptypes[0] = get_di_type(&cg, decl->as.fn_decl.return_types[0]);
+            usize_t di_pi = 1;
+            if (is_instance && decl->as.fn_decl.struct_name) {
+                type_info_t thi = {TypeUser, decl->as.fn_decl.struct_name,
+                                   True, PtrReadWrite, Null};
+                di_ptypes[di_pi++] = get_di_type(&cg, thi);
+            }
+            for (usize_t j = 0; j < nparam; j++) {
+                type_info_t pti =
+                    resolve_alias(&cg, decl->as.fn_decl.params.items[j]->as.var_decl.type);
+                di_ptypes[di_pi++] = get_di_type(&cg, pti);
+            }
+
+            LLVMMetadataRef di_func_ty = LLVMDIBuilderCreateSubroutineType(
+                cg.di_builder, cg.di_file,
+                di_ptypes, (unsigned)total_di,
+                LLVMDIFlagZero);
+            deallocate(di_pt_heap);
+
+            boolean_t is_local = (decl->as.fn_decl.linkage == LinkageInternal);
+            LLVMMetadataRef di_sp = LLVMDIBuilderCreateFunction(
+                cg.di_builder,
+                cg.di_compile_unit,
+                fn_name, strlen(fn_name),      /* display name */
+                fn_name, strlen(fn_name),      /* linkage name */
+                cg.di_file,
+                (unsigned)decl->line,
+                di_func_ty,
+                is_local ? 1 : 0,              /* isLocalToUnit */
+                /* isDefinition= */ 1,
+                (unsigned)decl->line,          /* scope line */
+                LLVMDIFlagZero,
+                /* isOptimized= */ 0);
+
+            LLVMSetSubprogram(cg.current_fn, di_sp);
+            cg.di_scope = di_sp;
+
+            /* Seed the builder with the function's opening line so that
+               the prologue allocas carry a valid location. */
+            di_set_location(&cg, decl->line);
+        }
+
         /* implicit this parameter for instance methods */
         if (is_instance && decl->as.fn_decl.struct_name) {
             struct_reg_t *sr = find_struct(&cg, decl->as.fn_decl.struct_name);
@@ -3519,6 +4124,29 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                            alloca_val);
             symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
                        pti, False);
+
+            /* ── DI: parameter variable ── */
+            if (cg.debug_mode && cg.di_builder && cg.di_scope) {
+                LLVMMetadataRef di_pty = get_di_type(&cg, pti);
+                LLVMMetadataRef di_param = LLVMDIBuilderCreateParameterVariable(
+                    cg.di_builder,
+                    cg.di_scope,
+                    param->as.var_decl.name, strlen(param->as.var_decl.name),
+                    (unsigned)(j + param_offset + 1), /* 1-based arg number */
+                    cg.di_file,
+                    (unsigned)(param->line ? param->line : decl->line),
+                    di_pty,
+                    /* alwaysPreserve= */ 1,
+                    LLVMDIFlagZero);
+                LLVMMetadataRef di_expr =
+                    LLVMDIBuilderCreateExpression(cg.di_builder, Null, 0);
+                LLVMMetadataRef di_loc =
+                    di_make_location(&cg, param->line ? param->line : decl->line);
+                LLVMDIBuilderInsertDeclareRecordAtEnd(
+                    cg.di_builder,
+                    alloca_val, di_param, di_expr, di_loc,
+                    LLVMGetInsertBlock(cg.builder));
+            }
         }
 
         gen_block(&cg, decl->as.fn_decl.body);
@@ -3532,6 +4160,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 LLVMBuildRet(cg.builder,
                     LLVMConstNull(get_llvm_type(&cg, rti)));
         }
+
+        /* Restore scope to compile unit after leaving the function. */
+        if (cg.debug_mode)
+            cg.di_scope = cg.di_compile_unit;
     }
 
     /* handle top-level comptime_assert (now that data layout is available) */
@@ -3564,6 +4196,42 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 LLVMAppendBasicBlockInContext(cg.ctx, cg.current_fn, "entry");
             LLVMPositionBuilderAtEnd(cg.builder, entry);
 
+            /* ── DI: DISubprogram for inline method ── */
+            if (cg.debug_mode && cg.di_builder) {
+                usize_t nparam = method->as.fn_decl.params.count;
+                usize_t total_di = nparam + 2; /* ret + this + params */
+                heap_t  di_pt_heap = allocate(total_di, sizeof(LLVMMetadataRef));
+                LLVMMetadataRef *di_ptypes = di_pt_heap.pointer;
+                di_ptypes[0] = get_di_type(&cg, method->as.fn_decl.return_types[0]);
+                type_info_t thi = {TypeUser, decl->as.type_decl.name, True, PtrReadWrite, Null};
+                di_ptypes[1] = get_di_type(&cg, thi);
+                for (usize_t j = 0; j < nparam; j++) {
+                    type_info_t pti = resolve_alias(&cg,
+                        method->as.fn_decl.params.items[j]->as.var_decl.type);
+                    di_ptypes[j + 2] = get_di_type(&cg, pti);
+                }
+                LLVMMetadataRef di_func_ty = LLVMDIBuilderCreateSubroutineType(
+                    cg.di_builder, cg.di_file,
+                    di_ptypes, (unsigned)total_di, LLVMDIFlagZero);
+                deallocate(di_pt_heap);
+
+                LLVMMetadataRef di_sp = LLVMDIBuilderCreateFunction(
+                    cg.di_builder, cg.di_compile_unit,
+                    fn_name, strlen(fn_name),
+                    fn_name, strlen(fn_name),
+                    cg.di_file,
+                    (unsigned)method->line,
+                    di_func_ty,
+                    /* isLocalToUnit= */ 1,
+                    /* isDefinition=  */ 1,
+                    (unsigned)method->line,
+                    LLVMDIFlagZero,
+                    /* isOptimized= */ 0);
+                LLVMSetSubprogram(cg.current_fn, di_sp);
+                cg.di_scope = di_sp;
+                di_set_location(&cg, method->line);
+            }
+
             /* implicit this */
             struct_reg_t *sr = find_struct(&cg, decl->as.type_decl.name);
             LLVMTypeRef this_type = LLVMPointerTypeInContext(cg.ctx, 0);
@@ -3583,6 +4251,25 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                alloca_val);
                 symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
                            pti, False);
+
+                /* DI: parameter */
+                if (cg.debug_mode && cg.di_builder && cg.di_scope) {
+                    LLVMMetadataRef di_pty = get_di_type(&cg, pti);
+                    LLVMMetadataRef di_p = LLVMDIBuilderCreateParameterVariable(
+                        cg.di_builder, cg.di_scope,
+                        param->as.var_decl.name, strlen(param->as.var_decl.name),
+                        (unsigned)(j + 2), /* 1-based; slot 1 = this */
+                        cg.di_file,
+                        (unsigned)(param->line ? param->line : method->line),
+                        di_pty, 1, LLVMDIFlagZero);
+                    LLVMMetadataRef di_expr =
+                        LLVMDIBuilderCreateExpression(cg.di_builder, Null, 0);
+                    LLVMMetadataRef di_loc =
+                        di_make_location(&cg, param->line ? param->line : method->line);
+                    LLVMDIBuilderInsertDeclareRecordAtEnd(
+                        cg.di_builder, alloca_val, di_p, di_expr, di_loc,
+                        LLVMGetInsertBlock(cg.builder));
+                }
             }
 
             gen_block(&cg, method->as.fn_decl.body);
@@ -3596,6 +4283,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     LLVMBuildRet(cg.builder,
                         LLVMConstNull(get_llvm_type(&cg, rti)));
             }
+
+            if (cg.debug_mode)
+                cg.di_scope = cg.di_compile_unit;
         }
     }
 
@@ -3718,6 +4408,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    /* ── DI: finalize before verification ──
+     * Must happen after all IR is emitted and before the module is verified,
+     * so that unresolved DI forward-references are resolved first. */
+    if (cg.debug_mode && cg.di_builder) {
+        LLVMDIBuilderFinalize(cg.di_builder);
+        LLVMDisposeDIBuilder(cg.di_builder);
+        cg.di_builder = Null;
+    }
+
     /* verify */
     char *error = Null;
     if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
@@ -3727,47 +4426,21 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (error) LLVMDisposeMessage(error);
     }
 
-    /* emit object file */
-    LLVMInitializeAllTargetInfos();
-    LLVMInitializeAllTargets();
-    LLVMInitializeAllTargetMCs();
-    LLVMInitializeAllAsmPrinters();
-    LLVMInitializeAllAsmParsers();
-
-    char *triple;
-    if (target_triple && target_triple[0] != '\0') {
-        /* cross-compilation: use user-supplied triple */
-        triple = LLVMCreateMessage(target_triple);
-    } else {
-        triple = LLVMGetDefaultTargetTriple();
-    }
-    LLVMSetTarget(cg.module, triple);
-
-    LLVMTargetRef target;
-    error = Null;
-    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
-        log_err("target lookup failed: %s", error);
-        LLVMDisposeMessage(error);
-        LLVMDisposeMessage(triple);
-        return Err;
-    }
-
-    LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
-        target, triple, "generic", "",
-        LLVMCodeGenLevelDefault, LLVMRelocPIC, LLVMCodeModelDefault);
-
+    /* emit object file — reuse the machine created during early target init */
     error = Null;
     if (LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
                                      LLVMObjectFile, &error)) {
         log_err("emit failed: %s", error);
         LLVMDisposeMessage(error);
-        LLVMDisposeMessage(triple);
         LLVMDisposeTargetMachine(machine);
+        LLVMDisposeMessage(triple);
         return Err;
     }
 
-    LLVMDisposeMessage(triple);
     LLVMDisposeTargetMachine(machine);
+    LLVMDisposeMessage(triple);
+    if (cg.di_data_layout) LLVMDisposeTargetData(cg.di_data_layout);
+
     LLVMDisposeBuilder(cg.builder);
     LLVMDisposeModule(cg.module);
     LLVMContextDispose(cg.ctx);
@@ -3785,6 +4458,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     if (cg.libs_heap.pointer) deallocate(cg.libs_heap);
     if (cg.aliases_heap.pointer) deallocate(cg.aliases_heap);
     if (cg.dtor_stack_heap.pointer) deallocate(cg.dtor_stack_heap);
+    if (cg.di_types_heap.pointer) deallocate(cg.di_types_heap);
 
     return Ok;
 }

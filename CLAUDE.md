@@ -303,6 +303,6 @@ For Stasha to be a valid C competitor — replacing C in the domains where it do
 - [x] **Cross-compilation** — `--target triple` flag; required for embedded and OS dev where host ≠ target
 - [ ] **Build system / package manager** — distributing and consuming Stasha libraries without manual `.a` path management
 - [x] **Dynamic library output** — produce `.so`/`.dylib`/`.dll`; needed for plugin systems and shared runtimes
-- [ ] **Debug info quality** — DWARF emission sufficient for `gdb`/`lldb` to show Stasha source, types, and variable names
+- [x] **Debug info quality** — DWARF emission sufficient for `gdb`/`lldb` to show Stasha source, types, and variable names; `-g` flag emits full DWARF4 into the object file; on macOS a `.dSYM` bundle is generated automatically via `dsymutil`
 - [ ] **Standard library** — native string, I/O, math, and collection types so programs don't depend entirely on C interop
 - [ ] **Self-hosting compiler** — compiler written in Stasha; proves the language is production-ready for systems work

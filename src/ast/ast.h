@@ -87,6 +87,7 @@ enum {
     VdeclVolatile = (1 << 4),  /* volatile qualifier */
     VdeclTls      = (1 << 5),  /* thread-local storage */
     VdeclRestrict = (1 << 6),  /* restrict pointer hint */
+    VdeclLet      = (1 << 7),  /* type-inferred (let binding) */
 };
 
 /* ── type declaration flavours ── */

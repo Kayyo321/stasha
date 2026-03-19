@@ -1112,6 +1112,35 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     if (match_tok(p, TokVolatile)) flags |= VdeclVolatile;
     if (match_tok(p, TokTls))      flags |= VdeclTls;
 
+    /* let binding: infer types from multi-return call
+       stack let [x, y] = fn_call(); */
+    if (match_tok(p, TokLet)) {
+        flags |= VdeclLet;
+        consume(p, TokLBracket, "'['");
+        node_list_t targets;
+        node_list_init(&targets);
+        node_list_t values;
+        node_list_init(&values);
+        do {
+            token_t name_tok = consume(p, TokIdent, "variable name");
+            node_t *var = make_node(NodeVarDecl, name_tok.line);
+            var->as.var_decl.name    = copy_token_text(name_tok);
+            var->as.var_decl.type    = NO_TYPE; /* filled in by codegen */
+            var->as.var_decl.storage = storage;
+            var->as.var_decl.linkage = linkage;
+            var->as.var_decl.flags   = flags;
+            node_list_push(&targets, var);
+        } while (match_tok(p, TokComma));
+        consume(p, TokRBracket, "']'");
+        consume(p, TokEq, "'='");
+        node_list_push(&values, parse_expr(p));
+        consume(p, TokSemicolon, "';'");
+        node_t *n = make_node(NodeMultiAssign, line);
+        n->as.multi_assign.targets = targets;
+        n->as.multi_assign.values  = values;
+        return n;
+    }
+
     if (!can_start_type(p)) {
         log_err("line %lu: expected type", p->current.line);
         p->had_error = True;

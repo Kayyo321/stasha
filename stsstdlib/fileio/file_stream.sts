@@ -1,2 +1,49 @@
 mod file_stream;
 
+lib "stdio" = cio;
+
+ext type f_stream: struct {
+stack:
+    int i32 fd, err, eof;
+
+    ext fn read(stack u32 no_bytes, stack i8 *w out_buf, stack u32 out_len): [u32, error] {
+
+    }
+
+    ext fn write(stack u32 no_bytes, stack i8 *r in_buf, stack u32 in_len): [u32, error] {
+
+    }
+
+    ext fn get_ch(void): void {
+
+    }
+
+    ext fn unget_ch(void): void {
+
+    }
+
+    ext fn at_eof(void): bool {
+
+    }
+
+    ext fn had_err(void): bool {
+
+    }
+}
+
+ext enum {
+    FSEndOfFile = -1,
+
+    FsWrite    = (1),
+    FsRead     = (1 << 1),
+    FsAppend   = (1 << 2),
+    FsAllFlags = (FSWrite | FSRead | FSAppend),
+}
+
+ext fn f_stream.new(stack i8 *r path, stack i32 mode) f_stream {
+
+}
+
+ext fn f_stream.rem(void): void {
+
+}

@@ -68,6 +68,7 @@ typedef enum {
     TokRestrict,    /* restrict */
     TokComptimeAssert, /* comptime_assert */
     TokComptimeIf,  /* comptime_if */
+    TokLet,         /* let (type-inferred multi-assign) */
 
     /* type keywords */
     TokI8,
