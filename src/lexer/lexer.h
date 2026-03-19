@@ -57,6 +57,18 @@ typedef enum {
     TokExpectNeq,   /* expect_neq.(a, b) */
     TokTestFail,    /* test_fail.('msg') */
 
+    /* new keywords */
+    TokSwitch,      /* switch */
+    TokCase,        /* case */
+    TokDefault,     /* default */
+    TokUnion,       /* union */
+    TokVolatile,    /* volatile */
+    TokAsm,         /* asm */
+    TokTls,         /* tls */
+    TokRestrict,    /* restrict */
+    TokComptimeAssert, /* comptime_assert */
+    TokComptimeIf,  /* comptime_if */
+
     /* type keywords */
     TokI8,
     TokI16,
@@ -131,6 +143,18 @@ typedef enum {
     TokQuestion,
 
     TokFatArrow,    /* => */
+    TokDotDotDot,   /* ... (variadic) */
+    TokAt,          /* @ (attributes) */
+
+    /* wrapping arithmetic: +% -% *% */
+    TokPlusPercent,
+    TokMinusPercent,
+    TokStarPercent,
+
+    /* trapping arithmetic: +! -! *! */
+    TokPlusBang,
+    TokMinusBang,
+    TokStarBang,
 
     TokEof,
     TokError,

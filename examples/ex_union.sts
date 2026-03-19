@@ -1,0 +1,23 @@
+mod union_example;
+
+lib "stdio" = io;
+
+// union type — all fields share the same memory
+type Value: union {
+    stack:
+        ext i32 as_int;
+        ext f32 as_float;
+        ext u8  as_byte;
+};
+
+ext fn main(void): i32 {
+    stack Value v;
+
+    // write as integer
+    v.as_int = 42;
+    io.printf("as_int: %d\n", v.as_int);
+
+    io.printf("sizeof Value: %lu\n", sizeof.(Value));
+
+    ret 0;
+}

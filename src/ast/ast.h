@@ -80,15 +80,29 @@ typedef enum {
 /* ── var_decl attribute flags ── */
 
 enum {
-    VdeclAtomic = (1 << 0),  /* atomic qualifier */
-    VdeclConst  = (1 << 1),  /* const qualifier  */
-    VdeclFinal  = (1 << 2),  /* final qualifier  */
-    VdeclArray  = (1 << 3),  /* array declaration */
+    VdeclAtomic   = (1 << 0),  /* atomic qualifier   */
+    VdeclConst    = (1 << 1),  /* const qualifier    */
+    VdeclFinal    = (1 << 2),  /* final qualifier    */
+    VdeclArray    = (1 << 3),  /* array declaration  */
+    VdeclVolatile = (1 << 4),  /* volatile qualifier */
+    VdeclTls      = (1 << 5),  /* thread-local storage */
+    VdeclRestrict = (1 << 6),  /* restrict pointer hint */
 };
 
 /* ── type declaration flavours ── */
 
-enum { TypeDeclStruct = 0, TypeDeclEnum = 1, TypeDeclAlias = 2 };
+enum { TypeDeclStruct = 0, TypeDeclEnum = 1, TypeDeclAlias = 2, TypeDeclUnion = 3 };
+
+/* ── struct/union attribute flags ── */
+enum {
+    AttrPacked  = (1 << 0),
+    AttrCLayout = (1 << 1),
+    AttrWeak    = (1 << 2),
+    AttrHidden  = (1 << 3),
+};
+
+/* ── bitfield width (0 = not a bitfield) ── */
+/* stored in var_decl.bitfield_width */
 
 /* ── node kinds ── */
 
@@ -118,6 +132,12 @@ typedef enum {
     NodeMatchStmt,
     NodeMatchArm,
     NodeDeferStmt,
+    NodeSwitchStmt,
+    NodeSwitchCase,
+    NodeAsmStmt,
+    NodeComptimeIf,
+    NodeComptimeAssert,
+    NodeDesigInit,
 
     /* expressions */
     NodeBinaryExpr,
@@ -183,6 +203,8 @@ struct node {
             node_t *body;               /* Block */
             boolean_t is_method;        /* fn Type.method(...) */
             char *struct_name;          /* the Type part (null if !is_method) */
+            boolean_t is_variadic;      /* fn foo(stack i32 n, ...): void */
+            int attr_flags;             /* AttrWeak | AttrHidden */
         } fn_decl;
 
         struct {
@@ -190,20 +212,24 @@ struct node {
             type_info_t type;
             storage_t storage;
             linkage_t linkage;
-            int flags;             /* VdeclAtomic | VdeclConst | VdeclFinal | VdeclArray */
+            int flags;             /* VdeclAtomic | VdeclConst | VdeclFinal | VdeclArray | VdeclVolatile | VdeclTls | VdeclRestrict */
             long array_size;
             char *array_size_name; /* non-null when size is a named const */
             node_t *init;
+            int bitfield_width;    /* >0 for bitfield: i32 flags: 3 */
+            int attr_flags;        /* AttrWeak | AttrHidden */
         } var_decl;
 
         struct {
             char *name;
             linkage_t linkage;
-            int decl_kind;              /* TypeDeclStruct / TypeDeclEnum / TypeDeclAlias */
-            node_list_t fields;         /* VarDecl nodes (struct fields) */
+            int decl_kind;              /* TypeDeclStruct / TypeDeclEnum / TypeDeclAlias / TypeDeclUnion */
+            node_list_t fields;         /* VarDecl nodes (struct/union fields) */
             node_list_t methods;        /* FnDecl nodes (inline methods) */
             node_list_t variants;       /* EnumVariant nodes */
             type_info_t alias_type;     /* for TypeDeclAlias */
+            int attr_flags;             /* AttrPacked | AttrCLayout */
+            unsigned align_value;       /* @align(N): 0 = default */
         } type_decl;
 
         struct {
@@ -237,6 +263,26 @@ struct node {
             char *bind_name;    /* payload binding name, null if none */
             node_t *body;
         } match_arm;
+
+        /* switch statement */
+        struct { node_t *expr; node_list_t cases; } switch_stmt;
+        struct {
+            boolean_t is_default;
+            node_list_t values;     /* case value expressions (empty for default) */
+            node_t *body;           /* Block */
+        } switch_case;
+
+        /* asm { "..." : outputs : inputs : clobbers } */
+        struct { char *code; char *constraints; node_list_t operands; } asm_stmt;
+
+        /* comptime_if platform == "..." { ... } */
+        struct { char *key; char *value; node_t *body; node_t *else_body; } comptime_if;
+
+        /* comptime_assert.(expr) */
+        struct { node_t *expr; char *message; } comptime_assert;
+
+        /* designated init: Type { .x = 1, .y = 2 } */
+        struct { char *type_name; node_list_t fields; node_list_t values; } desig_init;
 
         /* ── expressions ── */
         struct { token_kind_t op; node_t *left; node_t *right; } binary;

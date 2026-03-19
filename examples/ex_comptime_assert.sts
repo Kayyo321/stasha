@@ -1,0 +1,17 @@
+mod comptime_assert_example;
+
+lib "stdio" = io;
+
+type Header: struct {
+    stack:
+        ext i32 magic;
+        ext i32 version;
+};
+
+// compile-time assertion: verify struct layout assumptions
+comptime_assert.(sizeof.(Header) == 8);
+
+ext fn main(void): i32 {
+    io.printf("Header size verified at compile time: %lu bytes\n", sizeof.(Header));
+    ret 0;
+}

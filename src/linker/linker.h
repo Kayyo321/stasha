@@ -17,4 +17,11 @@ result_t link_object(const char *obj_path, const char *output_path,
  */
 result_t archive_object(const char *obj_path, const char *output_path);
 
+/*
+ * Link an object file into a dynamic library (.so / .dylib / .dll).
+ * extra_libs: same semantics as link_object.
+ */
+result_t link_dynamic(const char *obj_path, const char *output_path,
+                      const char **extra_libs);
+
 #endif

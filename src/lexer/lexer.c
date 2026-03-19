@@ -150,6 +150,16 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("expect_eq", TokExpectEq);
     KW("expect_neq", TokExpectNeq);
     KW("test_fail", TokTestFail);
+    KW("switch", TokSwitch);
+    KW("case", TokCase);
+    KW("default", TokDefault);
+    KW("union", TokUnion);
+    KW("volatile", TokVolatile);
+    KW("asm", TokAsm);
+    KW("tls", TokTls);
+    KW("restrict", TokRestrict);
+    KW("comptime_assert", TokComptimeAssert);
+    KW("comptime_if", TokComptimeIf);
 
     KW("i8", TokI8);
     KW("i16", TokI16);
@@ -249,20 +259,32 @@ token_t next_token(lexer_t *lex) {
         case ';': return make_token(lex, TokSemicolon);
         case ':': return make_token(lex, TokColon);
         case ',': return make_token(lex, TokComma);
-        case '.': return make_token(lex, TokDot);
+        case '.':
+            if (peek(lex) == '.' && peek_next(lex) == '.') {
+                advance(lex); advance(lex);
+                return make_token(lex, TokDotDotDot);
+            }
+            return make_token(lex, TokDot);
+        case '@': return make_token(lex, TokAt);
         case '?': return make_token(lex, TokQuestion);
         case '~': return make_token(lex, TokTilde);
 
         case '+':
             if (match(lex, '+')) return make_token(lex, TokPlusPlus);
             if (match(lex, '=')) return make_token(lex, TokPlusEq);
+            if (match(lex, '%')) return make_token(lex, TokPlusPercent);
+            if (match(lex, '!')) return make_token(lex, TokPlusBang);
             return make_token(lex, TokPlus);
         case '-':
             if (match(lex, '-')) return make_token(lex, TokMinusMinus);
             if (match(lex, '=')) return make_token(lex, TokMinusEq);
+            if (match(lex, '%')) return make_token(lex, TokMinusPercent);
+            if (match(lex, '!')) return make_token(lex, TokMinusBang);
             return make_token(lex, TokMinus);
         case '*':
             if (match(lex, '=')) return make_token(lex, TokStarEq);
+            if (match(lex, '%')) return make_token(lex, TokStarPercent);
+            if (match(lex, '!')) return make_token(lex, TokStarBang);
             return make_token(lex, TokStar);
         case '/':
             if (match(lex, '=')) return make_token(lex, TokSlashEq);

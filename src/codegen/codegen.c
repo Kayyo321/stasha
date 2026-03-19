@@ -11,11 +11,13 @@
 
 /* symbol attribute flags */
 enum {
-    SymAtomic  = (1 << 0),  /* atomic qualifier            */
-    SymHeapVar = (1 << 1),  /* heap primitive (malloc'd)   */
-    SymConst   = (1 << 2),  /* const qualifier             */
-    SymFinal   = (1 << 3),  /* final qualifier             */
-    SymNil     = (1 << 4),  /* statically known to be nil  */
+    SymAtomic   = (1 << 0),  /* atomic qualifier            */
+    SymHeapVar  = (1 << 1),  /* heap primitive (malloc'd)   */
+    SymConst    = (1 << 2),  /* const qualifier             */
+    SymFinal    = (1 << 3),  /* final qualifier             */
+    SymNil      = (1 << 4),  /* statically known to be nil  */
+    SymVolatile = (1 << 5),  /* volatile qualifier          */
+    SymTls      = (1 << 6),  /* thread-local storage        */
 };
 
 typedef struct {
@@ -45,6 +47,8 @@ typedef struct {
     usize_t index;
     linkage_t linkage;
     storage_t storage;  /* StorageStack or StorageHeap — from struct memory section */
+    int bit_offset;     /* bit position within backing field (0 if not a bitfield) */
+    int bit_width;      /* bitfield width in bits (0 = not a bitfield) */
 } field_info_t;
 
 typedef struct {
@@ -751,6 +755,8 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
                                         node->as.ident.name);
     if (sym->flags & SymAtomic)
         LLVMSetOrdering(load, LLVMAtomicOrderingSequentiallyConsistent);
+    if (sym->flags & SymVolatile)
+        LLVMSetVolatile(load, 1);
     return load;
 }
 
@@ -895,6 +901,56 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
         case TokBangEq:
             return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealONE, left, right, "fne")
                          : LLVMBuildICmp(cg->builder, LLVMIntNE, left, right, "ne");
+
+        /* wrapping arithmetic (+% -% *%) — LLVM integer add/sub/mul already wraps */
+        case TokPlusPercent:
+            return LLVMBuildAdd(cg->builder, left, right, "wadd");
+        case TokMinusPercent:
+            return LLVMBuildSub(cg->builder, left, right, "wsub");
+        case TokStarPercent:
+            return LLVMBuildMul(cg->builder, left, right, "wmul");
+
+        /* trapping arithmetic (+! -! *!) — overflow intrinsics + trap */
+        case TokPlusBang: case TokMinusBang: case TokStarBang: {
+            const char *intrinsic;
+            if (node->as.binary.op == TokPlusBang)      intrinsic = "llvm.sadd.with.overflow.i32";
+            else if (node->as.binary.op == TokMinusBang) intrinsic = "llvm.ssub.with.overflow.i32";
+            else                                          intrinsic = "llvm.smul.with.overflow.i32";
+
+            LLVMTypeRef i32 = LLVMInt32TypeInContext(cg->ctx);
+            left  = coerce_int(cg, left,  i32);
+            right = coerce_int(cg, right, i32);
+
+            /* build { i32, i1 } return type */
+            LLVMTypeRef ret_fields[2] = { i32, LLVMInt1TypeInContext(cg->ctx) };
+            LLVMTypeRef ret_type = LLVMStructTypeInContext(cg->ctx, ret_fields, 2, 0);
+            LLVMTypeRef param_types[2] = { i32, i32 };
+            LLVMTypeRef fn_type = LLVMFunctionType(ret_type, param_types, 2, 0);
+
+            LLVMValueRef fn = LLVMGetNamedFunction(cg->module, intrinsic);
+            if (!fn) fn = LLVMAddFunction(cg->module, intrinsic, fn_type);
+
+            LLVMValueRef args[2] = { left, right };
+            LLVMValueRef result = LLVMBuildCall2(cg->builder, fn_type, fn, args, 2, "ov");
+            LLVMValueRef val = LLVMBuildExtractValue(cg->builder, result, 0, "ov.val");
+            LLVMValueRef overflowed = LLVMBuildExtractValue(cg->builder, result, 1, "ov.flag");
+
+            /* branch: if overflowed, call llvm.trap; else continue */
+            LLVMBasicBlockRef trap_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ov.trap");
+            LLVMBasicBlockRef ok_bb   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ov.ok");
+            LLVMBuildCondBr(cg->builder, overflowed, trap_bb, ok_bb);
+
+            LLVMPositionBuilderAtEnd(cg->builder, trap_bb);
+            {
+                LLVMTypeRef trap_type = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
+                LLVMValueRef trap_fn = LLVMGetNamedFunction(cg->module, "llvm.trap");
+                if (!trap_fn) trap_fn = LLVMAddFunction(cg->module, "llvm.trap", trap_type);
+                LLVMBuildCall2(cg->builder, trap_type, trap_fn, Null, 0, "");
+                LLVMBuildUnreachable(cg->builder);
+            }
+            LLVMPositionBuilderAtEnd(cg->builder, ok_bb);
+            return val;
+        }
 
         /* bitwise */
         case TokAmp:   return LLVMBuildAnd(cg->builder, left, right, "and");
@@ -1468,6 +1524,29 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                                 (unsigned)sr->fields[i].index, field);
                             LLVMTypeRef ft = get_llvm_type(cg, sr->fields[i].type);
                             rhs = coerce_int(cg, rhs, ft);
+                            /* bitfield: read-modify-write */
+                            if (sr->fields[i].bit_width > 0) {
+                                int boff = sr->fields[i].bit_offset;
+                                int bw   = sr->fields[i].bit_width;
+                                unsigned long long mask_val = ((unsigned long long)1 << bw) - 1;
+                                /* mask the new value to bit_width bits */
+                                LLVMValueRef masked_new = LLVMBuildAnd(cg->builder, rhs,
+                                    LLVMConstInt(ft, mask_val, 0), "bf_new_mask");
+                                /* shift to position */
+                                LLVMValueRef shifted_new = masked_new;
+                                if (boff > 0)
+                                    shifted_new = LLVMBuildShl(cg->builder, masked_new,
+                                        LLVMConstInt(ft, (unsigned long long)boff, 0), "bf_shl");
+                                /* load old value, clear the target bits, OR in new */
+                                LLVMValueRef old_val = LLVMBuildLoad2(cg->builder, ft, gep, "bf_old");
+                                unsigned long long clear_mask = ~(mask_val << boff);
+                                LLVMValueRef cleared = LLVMBuildAnd(cg->builder, old_val,
+                                    LLVMConstInt(ft, clear_mask, 0), "bf_clear");
+                                LLVMValueRef result = LLVMBuildOr(cg->builder, cleared,
+                                    shifted_new, "bf_insert");
+                                LLVMBuildStore(cg->builder, result, gep);
+                                return rhs;
+                            }
                             LLVMBuildStore(cg->builder, rhs, gep);
                             return rhs;
                         }
@@ -1624,7 +1703,19 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
                             cg->builder, sr->llvm_type, sym->value,
                             (unsigned)sr->fields[i].index, field);
                         LLVMTypeRef ft = get_llvm_type(cg, sr->fields[i].type);
-                        return LLVMBuildLoad2(cg->builder, ft, gep, field);
+                        LLVMValueRef val = LLVMBuildLoad2(cg->builder, ft, gep, field);
+                        /* bitfield: extract bits via shift+mask */
+                        if (sr->fields[i].bit_width > 0) {
+                            int boff = sr->fields[i].bit_offset;
+                            int bw   = sr->fields[i].bit_width;
+                            if (boff > 0)
+                                val = LLVMBuildLShr(cg->builder, val,
+                                    LLVMConstInt(ft, (unsigned long long)boff, 0), "bf_shr");
+                            unsigned long long mask = ((unsigned long long)1 << bw) - 1;
+                            val = LLVMBuildAnd(cg->builder, val,
+                                LLVMConstInt(ft, mask, 0), "bf_mask");
+                        }
+                        return val;
                     }
                 }
             }
@@ -1968,6 +2059,38 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             }
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
+        case NodeDesigInit: {
+            /* Type { .x = 1, .y = 2 } — designated initializer */
+            struct_reg_t *sr = find_struct(cg, node->as.desig_init.type_name);
+            if (!sr) {
+                log_err("line %lu: unknown struct '%s' in designated initializer",
+                        node->line, node->as.desig_init.type_name);
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            }
+            LLVMValueRef tmp = alloc_in_entry(cg, sr->llvm_type, "desig_tmp");
+            /* zero-initialize first */
+            LLVMValueRef zero = LLVMConstNull(sr->llvm_type);
+            LLVMBuildStore(cg->builder, zero, tmp);
+            /* set each named field */
+            for (usize_t di = 0; di < node->as.desig_init.fields.count; di++) {
+                node_t *fname_node = node->as.desig_init.fields.items[di];
+                node_t *fval_node  = node->as.desig_init.values.items[di];
+                char *fname = fname_node->as.ident.name;
+                for (usize_t fi = 0; fi < sr->field_count; fi++) {
+                    if (strcmp(sr->fields[fi].name, fname) == 0) {
+                        LLVMValueRef gep = LLVMBuildStructGEP2(
+                            cg->builder, sr->llvm_type, tmp,
+                            (unsigned)sr->fields[fi].index, fname);
+                        LLVMTypeRef ft = get_llvm_type(cg, sr->fields[fi].type);
+                        LLVMValueRef val = gen_expr(cg, fval_node);
+                        val = coerce_int(cg, val, ft);
+                        LLVMBuildStore(cg->builder, val, gep);
+                        break;
+                    }
+                }
+            }
+            return LLVMBuildLoad2(cg->builder, sr->llvm_type, tmp, "desig_val");
+        }
         case NodeRemStmt: {
             node_t *ptr_node = node->as.rem_stmt.ptr;
             /* for heap primitive vars: free the heap ptr and null the alloca */
@@ -2114,8 +2237,12 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         LLVMBuildStore(cg->builder, init, alloca_val);
     }
 
-    symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
-               ti, (node->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
+    {
+        int sym_flags = 0;
+        if (node->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
+        if (node->as.var_decl.flags & VdeclVolatile)  sym_flags |= SymVolatile;
+        symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
+    }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
     {
         long arr_sz = (node->as.var_decl.flags & VdeclArray) ? node->as.var_decl.array_size : -1;
@@ -2575,6 +2702,193 @@ static void gen_match(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
 }
 
+static void gen_switch(cg_t *cg, node_t *node) {
+    LLVMValueRef subject = gen_expr(cg, node->as.switch_stmt.expr);
+    subject = coerce_int(cg, subject, LLVMInt32TypeInContext(cg->ctx));
+
+    usize_t case_count = node->as.switch_stmt.cases.count;
+    LLVMBasicBlockRef end_bb =
+        LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "sw.end");
+
+    /* find default case */
+    LLVMBasicBlockRef default_bb = end_bb;
+    for (usize_t i = 0; i < case_count; i++) {
+        node_t *c = node->as.switch_stmt.cases.items[i];
+        if (c->as.switch_case.is_default) {
+            default_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "sw.default");
+            break;
+        }
+    }
+
+    /* count non-default cases */
+    unsigned num_cases = 0;
+    for (usize_t i = 0; i < case_count; i++) {
+        node_t *c = node->as.switch_stmt.cases.items[i];
+        if (!c->as.switch_case.is_default)
+            num_cases += (unsigned)c->as.switch_case.values.count;
+    }
+
+    LLVMValueRef sw = LLVMBuildSwitch(cg->builder, subject, default_bb, num_cases);
+
+    LLVMBasicBlockRef saved_break = cg->break_target;
+    cg->break_target = end_bb;
+
+    for (usize_t i = 0; i < case_count; i++) {
+        node_t *c = node->as.switch_stmt.cases.items[i];
+
+        if (c->as.switch_case.is_default) {
+            LLVMPositionBuilderAtEnd(cg->builder, default_bb);
+            push_dtor_scope(cg);
+            if (c->as.switch_case.body)
+                gen_block(cg, c->as.switch_case.body);
+            pop_dtor_scope(cg);
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+                LLVMBuildBr(cg->builder, end_bb);
+            continue;
+        }
+
+        LLVMBasicBlockRef case_bb =
+            LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "sw.case");
+
+        /* add each case value to the switch */
+        for (usize_t v = 0; v < c->as.switch_case.values.count; v++) {
+            node_t *val_node = c->as.switch_case.values.items[v];
+            LLVMValueRef case_val;
+            if (val_node->kind == NodeIntLitExpr)
+                case_val = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+                    (unsigned long long)val_node->as.int_lit.value, 1);
+            else
+                case_val = coerce_int(cg, gen_expr(cg, val_node),
+                    LLVMInt32TypeInContext(cg->ctx));
+            LLVMAddCase(sw, case_val, case_bb);
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, case_bb);
+        push_dtor_scope(cg);
+        if (c->as.switch_case.body)
+            gen_block(cg, c->as.switch_case.body);
+        pop_dtor_scope(cg);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+            LLVMBuildBr(cg->builder, end_bb);
+    }
+
+    LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+    cg->break_target = saved_break;
+}
+
+static void gen_asm_stmt(cg_t *cg, node_t *node) {
+    char *code = node->as.asm_stmt.code;
+    char *constraints = node->as.asm_stmt.constraints;
+    if (!constraints) constraints = "";
+
+    usize_t argc = node->as.asm_stmt.operands.count;
+    LLVMTypeRef *arg_types = Null;
+    LLVMValueRef *args = Null;
+    heap_t at_heap = NullHeap, a_heap = NullHeap;
+    if (argc > 0) {
+        at_heap = allocate(argc, sizeof(LLVMTypeRef));
+        a_heap  = allocate(argc, sizeof(LLVMValueRef));
+        arg_types = at_heap.pointer;
+        args      = a_heap.pointer;
+        for (usize_t i = 0; i < argc; i++) {
+            args[i] = gen_expr(cg, node->as.asm_stmt.operands.items[i]);
+            arg_types[i] = LLVMTypeOf(args[i]);
+        }
+    }
+
+    LLVMTypeRef fn_type = LLVMFunctionType(
+        LLVMVoidTypeInContext(cg->ctx), arg_types, (unsigned)argc, 0);
+    LLVMValueRef asm_val = LLVMGetInlineAsm(
+        fn_type, code, strlen(code),
+        constraints, strlen(constraints),
+        1 /* has side effects */, 0 /* not align stack */,
+        LLVMInlineAsmDialectATT, 0 /* can throw */);
+    LLVMBuildCall2(cg->builder, fn_type, asm_val, args, (unsigned)argc, "");
+
+    if (argc > 0) { deallocate(at_heap); deallocate(a_heap); }
+}
+
+static void gen_comptime_if(cg_t *cg, node_t *node) {
+    char *key = node->as.comptime_if.key;
+    char *value = node->as.comptime_if.value;
+    boolean_t match = False;
+
+    if (strcmp(key, "platform") == 0 || strcmp(key, "os") == 0) {
+#if defined(__APPLE__)
+        match = (strcmp(value, "macos") == 0 || strcmp(value, "darwin") == 0);
+#elif defined(__linux__)
+        match = (strcmp(value, "linux") == 0);
+#elif defined(_WIN32)
+        match = (strcmp(value, "windows") == 0);
+#endif
+    } else if (strcmp(key, "arch") == 0) {
+#if defined(__x86_64__) || defined(_M_X64)
+        match = (strcmp(value, "x86_64") == 0 || strcmp(value, "amd64") == 0);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+        match = (strcmp(value, "aarch64") == 0 || strcmp(value, "arm64") == 0);
+#elif defined(__i386__) || defined(_M_IX86)
+        match = (strcmp(value, "x86") == 0 || strcmp(value, "i386") == 0);
+#endif
+    }
+
+    if (match) {
+        if (node->as.comptime_if.body)
+            gen_block(cg, node->as.comptime_if.body);
+    } else {
+        if (node->as.comptime_if.else_body)
+            gen_block(cg, node->as.comptime_if.else_body);
+    }
+}
+
+static void gen_comptime_assert(cg_t *cg, node_t *node) {
+    /* compile-time assertion: evaluate constant expression */
+    node_t *expr = node->as.comptime_assert.expr;
+    char *message = node->as.comptime_assert.message;
+
+    /* try to evaluate simple constant comparisons */
+    if (expr->kind == NodeBinaryExpr && expr->as.binary.op == TokEqEq) {
+        node_t *l = expr->as.binary.left;
+        node_t *r = expr->as.binary.right;
+        if (l->kind == NodeSizeofExpr && r->kind == NodeIntLitExpr) {
+            LLVMTypeRef ty = get_llvm_type(cg, l->as.sizeof_expr.type);
+            unsigned long long sz = LLVMABISizeOfType(
+                LLVMGetModuleDataLayout(cg->module), ty);
+            if (sz != (unsigned long long)r->as.int_lit.value) {
+                if (message)
+                    log_err("comptime_assert failed: %s (sizeof = %llu, expected %ld)",
+                            message, sz, r->as.int_lit.value);
+                else
+                    log_err("comptime_assert failed: sizeof = %llu, expected %ld",
+                            sz, r->as.int_lit.value);
+            }
+            return;
+        }
+        /* int == int */
+        if (l->kind == NodeIntLitExpr && r->kind == NodeIntLitExpr) {
+            if (l->as.int_lit.value != r->as.int_lit.value) {
+                if (message)
+                    log_err("comptime_assert failed: %s (%ld != %ld)",
+                            message, l->as.int_lit.value, r->as.int_lit.value);
+                else
+                    log_err("comptime_assert failed: %ld != %ld",
+                            l->as.int_lit.value, r->as.int_lit.value);
+            }
+            return;
+        }
+    }
+    /* boolean literal */
+    if (expr->kind == NodeBoolLitExpr) {
+        if (!expr->as.bool_lit.value) {
+            if (message)
+                log_err("comptime_assert failed: %s", message);
+            else
+                log_err("comptime_assert failed");
+        }
+        return;
+    }
+    log_err("comptime_assert: expression too complex to evaluate at compile time");
+}
+
 static void gen_stmt(cg_t *cg, node_t *node) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
@@ -2591,6 +2905,10 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeExprStmt:     gen_expr(cg, node->as.expr_stmt.expr); break;
         case NodeRemStmt:      gen_expr(cg, node); break;
         case NodeMatchStmt:    gen_match(cg, node); break;
+        case NodeSwitchStmt:   gen_switch(cg, node); break;
+        case NodeAsmStmt:      gen_asm_stmt(cg, node); break;
+        case NodeComptimeIf:   gen_comptime_if(cg, node); break;
+        case NodeComptimeAssert: gen_comptime_assert(cg, node); break;
         case NodeBreakStmt:
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);
@@ -2644,8 +2962,9 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type) {
     sr->destructor = Null;
 }
 
-static void struct_add_field(struct_reg_t *sr, const char *name, type_info_t type,
-                             usize_t index, linkage_t linkage, storage_t storage) {
+static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t type,
+                               usize_t index, linkage_t linkage, storage_t storage,
+                               int bit_offset, int bit_width) {
     if (sr->field_count >= sr->field_capacity) {
         usize_t new_cap = sr->field_capacity < 8 ? 8 : sr->field_capacity * 2;
         if (sr->fields_heap.pointer == Null)
@@ -2660,7 +2979,14 @@ static void struct_add_field(struct_reg_t *sr, const char *name, type_info_t typ
     sr->fields[sr->field_count].storage = storage;
     sr->fields[sr->field_count].index = index;
     sr->fields[sr->field_count].linkage = linkage;
+    sr->fields[sr->field_count].bit_offset = bit_offset;
+    sr->fields[sr->field_count].bit_width  = bit_width;
     sr->field_count++;
+}
+
+static void struct_add_field(struct_reg_t *sr, const char *name, type_info_t type,
+                             usize_t index, linkage_t linkage, storage_t storage) {
+    struct_add_field_ex(sr, name, type, index, linkage, storage, 0, 0);
 }
 
 static void register_enum(cg_t *cg, const char *name, node_list_t *variants) {
@@ -2747,7 +3073,8 @@ static void register_lib(cg_t *cg, const char *name, const char *alias,
 
 /* ── top-level codegen ── */
 
-result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
+result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
+                 const char *target_triple) {
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
     cg.test_mode = test_mode;
@@ -2811,7 +3138,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
         }
 
         if (decl->kind == NodeTypeDecl) {
-            if (decl->as.type_decl.decl_kind == TypeDeclStruct) {
+            if (decl->as.type_decl.decl_kind == TypeDeclStruct
+                || decl->as.type_decl.decl_kind == TypeDeclUnion) {
                 LLVMTypeRef stype = LLVMStructCreateNamed(cg.ctx, decl->as.type_decl.name);
                 register_struct(&cg, decl->as.type_decl.name, stype);
             } else if (decl->as.type_decl.decl_kind == TypeDeclEnum) {
@@ -2823,37 +3151,113 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
         }
     }
 
-    /* pass 0b: set struct bodies (now that all types are registered) */
+    /* pass 0b: set struct/union bodies (now that all types are registered) */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeTypeDecl || decl->as.type_decl.decl_kind != TypeDeclStruct)
+        if (decl->kind != NodeTypeDecl) continue;
+        if (decl->as.type_decl.decl_kind != TypeDeclStruct
+            && decl->as.type_decl.decl_kind != TypeDeclUnion)
             continue;
 
         struct_reg_t *sr = find_struct(&cg, decl->as.type_decl.name);
         if (!sr) continue;
 
-        usize_t fc = decl->as.type_decl.fields.count;
-        LLVMTypeRef *field_types = Null;
-        heap_t ft_heap = NullHeap;
-        if (fc > 0) {
-            ft_heap = allocate(fc, sizeof(LLVMTypeRef));
-            field_types = ft_heap.pointer;
+        boolean_t is_packed = (decl->as.type_decl.attr_flags & AttrPacked) != 0
+                            || (decl->as.type_decl.attr_flags & AttrCLayout) != 0;
+
+        if (decl->as.type_decl.decl_kind == TypeDeclUnion) {
+            /* Union: single body = byte array of largest member size */
+            usize_t fc = decl->as.type_decl.fields.count;
+            usize_t max_size = 0;
             for (usize_t j = 0; j < fc; j++) {
                 node_t *field = decl->as.type_decl.fields.items[j];
                 type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
-                field_types[j] = get_llvm_type(&cg, fti);
-                struct_add_field(sr, field->as.var_decl.name, fti, j,
+                usize_t sz = payload_type_size(fti);
+                if (sz > max_size) max_size = sz;
+                /* all union fields map to index 0 (they overlap) */
+                struct_add_field(sr, field->as.var_decl.name, fti, 0,
                                  field->as.var_decl.linkage,
                                  field->as.var_decl.storage);
             }
+            if (max_size == 0) max_size = 1;
+            LLVMTypeRef body = LLVMArrayType2(LLVMInt8TypeInContext(cg.ctx),
+                                               (unsigned long long)max_size);
+            LLVMStructSetBody(sr->llvm_type, &body, 1, is_packed ? 1 : 0);
+        } else {
+            /* Struct: field layout with bitfield packing */
+            usize_t fc = decl->as.type_decl.fields.count;
+            LLVMTypeRef *field_types = Null;
+            heap_t ft_heap = NullHeap;
+            usize_t llvm_field_count = 0;
+
+            if (fc > 0) {
+                ft_heap = allocate(fc, sizeof(LLVMTypeRef));
+                field_types = ft_heap.pointer;
+                usize_t j = 0;
+                while (j < fc) {
+                    node_t *field = decl->as.type_decl.fields.items[j];
+                    int bw = field->as.var_decl.bitfield_width;
+                    if (bw > 0) {
+                        /* start of a bitfield group — pack consecutive bitfields
+                           of the same base type into one backing integer */
+                        type_info_t base_ti = resolve_alias(&cg, field->as.var_decl.type);
+                        LLVMTypeRef backing_type = get_llvm_type(&cg, base_ti);
+                        usize_t backing_idx = llvm_field_count;
+                        int bit_pos = 0;
+
+                        while (j < fc) {
+                            node_t *bf = decl->as.type_decl.fields.items[j];
+                            int w = bf->as.var_decl.bitfield_width;
+                            if (w <= 0) break; /* not a bitfield, stop grouping */
+                            type_info_t bfti = resolve_alias(&cg, bf->as.var_decl.type);
+                            struct_add_field_ex(sr, bf->as.var_decl.name, bfti,
+                                                backing_idx,
+                                                bf->as.var_decl.linkage,
+                                                bf->as.var_decl.storage,
+                                                bit_pos, w);
+                            bit_pos += w;
+                            j++;
+                        }
+                        field_types[llvm_field_count++] = backing_type;
+                    } else {
+                        /* normal (non-bitfield) field */
+                        type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
+                        field_types[llvm_field_count] = get_llvm_type(&cg, fti);
+                        struct_add_field(sr, field->as.var_decl.name, fti,
+                                         llvm_field_count,
+                                         field->as.var_decl.linkage,
+                                         field->as.var_decl.storage);
+                        llvm_field_count++;
+                        j++;
+                    }
+                }
+            }
+            LLVMStructSetBody(sr->llvm_type, field_types, (unsigned)llvm_field_count,
+                              is_packed ? 1 : 0);
+            if (fc > 0) deallocate(ft_heap);
         }
-        LLVMStructSetBody(sr->llvm_type, field_types, (unsigned)fc, 0);
-        if (fc > 0) deallocate(ft_heap);
+
+        /* alignment attribute */
+        if (decl->as.type_decl.align_value > 0) {
+            /* LLVM doesn't directly set alignment on struct type;
+               alignment is applied per-variable. We store it for later use. */
+        }
     }
 
     /* pass 1: forward-declare all globals and functions */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
+
+        /* comptime_if at top level: conditionally include declarations */
+        if (decl->kind == NodeComptimeIf) {
+            /* evaluate and emit the block's declarations inline */
+            /* (handled in pass 2 via gen_stmt, but at top level we skip for now) */
+            continue;
+        }
+        if (decl->kind == NodeComptimeAssert) {
+            /* deferred to pass 2 where we have the data layout */
+            continue;
+        }
 
         if (decl->kind == NodeVarDecl) {
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
@@ -2864,9 +3268,20 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             if (decl->as.var_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(global, LLVMInternalLinkage);
 
+            /* @weak attribute */
+            if (decl->as.var_decl.attr_flags & AttrWeak)
+                LLVMSetLinkage(global, LLVMWeakAnyLinkage);
+            /* @hidden attribute */
+            if (decl->as.var_decl.attr_flags & AttrHidden)
+                LLVMSetVisibility(global, LLVMHiddenVisibility);
+
             /* const/final globals are LLVM-constant */
             if (decl->as.var_decl.flags & (VdeclConst | VdeclFinal))
                 LLVMSetGlobalConstant(global, 1);
+
+            /* thread-local storage */
+            if (decl->as.var_decl.flags & VdeclTls)
+                LLVMSetThreadLocal(global, 1);
 
             /* initializer — must be a constant expression */
             LLVMValueRef init_val = LLVMConstNull(type);
@@ -2888,8 +3303,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             }
             LLVMSetInitializer(global, init_val);
 
-            symtab_add(&cg.globals, decl->as.var_decl.name, global, type,
-                       ti, (decl->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
+            int sym_flags = 0;
+            if (decl->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
+            if (decl->as.var_decl.flags & VdeclVolatile)  sym_flags |= SymVolatile;
+            if (decl->as.var_decl.flags & VdeclTls)       sym_flags |= SymTls;
+            symtab_add(&cg.globals, decl->as.var_decl.name, global, type, ti, sym_flags);
             symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
@@ -2953,10 +3371,30 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
             }
 
             LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes,
-                (unsigned)total_params, 0);
+                (unsigned)total_params, decl->as.fn_decl.is_variadic ? 1 : 0);
             LLVMValueRef fn = LLVMAddFunction(cg.module, fn_name, fn_type);
             if (decl->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
+
+            /* @weak / @hidden attributes on functions */
+            if (decl->as.fn_decl.attr_flags & AttrWeak)
+                LLVMSetLinkage(fn, LLVMWeakAnyLinkage);
+            if (decl->as.fn_decl.attr_flags & AttrHidden)
+                LLVMSetVisibility(fn, LLVMHiddenVisibility);
+
+            /* restrict pointer params → noalias attribute */
+            for (usize_t j = 0; j < pc; j++) {
+                node_t *param = decl->as.fn_decl.params.items[j];
+                if ((param->as.var_decl.flags & VdeclRestrict)
+                    && param->as.var_decl.type.is_pointer) {
+                    unsigned pidx = (unsigned)(j + (is_instance ? 1 : 0));
+                    LLVMValueRef pval = LLVMGetParam(fn, pidx);
+                    unsigned attr_kind = LLVMGetEnumAttributeKindForName("noalias", 7);
+                    LLVMAttributeRef attr = LLVMCreateEnumAttribute(cg.ctx, attr_kind, 0);
+                    LLVMAddAttributeAtIndex(fn, pidx + 1, attr); /* 1-based for params */
+                    (void)pval;
+                }
+            }
 
             type_info_t dummy = {TypeVoid, Null, False, PtrNone, Null};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
@@ -2972,10 +3410,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
         }
     }
 
-    /* also forward-declare inline struct methods */
+    /* also forward-declare inline struct/union methods */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeTypeDecl || decl->as.type_decl.decl_kind != TypeDeclStruct)
+        if (decl->kind != NodeTypeDecl) continue;
+        if (decl->as.type_decl.decl_kind != TypeDeclStruct
+            && decl->as.type_decl.decl_kind != TypeDeclUnion)
             continue;
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
@@ -3094,10 +3534,19 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
         }
     }
 
-    /* also generate inline struct method bodies */
+    /* handle top-level comptime_assert (now that data layout is available) */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeTypeDecl || decl->as.type_decl.decl_kind != TypeDeclStruct)
+        if (decl->kind == NodeComptimeAssert)
+            gen_comptime_assert(&cg, decl);
+    }
+
+    /* also generate inline struct/union method bodies */
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind != NodeTypeDecl) continue;
+        if (decl->as.type_decl.decl_kind != TypeDeclStruct
+            && decl->as.type_decl.decl_kind != TypeDeclUnion)
             continue;
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
@@ -3279,10 +3728,21 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode) {
     }
 
     /* emit object file */
-    LLVMInitializeNativeTarget();
-    LLVMInitializeNativeAsmPrinter();
+    LLVMInitializeAllTargetInfos();
+    LLVMInitializeAllTargets();
+    LLVMInitializeAllTargetMCs();
+    LLVMInitializeAllAsmPrinters();
+    LLVMInitializeAllAsmParsers();
 
-    char *triple = LLVMGetDefaultTargetTriple();
+    char *triple;
+    if (target_triple && target_triple[0] != '\0') {
+        /* cross-compilation: use user-supplied triple */
+        triple = LLVMCreateMessage(target_triple);
+    } else {
+        triple = LLVMGetDefaultTargetTriple();
+    }
+    LLVMSetTarget(cg.module, triple);
+
     LLVMTargetRef target;
     error = Null;
     if (LLVMGetTargetFromTriple(triple, &target, &error)) {

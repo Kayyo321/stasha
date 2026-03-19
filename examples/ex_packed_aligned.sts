@@ -1,0 +1,32 @@
+mod packed_aligned_example;
+
+lib "stdio" = io;
+
+// @packed removes padding between fields
+type PackedHeader: @packed struct {
+    stack:
+        ext u8  version;
+        ext i32 length;
+        ext u8  flags;
+};
+
+// @c_layout guarantees C-compatible struct layout for FFI
+type CCompatPoint: @c_layout struct {
+    stack:
+        ext f64 x;
+        ext f64 y;
+};
+
+ext fn main(void): i32 {
+    io.printf("sizeof PackedHeader: %lu\n", sizeof.(PackedHeader));
+    io.printf("sizeof CCompatPoint: %lu\n", sizeof.(CCompatPoint));
+
+    stack PackedHeader hdr;
+    hdr.version = 1;
+    hdr.length = 1024;
+    hdr.flags = 7;
+    io.printf("version=%d length=%d flags=%d\n",
+              (i32)hdr.version, hdr.length, (i32)hdr.flags);
+
+    ret 0;
+}

@@ -1,0 +1,23 @@
+mod simple_rng;
+
+lib "stdlib" = crng;
+lib "time" = ctime;
+
+ext const i32 RandMax = 2147483647;
+
+ext fn random_range(stack i32 min, max): i32 {
+    return crng.rand() % (max - min + 1) + min;
+}
+
+ext fn random_frange(stack f32 fmin, fmax): f32 {
+    stack final f32 scale = (f32)crng.rand() / (f32)RandMax;
+    return min + scale * (max - min);
+}
+
+ext fn random_seed(stack u32 seed): void {
+    crng.srand(seed);
+}
+
+ext fn random_set_seed_to_time(void): void {
+    crng.srand(ctime.time(0));
+}

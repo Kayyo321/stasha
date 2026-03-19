@@ -145,6 +145,7 @@ static void resolve_imports(node_t *ast, const char *input_path) {
 typedef enum {
     EmitExe,   /* stasha build  — link into executable  */
     EmitLib,   /* stasha lib    — archive into .a        */
+    EmitDylib, /* stasha dylib  — link into .so/.dylib   */
     EmitTest,  /* stasha test   — executable in test mode */
 } emit_mode_t;
 
@@ -159,22 +160,27 @@ static void print_help(void) {
         "Usage:\n"
         "  stasha [build] <file.sts> [-o <output>]   Compile to executable\n"
         "  stasha lib     <file.sts> [-o <output>]   Compile to static library\n"
+        "  stasha dylib   <file.sts> [-o <output>]   Compile to dynamic library\n"
         "  stasha test    <file.sts> [-o <output>]   Compile and run tests\n"
         "\n"
         "Options:\n"
-        "  -o <output>    Set output path\n"
-        "                   build default: a.out\n"
-        "                   lib   default: lib<name>.a  (derived from filename)\n"
-        "                   test  default: a.test\n"
-        "  --version      Print version and exit\n"
-        "  -h, --help     Print this help and exit\n"
+        "  -o <output>        Set output path\n"
+        "                       build default: a.out\n"
+        "                       lib   default: lib<name>.a  (derived from filename)\n"
+        "                       dylib default: lib<name>.dylib / .so\n"
+        "                       test  default: a.test\n"
+        "  --target <triple>  Cross-compile for the given target triple\n"
+        "  --version          Print version and exit\n"
+        "  -h, --help         Print this help and exit\n"
         "\n"
         "Examples:\n"
-        "  stasha main.sts                    # -> a.out\n"
-        "  stasha build main.sts -o myapp     # -> myapp\n"
-        "  stasha lib   mathlib.sts           # -> libmathlib.a\n"
-        "  stasha lib   mathlib.sts -o out.a  # -> out.a\n"
-        "  stasha test  main.sts              # run tests\n",
+        "  stasha main.sts                            # -> a.out\n"
+        "  stasha build main.sts -o myapp             # -> myapp\n"
+        "  stasha lib   mathlib.sts                   # -> libmathlib.a\n"
+        "  stasha lib   mathlib.sts -o out.a          # -> out.a\n"
+        "  stasha dylib mathlib.sts                   # -> libmathlib.dylib\n"
+        "  stasha test  main.sts                      # run tests\n"
+        "  stasha build main.sts --target x86_64-linux-gnu\n",
         STASHA_VERSION
     );
 }
@@ -195,6 +201,30 @@ static void derive_lib_name(const char *input_path, char *out, usize_t out_size)
     if (dot) *dot = '\0';
 
     snprintf(out, out_size, "lib%s.a", stem);
+}
+
+/*
+ * Derive a default dynamic library output name.
+ * "path/to/mathlib.sts" -> "libmathlib.dylib" (macOS) or "libmathlib.so" (Linux)
+ */
+static void derive_dylib_name(const char *input_path, char *out, usize_t out_size) {
+    const char *base = strrchr(input_path, '/');
+    if (!base) base = strrchr(input_path, '\\');
+    base = base ? base + 1 : input_path;
+
+    char stem[256];
+    strncpy(stem, base, sizeof(stem) - 1);
+    stem[sizeof(stem) - 1] = '\0';
+    char *dot = strrchr(stem, '.');
+    if (dot) *dot = '\0';
+
+#if defined(__APPLE__)
+    snprintf(out, out_size, "lib%s.dylib", stem);
+#elif defined(_WIN32)
+    snprintf(out, out_size, "%s.dll", stem);
+#else
+    snprintf(out, out_size, "lib%s.so", stem);
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -227,6 +257,9 @@ int main(int argc, char **argv) {
     } else if (strcmp(argv[1], "lib") == 0) {
         mode = EmitLib;
         file_arg = 2;
+    } else if (strcmp(argv[1], "dylib") == 0) {
+        mode = EmitDylib;
+        file_arg = 2;
     } else if (strcmp(argv[1], "test") == 0) {
         mode = EmitTest;
         file_arg = 2;
@@ -248,6 +281,10 @@ int main(int argc, char **argv) {
             derive_lib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
             output_path = lib_name_buf;
             break;
+        case EmitDylib:
+            derive_dylib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
+            output_path = lib_name_buf;
+            break;
         case EmitTest:
             output_path = "a.test";
             break;
@@ -257,9 +294,12 @@ int main(int argc, char **argv) {
     }
 
     /* ── parse remaining options ── */
+    const char *target_triple = Null;
     for (int i = file_arg + 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
             output_path = argv[++i];
+        else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
+            target_triple = argv[++i];
     }
 
     /* ── compile ── */
@@ -281,7 +321,7 @@ int main(int argc, char **argv) {
 
     boolean_t test_mode = (mode == EmitTest) ? True : False;
     log_msg("generating code%s", test_mode ? " (test mode)" : "");
-    if (codegen(ast, obj_path, test_mode) != Ok) {
+    if (codegen(ast, obj_path, test_mode, target_triple) != Ok) {
         log_err("code generation failed");
         quit(Err);
     }
@@ -291,6 +331,26 @@ int main(int argc, char **argv) {
         if (archive_object(obj_path, output_path) != Ok) {
             remove(obj_path);
             log_err("archiving failed");
+            quit(Err);
+        }
+        remove(obj_path);
+    } else if (mode == EmitDylib) {
+        /* collect custom library paths */
+        const char *extra_lib_buf[64];
+        usize_t extra_lib_count = 0;
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *d = ast->as.module.decls.items[i];
+            if (d->kind == NodeLib && d->as.lib_decl.path
+                    && extra_lib_count < 63)
+                extra_lib_buf[extra_lib_count++] = d->as.lib_decl.path;
+        }
+        extra_lib_buf[extra_lib_count] = Null;
+
+        log_msg("linking dynamic library");
+        if (link_dynamic(obj_path, output_path,
+                         extra_lib_count > 0 ? extra_lib_buf : Null) != Ok) {
+            remove(obj_path);
+            log_err("dynamic linking failed");
             quit(Err);
         }
         remove(obj_path);

@@ -200,6 +200,10 @@ static node_t *parse_match_stmt(parser_t *p);
 static node_t *parse_var_decl(parser_t *p, linkage_t linkage);
 static node_t *parse_defer_stmt(parser_t *p);
 static node_t *parse_storage_group(parser_t *p, storage_t storage);
+static node_t *parse_switch_stmt(parser_t *p);
+static node_t *parse_asm_stmt(parser_t *p);
+static node_t *parse_comptime_if(parser_t *p);
+static node_t *parse_comptime_assert(parser_t *p);
 
 static boolean_t can_start_type(parser_t *p) {
     return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn);
@@ -222,6 +226,7 @@ static boolean_t can_start_param_type(parser_t *p) {
 static boolean_t can_start_var_decl(parser_t *p) {
     return check(p, TokStack) || check(p, TokHeap) || check(p, TokAtomic)
         || check(p, TokConst)  || check(p, TokFinal)
+        || check(p, TokVolatile) || check(p, TokTls)
         || is_builtin_type_token(p->current.kind);
 }
 
@@ -437,6 +442,28 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* comptime_assert.(expr) or comptime_assert.(expr, 'msg') */
+    if (check(p, TokComptimeAssert)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *expr = parse_expr(p);
+        char *msg = Null;
+        if (match_tok(p, TokComma)) {
+            if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                advance_parser(p);
+                token_t t = p->previous;
+                msg = ast_strdup(t.start + 1, t.length - 2);
+            }
+        }
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeComptimeAssert, line);
+        n->as.comptime_assert.expr = expr;
+        n->as.comptime_assert.message = msg;
+        return n;
+    }
+
     /* mov.(ptr, new_size) — realloc */
     if (check(p, TokMov)) {
         usize_t line = p->current.line;
@@ -477,11 +504,40 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* identifier */
+    /* identifier — may be designated initializer: Type { .x = 1, .y = 2 } */
     if (check(p, TokIdent)) {
         advance_parser(p);
-        node_t *n = make_node(NodeIdentExpr, p->previous.line);
-        n->as.ident.name = copy_token_text(p->previous);
+        char *name = copy_token_text(p->previous);
+        usize_t line = p->previous.line;
+
+        /* designated initializer: Type { .field = val, ... } */
+        if (check(p, TokLBrace)) {
+            parser_state_t snap = save_state(p);
+            advance_parser(p); /* consume '{' */
+            if (check(p, TokDot)) {
+                /* looks like designated init */
+                node_t *n = make_node(NodeDesigInit, line);
+                n->as.desig_init.type_name = name;
+                node_list_init(&n->as.desig_init.fields);
+                node_list_init(&n->as.desig_init.values);
+                do {
+                    consume(p, TokDot, "'.'");
+                    token_t fname = consume(p, TokIdent, "field name");
+                    node_t *fn_node = make_node(NodeIdentExpr, fname.line);
+                    fn_node->as.ident.name = copy_token_text(fname);
+                    node_list_push(&n->as.desig_init.fields, fn_node);
+                    consume(p, TokEq, "'='");
+                    node_list_push(&n->as.desig_init.values, parse_expr(p));
+                } while (match_tok(p, TokComma) && check(p, TokDot));
+                consume(p, TokRBrace, "'}'");
+                return n;
+            }
+            /* not a designated init — restore and fall through */
+            restore_state(p, snap);
+        }
+
+        node_t *n = make_node(NodeIdentExpr, line);
+        n->as.ident.name = name;
         return n;
     }
 
@@ -671,7 +727,8 @@ static node_t *parse_unary(parser_t *p) {
 
 static node_t *parse_multiplication(parser_t *p) {
     node_t *left = parse_unary(p);
-    while (check(p, TokStar) || check(p, TokSlash) || check(p, TokPercent)) {
+    while (check(p, TokStar) || check(p, TokSlash) || check(p, TokPercent)
+           || check(p, TokStarPercent) || check(p, TokStarBang)) {
         token_kind_t op = p->current.kind;
         usize_t line = p->current.line;
         advance_parser(p);
@@ -689,7 +746,9 @@ static node_t *parse_multiplication(parser_t *p) {
 
 static node_t *parse_addition(parser_t *p) {
     node_t *left = parse_multiplication(p);
-    while (check(p, TokPlus) || check(p, TokMinus)) {
+    while (check(p, TokPlus) || check(p, TokMinus)
+           || check(p, TokPlusPercent) || check(p, TokMinusPercent)
+           || check(p, TokPlusBang) || check(p, TokMinusBang)) {
         token_kind_t op = p->current.kind;
         usize_t line = p->current.line;
         advance_parser(p);
@@ -1047,9 +1106,11 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     else if (match_tok(p, TokHeap))  storage = StorageHeap;
     else if (p->group_storage != StorageDefault) storage = p->group_storage;
 
-    if (match_tok(p, TokAtomic)) flags |= VdeclAtomic;
-    if (match_tok(p, TokConst))  flags |= VdeclConst;
-    if (match_tok(p, TokFinal))  flags |= VdeclFinal;
+    if (match_tok(p, TokAtomic))   flags |= VdeclAtomic;
+    if (match_tok(p, TokConst))    flags |= VdeclConst;
+    if (match_tok(p, TokFinal))    flags |= VdeclFinal;
+    if (match_tok(p, TokVolatile)) flags |= VdeclVolatile;
+    if (match_tok(p, TokTls))      flags |= VdeclTls;
 
     if (!can_start_type(p)) {
         log_err("line %lu: expected type", p->current.line);
@@ -1157,16 +1218,19 @@ static node_t *parse_storage_group(parser_t *p, storage_t storage) {
 }
 
 static node_t *parse_statement(parser_t *p) {
-    if (check(p, TokLBrace))    return parse_block(p);
-    if (check(p, TokFor))       return parse_for_stmt(p);
-    if (check(p, TokWhile))     return parse_while_stmt(p);
-    if (check(p, TokDo))        return parse_do_while_stmt(p);
-    if (check(p, TokInf))       return parse_inf_loop(p);
-    if (check(p, TokIf))        return parse_if_stmt(p);
-    if (check(p, TokRet))       return parse_ret_stmt(p);
-    if (check(p, TokDebug))     return parse_debug_stmt(p);
-    if (check(p, TokMatch))     return parse_match_stmt(p);
-    if (check(p, TokDefer))     return parse_defer_stmt(p);
+    if (check(p, TokLBrace))       return parse_block(p);
+    if (check(p, TokFor))          return parse_for_stmt(p);
+    if (check(p, TokWhile))        return parse_while_stmt(p);
+    if (check(p, TokDo))           return parse_do_while_stmt(p);
+    if (check(p, TokInf))          return parse_inf_loop(p);
+    if (check(p, TokIf))           return parse_if_stmt(p);
+    if (check(p, TokRet))          return parse_ret_stmt(p);
+    if (check(p, TokDebug))        return parse_debug_stmt(p);
+    if (check(p, TokMatch))        return parse_match_stmt(p);
+    if (check(p, TokDefer))        return parse_defer_stmt(p);
+    if (check(p, TokSwitch))       return parse_switch_stmt(p);
+    if (check(p, TokAsm))          return parse_asm_stmt(p);
+    if (check(p, TokComptimeIf))   return parse_comptime_if(p);
 
     if (check(p, TokBreak)) {
         usize_t line = p->current.line;
@@ -1306,6 +1370,17 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             field->as.var_decl.type = ftype;
             field->as.var_decl.storage = current_section;
             field->as.var_decl.linkage = field_link;
+            field->as.var_decl.bitfield_width = 0;
+            /* bitfield: type name: width */
+            if (match_tok(p, TokColon)) {
+                if (check(p, TokIntLit)) {
+                    field->as.var_decl.bitfield_width = (int)parse_int_value(p->current);
+                    advance_parser(p);
+                } else {
+                    log_err("line %lu: expected bitfield width", p->current.line);
+                    p->had_error = True;
+                }
+            }
             node_list_push(&decl->as.type_decl.fields, field);
         } while (match_tok(p, TokComma));
         consume(p, TokSemicolon, "';'");
@@ -1403,15 +1478,51 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
     node_t *n = make_node(NodeTypeDecl, line);
     n->as.type_decl.name = copy_token_text(name_tok);
     n->as.type_decl.linkage = linkage;
+    n->as.type_decl.attr_flags = 0;
+    n->as.type_decl.align_value = 0;
     node_list_init(&n->as.type_decl.fields);
     node_list_init(&n->as.type_decl.methods);
     node_list_init(&n->as.type_decl.variants);
+
+    /* parse attributes before struct/union keyword: @packed @align(N) @c_layout */
+    while (check(p, TokAt)) {
+        advance_parser(p); /* consume '@' */
+        if (check(p, TokIdent)) {
+            const char *s = p->current.start;
+            usize_t len = p->current.length;
+            if (len == 6 && memcmp(s, "packed", 6) == 0) {
+                n->as.type_decl.attr_flags |= AttrPacked;
+                advance_parser(p);
+            } else if (len == 8 && memcmp(s, "c_layout", 8) == 0) {
+                n->as.type_decl.attr_flags |= AttrCLayout;
+                advance_parser(p);
+            } else if (len == 5 && memcmp(s, "align", 5) == 0) {
+                advance_parser(p);
+                consume(p, TokLParen, "'('");
+                if (check(p, TokIntLit)) {
+                    n->as.type_decl.align_value = (unsigned)parse_int_value(p->current);
+                    advance_parser(p);
+                }
+                consume(p, TokRParen, "')'");
+            } else {
+                log_err("line %lu: unknown attribute '@%.*s'",
+                        p->current.line, (int)len, s);
+                p->had_error = True;
+                advance_parser(p);
+            }
+        }
+    }
 
     if (check(p, TokStruct)) {
         advance_parser(p);
         n->as.type_decl.decl_kind = TypeDeclStruct;
         parse_struct_body(p, n);
         match_tok(p, TokSemicolon); /* optional trailing ; */
+    } else if (check(p, TokUnion)) {
+        advance_parser(p);
+        n->as.type_decl.decl_kind = TypeDeclUnion;
+        parse_struct_body(p, n); /* reuse struct body parser for fields */
+        match_tok(p, TokSemicolon);
     } else if (check(p, TokEnum)) {
         advance_parser(p);
         n->as.type_decl.decl_kind = TypeDeclEnum;
@@ -1532,16 +1643,26 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     consume(p, TokLParen, "'('");
     node_list_t params;
     node_list_init(&params);
+    boolean_t is_variadic = False;
     if (!check(p, TokRParen) && !check(p, TokVoid)) {
         type_info_t last_type = NO_TYPE;
         storage_t last_storage = StorageDefault;
         do {
+            /* variadic: ... must be last */
+            if (check(p, TokDotDotDot)) {
+                advance_parser(p);
+                is_variadic = True;
+                break;
+            }
             /* optional storage qualifier on parameter */
             storage_t param_storage = StorageDefault;
             if (check(p, TokStack))      { param_storage = StorageStack;  advance_parser(p); }
             else if (check(p, TokHeap)) { param_storage = StorageHeap;   advance_parser(p); }
             if (param_storage != StorageDefault) last_storage = param_storage;
             else param_storage = last_storage;
+            /* optional restrict qualifier */
+            boolean_t is_restrict = False;
+            if (match_tok(p, TokRestrict)) is_restrict = True;
             if (can_start_param_type(p))
                 last_type = parse_type(p);
             token_t pname = consume(p, TokIdent, "parameter name");
@@ -1549,6 +1670,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             param->as.var_decl.name = copy_token_text(pname);
             param->as.var_decl.type = last_type;
             param->as.var_decl.storage = param_storage;
+            if (is_restrict) param->as.var_decl.flags |= VdeclRestrict;
             node_list_push(&params, param);
         } while (match_tok(p, TokComma));
     } else if (check(p, TokVoid)) {
@@ -1593,6 +1715,140 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     n->as.fn_decl.body = body;
     n->as.fn_decl.is_method = is_method;
     n->as.fn_decl.struct_name = struct_name;
+    n->as.fn_decl.is_variadic = is_variadic;
+    return n;
+}
+
+/* ── switch statement ── */
+/*
+ * switch expr {
+ *     case val1: { ... }
+ *     case val2, val3: { ... }
+ *     default: { ... }
+ * }
+ */
+static node_t *parse_switch_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'switch' */
+    node_t *expr = parse_expr(p);
+    consume(p, TokLBrace, "'{'");
+
+    node_t *n = make_node(NodeSwitchStmt, line);
+    n->as.switch_stmt.expr = expr;
+    node_list_init(&n->as.switch_stmt.cases);
+
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        node_t *c = make_node(NodeSwitchCase, p->current.line);
+        node_list_init(&c->as.switch_case.values);
+        c->as.switch_case.is_default = False;
+
+        if (check(p, TokCase)) {
+            advance_parser(p);
+            do {
+                node_list_push(&c->as.switch_case.values, parse_expr(p));
+            } while (match_tok(p, TokComma));
+            consume(p, TokColon, "':'");
+        } else if (check(p, TokDefault)) {
+            advance_parser(p);
+            c->as.switch_case.is_default = True;
+            consume(p, TokColon, "':'");
+        } else {
+            log_err("line %lu: expected 'case' or 'default'", p->current.line);
+            p->had_error = True;
+            advance_parser(p);
+            continue;
+        }
+        c->as.switch_case.body = parse_block(p);
+        node_list_push(&n->as.switch_stmt.cases, c);
+    }
+
+    consume(p, TokRBrace, "'}'");
+    return n;
+}
+
+/* ── inline assembly ── */
+/* asm { "assembly code" } or asm("code", "constraints", operands...) */
+static node_t *parse_asm_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'asm' */
+
+    node_t *n = make_node(NodeAsmStmt, line);
+    node_list_init(&n->as.asm_stmt.operands);
+    n->as.asm_stmt.constraints = Null;
+
+    if (check(p, TokLBrace)) {
+        /* asm { "code" } */
+        advance_parser(p);
+        if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+            advance_parser(p);
+            token_t t = p->previous;
+            n->as.asm_stmt.code = ast_strdup(t.start + 1, t.length - 2);
+        } else {
+            log_err("line %lu: expected assembly string in asm block", p->current.line);
+            p->had_error = True;
+            n->as.asm_stmt.code = ast_strdup("", 0);
+        }
+        consume(p, TokRBrace, "'}'");
+    } else {
+        /* asm("code", "constraints", operands...) */
+        consume(p, TokLParen, "'('");
+        if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+            advance_parser(p);
+            token_t t = p->previous;
+            n->as.asm_stmt.code = ast_strdup(t.start + 1, t.length - 2);
+        } else {
+            n->as.asm_stmt.code = ast_strdup("", 0);
+        }
+        if (match_tok(p, TokComma)) {
+            if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                advance_parser(p);
+                token_t t = p->previous;
+                n->as.asm_stmt.constraints = ast_strdup(t.start + 1, t.length - 2);
+            }
+            while (match_tok(p, TokComma))
+                node_list_push(&n->as.asm_stmt.operands, parse_expr(p));
+        }
+        consume(p, TokRParen, "')'");
+        consume(p, TokSemicolon, "';'");
+    }
+
+    return n;
+}
+
+/* ── compile-time conditional compilation ── */
+/*
+ * comptime_if platform == "macos" { ... }
+ * comptime_if arch == "aarch64" { ... } else { ... }
+ */
+static node_t *parse_comptime_if(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'comptime_if' */
+
+    /* key == "value" */
+    token_t key_tok = consume(p, TokIdent, "comptime key (platform, arch, os)");
+    char *key = copy_token_text(key_tok);
+    consume(p, TokEqEq, "'=='");
+    char *value = Null;
+    if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+        advance_parser(p);
+        token_t t = p->previous;
+        value = ast_strdup(t.start + 1, t.length - 2);
+    } else {
+        log_err("line %lu: expected string after '==' in comptime_if", p->current.line);
+        p->had_error = True;
+        value = ast_strdup("", 0);
+    }
+
+    node_t *body = parse_block(p);
+    node_t *else_body = Null;
+    if (match_tok(p, TokElse))
+        else_body = parse_block(p);
+
+    node_t *n = make_node(NodeComptimeIf, line);
+    n->as.comptime_if.key = key;
+    n->as.comptime_if.value = value;
+    n->as.comptime_if.body = body;
+    n->as.comptime_if.else_body = else_body;
     return n;
 }
 
@@ -1627,6 +1883,34 @@ static node_t *parse_top_decl(parser_t *p) {
     /* test block */
     if (check(p, TokTest)) return parse_test_block(p);
 
+    /* comptime_if at top level */
+    if (check(p, TokComptimeIf)) return parse_comptime_if(p);
+
+    /* comptime_assert at top level (as statement) */
+    if (check(p, TokComptimeAssert)) return parse_expr_stmt(p);
+
+    /* attributes: @weak, @hidden (collected and passed to fn/var decl) */
+    int attr_flags = 0;
+    while (check(p, TokAt)) {
+        advance_parser(p);
+        if (check(p, TokIdent)) {
+            const char *s = p->current.start;
+            usize_t len = p->current.length;
+            if (len == 4 && memcmp(s, "weak", 4) == 0) {
+                attr_flags |= AttrWeak;
+                advance_parser(p);
+            } else if (len == 6 && memcmp(s, "hidden", 6) == 0) {
+                attr_flags |= AttrHidden;
+                advance_parser(p);
+            } else {
+                log_err("line %lu: unknown attribute '@%.*s'",
+                        p->current.line, (int)len, s);
+                p->had_error = True;
+                advance_parser(p);
+            }
+        }
+    }
+
     linkage_t linkage = LinkageNone;
     if (check(p, TokInt) || check(p, TokExt)) {
         linkage = check(p, TokInt) ? LinkageInternal : LinkageExternal;
@@ -1637,10 +1921,19 @@ static node_t *parse_top_decl(parser_t *p) {
     if (check(p, TokType)) return parse_type_decl(p, linkage);
 
     /* function declaration */
-    if (check(p, TokFn)) return parse_fn_decl(p, linkage);
+    if (check(p, TokFn)) {
+        node_t *fn = parse_fn_decl(p, linkage);
+        fn->as.fn_decl.attr_flags = attr_flags;
+        return fn;
+    }
 
     /* global variable */
-    return parse_var_decl(p, linkage);
+    {
+        node_t *var = parse_var_decl(p, linkage);
+        if (var->kind == NodeVarDecl)
+            var->as.var_decl.attr_flags = attr_flags;
+        return var;
+    }
 }
 
 /* ── entry point ── */

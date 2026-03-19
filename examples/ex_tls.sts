@@ -1,0 +1,12 @@
+mod tls_example;
+
+lib "stdio" = io;
+
+// thread-local storage: each thread gets its own copy
+ext tls i32 thread_counter = 0;
+
+ext fn main(void): i32 {
+    thread_counter = 42;
+    io.printf("thread_counter = %d\n", thread_counter);
+    ret 0;
+}

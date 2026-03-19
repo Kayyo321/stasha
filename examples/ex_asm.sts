@@ -1,0 +1,14 @@
+mod asm_example;
+
+lib "stdio" = io;
+
+ext fn main(void): i32 {
+    io.printf("before inline asm\n");
+
+    // inline assembly — block syntax
+    asm { "nop" }
+
+    io.printf("after nop\n");
+
+    ret 0;
+}

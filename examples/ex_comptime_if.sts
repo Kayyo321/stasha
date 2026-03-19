@@ -1,0 +1,20 @@
+mod comptime_if_example;
+
+lib "stdio" = io;
+
+ext fn main(void): i32 {
+    // comptime_if evaluates at compile time — dead code is eliminated
+    comptime_if platform == "macos" {
+        io.printf("Running on macOS\n");
+    } else {
+        io.printf("Running on another platform\n");
+    }
+
+    comptime_if arch == "aarch64" {
+        io.printf("Architecture: ARM64\n");
+    } else {
+        io.printf("Architecture: x86_64 or other\n");
+    }
+
+    ret 0;
+}
