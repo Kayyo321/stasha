@@ -1,0 +1,13 @@
+mod ex_print;
+
+fn main(void): i16 { // TODO remove the debug keyword
+    print.('Hello, World!\n');
+
+    print.('Nice to meet you, {}!\n', 'Sully!');
+    print.('{} + {} * {} = {}', 1, 2, 3, 1+2*3);
+
+    // similar to new and rem, print is a builtin that 
+    // turns all these into printf statements with the correct fmt
+
+    ret 0;
+}

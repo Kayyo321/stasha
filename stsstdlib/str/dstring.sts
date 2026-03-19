@@ -1,42 +1,210 @@
 mod dstring;
 
+lib "stdio" = io;
+
 type dstring_t: struct {
 heap:
-    ext i8 *characters;
+    int i8 *chars; // TODO: change parse rules so you CAN return an ext 
+                   // pointer to int data AS LONG as the ext pointer only has 
+                   // READ permissions
 
 stack:
     int i32 len, cap;
+
+    int fn make_space_for(stack u32 add): void {
+        final needed = dstring_t.(len) + add + 1; // +1 for null terminator
+
+        if (needed <= dstring_t.(cap))
+            ret;
+
+        i32 new_cap = dstring_t.(cap);
+
+        new_cap = (new_cap <= 0) ? 8 : new_cap;
+
+        while (new_cap < needed)
+            new_cap <<= 1;
+
+        dstring_t.(chars) = mov.(dstring_t.(chars), new_cap);
+        dstring_t.(cap) = new_cap;
+    }
+
+    ext fn append_ch(stack i8 ch): void {
+        dstring_t.(make_space_for)(1);
+
+        dstring_t.(chars)[dstring_t.(len)++] = ch;
+        dstring_t.(chars)[dstring_t.(len)] = 0;
+    }
+
+    ext fn append_cstr(stack i8 *r txt): void {
+        final txt_len = byte_cnt_till_term(txt);
+
+        dstring_t.(make_space_for)(txt_len);
+
+        cpy_str_from(
+            dstring_t.(chars) + dstring_t.(len),
+            txt,
+            txt_len
+        );
+
+        dstring_t.(len) += txt_len;
+        dstring_t.(chars)[dstring_t.(len)] = 0;
+    }
+
+    ext fn append_dstr(stack dstring_t *r other): void {
+        if (!other || other.length() <= 0)
+            ret;
+
+        dstring_t.(make_space_for)(other.length());
+
+        cpy_str_from(
+            dstring_t.(characters) + dstring_t.(len),
+            other.characters,
+            other.len
+        );
+
+        dstring_t.(len) += other.len;
+        dstring_t.(characters)[dstring_t.(len)] = 0;
+    }
+
+    ext fn append_i8(stack i8 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%d", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_i16(stack i16 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%d", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_i32(stack i32 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%d", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_i64(stack i64 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%lld", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_u8(stack u8 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%u", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_u16(stack u16 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%u", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_u32(stack u32 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%u", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_u64(stack u64 v): void {
+        final i8 buf[32];
+        io.snprintf(buf, sizeof.(buf), "%llu", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_f32(stack f32 v): void {
+        final i8 buf[64];
+        io.snprintf(buf, sizeof.(buf), "%g", v);
+        append_cstr(buf);
+    }
+
+    ext fn append_f64(stack f64 v): void {
+        final i8 buf[64];
+        io.snprintf(buf, sizeof.(buf), "%g", v);
+        append_cstr(buf);
+    }
+
+    ext fn insert_ch(stack i8 ch, stack u32 pos): void {
+        if (pos > dstring_t.(len))
+            pos = dstring_t.(len);
+
+        dstring_t.(make_space_for)(1);
+
+        for (i32 i = dstring_t.(len); i >= pos; --i) {
+            dstring_t.(chars)[i + 1] =
+                dstring_t.(chars)[i];
+        }
+
+        dstring_t.(chars)[pos] = ch;
+        dstring_t.(len)++;
+    }
+
+    ext fn clear(void): void {
+        dstring_t.(len) = 0;
+
+        if (dstring_t.(chars))
+            dstring_t.(chars)[0] = 0;
+    }
+
+    ext fn length(void): u32 {
+        return dstring_t.(len);
+    }
+
+    ext fn characters(void): heap i8 *r {
+        return dstring_t.(chars);
+    }
 }
 
 ext fn dstring_t.new(void): dstring_t {
-    return dstring_t{.characters = nil, .len = 0, .cap = 0};
+    ret dstring_t{
+        .chars = nil,
+        .len = 0,
+        .cap = 0
+    };
 }
 
 ext fn dstring_t.from(stack i8 *r txt): dstring_t {
-    stack let [hchars, len] = cpy_str(txt);
+    final len = byte_cnt_till_term(txt);
 
-    return dstring_t{.characters = hchars, .len = len, .cap = len};
+    heap i8 *buf = new.(sizeof(i8) * (len + 1));
+
+    cpy_str_from(buf, txt, len);
+    buf[len] = 0;
+
+    ret dstring_t{
+        .chars = buf,
+        .len = len,
+        .cap = len + 1
+    };
 }
 
 ext fn dstring_t.rem(void): void {
-    rem.(dstring_t.(characters))
+    if (dstring_t.(chars))
+        rem.(dstring_t.(chars));
 
-    dstring_t.len = dstring_t.cap = 0;
+    dstring_t.(chars) = nil;
+    dstring_t.(len) = 0;
+    dstring_t.(cap) = 0;
 }
 
+// Count bytes until null terminator
 int fn byte_cnt_till_term(stack i8 *r bs): i32 {
     stack i32 i = 0;
-    for (; bs && *bs != 0; ++bs) {}
 
-    return i;
+    for (; bs && *bs != 0; ++bs)
+        ++i;
+
+    ret i;
 }
 
-int fn cpy_str(stack i8 *r s): [heap i8*, i32] {
-    stack const i32 slen = byte_cnt_till_term(s);
-    heap i8 *bs = new.(sizeof(i8) * slen);
-    for (stack i32 i = 0; i < slen; ++i) {
-        bs[i] = s[i];
-    }
+// Copy N bytes
+int fn cpy_str_from(stack i8 *w dest, stack i8 *r src, stack u32 n): u32 {
+    stack u32 written = 0;
 
-    ret bs, len;
+    for (; written < n; ++written)
+        dest[written] = src[written];
+
+    ret written;
 }
