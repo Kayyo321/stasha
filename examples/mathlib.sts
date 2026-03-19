@@ -1,0 +1,54 @@
+mod mathlib;
+
+// ── mathlib — exported math utilities ─────────────────────────────────────
+//
+// This file is a library module.  Its ext functions and types are visible to
+// any file that does `imp mathlib;`.
+//
+// int symbols stay private — the caller never sees them.
+
+// Private helper: clamp an i32 to [lo, hi]
+int fn clamp(stack i32 v, lo, hi): i32 {
+    if v < lo { ret lo; }
+    if v > hi { ret hi; }
+    ret v;
+}
+
+// Exported: absolute value of an i32
+ext fn abs(stack i32 n): i32 {
+    ret n < 0 ? -n : n;
+}
+
+// Exported: integer power  base^exp  (exp >= 0)
+ext fn pow(stack i32 base, exp): i32 {
+    stack i32 result = 1;
+    for (stack i32 i = 0; i < exp; ++i) {
+        result *= base;
+    }
+    ret result;
+}
+
+// Exported: clamp an i32 to [lo, hi]  (thin public wrapper)
+ext fn clamp_i32(stack i32 v, lo, hi): i32 {
+    ret clamp(v, lo, hi);
+}
+
+// Exported type: a 2-D integer point
+ext type point_t: struct {
+stack:
+    ext i32 x;
+    ext i32 y;
+};
+
+// Constructor
+ext fn point_t.new(stack i32 x, y): point_t {
+    stack point_t p;
+    p.x = x;
+    p.y = y;
+    ret p;
+}
+
+// Manhattan distance from this point to other
+ext fn point_t.manhattan(stack point_t other): i32 {
+    ret abs(point_t.(x) - other.x) + abs(point_t.(y) - other.y);
+}
