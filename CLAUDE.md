@@ -80,7 +80,7 @@ CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module A
 ## Language Quick Reference
 
 **Storage qualifiers** (required everywhere): `stack`, `heap`, `atomic`, `const`, `final`, `volatile`, `tls`
-**Pointer permissions**: `*r` (read-only), `*w` (write-only), `*rw` / `*` (read-write)
+**Pointer permissions**: `*r` (read-only), `*w` (write-only), `*+` (pointer allows pointer arithmatic), `*rw` / `*` (read-write), for example: `*w+`
 **Types**: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `void`, `nil`, `error`
 
 ```
