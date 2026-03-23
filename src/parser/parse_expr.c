@@ -106,6 +106,19 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* hash.(expr) — universal hash */
+    if (check(p, TokHash)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *operand = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeHashExpr, line);
+        n->as.hash_expr.operand = operand;
+        return n;
+    }
+
     /* sizeof.(type) */
     if (check(p, TokSizeof)) {
         usize_t line = p->current.line;

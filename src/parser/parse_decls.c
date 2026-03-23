@@ -429,6 +429,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         } else if (check(p, TokFrom)) {
             name = ast_strdup("from", 4);
             advance_parser(p);
+        } else if (check(p, TokHash)) {
+            name = ast_strdup("hash", 4);
+            advance_parser(p);
         } else {
             log_err("line %lu: expected method name after '.'", p->current.line);
             p->had_error = True;

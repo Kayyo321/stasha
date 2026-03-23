@@ -163,6 +163,7 @@ typedef enum {
     /* added after initial release — keep at end to avoid shifting existing values */
     TokLibImp,      /* libimp */
     TokStd,         /* std (stdlib source specifier) */
+    TokHash,        /* hash */
 } token_kind_t;
 
 typedef struct {

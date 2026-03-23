@@ -16,7 +16,9 @@
       "Bash(printf \"mod hello;\\\\n\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\" bin/stasha build /tmp/hello.sts -o /tmp/hello)",
       "Bash(git stash:*)",
       "Bash(printf \"mod hello;\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\")",
-      "Bash(./bin/typer)"
+      "Bash(./bin/typer)",
+      "Bash(/Users/jessicabruce/Documents/stasha/bin/stasha build:*)",
+      "Bash(ls /Users/jessicabruce/Documents/stasha/examples/*.sts)"
     ],
     "additionalDirectories": [
       "/private/tmp"

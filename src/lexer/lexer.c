@@ -164,6 +164,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("return", TokRet);  /* alias for ret */
     KW("libimp", TokLibImp);
     KW("std", TokStd);
+    KW("hash", TokHash);
 
     KW("i8", TokI8);
     KW("i16", TokI16);

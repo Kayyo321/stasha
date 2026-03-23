@@ -1433,6 +1433,120 @@ static LLVMValueRef gen_new(cg_t *cg, node_t *node) {
     return LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn, args, 1, "alloc");
 }
 
+/* ── universal hash ── */
+
+/* MurmurHash3 finalizer: avalanches all bits of a 64-bit integer */
+static LLVMValueRef hash_mix_i64(cg_t *cg, LLVMValueRef v) {
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(cg->ctx);
+    LLVMValueRef c33 = LLVMConstInt(i64, 33, 0);
+    LLVMValueRef m1  = LLVMConstInt(i64, 0xff51afd7ed558ccdULL, 0);
+    LLVMValueRef m2  = LLVMConstInt(i64, 0xc4ceb9fe1a85ec53ULL, 0);
+    v = LLVMBuildXor(cg->builder, v, LLVMBuildLShr(cg->builder, v, c33, ""), "hm0");
+    v = LLVMBuildMul(cg->builder, v, m1, "hm1");
+    v = LLVMBuildXor(cg->builder, v, LLVMBuildLShr(cg->builder, v, c33, ""), "hm2");
+    v = LLVMBuildMul(cg->builder, v, m2, "hm3");
+    v = LLVMBuildXor(cg->builder, v, LLVMBuildLShr(cg->builder, v, c33, ""), "hm4");
+    return v;
+}
+
+/* Combine two hash values (boost::hash_combine style) */
+static LLVMValueRef hash_combine(cg_t *cg, LLVMValueRef seed, LLVMValueRef h) {
+    LLVMTypeRef i64  = LLVMInt64TypeInContext(cg->ctx);
+    LLVMValueRef phi = LLVMConstInt(i64, 0x9e3779b97f4a7c15ULL, 0);
+    LLVMValueRef c6  = LLVMConstInt(i64, 6, 0);
+    LLVMValueRef c2  = LLVMConstInt(i64, 2, 0);
+    LLVMValueRef tmp = LLVMBuildAdd(cg->builder, h, phi, "");
+    tmp = LLVMBuildAdd(cg->builder, tmp, LLVMBuildShl(cg->builder, seed, c6, ""), "");
+    tmp = LLVMBuildAdd(cg->builder, tmp, LLVMBuildLShr(cg->builder, seed, c2, ""), "");
+    return LLVMBuildXor(cg->builder, seed, tmp, "hcomb");
+}
+
+/* Hash a single primitive LLVM value to i64 */
+static LLVMValueRef hash_primitive(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(cg->ctx);
+    LLVMValueRef v64;
+    if (LLVMGetTypeKind(ty) == LLVMPointerTypeKind) {
+        v64 = LLVMBuildPtrToInt(cg->builder, val, i64, "htoi");
+    } else if (ty == LLVMFloatTypeInContext(cg->ctx)) {
+        LLVMValueRef i32v = LLVMBuildBitCast(cg->builder, val,
+                                              LLVMInt32TypeInContext(cg->ctx), "fbc");
+        v64 = LLVMBuildZExt(cg->builder, i32v, i64, "fext");
+    } else if (ty == LLVMDoubleTypeInContext(cg->ctx)) {
+        v64 = LLVMBuildBitCast(cg->builder, val, i64, "dbc");
+    } else if (ty == i64) {
+        v64 = val;
+    } else {
+        v64 = LLVMBuildZExt(cg->builder, val, i64, "iext");
+    }
+    return hash_mix_i64(cg, v64);
+}
+
+/* Forward declaration for recursion */
+static LLVMValueRef hash_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr);
+
+static LLVMValueRef hash_value(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(cg->ctx);
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        const char *sname = LLVMGetStructName(ty);
+        if (sname) {
+            char mname[256];
+            snprintf(mname, sizeof(mname), "%s.hash", sname);
+            LLVMValueRef hfn = LLVMGetNamedFunction(cg->module, mname);
+            if (hfn) {
+                LLVMValueRef tmp = alloc_in_entry(cg, ty, "hs_tmp");
+                LLVMBuildStore(cg->builder, val, tmp);
+                LLVMTypeRef fty = LLVMGlobalGetValueType(hfn);
+                LLVMValueRef ca[1] = { tmp };
+                LLVMValueRef r = LLVMBuildCall2(cg->builder, fty, hfn, ca, 1, "fh");
+                return coerce_int(cg, r, i64);
+            }
+            struct_reg_t *fsr = find_struct(cg, sname);
+            if (fsr) return hash_struct_default(cg, val, fsr);
+        }
+        return LLVMConstInt(i64, 0, 0);
+    }
+    return hash_primitive(cg, val, ty);
+}
+
+static LLVMValueRef hash_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr) {
+    LLVMTypeRef i64  = LLVMInt64TypeInContext(cg->ctx);
+    LLVMValueRef seed = LLVMConstInt(i64, 0, 0);
+    for (usize_t i = 0; i < sr->field_count; i++) {
+        field_info_t *f = &sr->fields[i];
+        LLVMValueRef fval = LLVMBuildExtractValue(cg->builder, val, (unsigned)f->index, "hfv");
+        LLVMValueRef fh   = hash_value(cg, fval, LLVMTypeOf(fval));
+        seed = hash_combine(cg, seed, fh);
+    }
+    return seed;
+}
+
+static LLVMValueRef gen_hash(cg_t *cg, node_t *node) {
+    LLVMValueRef val = gen_expr(cg, node->as.hash_expr.operand);
+    LLVMTypeRef  ty  = LLVMTypeOf(val);
+    LLVMTypeRef  i64 = LLVMInt64TypeInContext(cg->ctx);
+
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        const char *sname = LLVMGetStructName(ty);
+        if (sname) {
+            char mname[256];
+            snprintf(mname, sizeof(mname), "%s.hash", sname);
+            LLVMValueRef hfn = LLVMGetNamedFunction(cg->module, mname);
+            if (hfn) {
+                LLVMValueRef tmp = alloc_in_entry(cg, ty, "hash_self");
+                LLVMBuildStore(cg->builder, val, tmp);
+                LLVMTypeRef fty = LLVMGlobalGetValueType(hfn);
+                LLVMValueRef ca[1] = { tmp };
+                LLVMValueRef r = LLVMBuildCall2(cg->builder, fty, hfn, ca, 1, "hash_r");
+                return coerce_int(cg, r, i64);
+            }
+            struct_reg_t *sr = find_struct(cg, sname);
+            if (sr) return hash_struct_default(cg, val, sr);
+        }
+        return LLVMConstInt(i64, 0, 0);
+    }
+    return hash_primitive(cg, val, ty);
+}
+
 static LLVMValueRef gen_sizeof(cg_t *cg, node_t *node) {
     LLVMTypeRef ty = get_llvm_type(cg, node->as.sizeof_expr.type);
     return LLVMSizeOf(ty);
@@ -1493,6 +1607,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeCastExpr:         return gen_cast(cg, node);
         case NodeNewExpr:          return gen_new(cg, node);
         case NodeSizeofExpr:       return gen_sizeof(cg, node);
+        case NodeHashExpr:         return gen_hash(cg, node);
         case NodeNilExpr:          return gen_nil(cg);
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);
