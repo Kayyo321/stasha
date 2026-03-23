@@ -32,8 +32,8 @@ typedef enum {
     TokAtomic,
     TokConst,
     TokFinal,
-    TokGpu,
-    TokCpu,
+    TokThread,  /* thread — parallel dispatch to thread pool */
+    TokFuture,  /* future — handle to an async result       */
     TokPrint,
     TokVoid,
     TokTrue,

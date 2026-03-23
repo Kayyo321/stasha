@@ -378,6 +378,15 @@ static node_t *parse_statement(parser_t *p) {
         restore_state(p, saved);
     }
 
+    /* future.op(...) is an expression statement, not a var decl — peek ahead */
+    if (check(p, TokFuture)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p);
+        boolean_t is_future_op = check(p, TokDot);
+        restore_state(p, snap);
+        if (is_future_op) return parse_expr_stmt(p);
+    }
+
     if (can_start_var_decl(p)) return parse_var_decl(p, LinkageNone);
     return parse_expr_stmt(p);
 }

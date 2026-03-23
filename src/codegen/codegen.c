@@ -125,6 +125,16 @@ typedef struct {
     heap_t deferred_heap;
 } dtor_scope_t;
 
+/* ── thread wrapper cache ── */
+
+typedef struct {
+    char         *fn_name;          /* name of the target function        */
+    LLVMValueRef  wrapper_fn;       /* generated __thr_wrap_<name> func   */
+    LLVMTypeRef   args_struct_type; /* struct { param_types... }          */
+    usize_t       param_count;
+    usize_t       result_size;      /* sizeof return value (0 = void)     */
+} thr_wrapper_t;
+
 /* ── type alias registry ── */
 
 typedef struct {
@@ -184,6 +194,25 @@ typedef struct {
     char *current_struct_name;      /* non-null when inside a struct method body */
 
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
+
+    /* ── thread runtime function declarations ── */
+    LLVMValueRef thread_dispatch_fn;
+    LLVMTypeRef  thread_dispatch_type;
+    LLVMValueRef future_get_fn;
+    LLVMTypeRef  future_get_type;
+    LLVMValueRef future_wait_fn;
+    LLVMTypeRef  future_wait_type;
+    LLVMValueRef future_ready_fn;
+    LLVMTypeRef  future_ready_type;
+    LLVMValueRef future_drop_fn;
+    LLVMTypeRef  future_drop_type;
+
+    /* ── thread wrapper cache ── */
+    thr_wrapper_t *thr_wrappers;
+    usize_t        thr_wrap_count;
+    usize_t        thr_wrap_cap;
+    heap_t         thr_wrap_heap;
+
     boolean_t test_mode;            /* True when compiling in test mode */
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
@@ -360,6 +389,45 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                         realloc_params, 2, 0);
     cg.realloc_fn = LLVMAddFunction(cg.module, "realloc", cg.realloc_type);
     symtab_add(&cg.globals, "realloc", cg.realloc_fn, Null, rt_dummy, False);
+
+    /* ── thread runtime function declarations ── */
+    {
+        LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg.ctx, 0);
+        LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg.ctx);
+        LLVMTypeRef i32_t  = LLVMInt32TypeInContext(cg.ctx);
+        LLVMTypeRef void_t = LLVMVoidTypeInContext(cg.ctx);
+        type_info_t rt_dummy2 = {TypeVoid, Null, False, PtrNone, Null};
+
+        /* __thread_dispatch(fn_ptr, args_ptr, result_size) -> future_ptr */
+        LLVMTypeRef td_params[3] = { ptr_t, ptr_t, i64_t };
+        cg.thread_dispatch_type = LLVMFunctionType(ptr_t, td_params, 3, 0);
+        cg.thread_dispatch_fn   = LLVMAddFunction(cg.module, "__thread_dispatch", cg.thread_dispatch_type);
+        symtab_add(&cg.globals, "__thread_dispatch", cg.thread_dispatch_fn, Null, rt_dummy2, False);
+
+        /* __future_get(future_ptr) -> void_ptr */
+        LLVMTypeRef fg_params[1] = { ptr_t };
+        cg.future_get_type = LLVMFunctionType(ptr_t, fg_params, 1, 0);
+        cg.future_get_fn   = LLVMAddFunction(cg.module, "__future_get", cg.future_get_type);
+        symtab_add(&cg.globals, "__future_get", cg.future_get_fn, Null, rt_dummy2, False);
+
+        /* __future_wait(future_ptr) -> void */
+        LLVMTypeRef fw_params[1] = { ptr_t };
+        cg.future_wait_type = LLVMFunctionType(void_t, fw_params, 1, 0);
+        cg.future_wait_fn   = LLVMAddFunction(cg.module, "__future_wait", cg.future_wait_type);
+        symtab_add(&cg.globals, "__future_wait", cg.future_wait_fn, Null, rt_dummy2, False);
+
+        /* __future_ready(future_ptr) -> i32 */
+        LLVMTypeRef fr_params[1] = { ptr_t };
+        cg.future_ready_type = LLVMFunctionType(i32_t, fr_params, 1, 0);
+        cg.future_ready_fn   = LLVMAddFunction(cg.module, "__future_ready", cg.future_ready_type);
+        symtab_add(&cg.globals, "__future_ready", cg.future_ready_fn, Null, rt_dummy2, False);
+
+        /* __future_drop(future_ptr) -> void */
+        LLVMTypeRef fdr_params[1] = { ptr_t };
+        cg.future_drop_type = LLVMFunctionType(void_t, fdr_params, 1, 0);
+        cg.future_drop_fn   = LLVMAddFunction(cg.module, "__future_drop", cg.future_drop_type);
+        symtab_add(&cg.globals, "__future_drop", cg.future_drop_fn, Null, rt_dummy2, False);
+    }
 
     /* built-in error type: { i1 has_error, ptr message } */
     {

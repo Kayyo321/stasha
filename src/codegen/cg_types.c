@@ -38,6 +38,9 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         case TypeFnPtr:
             /* function pointers are opaque pointers in LLVM's opaque pointer model */
             return LLVMPointerTypeInContext(cg->ctx, 0);
+        case TypeFuture:
+            /* future is an opaque pointer to __future_t in the thread runtime */
+            return LLVMPointerTypeInContext(cg->ctx, 0);
     }
     return LLVMVoidTypeInContext(cg->ctx);
 }

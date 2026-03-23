@@ -36,6 +36,18 @@ LINKER_OBJ = build/obj/linker/linker.o
 
 TARGET = bin/stasha
 
+# ── Thread runtime ─────────────────────────────────────────────────────────
+THREAD_RUNTIME_SRC = src/runtime/thread_runtime.c
+THREAD_RUNTIME_OBJ = build/obj/runtime/thread_runtime.o
+THREAD_RUNTIME_LIB = bin/thread_runtime.a
+
+# ── Thread test programs ────────────────────────────────────────────────────
+THREAD_TEST_SRCS = examples/thread_basic.sts    \
+                   examples/thread_return.sts   \
+                   examples/thread_many_jobs.sts \
+                   examples/thread_stress.sts   \
+                   examples/future_wait.sts
+
 # ── Standard library ──────────────────────────────────────────────────────
 STDLIB_SRCS := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS),$(dir $(s))lib$(notdir $(basename $(s))).a)
@@ -61,9 +73,9 @@ else
   endif
 endif
 
-.PHONY: all stdlib clean clean-stdlib clean-llvm llvm openssl clean-openssl
+.PHONY: all stdlib thread-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads
 
-all: $(TARGET)
+all: $(TARGET) thread-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/ so that
@@ -89,8 +101,30 @@ clean-stdlib:
 	find stsstdlib -name '*.a' -delete 2>/dev/null; true
 	rm -rf bin/stdlib
 
+thread-runtime: $(THREAD_RUNTIME_LIB)
+
+$(THREAD_RUNTIME_OBJ): $(THREAD_RUNTIME_SRC) src/runtime/thread_runtime.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+
+$(THREAD_RUNTIME_LIB): $(THREAD_RUNTIME_OBJ) | bin
+	ar rcs $@ $<
+
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
+
+# Run all thread-related test programs via 'stasha test'
+test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
+	@echo "=== Thread system tests ==="
+	@fail=0; \
+	for f in $(THREAD_TEST_SRCS); do \
+	    echo "--- $$f ---"; \
+	    if ! $(TARGET) test "$$f"; then \
+	        echo "FAIL: $$f"; fail=1; \
+	    fi; \
+	done; \
+	if [ $$fail -eq 1 ]; then echo "=== SOME TESTS FAILED ==="; exit 1; fi; \
+	echo "=== All thread tests passed ==="
 
 HDRS := $(shell find src -name '*.h')
 

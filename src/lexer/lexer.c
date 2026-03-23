@@ -133,8 +133,8 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("atomic", TokAtomic);
     KW("const", TokConst);
     KW("final", TokFinal);
-    KW("gpu", TokGpu);
-    KW("cpu", TokCpu);
+    KW("thread", TokThread);
+    KW("future", TokFuture);
     KW("print", TokPrint);
     KW("void", TokVoid);
     KW("true", TokTrue);

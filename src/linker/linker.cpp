@@ -78,6 +78,7 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
     args.push_back(output_path);
     args.push_back("-lc");
     args.push_back("-lm");
+    args.push_back("-lpthread");  /* thread runtime requires pthreads on Linux */
     args.push_back("-dynamic-linker");
     args.push_back("/lib64/ld-linux-x86-64.so.2");
 #endif

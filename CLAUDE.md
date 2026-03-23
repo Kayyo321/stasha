@@ -73,11 +73,17 @@ CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module A
 | `cg_lookup.c` (57) | `find_struct`, `find_enum`, `resolve_alias`, `find_lib_alias` (matches by alias or bare name), `find_fn_decl` |
 | `cg_dtors.c` (175) | `push/pop_dtor_scope`, `add_deferred_stmt/dtor_var/heap_var`, `emit_struct_field_cleanup`, `emit_struct_cleanup`, `emit_dtor_calls`, `emit_all_dtor_calls`, `remove_from_dtor_scopes` |
 | `cg_types.c` (143) | `get_llvm_base_type`, `get_llvm_type`, `build_fn_ptr_llvm_type`, `coerce_int`, `make_nil_error`, type-kind predicates, `payload_type_size`, `alloc_in_entry` |
-| `cg_expr.c` (1415) | `gen_int/float/bool/char/str_lit`, `gen_ident`, `gen_binary`, `gen_unary_prefix/postfix`, `gen_call`, `gen_method_call`, `gen_parallel_call`, `gen_compound_assign`, `gen_assign`, `gen_index`, `gen_member`, `gen_self_member`, `gen_ternary`, `gen_cast`, `gen_new/sizeof/nil/mov/addr_of`, `gen_expr` dispatcher |
+| `cg_expr.c` | `gen_int/float/bool/char/str_lit`, `gen_ident`, `gen_binary`, `gen_unary_prefix/postfix`, `gen_call`, `gen_method_call`, `get_or_create_thread_wrapper`, `gen_thread_call`, `gen_future_op`, `gen_compound_assign`, `gen_assign`, `gen_index`, `gen_member`, `gen_self_member`, `gen_ternary`, `gen_cast`, `gen_new/sizeof/nil/mov/addr_of`, `gen_expr` dispatcher |
 | `cg_stmt.c` (900) | `gen_local_var`, `gen_for/while/do_while/inf_loop/if/ret/debug/multi_assign/match/switch/asm_stmt/comptime_if/comptime_assert`, `gen_stmt` dispatcher, `gen_block` |
 | `cg_registry.c` (132) | `register_struct/enum/alias/lib`, `struct_add_field/field_ex` |
 | `cg_debug.c` (288) | `di_cache_lookup/set`, `get_di_named_type`, `get_di_type`, `di_make_location`, `di_set_location` |
 | `codegen.h` (10) | `codegen()` declaration |
+
+### `src/runtime/`
+| File | Contents |
+|------|----------|
+| `thread_runtime.h` | Public API: `__future_t`, `__thread_dispatch`, `__future_get/wait/ready/drop`, `__thread_runtime_init/shutdown` |
+| `thread_runtime.c` | Thread pool (POSIX pthreads), ring-buffer job queue, future implementation. Auto-init/shutdown via `__attribute__((constructor/destructor))`. Compiled to `bin/thread_runtime.a` and automatically linked into every executable. |
 
 ### `src/linker/`
 | File | Contents |
@@ -91,7 +97,7 @@ CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module A
 
 **Storage qualifiers** (required everywhere): `stack`, `heap`, `atomic`, `const`, `final`, `volatile`, `tls`
 **Pointer permissions**: `*r` (read-only), `*w` (write-only), `*+` (pointer allows pointer arithmatic), `*rw` / `*` (read-write), for example: `*w+`
-**Types**: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `void`, `nil`, `error`
+**Types**: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `void`, `nil`, `error`, `future`
 
 ```
 // Declarations
@@ -136,8 +142,15 @@ new.(bytes)   rem.(ptr)   mov.(ptr, new_bytes)   sizeof.(Type)
 asm { "nop" }        // inline assembly
 comptime_assert.(sizeof.(Foo) == 8);
 #if os == "macos" && arch == "arm64" { ... }
-cpu.(fn_name)()   gpu.(fn_name)()   // parallel dispatch
 test 'name' { expect.(x); expect_eq.(a, b); test_fail.('msg'); }
+
+// Thread parallelism (thread pool, POSIX threads)
+stack future f = thread.(fn_name)(arg1, arg2);  // dispatch to thread pool
+future.wait(f);                    // block until done
+stack bool r = future.ready(f);    // non-blocking check
+stack i32 v = future.get.(i32)(f); // block and return typed result
+stack void *p = future.get(f);     // block and return raw void*
+future.drop(f);                    // wait + free future
 
 // Struct attributes: @packed  @align(N)  @c_layout
 // Fn/var attributes: @weak  @hidden  @restrict
@@ -154,6 +167,7 @@ test 'name' { expect.(x); expect_eq.(a, b); test_fail.('msg'); }
 
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
 - [x] Dotted module names + sts.sproj project file
+- [x] Thread parallelism: `thread.(fn)(args)` + `future` type (thread pool, POSIX pthreads)
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler

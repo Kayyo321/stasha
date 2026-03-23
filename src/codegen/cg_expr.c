@@ -772,29 +772,230 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
-static LLVMValueRef gen_parallel_call(cg_t *cg, node_t *node) {
-    symbol_t *sym = cg_lookup(cg, node->as.parallel_call.callee);
+/* ── thread dispatch code generation ────────────────────────────────────── */
+
+/* Return the thr_wrapper_t for `fn_name`, creating it if not cached.
+   `sym` must point to the LLVM function value; `fn_decl` is the AST node. */
+static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
+        const char *fn_name, symbol_t *sym, node_t *fn_decl) {
+
+    /* cache lookup */
+    for (usize_t i = 0; i < cg->thr_wrap_count; i++)
+        if (strcmp(cg->thr_wrappers[i].fn_name, fn_name) == 0)
+            return &cg->thr_wrappers[i];
+
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+
+    /* ── build args struct type { param0_type, param1_type, ... } ── */
+    usize_t param_count = fn_decl->as.fn_decl.params.count;
+    LLVMTypeRef args_struct_type = Null;
+
+    if (param_count > 0) {
+        heap_t pt_heap = allocate(param_count, sizeof(LLVMTypeRef));
+        LLVMTypeRef *ptypes = pt_heap.pointer;
+        for (usize_t i = 0; i < param_count; i++) {
+            node_t *param = fn_decl->as.fn_decl.params.items[i];
+            type_info_t pti = resolve_alias(cg, param->as.var_decl.type);
+            ptypes[i] = get_llvm_type(cg, pti);
+        }
+        char sname[256];
+        snprintf(sname, sizeof(sname), "__thr_args_%s_t", fn_name);
+        args_struct_type = LLVMStructCreateNamed(cg->ctx, sname);
+        LLVMStructSetBody(args_struct_type, ptypes, (unsigned)param_count, 0);
+        deallocate(pt_heap);
+    }
+
+    /* ── determine return type size ── */
+    boolean_t void_return = True;
+    LLVMTypeRef ret_llvm_type = Null;
+    usize_t result_size = 0;
+    if (fn_decl->as.fn_decl.return_count > 0) {
+        type_info_t rti = fn_decl->as.fn_decl.return_types[0];
+        if (!(rti.base == TypeVoid && !rti.is_pointer)) {
+            void_return = False;
+            ret_llvm_type = get_llvm_type(cg, rti);
+            if (cg->di_data_layout && ret_llvm_type)
+                result_size = (usize_t)LLVMABISizeOfType(cg->di_data_layout, ret_llvm_type);
+            else
+                result_size = payload_type_size(rti);
+        }
+    }
+
+    /* ── generate the wrapper function ──
+       signature: void __thr_wrap_<name>(ptr %args, ptr %result)          */
+    LLVMTypeRef wp_params[2] = { ptr_t, ptr_t };
+    LLVMTypeRef wrapper_fn_type = LLVMFunctionType(
+        LLVMVoidTypeInContext(cg->ctx), wp_params, 2, 0);
+
+    char wrapper_name[256];
+    snprintf(wrapper_name, sizeof(wrapper_name), "__thr_wrap_%s", fn_name);
+    LLVMValueRef wrapper_fn = LLVMAddFunction(cg->module, wrapper_name, wrapper_fn_type);
+    LLVMSetLinkage(wrapper_fn, LLVMInternalLinkage);
+
+    /* save builder state */
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
+    LLVMValueRef      saved_fn = cg->current_fn;
+
+    /* build entry block */
+    LLVMBasicBlockRef entry_bb = LLVMAppendBasicBlockInContext(cg->ctx, wrapper_fn, "entry");
+    LLVMPositionBuilderAtEnd(cg->builder, entry_bb);
+    cg->current_fn = wrapper_fn;
+
+    LLVMValueRef args_param   = LLVMGetParam(wrapper_fn, 0);
+    LLVMValueRef result_param = LLVMGetParam(wrapper_fn, 1);
+
+    /* load each argument from the packed struct */
+    LLVMValueRef *call_args = Null;
+    heap_t        ca_heap   = NullHeap;
+    if (param_count > 0) {
+        ca_heap   = allocate(param_count, sizeof(LLVMValueRef));
+        call_args = ca_heap.pointer;
+        for (usize_t i = 0; i < param_count; i++) {
+            node_t *param = fn_decl->as.fn_decl.params.items[i];
+            type_info_t pti = resolve_alias(cg, param->as.var_decl.type);
+            LLVMTypeRef ptype = get_llvm_type(cg, pti);
+            LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, args_struct_type,
+                                                    args_param, (unsigned)i, "ap");
+            call_args[i] = LLVMBuildLoad2(cg->builder, ptype, gep, "av");
+        }
+    }
+
+    /* free the args struct — all values have been loaded */
+    {
+        LLVMValueRef free_args[1] = { args_param };
+        LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, free_args, 1, "");
+    }
+
+    /* call the original function */
+    LLVMTypeRef  orig_fn_type = LLVMGlobalGetValueType(sym->value);
+    if (void_return) {
+        LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
+                       call_args, (unsigned)param_count, "");
+    } else {
+        LLVMValueRef ret_val = LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
+                                               call_args, (unsigned)param_count, "tret");
+        /* store result into result buffer */
+        LLVMBuildStore(cg->builder, ret_val, result_param);
+    }
+    LLVMBuildRetVoid(cg->builder);
+
+    if (param_count > 0) deallocate(ca_heap);
+
+    /* restore builder state */
+    cg->current_fn = saved_fn;
+    if (saved_bb) LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
+
+    /* ── store in cache ── */
+    if (cg->thr_wrap_count >= cg->thr_wrap_cap) {
+        usize_t new_cap = cg->thr_wrap_cap ? cg->thr_wrap_cap * 2 : 8;
+        heap_t  new_h   = allocate(new_cap, sizeof(thr_wrapper_t));
+        if (cg->thr_wrap_count > 0)
+            memcpy(new_h.pointer, cg->thr_wrappers,
+                   cg->thr_wrap_count * sizeof(thr_wrapper_t));
+        if (cg->thr_wrap_cap > 0) deallocate(cg->thr_wrap_heap);
+        cg->thr_wrappers  = new_h.pointer;
+        cg->thr_wrap_cap  = new_cap;
+        cg->thr_wrap_heap = new_h;
+    }
+    thr_wrapper_t *w    = &cg->thr_wrappers[cg->thr_wrap_count++];
+    w->fn_name          = ast_strdup(fn_name, strlen(fn_name));
+    w->wrapper_fn       = wrapper_fn;
+    w->args_struct_type = args_struct_type;
+    w->param_count      = param_count;
+    w->result_size      = result_size;
+    return w;
+}
+
+static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
+    const char *callee = node->as.thread_call.callee;
+
+    /* look up the function in the symbol table */
+    symbol_t *sym = cg_lookup(cg, callee);
     if (!sym) {
-        diag_begin_error("undefined function '%s'", node->as.parallel_call.callee);
+        diag_begin_error("undefined function '%s'", callee);
         diag_span(DIAG_NODE(node), True, "not defined in this module");
-        diag_note("variables must be declared before use");
+        diag_note("thread dispatch requires the function to be visible in this module");
         diag_finish();
-        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
-    usize_t argc = node->as.parallel_call.args.count;
-    LLVMValueRef *args = Null;
-    heap_t args_heap = NullHeap;
-    if (argc > 0) {
-        args_heap = allocate(argc, sizeof(LLVMValueRef));
-        args = args_heap.pointer;
-        for (usize_t i = 0; i < argc; i++)
-            args[i] = gen_expr(cg, node->as.parallel_call.args.items[i]);
+
+    /* find AST declaration for param / return type info */
+    node_t *fn_decl = find_fn_decl(cg, callee);
+    if (!fn_decl) {
+        diag_begin_error("cannot find declaration of '%s' for thread dispatch", callee);
+        diag_span(DIAG_NODE(node), True, "dispatched here");
+        diag_note("function must be declared in the same compilation unit");
+        diag_finish();
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
-    LLVMTypeRef fn_type = LLVMGlobalGetValueType(sym->value);
-    LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, sym->value,
-                                       args, (unsigned)argc, "");
-    if (argc > 0) deallocate(args_heap);
-    return ret;
+
+    /* get / lazily create the wrapper function */
+    thr_wrapper_t *w = get_or_create_thread_wrapper(cg, callee, sym, fn_decl);
+
+    /* ── pack arguments into a heap-allocated struct ── */
+    LLVMValueRef args_ptr;
+    usize_t argc = node->as.thread_call.args.count;
+
+    if (argc > 0 && w->args_struct_type) {
+        LLVMValueRef sz = LLVMSizeOf(w->args_struct_type);
+        sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
+        LLVMValueRef malloc_args[1] = { sz };
+        args_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
+                                   cg->malloc_fn, malloc_args, 1, "thr_args");
+        for (usize_t i = 0; i < argc; i++) {
+            LLVMValueRef val = gen_expr(cg, node->as.thread_call.args.items[i]);
+            LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, w->args_struct_type,
+                                                    args_ptr, (unsigned)i, "af");
+            LLVMBuildStore(cg->builder, val, gep);
+        }
+    } else {
+        args_ptr = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    }
+
+    /* ── call __thread_dispatch(wrapper_fn, args_ptr, result_size) ── */
+    LLVMValueRef result_sz = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
+                                           (unsigned long long)w->result_size, 0);
+    LLVMValueRef dispatch_args[3] = { w->wrapper_fn, args_ptr, result_sz };
+    LLVMValueRef future = LLVMBuildCall2(cg->builder,
+                                          cg->thread_dispatch_type,
+                                          cg->thread_dispatch_fn,
+                                          dispatch_args, 3, "future");
+    return future;
+}
+
+static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
+    LLVMValueRef handle = gen_expr(cg, node->as.future_op.handle);
+    LLVMValueRef call_args[1] = { handle };
+
+    switch (node->as.future_op.op) {
+        case FutureWait:
+            LLVMBuildCall2(cg->builder, cg->future_wait_type,
+                           cg->future_wait_fn, call_args, 1, "");
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+
+        case FutureReady:
+            return LLVMBuildCall2(cg->builder, cg->future_ready_type,
+                                   cg->future_ready_fn, call_args, 1, "fready");
+
+        case FutureGetRaw:
+            return LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                   cg->future_get_fn, call_args, 1, "fget");
+
+        case FutureGet: {
+            /* block and get the void* result pointer */
+            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                               cg->future_get_fn, call_args, 1, "fget_raw");
+            /* load the typed value from the result buffer */
+            LLVMTypeRef llvm_ret_type = get_llvm_type(cg, node->as.future_op.get_type);
+            return LLVMBuildLoad2(cg->builder, llvm_ret_type, raw, "fget_val");
+        }
+
+        case FutureDrop:
+            LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                           cg->future_drop_fn, call_args, 1, "");
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
 static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
@@ -1879,7 +2080,8 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeUnaryPostfixExpr: return gen_unary_postfix(cg, node);
         case NodeCallExpr:         return gen_call(cg, node);
         case NodeMethodCall:       return gen_method_call(cg, node);
-        case NodeParallelCall:     return gen_parallel_call(cg, node);
+        case NodeThreadCall:       return gen_thread_call(cg, node);
+        case NodeFutureOp:         return gen_future_op(cg, node);
         case NodeCompoundAssign:   return gen_compound_assign(cg, node);
         case NodeAssignExpr:       return gen_assign(cg, node);
         case NodeIndexExpr:        return gen_index(cg, node);

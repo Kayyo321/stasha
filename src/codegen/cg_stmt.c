@@ -5,6 +5,7 @@ static boolean_t is_primitive_type(type_info_t ti) {
     if (ti.is_pointer || ti.base == TypeVoid) return False;
     if (ti.base == TypeUser)   return False;
     if (ti.base == TypeFnPtr)  return False; /* function pointers are not heap primitives */
+    if (ti.base == TypeFuture) return False; /* future is an opaque pointer — never heap-wrap */
     return True;
 }
 

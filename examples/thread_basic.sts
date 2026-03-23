@@ -1,0 +1,25 @@
+mod thread_basic;
+
+lib "stdio" = io;
+
+// A simple void function to run on another thread
+int fn worker(void): void {
+    io.printf("  worker: running on thread\n");
+}
+
+ext fn main(void): i32 {
+    io.printf("main: dispatching worker\n");
+    stack future f = thread.(worker)();
+    future.wait(f);
+    io.printf("main: worker done\n");
+    future.drop(f);
+    ret 0;
+}
+
+test 'basic thread dispatch' {
+    // Thread dispatch should execute without crashing
+    stack future f = thread.(worker)();
+    future.wait(f);
+    expect.(future.ready(f));
+    future.drop(f);
+}

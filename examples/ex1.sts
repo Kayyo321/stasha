@@ -1,25 +1,27 @@
 mod ex1;
 
+lib "stdio" = io;
+
 int stack atomic i32 counter = 0;
 
-// internal function
-int fn do_stuff_in_parallel(void): void {
-    inf {
-         counter += 8;
-    }
+// internal function — runs in a separate thread
+int fn do_stuff(void): void {
+    counter += 8;
+    io.printf("  do_stuff: counter = %d\n", counter);
 }
 
 // external function
 ext fn main(void): i16 {
-    // gpu parallel
-    gpu.(do_stuff_in_parallel)();
+    // dispatch two jobs to the thread pool concurrently
+    stack future f1 = thread.(do_stuff)();
+    stack future f2 = thread.(do_stuff)();
 
-    // cpu parallel
-    cpu.(do_stuff_in_parallel)();
+    // wait for both to finish
+    future.wait(f1);
+    future.wait(f2);
+    future.drop(f1);
+    future.drop(f2);
 
-    inf {
-        debug counter;
-    }
-
+    io.printf("main: counter = %d\n", counter);
     ret 0;
 }

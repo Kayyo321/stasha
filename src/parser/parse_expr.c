@@ -277,9 +277,8 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* gpu.(fn)() / cpu.(fn)() */
-    if (check(p, TokGpu) || check(p, TokCpu)) {
-        boolean_t is_gpu = check(p, TokGpu);
+    /* thread.(fn)(args) — dispatch function to thread pool, returns future */
+    if (check(p, TokThread)) {
         usize_t line = p->current.line;
         advance_parser(p);
         consume(p, TokDot, "'.'");
@@ -294,10 +293,65 @@ static node_t *parse_primary(parser_t *p) {
             do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
         }
         consume(p, TokRParen, "')'");
-        node_t *n = make_node(NodeParallelCall, line);
-        n->as.parallel_call.is_gpu = is_gpu;
-        n->as.parallel_call.callee = name;
-        n->as.parallel_call.args = args;
+        node_t *n = make_node(NodeThreadCall, line);
+        n->as.thread_call.callee = name;
+        n->as.thread_call.args   = args;
+        return n;
+    }
+
+    /* future.op(handle) / future.get.(Type)(handle) */
+    if (check(p, TokFuture)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+
+        /* read operation name */
+        token_t op_tok = consume(p, TokIdent, "future operation (wait, ready, get, drop)");
+        char op_name[16];
+        usize_t op_len = op_tok.length < 15 ? op_tok.length : 15;
+        memcpy(op_name, op_tok.start, op_len);
+        op_name[op_len] = '\0';
+
+        future_op_t op;
+        type_info_t get_type = NO_TYPE;
+        boolean_t   typed_get = False;
+
+        if (strcmp(op_name, "wait") == 0) {
+            op = FutureWait;
+        } else if (strcmp(op_name, "ready") == 0) {
+            op = FutureReady;
+        } else if (strcmp(op_name, "drop") == 0) {
+            op = FutureDrop;
+        } else if (strcmp(op_name, "get") == 0) {
+            /* future.get.(Type)(handle)  — typed get
+               future.get(handle)         — raw void* get */
+            if (check(p, TokDot)) {
+                advance_parser(p); /* consume '.' */
+                consume(p, TokLParen, "'('");
+                get_type  = parse_type(p);
+                consume(p, TokRParen, "')'");
+                op        = FutureGet;
+                typed_get = True;
+            } else {
+                op = FutureGetRaw;
+            }
+        } else {
+            diag_begin_error("unknown future operation '%s'", op_name);
+            diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
+                      "expected: wait, ready, get, drop");
+            diag_finish();
+            op = FutureWait; /* recover */
+        }
+
+        consume(p, TokLParen, "'('");
+        node_t *handle = parse_expr(p);
+        consume(p, TokRParen, "')'");
+
+        node_t *n = make_node(NodeFutureOp, line);
+        n->as.future_op.op       = op;
+        n->as.future_op.handle   = handle;
+        n->as.future_op.get_type = get_type;
+        (void)typed_get;
         return n;
     }
 

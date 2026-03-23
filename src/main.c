@@ -794,6 +794,14 @@ int main(int argc, char **argv) {
                     extra_lib_buf[extra_lib_count++] = sproj_cfg.ext_libs[i].arc_path;
             }
         }
+        /* always link the thread runtime (provides __thread_dispatch, __future_*) */
+        if (extra_lib_count < 63) {
+            snprintf(resolved_lib_paths[extra_lib_count],
+                     sizeof(resolved_lib_paths[extra_lib_count]),
+                     "%s/thread_runtime.a", bin_dir);
+            extra_lib_buf[extra_lib_count] = resolved_lib_paths[extra_lib_count];
+            extra_lib_count++;
+        }
         extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
 
         log_msg("linking");

@@ -1,0 +1,68 @@
+mod future_wait;
+
+lib "stdio" = io;
+
+int fn slow_add(stack i32 a, stack i32 b): i32 {
+    // Just adds two numbers (fast in practice, tests wait/ready semantics)
+    stack i32 result = a + b;
+    ret result;
+}
+
+int fn returns_true(void): bool {
+    ret true;
+}
+
+ext fn main(void): i32 {
+    stack future f = thread.(slow_add)(21, 21);
+
+    // future.wait should block until done
+    future.wait(f);
+    io.printf("done signal received\n");
+
+    // After wait, ready must be true
+    stack bool r = future.ready(f);
+    if (r) {
+        io.printf("future.ready() == true  OK\n");
+    }
+
+    future.drop(f);
+
+    // Test bool return
+    stack future fb = thread.(returns_true)();
+    stack bool bval = future.get.(bool)(fb);
+    if (bval) {
+        io.printf("bool future returned true  OK\n");
+    }
+    future.drop(fb);
+
+    ret 0;
+}
+
+test 'future.wait then future.ready is true' {
+    stack future f = thread.(slow_add)(3, 4);
+    future.wait(f);
+    expect.(future.ready(f));
+    future.drop(f);
+}
+
+test 'future.get.(i32) after wait' {
+    stack future f = thread.(slow_add)(100, 200);
+    stack i32 v = future.get.(i32)(f);
+    expect_eq.(v, 300);
+    future.drop(f);
+}
+
+test 'future.get.(bool) from bool function' {
+    stack future f = thread.(returns_true)();
+    stack bool b = future.get.(bool)(f);
+    expect.(b);
+    future.drop(f);
+}
+
+test 'fire and forget (void return, no drop needed)' {
+    // Dispatch a void function — just make sure it completes without crashing
+    stack future f = thread.(slow_add)(1, 1);
+    future.wait(f);
+    expect.(future.ready(f));
+    future.drop(f);
+}

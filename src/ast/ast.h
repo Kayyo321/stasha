@@ -22,6 +22,7 @@ typedef enum {
     TypeUser,       /* struct, enum, or alias — name stored in type_info_t */
     TypeError,      /* built-in error type: nil or message */
     TypeFnPtr,      /* function pointer with domain-tagged parameters */
+    TypeFuture,     /* future handle — opaque ptr to __future_t (thread result) */
 } type_kind_t;
 
 /* ── forward declaration for fn_ptr_desc_t used inside type_info_t ── */
@@ -146,7 +147,7 @@ typedef enum {
     NodeUnaryPostfixExpr,
     NodeCallExpr,
     NodeMethodCall,
-    NodeParallelCall,
+    NodeThreadCall,     /* thread.(fn)(args) — dispatch to thread pool */
     NodeCompoundAssign,
     NodeAssignExpr,
     NodeMultiAssign,
@@ -177,7 +178,17 @@ typedef enum {
     /* added after initial release — keep at end to avoid shifting existing values */
     NodeLibImp,     /* libimp "name" from "path"|std */
     NodeHashExpr,   /* hash.(expr) — universal hash */
+    NodeFutureOp,   /* future.wait/ready/get/drop(handle) */
 } node_kind_t;
+
+/* ── future operation kinds ── */
+typedef enum {
+    FutureWait,  /* future.wait(f)              — block, no return        */
+    FutureReady, /* future.ready(f)             — non-blocking bool check  */
+    FutureGet,   /* future.get.(Type)(f)        — block, return typed val  */
+    FutureGetRaw,/* future.get(f)               — block, return void ptr   */
+    FutureDrop,  /* future.drop(f)              — wait + free future       */
+} future_op_t;
 
 /* ── node list ── */
 
@@ -299,7 +310,12 @@ struct node {
         struct { token_kind_t op; node_t *operand; } unary;
         struct { char *callee; node_list_t args; } call;
         struct { node_t *object; char *method; node_list_t args; } method_call;
-        struct { boolean_t is_gpu; char *callee; node_list_t args; } parallel_call;
+        struct { char *callee; node_list_t args; } thread_call;   /* NodeThreadCall */
+        struct {
+            future_op_t op;
+            node_t     *handle;    /* the future variable expression      */
+            type_info_t get_type;  /* for FutureGet: the return type      */
+        } future_op;               /* NodeFutureOp */
         struct { token_kind_t op; node_t *target; node_t *value; } compound_assign;
         struct { node_t *target; node_t *value; } assign;
         struct { node_list_t targets; node_list_t values; } multi_assign;

@@ -79,7 +79,7 @@ static boolean_t is_builtin_type_token(token_kind_t k) {
     return k == TokI8  || k == TokI16 || k == TokI32 || k == TokI64
         || k == TokU8  || k == TokU16 || k == TokU32 || k == TokU64
         || k == TokF32 || k == TokF64
-        || k == TokBool || k == TokVoid || k == TokErrorType;
+        || k == TokBool || k == TokVoid || k == TokErrorType || k == TokFuture;
 }
 
 static type_kind_t token_to_type(token_kind_t k) {
@@ -97,6 +97,7 @@ static type_kind_t token_to_type(token_kind_t k) {
         case TokF32:  return TypeF32;
         case TokF64:  return TypeF64;
         case TokErrorType: return TypeError;
+        case TokFuture:    return TypeFuture;
         default:      return TypeVoid;
     }
 }
