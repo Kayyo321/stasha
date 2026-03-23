@@ -53,6 +53,11 @@ static void init_bin_dir(const char *argv0) {
 
 static heap_t source_heap = {0};
 
+static void compile_cleanup(void) {
+    ast_free_all();
+    if (source_heap.pointer) deallocate(source_heap);
+}
+
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file) {
@@ -644,6 +649,7 @@ int main(int argc, char **argv) {
     node_t *ast = parse(source);
     if (!ast) {
         log_err("parsing failed");
+        compile_cleanup();
         quit(Err);
     }
 
@@ -658,6 +664,7 @@ int main(int argc, char **argv) {
             debug_mode ? " (debug)" : "");
     if (codegen(ast, obj_path, test_mode, target_triple, input_path, debug_mode) != Ok) {
         log_err("code generation failed");
+        compile_cleanup();
         quit(Err);
     }
 
@@ -666,6 +673,7 @@ int main(int argc, char **argv) {
         if (archive_object(obj_path, output_path) != Ok) {
             remove(obj_path);
             log_err("archiving failed");
+            compile_cleanup();
             quit(Err);
         }
         remove(obj_path);
@@ -725,6 +733,7 @@ int main(int argc, char **argv) {
                          extra_lib_count > 0 ? extra_lib_buf : Null) != Ok) {
             remove(obj_path);
             log_err("dynamic linking failed");
+            compile_cleanup();
             quit(Err);
         }
 #if defined(__APPLE__)
@@ -809,6 +818,7 @@ int main(int argc, char **argv) {
                         extra_lib_count > 0 ? extra_lib_buf : Null) != Ok) {
             remove(obj_path);
             log_err("linking failed");
+            compile_cleanup();
             quit(Err);
         }
 #if defined(__APPLE__)
@@ -834,8 +844,6 @@ int main(int argc, char **argv) {
 
     log_msg("compiled '%s' -> '%s'", input_path, output_path);
 
-    ast_free_all();
-    deallocate(source_heap);
-
+    compile_cleanup();
     quit(Ok);
 }

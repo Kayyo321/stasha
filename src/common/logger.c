@@ -240,10 +240,10 @@ static void timestamp(char *buffer, size_t buf_size) {
 }
 
 void quit(result_t res) {
+    res = scan_and_deallocate() == Ok ? res : Err;
+
     if (log_file)
         close_logger();
-
-    res = scan_and_deallocate() == Ok ? res : Err;
 
     fprintf(stderr, "warn count: %lu, error count: %lu\n", warn_cnt, error_cnt);
     fprintf(stderr, "exited with code %d\n", res);

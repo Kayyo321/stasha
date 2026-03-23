@@ -91,6 +91,12 @@ static LLVMValueRef coerce_int(cg_t *cg, LLVMValueRef val, LLVMTypeRef target) {
         if (sk == LLVMDoubleTypeKind && tk == LLVMFloatTypeKind)
             return LLVMBuildFPTrunc(cg->builder, val, target, "fptrunc");
     }
+    /* int -> ptr (e.g. lib call inferred as i32 but used where ptr expected) */
+    if (sk == LLVMIntegerTypeKind && tk == LLVMPointerTypeKind)
+        return LLVMBuildIntToPtr(cg->builder, val, target, "itoptr");
+    /* ptr -> int */
+    if (sk == LLVMPointerTypeKind && tk == LLVMIntegerTypeKind)
+        return LLVMBuildPtrToInt(cg->builder, val, target, "ptrtoi");
     return val;
 }
 

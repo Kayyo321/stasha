@@ -1263,14 +1263,13 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     /* emit object file — reuse the machine created during early target init */
     error = Null;
+    result_t emit_result = Ok;
     if (LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
                                      LLVMObjectFile, &error)) {
         diag_begin_error("object file emission failed: %s", error);
         diag_finish();
         LLVMDisposeMessage(error);
-        LLVMDisposeTargetMachine(machine);
-        LLVMDisposeMessage(triple);
-        return Err;
+        emit_result = Err;
     }
 
     LLVMDisposeTargetMachine(machine);
@@ -1295,6 +1294,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     if (cg.aliases_heap.pointer) deallocate(cg.aliases_heap);
     if (cg.dtor_stack_heap.pointer) deallocate(cg.dtor_stack_heap);
     if (cg.di_types_heap.pointer) deallocate(cg.di_types_heap);
+    if (cg.thr_wrap_heap.pointer) deallocate(cg.thr_wrap_heap);
 
+    if (emit_result != Ok) return Err;
     return get_error_count() > errors_before ? Err : Ok;
 }

@@ -45,7 +45,8 @@
       "Bash(ls -la /Users/jessicabruce/Documents/stasha/stsstdlib/*/)",
       "Bash(./bin/stasha build:*)",
       "Bash(nm /Users/jessicabruce/Documents/stasha/bin/thread_runtime.a)",
-      "Bash(/tmp/thread_many_jobs)"
+      "Bash(/tmp/thread_many_jobs)",
+      "Bash(./bin/stasha lib:*)"
     ],
     "additionalDirectories": [
       "/private/tmp"

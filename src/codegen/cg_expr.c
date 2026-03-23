@@ -1904,6 +1904,34 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
         }
         return sym->value; /* alloca = address of the stack variable */
     }
+    /* &arr[i] / &ptr[i] — address of an indexed element (GEP, no load) */
+    if (operand->kind == NodeIndexExpr) {
+        node_t *obj = operand->as.index_expr.object;
+        LLVMValueRef index_val = gen_expr(cg, operand->as.index_expr.index);
+        if (obj->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+            if (!sym) {
+                diag_begin_error("undefined variable '%s'", obj->as.ident.name);
+                diag_span(DIAG_NODE(obj), True, "not found in this scope");
+                diag_finish();
+                return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+            }
+            if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
+                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
+                LLVMValueRef indices[2] = { zero, index_val };
+                return LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "aidxptr");
+            }
+            if (llvm_is_ptr(sym->type)) {
+                LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
+                type_info_t elem_ti = sym->stype;
+                elem_ti.is_pointer = False;
+                LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
+                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                return LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidxptr");
+            }
+        }
+    }
     diag_begin_error("address-of requires an lvalue");
     diag_span(DIAG_NODE(operand), True, "");
     diag_finish();

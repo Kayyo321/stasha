@@ -79,7 +79,7 @@ stack:
     // Insert or update the value for key.
     ext fn insert(stack u8 *r key, stack u8 *r val): void {
         map_t.(maybe_grow)();
-        final u32 ss   = map_t.(slot_size)();
+        final u32 _ss  = map_t.(slot_size)();
         stack u32 idx  = map_t.(hash_key)(key) % map_t.(cap);
         stack u32 tomb = map_t.(cap); // first tombstone index, cap = none found
 
