@@ -1,5 +1,213 @@
 mod map;
 
-type map_t: struct {
-    
+// Open-addressing hash map with linear probing.
+// Keys and values are raw byte blobs of fixed size (set at construction).
+// Each bucket layout: [state: u8][key: key_size bytes][val: val_size bytes]
+//   state 0 = empty, 1 = occupied, 2 = tombstone
+
+const u8 MAP_EMPTY     = 0;
+const u8 MAP_OCCUPIED  = 1;
+const u8 MAP_TOMBSTONE = 2;
+
+ext type map_t: struct {
+heap:
+    int u8 *buckets;
+
+stack:
+    int u32 count, cap, key_size, val_size;
+
+    // Byte size of one bucket slot.
+    int fn slot_size(void): u32 {
+        ret 1 + map_t.(key_size) + map_t.(val_size);
+    }
+
+    // Pointer to the start of bucket i.
+    int fn bucket_ptr(stack u32 i): heap u8 *rw {
+        ret map_t.(buckets) + (i * map_t.(slot_size)());
+    }
+
+    // FNV-1a hash over key_size bytes.
+    int fn hash_key(stack u8 *r key): u32 {
+        stack u32 h = 2166136261;
+        final u32 n = map_t.(key_size);
+        for (u32 i = 0; i < n; i++) {
+            h = h ^ (u32)key[i];
+            h = h * 16777619;
+        }
+        ret h;
+    }
+
+    // True if the key bytes at a and b are equal.
+    int fn keys_equal(stack u8 *r a, stack u8 *r b): bool {
+        final u32 n = map_t.(key_size);
+        for (u32 i = 0; i < n; i++) {
+            if (a[i] != b[i]) { ret false; }
+        }
+        ret true;
+    }
+
+    // Copy n bytes from src to dst.
+    int fn copy_bytes(stack u8 *w dst, stack u8 *r src, stack u32 n): void {
+        for (u32 i = 0; i < n; i++) { dst[i] = src[i]; }
+    }
+
+    // Grow and rehash when load factor exceeds 0.7.
+    int fn maybe_grow(void): void {
+        // count / cap > 0.7  →  count * 10 > cap * 7
+        if (map_t.(count) * 10 <= map_t.(cap) * 7) { ret; }
+
+        final u32 old_cap    = map_t.(cap);
+        heap u8 *old_buckets = map_t.(buckets);
+        final u32 ss         = map_t.(slot_size)();
+        final u32 new_cap    = old_cap * 2;
+
+        map_t.(buckets) = new.(new_cap * ss);
+        // zero new buckets (state = MAP_EMPTY)
+        for (u32 i = 0; i < new_cap * ss; i++) { map_t.(buckets)[i] = 0; }
+        map_t.(cap)   = new_cap;
+        map_t.(count) = 0;
+
+        for (u32 i = 0; i < old_cap; i++) {
+            heap u8 *slot = old_buckets + (i * ss);
+            if (slot[0] == MAP_OCCUPIED) {
+                map_t.(insert)(slot + 1, slot + 1 + map_t.(key_size));
+            }
+        }
+        rem.(old_buckets);
+    }
+
+    // Insert or update the value for key.
+    ext fn insert(stack u8 *r key, stack u8 *r val): void {
+        map_t.(maybe_grow)();
+        final u32 ss   = map_t.(slot_size)();
+        stack u32 idx  = map_t.(hash_key)(key) % map_t.(cap);
+        stack u32 tomb = map_t.(cap); // first tombstone index, cap = none found
+
+        inf {
+            heap u8 *slot = map_t.(bucket_ptr)(idx);
+            if (slot[0] == MAP_EMPTY) {
+                final u32 write = (tomb < map_t.(cap)) ? tomb : idx;
+                heap u8 *dst = map_t.(bucket_ptr)(write);
+                dst[0] = MAP_OCCUPIED;
+                map_t.(copy_bytes)(dst + 1, key, map_t.(key_size));
+                map_t.(copy_bytes)(dst + 1 + map_t.(key_size), val, map_t.(val_size));
+                map_t.(count)++;
+                ret;
+            }
+            if (slot[0] == MAP_TOMBSTONE) {
+                if (tomb == map_t.(cap)) { tomb = idx; }
+            } else {
+                // MAP_OCCUPIED — check key equality
+                if (map_t.(keys_equal)(slot + 1, key)) {
+                    // update value in place
+                    map_t.(copy_bytes)(slot + 1 + map_t.(key_size), val, map_t.(val_size));
+                    ret;
+                }
+            }
+            idx = (idx + 1) % map_t.(cap);
+        }
+    }
+
+    // Get a read-only pointer to the value for key, or nil if not found.
+    // Prefer this over get() for simple lookups; check the result against nil.
+    ext fn get_or_nil(stack u8 *r key): heap u8 *r {
+        stack u32 idx = map_t.(hash_key)(key) % map_t.(cap);
+        stack u32 probed = 0;
+        while (probed < map_t.(cap)) {
+            heap u8 *slot = map_t.(bucket_ptr)(idx);
+            if (slot[0] == MAP_EMPTY) { ret nil; }
+            if (slot[0] == MAP_OCCUPIED && map_t.(keys_equal)(slot + 1, key)) {
+                ret slot + 1 + map_t.(key_size);
+            }
+            idx = (idx + 1) % map_t.(cap);
+            probed++;
+        }
+        ret nil;
+    }
+
+    // Get a read-only pointer to the value for key, or error if not found.
+    ext fn get(stack u8 *r key): [heap u8 *r, error] {
+        stack u32 idx = map_t.(hash_key)(key) % map_t.(cap);
+        stack u32 probed = 0;
+        while (probed < map_t.(cap)) {
+            heap u8 *slot = map_t.(bucket_ptr)(idx);
+            if (slot[0] == MAP_EMPTY) {
+                ret nil, error.('key not found');
+            }
+            if (slot[0] == MAP_OCCUPIED && map_t.(keys_equal)(slot + 1, key)) {
+                ret slot + 1 + map_t.(key_size), nil;
+            }
+            idx = (idx + 1) % map_t.(cap);
+            probed++;
+        }
+        ret nil, error.('key not found');
+    }
+
+    // Remove key. No-op if not present.
+    ext fn remove(stack u8 *r key): void {
+        stack u32 idx = map_t.(hash_key)(key) % map_t.(cap);
+        stack u32 probed = 0;
+        while (probed < map_t.(cap)) {
+            heap u8 *slot = map_t.(bucket_ptr)(idx);
+            if (slot[0] == MAP_EMPTY) { ret; }
+            if (slot[0] == MAP_OCCUPIED && map_t.(keys_equal)(slot + 1, key)) {
+                slot[0] = MAP_TOMBSTONE;
+                map_t.(count)--;
+                ret;
+            }
+            idx = (idx + 1) % map_t.(cap);
+            probed++;
+        }
+    }
+
+    // True if key is present.
+    ext fn contains(stack u8 *r key): bool {
+        stack u32 idx = map_t.(hash_key)(key) % map_t.(cap);
+        stack u32 probed = 0;
+        while (probed < map_t.(cap)) {
+            heap u8 *slot = map_t.(bucket_ptr)(idx);
+            if (slot[0] == MAP_EMPTY) { ret false; }
+            if (slot[0] == MAP_OCCUPIED && map_t.(keys_equal)(slot + 1, key)) {
+                ret true;
+            }
+            idx = (idx + 1) % map_t.(cap);
+            probed++;
+        }
+        ret false;
+    }
+
+    ext fn count(void): u32 {
+        ret map_t.(count);
+    }
+
+    ext fn is_empty(void): bool {
+        ret map_t.(count) == 0;
+    }
+}
+
+// Initial capacity must be a power of two (we use modulo, not bitwise AND,
+// so any non-zero value is fine; 16 gives decent breathing room).
+ext fn map_t.new(stack u32 key_size, stack u32 val_size): map_t {
+    final u32 init_cap = 16;
+    final u32 ss = 1 + key_size + val_size;
+    heap u8 *bkts = new.(init_cap * ss);
+    for (u32 i = 0; i < init_cap * ss; i++) { bkts[i] = 0; }
+    ret map_t{
+        .buckets  = bkts,
+        .count    = 0,
+        .cap      = init_cap,
+        .key_size = key_size,
+        .val_size = val_size
+    };
+}
+
+ext fn map_t.rem(void): void {
+    if (map_t.(buckets) != nil) {
+        rem.(map_t.(buckets));
+    }
+    map_t.(buckets)  = nil;
+    map_t.(count)    = 0;
+    map_t.(cap)      = 0;
+    map_t.(key_size) = 0;
+    map_t.(val_size) = 0;
 }

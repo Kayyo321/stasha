@@ -40,7 +40,28 @@ TARGET = bin/stasha
 STDLIB_SRCS := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS),$(dir $(s))lib$(notdir $(basename $(s))).a)
 
-.PHONY: all stdlib clean clean-stdlib clean-llvm llvm
+UNAME_S := $(shell uname -s)
+
+# ── OpenSSL (static libcrypto) ────────────────────────────────────────────
+OPENSSL_SRC   = extlib/extlib/openssl
+OPENSSL_BUILD = build/openssl
+OPENSSL_LIB   = $(OPENSSL_BUILD)/lib/libcrypto.a
+
+ifeq ($(UNAME_S),Darwin)
+  ifeq ($(UNAME_M),arm64)
+    OPENSSL_TARGET = darwin64-arm64-cc
+  else
+    OPENSSL_TARGET = darwin64-x86_64-cc
+  endif
+else
+  ifeq ($(UNAME_M),aarch64)
+    OPENSSL_TARGET = linux-aarch64
+  else
+    OPENSSL_TARGET = linux-x86_64
+  endif
+endif
+
+.PHONY: all stdlib clean clean-stdlib clean-llvm llvm openssl clean-openssl
 
 all: $(TARGET)
 
@@ -125,6 +146,22 @@ $(LLVM_CFG):
 	      -DLLVM_ENABLE_TERMINFO=OFF                       \
 	      -DLLVM_ENABLE_ZSTD=OFF
 	cmake --build $(LLVM_BUILD) -- -j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+
+# ── OpenSSL build ─────────────────────────────────────────────
+openssl: $(OPENSSL_LIB)
+
+$(OPENSSL_LIB): $(OPENSSL_SRC)/Configure
+	cd $(OPENSSL_SRC) && ./Configure \
+	    --prefix=$(abspath $(OPENSSL_BUILD)) \
+	    --openssldir=$(abspath $(OPENSSL_BUILD))/ssl \
+	    $(OPENSSL_TARGET) \
+	    no-shared no-tests no-docs
+	$(MAKE) -C $(OPENSSL_SRC) build_libs
+	$(MAKE) -C $(OPENSSL_SRC) install_dev
+
+clean-openssl:
+	$(MAKE) -C $(OPENSSL_SRC) clean 2>/dev/null; true
+	rm -rf $(OPENSSL_BUILD)
 
 # ── housekeeping ───────────────────────────────────────────────
 clean:

@@ -19,7 +19,13 @@
       "Bash(./bin/typer)",
       "Bash(/Users/jessicabruce/Documents/stasha/bin/stasha build:*)",
       "Bash(ls /Users/jessicabruce/Documents/stasha/examples/*.sts)",
-      "Bash(/tmp/ex_hash)"
+      "Bash(/tmp/ex_hash)",
+      "Bash(openssl version:*)",
+      "Read(//usr/local/opt/**)",
+      "Read(//opt/homebrew/Cellar/openssl@3/3.6.1/**)",
+      "Bash(find /Users/jessicabruce/Documents/stasha/stsstdlib/str -name *.sts)",
+      "Bash(grep -v \"^--$\")",
+      "Bash(bin/stasha examples/ex_map.sts)"
     ],
     "additionalDirectories": [
       "/private/tmp"

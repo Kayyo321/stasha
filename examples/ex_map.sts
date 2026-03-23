@@ -1,0 +1,123 @@
+mod ex_map;
+
+// ── Using the map standard library ───────────────────────────────────────
+//
+// Build the stdlib first:
+//   make stdlib
+//
+// Then compile and run:
+//   stasha examples/ex_map.sts
+//
+// map_t stores keys and values as raw byte blobs of fixed size.
+//
+// Passing a key or value: take the address of your variable, then cast
+// the resulting pointer to (u8 *r).  The cast syntax (T)expr only
+// handles postfix sub-expressions, so the address-of step must be
+// separate:
+//
+//   stack i32 k = 42;
+//   stack i32 *rw kp = &k;
+//   m.insert((u8 *r)kp, ...);
+//
+// Reading a value back: cast the heap u8 *r to the concrete pointer type
+// and index element 0:
+//
+//   stack u8 *r vp = m.get_or_nil((u8 *r)kp);
+//   if (vp != nil) { stack i32 val = ((i32 *r)vp)[0]; }
+
+libimp "map"     from std;
+libimp "console" from std;
+
+// A Point used as a map key in the second demo.
+// Two i32 fields — no internal padding — so byte-for-byte comparison is safe.
+type Point: struct {
+stack:
+    ext i32 x, y;
+};
+
+ext fn main(void): i32 {
+
+    // ── 1. i32 → i32  (score table) ──────────────────────────────────────
+    writeln("=== i32 -> i32 map ===");
+
+    heap map_t scores = map_t.new(sizeof.(i32), sizeof.(i32));
+
+    // insert ---------------------------------------------------------------
+    stack i32 k1 = 1;  stack i32 *rw k1p = &k1;
+    stack i32 k2 = 2;  stack i32 *rw k2p = &k2;
+    stack i32 k3 = 3;  stack i32 *rw k3p = &k3;
+
+    stack i32 v1 = 100; stack i32 *rw v1p = &v1;
+    stack i32 v2 = 200; stack i32 *rw v2p = &v2;
+    stack i32 v3 = 300; stack i32 *rw v3p = &v3;
+
+    scores.insert((u8 *r)k1p, (u8 *r)v1p);
+    scores.insert((u8 *r)k2p, (u8 *r)v2p);
+    scores.insert((u8 *r)k3p, (u8 *r)v3p);
+
+    write("count after 3 inserts: "); write_u32(scores.count()); write("\n");
+
+    // get_or_nil -----------------------------------------------------------
+    stack u8 *r p1 = scores.get_or_nil((u8 *r)k1p);
+    write("scores[1] = ");
+    if (p1 != nil) { write_i32(((i32 *r)p1)[0]); } else { write("NOT FOUND"); }
+    write("\n");
+
+    stack u8 *r p2 = scores.get_or_nil((u8 *r)k2p);
+    write("scores[2] = ");
+    if (p2 != nil) { write_i32(((i32 *r)p2)[0]); } else { write("NOT FOUND"); }
+    write("\n");
+
+    // update: re-insert same key with a new value --------------------------
+    stack i32 v1_new = 999; stack i32 *rw v1np = &v1_new;
+    scores.insert((u8 *r)k1p, (u8 *r)v1np);
+
+    stack u8 *r p1u = scores.get_or_nil((u8 *r)k1p);
+    write("scores[1] after update: ");
+    if (p1u != nil) { write_i32(((i32 *r)p1u)[0]); } else { write("NOT FOUND"); }
+    write("\n");
+
+    // contains -------------------------------------------------------------
+    stack i32 k_missing = 99; stack i32 *rw kmp = &k_missing;
+    write("contains(3)  = "); write_bool(scores.contains((u8 *r)k3p)); write("\n");
+    write("contains(99) = "); write_bool(scores.contains((u8 *r)kmp)); write("\n");
+
+    // remove ---------------------------------------------------------------
+    scores.remove((u8 *r)k2p);
+    write("count after remove(2): "); write_u32(scores.count()); write("\n");
+
+    stack u8 *r p2r = scores.get_or_nil((u8 *r)k2p);
+    write("scores[2] after remove: ");
+    if (p2r == nil) { write("NOT FOUND (expected)"); }
+    write("\n");
+
+    // ── 2. Point → i32  (grid value map) ─────────────────────────────────
+    writeln("\n=== Point -> i32 map ===");
+
+    heap map_t grid = map_t.new(sizeof.(Point), sizeof.(i32));
+
+    stack Point pa; pa.x =  0; pa.y = 0; stack Point *rw pap = &pa;
+    stack Point pb; pb.x =  1; pb.y = 2; stack Point *rw pbp = &pb;
+    stack Point pc; pc.x = -3; pc.y = 5; stack Point *rw pcp = &pc;
+
+    stack i32 va = 7;  stack i32 *rw vap = &va;
+    stack i32 vb = 42; stack i32 *rw vbp = &vb;
+    stack i32 vc = 99; stack i32 *rw vcp = &vc;
+
+    grid.insert((u8 *r)pap, (u8 *r)vap);
+    grid.insert((u8 *r)pbp, (u8 *r)vbp);
+    grid.insert((u8 *r)pcp, (u8 *r)vcp);
+
+    write("count: "); write_u32(grid.count()); write("\n");
+
+    stack u8 *r gp = grid.get_or_nil((u8 *r)pbp);
+    write("grid[(1,2)] = ");
+    if (gp != nil) { write_i32(((i32 *r)gp)[0]); } else { write("NOT FOUND"); }
+    write("\n");
+
+    // lookup a key that was never inserted
+    stack Point pd; pd.x = 10; pd.y = 10; stack Point *rw pdp = &pd;
+    write("grid[(10,10)] exists: "); write_bool(grid.contains((u8 *r)pdp)); write("\n");
+
+    ret 0;
+}

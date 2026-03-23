@@ -1,39 +1,76 @@
 mod buffer;
 
-ext type byte: i8;
+// A growable raw-byte buffer for storing fixed-size items.
+// New items are appended with push(); elements accessed by index with at().
 
 ext type buffer_t: struct {
 heap:
-    int byte *bytes;
+    int u8 *rw bytes;
 
 stack:
     int u32 length, capacity, size_of_one_item;
 
-    ext fn at(stack u32 idx): [heap byte *r, error] {
+    // Return a read-only pointer to element at idx, or error if out of bounds.
+    ext fn at(stack u32 idx): [heap u8 *r, error] {
         if (idx >= buffer_t.(length)) {
-            return nil, error.('index {} is out of bounds in buffer with length of: {}', idx, buffer_t.(length));
+            ret nil, error.('index {} is out of bounds in buffer with length of: {}', idx, buffer_t.(length));
         }
+        ret buffer_t.(bytes) + (idx * buffer_t.(size_of_one_item)), nil;
+    }
 
-        return buffer_t.(bytes) + (idx * buffer_t.(size_of_one_item)), nil;
+    // Copy size_of_one_item bytes from src into the buffer, growing if needed.
+    ext fn push(stack u8 *r src): void {
+        if (buffer_t.(length) >= buffer_t.(capacity) / buffer_t.(size_of_one_item)) {
+            final u32 new_cap = buffer_t.(capacity) * 2;
+            buffer_t.(bytes) = mov.(buffer_t.(bytes), new_cap);
+            buffer_t.(capacity) = new_cap;
+        }
+        final u32 offset = buffer_t.(length) * buffer_t.(size_of_one_item);
+        final u32 n = buffer_t.(size_of_one_item);
+        for (i32 i = 0; i < (i32)n; i++) {
+            buffer_t.(bytes)[offset + (u32)i] = src[i];
+        }
+        buffer_t.(length)++;
+    }
+
+    // Decrement length, discarding the last element. No-op if empty.
+    ext fn pop(void): void {
+        if (buffer_t.(length) > 0) {
+            buffer_t.(length)--;
+        }
+    }
+
+    // Reset length to zero without freeing memory.
+    ext fn clear(void): void {
+        buffer_t.(length) = 0;
+    }
+
+    ext fn length(void): u32 {
+        ret buffer_t.(length);
+    }
+
+    ext fn capacity(void): u32 {
+        ret buffer_t.(capacity);
+    }
+
+    ext fn is_empty(void): bool {
+        ret buffer_t.(length) == 0;
     }
 }
 
 ext fn buffer_t.new(stack u32 size_of_one_item): buffer_t {
     stack buffer_t b;
-
     b.length = 0;
     b.capacity = 2 * size_of_one_item;
     b.size_of_one_item = size_of_one_item;
     b.bytes = new.(b.capacity);
-
-    return b;
+    ret b;
 }
 
 ext fn buffer_t.rem(void): void {
     if (buffer_t.(bytes) != nil) {
         rem.(buffer_t.(bytes));
     }
-
     buffer_t.(length) = 0;
     buffer_t.(capacity) = 0;
     buffer_t.(size_of_one_item) = 0;

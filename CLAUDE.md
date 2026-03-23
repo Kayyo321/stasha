@@ -133,7 +133,6 @@ io.printf("hello\n");    math.sqrt(x);
 new.(bytes)   rem.(ptr)   mov.(ptr, new_bytes)   sizeof.(Type)
 
 // Misc
-debug expr;          // type-aware print
 asm { "nop" }        // inline assembly
 comptime_assert.(sizeof.(Foo) == 8);
 #if os == "macos" && arch == "arm64" { ... }

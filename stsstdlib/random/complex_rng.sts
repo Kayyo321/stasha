@@ -1,5 +1,9 @@
 mod complex_rng;
 
+// OpenSSL libcrypto — RAND bindings (crypto-strength randomness).
+// Build the library first: make openssl
+lib "crypto" from "../../build/openssl/lib/libcrypto.a" = ossl;
+
 // PCG32 — Permuted Congruence Generator (O'Neill, 2014)
 // 64-bit state, 32-bit output, period 2^64.
 // High statistical quality with very low memory overhead.
@@ -79,4 +83,123 @@ ext fn pcg32_t.new(stack u64 seed): pcg32_t {
     final u64 state1 = inc;
     final u64 state2 = (state1 + seed) * 6364136223846793005 + inc;
     ret pcg32_t{ .state = state2, .inc = inc };
+}
+
+// ── OpenSSL RAND API ───────────────────────────────────────────────────────
+// All functions below use the OS CSPRNG via OpenSSL's RAND subsystem.
+// RAND_bytes / RAND_priv_bytes return 1 on success, 0 on failure.
+// Requires: make openssl  (builds build/openssl/lib/libcrypto.a)
+
+// Fill `buf` with `num` cryptographically strong random bytes.
+// Use for nonces, IVs, salts, session tokens.
+ext fn rand_bytes(stack u8 *w buf, stack i32 num): i32 {
+    ret ossl.RAND_bytes(buf, num);
+}
+
+// Like rand_bytes but intended exclusively for private key material.
+// May draw from a separate entropy pool on some platforms.
+ext fn rand_priv_bytes(stack u8 *w buf, stack i32 num): i32 {
+    ret ossl.RAND_priv_bytes(buf, num);
+}
+
+// Add `num` bytes of external entropy from `buf` to the PRNG pool.
+// Useful for seeding from hardware RNG or platform-specific sources.
+ext fn rand_seed(stack u8 *r buf, stack i32 num): void {
+    ossl.RAND_seed(buf, num);
+}
+
+// Returns 1 if the PRNG has been seeded with sufficient entropy, 0 otherwise.
+ext fn rand_status(void): i32 {
+    ret ossl.RAND_status();
+}
+
+// Ask OpenSSL to poll the OS for fresh entropy; returns 1 on success.
+// Normally called automatically — use to force a re-poll.
+ext fn rand_poll(void): i32 {
+    ret ossl.RAND_poll();
+}
+
+// Load entropy bytes from the file at `path`.
+// Pass `max_bytes` = -1 to read the whole file.
+// Returns number of bytes read, or -1 on error.
+ext fn rand_load_file(stack i8 *r path, stack i64 max_bytes): i32 {
+    ret ossl.RAND_load_file(path, max_bytes);
+}
+
+// Write the current PRNG state as entropy to the file at `path`.
+// Returns the number of bytes written, or -1 on error.
+ext fn rand_write_file(stack i8 *r path): i32 {
+    ret ossl.RAND_write_file(path);
+}
+
+// Retrieve the default entropy seed-file path into `buf` (capacity `cap`).
+// Returns `buf` on success, or a null pointer on failure.
+ext fn rand_file_name(stack i8 *w buf, stack u64 cap): i8 *rw {
+    ret ossl.RAND_file_name(buf, cap);
+}
+
+// Keep random device file descriptors open between calls for lower latency.
+// Pass 1 to keep open, 0 to close after each use.
+ext fn rand_keep_devices_open(stack i32 keep): void {
+    ossl.RAND_keep_random_devices_open(keep);
+}
+
+// ── Convenience wrappers ──────────────────────────────────────────────────
+
+// Return a single cryptographically random u32.
+// Panics (returns 0) if the PRNG fails — check rand_status() first if needed.
+ext fn rand_u32(void): u32 {
+    stack u8 buf[4];
+    ossl.RAND_bytes(&buf[0], 4);
+    ret (u32)buf[0]
+       | ((u32)buf[1] << 8)
+       | ((u32)buf[2] << 16)
+       | ((u32)buf[3] << 24);
+}
+
+// Return a single cryptographically random u64.
+ext fn rand_u64(void): u64 {
+    stack u8 buf[8];
+    ossl.RAND_bytes(&buf[0], 8);
+    ret (u64)buf[0]
+       | ((u64)buf[1] << 8)
+       | ((u64)buf[2] << 16)
+       | ((u64)buf[3] << 24)
+       | ((u64)buf[4] << 32)
+       | ((u64)buf[5] << 40)
+       | ((u64)buf[6] << 48)
+       | ((u64)buf[7] << 56);
+}
+
+// Uniform random i32 in [min, max] inclusive using crypto randomness.
+// Uses rejection sampling for unbiased output.
+ext fn rand_range(stack i32 min, max): i32 {
+    final u32 range  = (u32)(max - min + 1);
+    final u32 bucket = 4294967295 - (4294967295 % range);
+    stack u32 r;
+    stack u8 buf[4];
+    inf {
+        ossl.RAND_bytes(&buf[0], 4);
+        r = (u32)buf[0]
+           | ((u32)buf[1] << 8)
+           | ((u32)buf[2] << 16)
+           | ((u32)buf[3] << 24);
+        if (r <= bucket) { ret min + (i32)(r % range); }
+    }
+    ret min; // unreachable
+}
+
+// Uniform random f64 in [0.0, 1.0] using crypto randomness.
+ext fn rand_f64(void): f64 {
+    stack u8 buf[8];
+    ossl.RAND_bytes(&buf[0], 8);
+    final u64 bits = (u64)buf[0]
+                   | ((u64)buf[1] << 8)
+                   | ((u64)buf[2] << 16)
+                   | ((u64)buf[3] << 24)
+                   | ((u64)buf[4] << 32)
+                   | ((u64)buf[5] << 40)
+                   | ((u64)buf[6] << 48)
+                   | ((u64)buf[7] << 56);
+    ret (f64)(bits >> 11) / 9007199254740992.0; // 2^53
 }
