@@ -384,6 +384,23 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         }
 
+        /* libimp "name" from ...: register as both lib alias and module alias */
+        if (decl->kind == NodeLibImp) {
+            register_lib(&cg, decl->as.libimp_decl.name,
+                         decl->as.libimp_decl.name, decl->as.libimp_decl.path);
+            continue;
+        }
+
+        /* imp a.b.c: register the last segment as a module alias so that
+           qualified calls like "typewriter.scribe()" resolve correctly. */
+        if (decl->kind == NodeImpDecl) {
+            const char *mod = decl->as.imp_decl.module_name;
+            const char *dot = strrchr(mod, '.');
+            const char *alias = dot ? dot + 1 : mod;
+            register_lib(&cg, alias, alias, Null);
+            continue;
+        }
+
         if (decl->kind == NodeTypeDecl) {
             if (decl->as.type_decl.decl_kind == TypeDeclStruct
                 || decl->as.type_decl.decl_kind == TypeDeclUnion) {

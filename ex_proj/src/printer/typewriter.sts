@@ -1,17 +1,13 @@
 mod printer.typewriter;
 
-libimp "clock" from std;
+lib "unistd";
+lib "stdio" = io;
 
 ext fn scribe(stack i8 *r+ a_string): void {
-    stack let stopwatch = stopwatch_t.new();
-
     for (; a_string && *a_string != 0; ++a_string) {
         print.('{}', *a_string);
-
-        do {
-            // nothing
-        } while (stopwatch.elapsed_ms() < 500);
-
-        stopwatch.reset();
+        io.fflush(0);
+        unistd.usleep(80000);
     }
+    print.('\n');
 }

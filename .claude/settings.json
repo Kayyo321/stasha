@@ -15,7 +15,8 @@
       "Bash(xxd stsstdlib/io/console.sts)",
       "Bash(printf \"mod hello;\\\\n\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\" bin/stasha build /tmp/hello.sts -o /tmp/hello)",
       "Bash(git stash:*)",
-      "Bash(printf \"mod hello;\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\")"
+      "Bash(printf \"mod hello;\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\")",
+      "Bash(./bin/typer)"
     ],
     "additionalDirectories": [
       "/private/tmp"
