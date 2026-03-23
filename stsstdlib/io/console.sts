@@ -1,0 +1,90 @@
+mod console;
+
+lib "stdio"  = cio;
+lib "unistd" = cunistd;
+
+// ── stdout ────────────────────────────────────────────────────────────────
+
+// Write `msg` to stdout without a trailing newline.
+ext fn print(stack i8 *r msg): void {
+    cio.printf("%s", msg);
+}
+
+// Write `msg` to stdout followed by a newline.
+ext fn println(stack i8 *r msg): void {
+    cio.puts(msg);
+}
+
+ext fn print_i32(stack i32 v): void {
+    cio.printf("%d", v);
+}
+
+ext fn print_i64(stack i64 v): void {
+    cio.printf("%lld", v);
+}
+
+ext fn print_u32(stack u32 v): void {
+    cio.printf("%u", v);
+}
+
+ext fn print_u64(stack u64 v): void {
+    cio.printf("%llu", v);
+}
+
+ext fn print_f32(stack f32 v): void {
+    cio.printf("%g", v);
+}
+
+ext fn print_f64(stack f64 v): void {
+    cio.printf("%g", v);
+}
+
+ext fn print_bool(stack bool v): void {
+    cio.printf("%s", v ? "true" : "false");
+}
+
+ext fn print_char(stack i8 c): void {
+    cio.printf("%c", c);
+}
+
+// ── stderr ────────────────────────────────────────────────────────────────
+
+// Write `msg` to stderr without a trailing newline.
+ext fn eprint(stack i8 *r msg): void {
+    final u32 len = con_str_len(msg);
+    cunistd.write(2, msg, len);   // fd 2 = stderr
+}
+
+// Write `msg` to stderr followed by a newline.
+ext fn eprintln(stack i8 *r msg): void {
+    eprint(msg);
+    cunistd.write(2, "\n", 1);
+}
+
+// ── stdin ─────────────────────────────────────────────────────────────────
+
+// Read up to `max - 1` characters from stdin into `buf`, stopping at newline
+// or EOF. Null-terminates `buf`. Returns the number of characters read.
+ext fn read_line(stack i8 *w buf, stack u32 max): u32 {
+    stack u32 i = 0;
+    stack i8  ch;
+
+    while (i < max - 1) {
+        if (cunistd.read(0, &ch, 1) <= 0)   // fd 0 = stdin
+            break;
+        if (ch == '\n')
+            break;
+        buf[i++] = ch;
+    }
+
+    buf[i] = 0;
+    ret i;
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+int fn con_str_len(stack i8 *r s): u32 {
+    stack u32 n = 0;
+    while (s && s[n] != 0) ++n;
+    ret n;
+}

@@ -1,1 +1,60 @@
 mod complex_rng;
+
+// PCG32 — Permuted Congruence Generator (O'Neill, 2014)
+// 64-bit state, 32-bit output, period 2^64.
+// High statistical quality with very low memory overhead.
+
+ext type pcg32_t: struct {
+stack:
+    int u64 state;
+    int u64 inc;    // must always be odd
+
+    // Advance and return the next uniform u32.
+    ext fn next_u32(void): u32 {
+        final u64 old = pcg32_t.(state);
+        pcg32_t.(state) = old * 6364136223846793005 + pcg32_t.(inc);
+        final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
+        final u32 rot = (u32)(old >> 59);
+        ret (xsh >> rot) | (xsh << ((-rot) & 31));
+    }
+
+    // Uniform integer in [min, max] inclusive.
+    ext fn next_range(stack i32 min, max): i32 {
+        final u32 range = (u32)(max - min + 1);
+        ret min + (i32)(pcg32_t.(next_u32)() % range);
+    }
+
+    // Uniform float in [0.0, 1.0].
+    ext fn next_f32(void): f32 {
+        ret (f32)pcg32_t.(next_u32)() / 4294967295.0;
+    }
+
+    // Uniform float in [lo, hi].
+    ext fn next_frange(stack f32 lo, hi): f32 {
+        ret lo + pcg32_t.(next_f32)() * (hi - lo);
+    }
+
+    // Random bool with 50/50 probability.
+    ext fn next_bool(void): bool {
+        ret (pcg32_t.(next_u32)() & 1) != 0;
+    }
+
+    // Re-seed the generator.
+    ext fn reseed(stack u64 seed): void {
+        final u64 inc = (seed << 1) | 1;
+        pcg32_t.(state) = inc;
+        pcg32_t.(inc)   = inc;
+        pcg32_t.(next_u32)();
+        pcg32_t.(state) += seed;
+        pcg32_t.(next_u32)();
+    }
+}
+
+// Create a PCG32 seeded with `seed`.
+ext fn pcg32_t.new(stack u64 seed): pcg32_t {
+    // Init sequence: state=0, inc=(seed<<1)|1, step, state+=seed, step.
+    final u64 inc    = (seed << 1) | 1;
+    final u64 state1 = inc;                                     // 0 * M + inc
+    final u64 state2 = (state1 + seed) * 6364136223846793005 + inc;
+    ret pcg32_t{ .state = state2, .inc = inc };
+}

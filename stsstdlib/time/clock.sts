@@ -1,0 +1,67 @@
+mod clock;
+
+lib "time" = ctime;
+
+// ── Ticks ─────────────────────────────────────────────────────────────────
+// Uses clock() which measures CPU time consumed by the process.
+// Resolution is CLOCKS_PER_SEC (1 000 000 on POSIX — microsecond precision).
+
+ext const i64 StsClockPerSec = 1000000;
+
+// Raw CPU-clock tick count.
+ext fn clock_ticks(void): i64 {
+    ret ctime.clock();
+}
+
+// Convert ticks to milliseconds.
+ext fn clock_ticks_to_ms(stack i64 ticks): f64 {
+    ret (f64)ticks * 1000.0 / (f64)StsClockPerSec;
+}
+
+// Convert ticks to microseconds.
+ext fn clock_ticks_to_us(stack i64 ticks): f64 {
+    ret (f64)ticks * 1000000.0 / (f64)StsClockPerSec;
+}
+
+// ── Stopwatch ─────────────────────────────────────────────────────────────
+// Measures CPU time between new() / reset() and elapsed_*() calls.
+
+ext type stopwatch_t: struct {
+stack:
+    int i64 t0;
+
+    // Elapsed CPU time in milliseconds since construction or last reset().
+    ext fn elapsed_ms(void): f64 {
+        ret clock_ticks_to_ms(ctime.clock() - stopwatch_t.(t0));
+    }
+
+    // Elapsed CPU time in microseconds since construction or last reset().
+    ext fn elapsed_us(void): f64 {
+        ret clock_ticks_to_us(ctime.clock() - stopwatch_t.(t0));
+    }
+
+    // Return elapsed milliseconds and reset the timer.
+    ext fn lap(void): f64 {
+        final now = ctime.clock();
+        final ms  = clock_ticks_to_ms(now - stopwatch_t.(t0));
+        stopwatch_t.(t0) = now;
+        ret ms;
+    }
+
+    // Restart the timer.
+    ext fn reset(void): void {
+        stopwatch_t.(t0) = ctime.clock();
+    }
+}
+
+// Start a new stopwatch (captures the current tick count).
+ext fn stopwatch_t.new(void): stopwatch_t {
+    ret stopwatch_t{ .t0 = ctime.clock() };
+}
+
+// ── Calendar time ─────────────────────────────────────────────────────────
+
+// Seconds since the Unix epoch (UTC).
+ext fn clock_unix_time(void): i64 {
+    ret ctime.time(0);
+}

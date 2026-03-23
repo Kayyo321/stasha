@@ -36,9 +36,27 @@ LINKER_OBJ = build/obj/linker/linker.o
 
 TARGET = bin/stasha
 
-.PHONY: all clean clean-llvm llvm
+# ── Standard library ──────────────────────────────────────────────────────
+STDLIB_SRCS := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
+STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS),$(dir $(s))lib$(notdir $(basename $(s))).a)
+
+.PHONY: all stdlib clean clean-stdlib clean-llvm llvm
 
 all: $(TARGET)
+
+# Build every .sts under stsstdlib/ into a .a alongside the source.
+stdlib: $(TARGET) $(STDLIB_LIBS)
+
+# Generated rule: stsstdlib/<cat>/lib<name>.a  ←  stsstdlib/<cat>/<name>.sts
+define stdlib-rule
+$(dir $(1))lib$(notdir $(basename $(1))).a: $(1) $(TARGET)
+	@mkdir -p $$(dir $$@)
+	$(TARGET) lib $$< -o $$@
+endef
+$(foreach s,$(STDLIB_SRCS),$(eval $(call stdlib-rule,$(s))))
+
+clean-stdlib:
+	find stsstdlib -name '*.a' -delete 2>/dev/null; true
 
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)

@@ -2,48 +2,96 @@ mod file_stream;
 
 lib "stdio" = cio;
 
-ext type file_stream_t: struct {
-stack:
-    int i32 fd, err, eof;
-
-    ext fn read(stack u32 no_bytes, stack i8 *w out_buf, stack u32 out_len): [u32, error] {
-
-    }
-
-    ext fn write(stack u32 no_bytes, stack i8 *r in_buf, stack u32 in_len): [u32, error] {
-
-    }
-
-    ext fn get_ch(void): void {
-
-    }
-
-    ext fn unget_ch(void): void {
-
-    }
-
-    ext fn at_eof(void): bool {
-
-    }
-
-    ext fn had_err(void): bool {
-
-    }
-}
-
 ext enum {
-    FSEndOfFile = -1,
+    FsEndOfFile = -1,
 
     FsWrite    = (1),
     FsRead     = (1 << 1),
     FsAppend   = (1 << 2),
-    FsAllFlags = (FSWrite | FSRead | FSAppend),
+    FsAllFlags = (FsWrite | FsRead | FsAppend),
 }
 
-ext fn f_stream.new(stack i8 *r path, stack i32 mode) f_stream {
+ext type file_stream_t: struct {
+stack:
+    int i8 *rw fp;       // FILE* stored as opaque pointer
+    int i32 err_flag;
 
+    ext fn read(stack u32 no_bytes, stack i8 *w out_buf, stack u32 out_len): [u32, error] {
+        final u32 n = cio.fread(out_buf, 1, no_bytes, file_stream_t.(fp));
+        if (cio.ferror(file_stream_t.(fp)) != 0)
+            file_stream_t.(err_flag) = 1;
+        ret [n, nil];
+    }
+
+    ext fn write(stack u32 no_bytes, stack i8 *r in_buf, stack u32 in_len): [u32, error] {
+        final u32 n = cio.fwrite(in_buf, 1, no_bytes, file_stream_t.(fp));
+        if (cio.ferror(file_stream_t.(fp)) != 0)
+            file_stream_t.(err_flag) = 1;
+        ret [n, nil];
+    }
+
+    // Returns the next character as i32, or FsEndOfFile (-1) on EOF/error.
+    ext fn get_ch(void): i32 {
+        ret cio.fgetc(file_stream_t.(fp));
+    }
+
+    // Push a character back into the stream so the next get_ch returns it.
+    ext fn unget_ch(stack i32 ch): void {
+        cio.ungetc(ch, file_stream_t.(fp));
+    }
+
+    ext fn at_eof(void): bool {
+        ret cio.feof(file_stream_t.(fp)) != 0;
+    }
+
+    ext fn had_err(void): bool {
+        ret file_stream_t.(err_flag) != 0;
+    }
+
+    ext fn flush(void): void {
+        cio.fflush(file_stream_t.(fp));
+    }
+
+    ext fn is_open(void): bool {
+        ret file_stream_t.(fp) != nil;
+    }
 }
 
-ext fn f_stream.rem(void): void {
+// Build a fopen mode string from FsRead/FsWrite/FsAppend flags.
+int fn build_mode_str(stack i32 mode, stack i8 *w out): void {
+    stack i32 mi = 0;
 
+    if (mode & FsAppend) {
+        out[mi++] = 'a';
+        if (mode & FsRead)
+            out[mi++] = '+';
+    } else if ((mode & FsRead) && (mode & FsWrite)) {
+        out[mi++] = 'r';
+        out[mi++] = '+';
+    } else if (mode & FsWrite) {
+        out[mi++] = 'w';
+    } else {
+        out[mi++] = 'r';
+    }
+
+    out[mi] = 0;
+}
+
+ext fn file_stream_t.new(stack i8 *r path, stack i32 mode): file_stream_t {
+    stack i8 mode_str[4];
+    build_mode_str(mode, mode_str);
+
+    stack i8 *rw fp = cio.fopen(path, mode_str);
+    ret file_stream_t{
+        .fp       = fp,
+        .err_flag = (fp != nil) ? 0 : 1
+    };
+}
+
+ext fn file_stream_t.rem(void): void {
+    if (file_stream_t.(fp) != nil) {
+        cio.fclose(file_stream_t.(fp));
+        file_stream_t.(fp) = nil;
+    }
+    file_stream_t.(err_flag) = 0;
 }

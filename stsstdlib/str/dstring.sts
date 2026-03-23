@@ -51,19 +51,19 @@ stack:
     }
 
     ext fn append_dstr(stack dstring_t *r other): void {
-        if (!other || other.length() <= 0)
+        if (other == nil || other.length() == 0)
             ret;
 
         dstring_t.(make_space_for)(other.length());
 
         cpy_str_from(
-            dstring_t.(characters) + dstring_t.(len),
-            other.characters,
-            other.len
+            dstring_t.(chars) + dstring_t.(len),
+            other.characters(),
+            other.length()
         );
 
-        dstring_t.(len) += other.len;
-        dstring_t.(characters)[dstring_t.(len)] = 0;
+        dstring_t.(len) += (i32)other.length();
+        dstring_t.(chars)[dstring_t.(len)] = 0;
     }
 
     ext fn append_i8(stack i8 v): void {
@@ -168,7 +168,7 @@ ext fn dstring_t.new(void): dstring_t {
 ext fn dstring_t.from(stack i8 *r txt): dstring_t {
     final len = byte_cnt_till_term(txt);
 
-    heap i8 *buf = new.(sizeof(i8) * (len + 1));
+    heap i8 *buf = new.(sizeof.(i8) * (len + 1));
 
     cpy_str_from(buf, txt, len);
     buf[len] = 0;

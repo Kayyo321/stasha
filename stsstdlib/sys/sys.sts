@@ -1,0 +1,64 @@
+mod sys;
+
+lib "stdlib" = cstd;
+lib "unistd" = cunistd;
+
+// ── Process control ───────────────────────────────────────────────────────
+
+// Terminate the process with the given exit code.
+ext fn sys_exit(stack i32 code): void {
+    cstd.exit(code);
+}
+
+// Abort with a core dump (SIGABRT).
+ext fn sys_abort(void): void {
+    cstd.abort();
+}
+
+// ── Environment ───────────────────────────────────────────────────────────
+
+// Return the value of environment variable `name`, or nil if not set.
+ext fn sys_getenv(stack i8 *r name): i8 *r {
+    ret cstd.getenv(name);
+}
+
+// ── Process / user identity ───────────────────────────────────────────────
+
+// Current process ID.
+ext fn sys_getpid(void): i32 {
+    ret cunistd.getpid();
+}
+
+// Current user ID.
+ext fn sys_getuid(void): u32 {
+    ret cunistd.getuid();
+}
+
+// Parent process ID.
+ext fn sys_getppid(void): i32 {
+    ret cunistd.getppid();
+}
+
+// ── Sleep ─────────────────────────────────────────────────────────────────
+
+// Sleep for `secs` whole seconds.
+ext fn sys_sleep_s(stack u32 secs): void {
+    cunistd.sleep(secs);
+}
+
+// Sleep for `usecs` microseconds.
+ext fn sys_sleep_us(stack u32 usecs): void {
+    cunistd.usleep(usecs);
+}
+
+// ── Memory allocation helpers ─────────────────────────────────────────────
+
+// Allocate `bytes` on the heap; caller must rem.() the result.
+ext fn sys_alloc(stack u32 bytes): heap i8 *rw {
+    ret new.(bytes);
+}
+
+// Free a heap pointer obtained from sys_alloc or new.().
+ext fn sys_free(stack heap i8 *rw ptr): void {
+    rem.(ptr);
+}

@@ -11,7 +11,7 @@ ext fn random_range(stack i32 min, max): i32 {
 
 ext fn random_frange(stack f32 fmin, fmax): f32 {
     stack final f32 scale = (f32)crng.rand() / (f32)RandMax;
-    return min + scale * (max - min);
+    return fmin + scale * (fmax - fmin);
 }
 
 ext fn random_seed(stack u32 seed): void {
