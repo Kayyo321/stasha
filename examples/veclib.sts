@@ -1,6 +1,6 @@
 mod veclib;
 
-lib "math" = m;
+lib "math";
 
 // ── 2-D floating-point vector ────────────────────────────────────────────
 

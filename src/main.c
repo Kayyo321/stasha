@@ -369,14 +369,34 @@ int main(int argc, char **argv) {
         }
         remove(obj_path);
     } else if (mode == EmitDylib) {
+        /* derive the directory of the input file for resolving relative lib paths */
+        char input_dir[512];
+        strncpy(input_dir, input_path, sizeof(input_dir) - 1);
+        input_dir[sizeof(input_dir) - 1] = '\0';
+        char *input_sep = strrchr(input_dir, '/');
+        if (!input_sep) input_sep = strrchr(input_dir, '\\');
+        if (input_sep) *input_sep = '\0';
+        else { input_dir[0] = '.'; input_dir[1] = '\0'; }
+
         /* collect custom library paths */
         const char *extra_lib_buf[64];
+        static char resolved_lib_paths[64][1024];
         usize_t extra_lib_count = 0;
         for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
             node_t *d = ast->as.module.decls.items[i];
             if (d->kind == NodeLib && d->as.lib_decl.path
-                    && extra_lib_count < 63)
-                extra_lib_buf[extra_lib_count++] = d->as.lib_decl.path;
+                    && extra_lib_count < 63) {
+                const char *lib_path = d->as.lib_decl.path;
+                if (lib_path[0] != '/' && !(lib_path[0] && lib_path[1] == ':')) {
+                    snprintf(resolved_lib_paths[extra_lib_count],
+                             sizeof(resolved_lib_paths[extra_lib_count]),
+                             "%s/%s", input_dir, lib_path);
+                    extra_lib_buf[extra_lib_count] = resolved_lib_paths[extra_lib_count];
+                } else {
+                    extra_lib_buf[extra_lib_count] = lib_path;
+                }
+                extra_lib_count++;
+            }
         }
         extra_lib_buf[extra_lib_count] = Null;
 
@@ -405,14 +425,35 @@ int main(int argc, char **argv) {
 #endif
         remove(obj_path);
     } else {
+        /* derive the directory of the input file for resolving relative lib paths */
+        char input_dir[512];
+        strncpy(input_dir, input_path, sizeof(input_dir) - 1);
+        input_dir[sizeof(input_dir) - 1] = '\0';
+        char *input_sep = strrchr(input_dir, '/');
+        if (!input_sep) input_sep = strrchr(input_dir, '\\');
+        if (input_sep) *input_sep = '\0';
+        else { input_dir[0] = '.'; input_dir[1] = '\0'; }
+
         /* collect custom library paths from `lib "name" from "path"` declarations */
         const char *extra_lib_buf[64];
+        static char resolved_lib_paths[64][1024];
         usize_t extra_lib_count = 0;
         for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
             node_t *d = ast->as.module.decls.items[i];
             if (d->kind == NodeLib && d->as.lib_decl.path
-                    && extra_lib_count < 63)
-                extra_lib_buf[extra_lib_count++] = d->as.lib_decl.path;
+                    && extra_lib_count < 63) {
+                const char *lib_path = d->as.lib_decl.path;
+                if (lib_path[0] != '/' && !(lib_path[0] && lib_path[1] == ':')) {
+                    /* relative path — resolve against input file's directory */
+                    snprintf(resolved_lib_paths[extra_lib_count],
+                             sizeof(resolved_lib_paths[extra_lib_count]),
+                             "%s/%s", input_dir, lib_path);
+                    extra_lib_buf[extra_lib_count] = resolved_lib_paths[extra_lib_count];
+                } else {
+                    extra_lib_buf[extra_lib_count] = lib_path;
+                }
+                extra_lib_count++;
+            }
         }
         extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
 

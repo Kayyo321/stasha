@@ -403,9 +403,12 @@ static type_info_t resolve_alias(cg_t *cg, type_info_t ti) {
 }
 
 static const char *find_lib_alias(cg_t *cg, const char *alias) {
-    for (usize_t i = 0; i < cg->lib_count; i++)
+    for (usize_t i = 0; i < cg->lib_count; i++) {
         if (cg->libs[i].alias && strcmp(cg->libs[i].alias, alias) == 0)
             return cg->libs[i].name;
+        if (!cg->libs[i].alias && strcmp(cg->libs[i].name, alias) == 0)
+            return cg->libs[i].name;
+    }
     return Null;
 }
 
