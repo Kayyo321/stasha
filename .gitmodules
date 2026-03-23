@@ -4,3 +4,6 @@
 [submodule "extlib/sodium"]
 	path = extlib/sodium
 	url = https://github.com/jedisct1/libsodium.git
+[submodule "extlib/extlib/openssl"]
+	path = extlib/extlib/openssl
+	url = https://github.com/openssl/openssl.git
