@@ -577,93 +577,141 @@ static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
      b           binary (C23 / clang %b extension)
      o           octal
      .N          float with N decimal places  (e.g. .2)
-     N           minimum field width, right-aligned (e.g. 8)
-     0N          zero-padded minimum width     (e.g. 08)
+     <N         left-align in field of width N     (e.g. <8)
+     +          force sign prefix for positive nums
+     #x / #X   hex with 0x / 0X prefix
+     #b         binary with 0b prefix
+     #o         octal with 0 prefix (via printf %#llo)
+     N          minimum field width, right-aligned  (e.g. 8)
+     0N         zero-padded minimum width            (e.g. 08)
+     .N         float with N decimal places          (e.g. .2)
+   Flags and modifiers compose: {:+#08x}, {:<+8}, etc.
    Anything unrecognised falls back to the auto format. */
+
+/* Parsed representation of a format spec (the part after ':'). */
+typedef struct {
+    boolean_t left_align;   /* '<' flag                          */
+    boolean_t force_sign;   /* '+' flag                          */
+    boolean_t alt_form;     /* '#' flag (0x/0X/0b/0 prefixes)   */
+    boolean_t zero_pad;     /* '0' flag                          */
+    usize_t   width;        /* field width; 0 = unset            */
+    usize_t   prec;         /* float precision; (usize_t)-1 = unset */
+    char      base;         /* 'x','X','b','o','d'; 0 = auto     */
+} print_spec_t;
+
+static print_spec_t parse_print_spec(const char *s, usize_t len) {
+    print_spec_t sp = { False, False, False, False, 0, (usize_t)-1, 0 };
+    usize_t i = 0;
+
+    /* flags: any of + < # 0 in any order before width/precision/base.
+       '0' is always the zero-pad flag here; width digits come after. */
+    while (i < len) {
+        if      (s[i] == '<') { sp.left_align = True; i++; }
+        else if (s[i] == '+') { sp.force_sign = True; i++; }
+        else if (s[i] == '#') { sp.alt_form   = True; i++; }
+        else if (s[i] == '0') { sp.zero_pad   = True; i++; }
+        else break;
+    }
+
+    /* width */
+    while (i < len && s[i] >= '0' && s[i] <= '9')
+        sp.width = sp.width * 10 + (usize_t)(s[i++] - '0');
+
+    /* precision */
+    if (i < len && s[i] == '.') {
+        i++;
+        sp.prec = 0;
+        while (i < len && s[i] >= '0' && s[i] <= '9')
+            sp.prec = sp.prec * 10 + (usize_t)(s[i++] - '0');
+    }
+
+    /* base specifier */
+    if (i < len && (s[i]=='x'||s[i]=='X'||s[i]=='b'||s[i]=='o'||s[i]=='d'))
+        sp.base = s[i];
+
+    return sp;
+}
+
 static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
                                    const char *spec, usize_t slen) {
     if (slen == 0) { print_emit_scalar(cg, val, ty); return; }
 
-    /* coerce integer to i64 for non-decimal bases */
-    LLVMValueRef ival = val;
-    if (llvm_is_int(ty) && ty != LLVMInt64TypeInContext(cg->ctx))
-        ival = LLVMBuildSExt(cg->builder, val, LLVMInt64TypeInContext(cg->ctx), "i64e");
+    print_spec_t sp = parse_print_spec(spec, slen);
 
-    /* single-char base specifier */
-    if (slen == 1) {
-        if (spec[0] == 'b') {
-            LLVMValueRef bfn = ensure_print_binary_fn(cg);
-            LLVMTypeRef bfty = LLVMGlobalGetValueType(bfn);
-            LLVMValueRef a[1] = { ival };
-            LLVMBuildCall2(cg->builder, bfty, bfn, a, 1, "");
-            return;
-        }
-        const char *pfmt = Null;
-        if      (spec[0] == 'x') pfmt = "%llx";
-        else if (spec[0] == 'X') pfmt = "%llX";
-        else if (spec[0] == 'o') pfmt = "%llo";
-        if (pfmt) {
-            LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_base");
-            LLVMValueRef a[2] = { f, ival };
-            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
-            return;
-        }
+    /* ── binary: custom helper (printf has no portable %b) ── */
+    if (sp.base == 'b') {
+        if (sp.alt_form) print_emit_cstr(cg, "0b");
+        LLVMValueRef ival = val;
+        if (llvm_is_int(ty) && ty != LLVMInt64TypeInContext(cg->ctx))
+            ival = LLVMBuildSExt(cg->builder, val,
+                                  LLVMInt64TypeInContext(cg->ctx), "i64e");
+        LLVMValueRef bfn = ensure_print_binary_fn(cg);
+        LLVMTypeRef bfty = LLVMGlobalGetValueType(bfn);
+        LLVMValueRef a[1] = { ival };
+        LLVMBuildCall2(cg->builder, bfty, bfn, a, 1, "");
+        return;
     }
 
-    /* .N — float precision */
-    if (spec[0] == '.') {
-        usize_t n = 0, k = 1;
-        while (k < slen && spec[k] >= '0' && spec[k] <= '9') n = n * 10 + (usize_t)(spec[k++] - '0');
-        char pfmt[32];
-        snprintf(pfmt, sizeof(pfmt), "%%.%zuf", n);
+    /* ── float ── */
+    if (llvm_is_float(ty) || (sp.base == 0 && sp.prec != (usize_t)-1)) {
         LLVMValueRef dval = val;
         if (llvm_is_float(ty) && ty == LLVMFloatTypeInContext(cg->ctx))
-            dval = LLVMBuildFPExt(cg->builder, val, LLVMDoubleTypeInContext(cg->ctx), "fpext");
+            dval = LLVMBuildFPExt(cg->builder, val,
+                                   LLVMDoubleTypeInContext(cg->ctx), "fpext");
         else if (llvm_is_int(ty))
-            dval = LLVMBuildSIToFP(cg->builder, val, LLVMDoubleTypeInContext(cg->ctx), "itof");
-        LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_prec");
+            dval = LLVMBuildSIToFP(cg->builder, val,
+                                    LLVMDoubleTypeInContext(cg->ctx), "itof");
+
+        /* build: %[flags][width][.prec]g */
+        char pfmt[32];
+        usize_t n = 0;
+        pfmt[n++] = '%';
+        if (sp.left_align) pfmt[n++] = '-';
+        if (sp.force_sign) pfmt[n++] = '+';
+        if (sp.zero_pad && !sp.left_align) pfmt[n++] = '0';
+        if (sp.width > 0)
+            n += (usize_t)snprintf(pfmt + n, sizeof(pfmt) - n, "%zu", sp.width);
+        if (sp.prec != (usize_t)-1)
+            n += (usize_t)snprintf(pfmt + n, sizeof(pfmt) - n, ".%zu", sp.prec);
+        pfmt[n++] = (sp.prec != (usize_t)-1) ? 'f' : 'g';
+        pfmt[n] = '\0';
+
+        LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_f");
         LLVMValueRef a[2] = { f, dval };
         LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
         return;
     }
 
-    /* [0]N — minimum field width, optionally zero-padded */
-    if (spec[0] == '0' || (spec[0] >= '1' && spec[0] <= '9')) {
-        boolean_t zpad = (spec[0] == '0');
-        usize_t k = zpad ? 1 : 0;
-        usize_t w = 0;
-        while (k < slen && spec[k] >= '0' && spec[k] <= '9') w = w * 10 + (usize_t)(spec[k++] - '0');
-        if (k == slen && w > 0) {
-            char pfmt[32];
-            if (llvm_is_float(ty)) {
-                LLVMValueRef dval = val;
-                if (ty == LLVMFloatTypeInContext(cg->ctx))
-                    dval = LLVMBuildFPExt(cg->builder, val,
-                                          LLVMDoubleTypeInContext(cg->ctx), "fpext");
-                snprintf(pfmt, sizeof(pfmt), zpad ? "%%0%zug" : "%%%zug", w);
-                LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_w");
-                LLVMValueRef a[2] = { f, dval };
-                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
-            } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
-                snprintf(pfmt, sizeof(pfmt), zpad ? "%%0%zulld" : "%%%zulld", w);
-                LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_w");
-                LLVMValueRef a[2] = { f, ival };
-                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
-            } else {
-                LLVMValueRef iv32 = val;
-                if (ty != LLVMInt32TypeInContext(cg->ctx))
-                    iv32 = LLVMBuildSExt(cg->builder, val,
-                                          LLVMInt32TypeInContext(cg->ctx), "iext");
-                snprintf(pfmt, sizeof(pfmt), zpad ? "%%0%zud" : "%%%zud", w);
-                LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_w");
-                LLVMValueRef a[2] = { f, iv32 };
-                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
-            }
-            return;
+    /* ── integer (decimal, hex, octal) ── */
+    {
+        /* sign-extend to the right width for printf */
+        boolean_t use64 = (ty == LLVMInt64TypeInContext(cg->ctx));
+        LLVMValueRef ival = val;
+        if (llvm_is_int(ty) && !use64) {
+            ival = LLVMBuildSExt(cg->builder, val,
+                                  LLVMInt32TypeInContext(cg->ctx), "iext");
         }
-    }
 
-    print_emit_scalar(cg, val, ty); /* unrecognised spec: auto */
+        /* build: %[flags][width]ll?[base] */
+        char pfmt[32];
+        usize_t n = 0;
+        pfmt[n++] = '%';
+        if (sp.left_align) pfmt[n++] = '-';
+        if (sp.force_sign) pfmt[n++] = '+';
+        if (sp.alt_form && sp.base != 'b') pfmt[n++] = '#';
+        if (sp.zero_pad && !sp.left_align) pfmt[n++] = '0';
+        if (sp.width > 0)
+            n += (usize_t)snprintf(pfmt + n, sizeof(pfmt) - n, "%zu", sp.width);
+        if (use64) { pfmt[n++] = 'l'; pfmt[n++] = 'l'; }
+
+        char base_ch = (sp.base != 0) ? sp.base : 'd';
+        pfmt[n++] = base_ch;
+        pfmt[n] = '\0';
+
+        LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_i");
+        LLVMValueRef a[2] = { f, ival };
+        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+    }
 }
 
 static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr) {

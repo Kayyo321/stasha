@@ -27,7 +27,7 @@ stack:
 // print.(...) calls this instead of the default field-by-field output.
 fn complex_t.print(void): void {
     for (stack i32 i = 0; i < complex_t.(len); i++) {
-        io.printf("%c", complex_t.(chars)[i]);
+        print.('{}', complex_t.(chars)[i]);
     }
 }
 
@@ -49,21 +49,36 @@ fn main(void): i32 {
     print.('custom struct print: {}\n', complex_t { .chars = characters, .len = 10 });
 
     // {:x} {:X} — hex
-    print.('255 in hex:        {:x}\n', 255);
-    print.('255 in HEX:        {:X}\n', 255);
+    print.('hex lower:         {:x}\n', 255);
+    print.('hex upper:         {:X}\n', 255);
 
-    // {:b} — binary
+    // {:#x} {:#X} — hex with 0x / 0X prefix
+    print.('hex with prefix:   {:#x}\n', 255);
+    print.('HEX with prefix:   {:#X}\n', 255);
+
+    // {:b} {:#b} — binary, with optional 0b prefix
     print.('10 in binary:      {:b}\n', 10);
+    print.('10 with prefix:    {:#b}\n', 10);
 
-    // {:o} — octal
+    // {:o} — octal (printf %#llo adds 0 prefix via alt_form)
     print.('8 in octal:        {:o}\n', 8);
+    print.('8 octal alt:       {:#o}\n', 8);
 
     // {:.N} — float precision
     print.('pi to 4 places:    {:.4}\n', 3.14159265);
 
-    // {:N} — minimum width (right-aligned), {:0N} — zero-padded
-    print.('width 8:           |{:8}|\n', 42);
+    // {:+} — force sign
+    print.('force sign +42:    {:+}\n', 42);
+    print.('force sign -42:    {:+}\n', -42);
+
+    // {:N} {:0N} {:<N} — width: right-align, zero-pad, left-align
+    print.('right-aligned:     |{:8}|\n',  42);
     print.('zero-padded:       |{:08}|\n', 42);
+    print.('left-aligned:      |{:<8}|\n', 42);
+
+    // combinations
+    print.('left+sign:         |{:<+8}|\n',  42);
+    print.('zero+hex+prefix:   |{:#010x}|\n', 255);
 
     ret 0;
 }
