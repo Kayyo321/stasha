@@ -114,13 +114,34 @@ static node_t *parse_ret_stmt(parser_t *p) {
     return n;
 }
 
-static node_t *parse_debug_stmt(parser_t *p) {
+static node_t *parse_print_stmt(parser_t *p) {
     usize_t line = p->current.line;
+    advance_parser(p); /* consume 'print' */
+    consume(p, TokDot, "'.'");
+    consume(p, TokLParen, "'('");
+
+    if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+        log_err("line %lu: print.() requires a string literal as the first argument", line);
+        p->had_error = True;
+        return make_node(NodePrintStmt, line);
+    }
+
+    token_t fmt_tok = p->current;
     advance_parser(p);
-    node_t *value = parse_expr(p);
+
+    usize_t fmt_len = 0;
+    char *fmt = ast_strdup_escape(fmt_tok.start + 1, fmt_tok.length - 2, &fmt_len);
+
+    node_t *n = make_node(NodePrintStmt, line);
+    n->as.print_stmt.fmt     = fmt;
+    n->as.print_stmt.fmt_len = fmt_len;
+    node_list_init(&n->as.print_stmt.args);
+
+    while (match_tok(p, TokComma))
+        node_list_push(&n->as.print_stmt.args, parse_expr(p));
+
+    consume(p, TokRParen, "')'");
     consume(p, TokSemicolon, "';'");
-    node_t *n = make_node(NodeDebugStmt, line);
-    n->as.debug_stmt.value = value;
     return n;
 }
 
@@ -292,7 +313,7 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokInf))          return parse_inf_loop(p);
     if (check(p, TokIf))           return parse_if_stmt(p);
     if (check(p, TokRet))          return parse_ret_stmt(p);
-    if (check(p, TokDebug))        return parse_debug_stmt(p);
+    if (check(p, TokPrint))        return parse_print_stmt(p);
     if (check(p, TokMatch))        return parse_match_stmt(p);
     if (check(p, TokDefer))        return parse_defer_stmt(p);
     if (check(p, TokSwitch))       return parse_switch_stmt(p);

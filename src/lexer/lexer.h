@@ -34,7 +34,7 @@ typedef enum {
     TokFinal,
     TokGpu,
     TokCpu,
-    TokDebug,
+    TokPrint,
     TokVoid,
     TokTrue,
     TokFalse,

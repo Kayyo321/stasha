@@ -407,7 +407,7 @@ static node_t *parse_postfix(parser_t *p) {
                 continue;
             }
 
-            /* consume method/field name — accept keywords new/rem as method names */
+            /* consume method/field name — accept keywords new/rem/print as method names */
             char *field_name;
             if (check(p, TokIdent)) {
                 field_name = copy_token_text(p->current);
@@ -417,6 +417,9 @@ static node_t *parse_postfix(parser_t *p) {
                 advance_parser(p);
             } else if (check(p, TokRem)) {
                 field_name = ast_strdup("rem", 3);
+                advance_parser(p);
+            } else if (check(p, TokPrint)) {
+                field_name = ast_strdup("print", 5);
                 advance_parser(p);
             } else {
                 field_name = ast_strdup("?", 1);

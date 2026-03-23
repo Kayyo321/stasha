@@ -360,7 +360,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         struct_name = name;
         is_method = True;
 
-        /* method name: allow ident, new, rem */
+        /* method name: allow ident, new, rem, print */
         if (check(p, TokIdent)) {
             name = copy_token_text(p->current);
             advance_parser(p);
@@ -369,6 +369,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             advance_parser(p);
         } else if (check(p, TokRem)) {
             name = ast_strdup("rem", 3);
+            advance_parser(p);
+        } else if (check(p, TokPrint)) {
+            name = ast_strdup("print", 5);
             advance_parser(p);
         } else {
             log_err("line %lu: expected method name after '.'", p->current.line);

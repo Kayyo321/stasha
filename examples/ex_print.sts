@@ -1,13 +1,49 @@
 mod ex_print;
 
-fn main(void): i16 { // TODO remove the debug keyword
+lib "stdio" = io;
+
+type simple_t: struct {
+stack:
+    ext i32 x, y, z;
+    int i32 priv;
+}
+
+fn simple_t.new(stack i32 x, y, z, priv): simple_t {
+    stack simple_t s;
+    s.x = x;
+    s.y = y;
+    s.z = z;
+    s.priv = priv;
+    ret s;
+}
+
+type complex_t: struct {
+stack:
+    ext i8 *r chars;
+    ext i32 len;
+}
+
+// Override print for complex_t: fn Type.print(void): void
+// print.(...) calls this instead of the default field-by-field output.
+fn complex_t.print(void): void {
+    for (stack i32 i = 0; i < complex_t.(len); i++) {
+        io.printf("%c", complex_t.(chars)[i]);
+    }
+}
+
+fn main(void): i32 {
     print.('Hello, World!\n');
 
     print.('Nice to meet you, {}!\n', 'Sully!');
-    print.('{} + {} * {} = {}', 1, 2, 3, 1+2*3);
+    print.('{} + {} * {} = {}\n', 1, 2, 3, 1+2*3);
 
-    // similar to new and rem, print is a builtin that 
-    // turns all these into printf statements with the correct fmt
+    // default struct print: "simple_t{.x = 1, .y = 2, .z = 3}"
+    // (.priv is int so it is omitted)
+    print.('default struct print: {}\n', simple_t.new(1, 2, 3, 4));
+
+    // complex_t has a print override, so {} calls complex_t.print(self)
+    stack i8 *r characters = 'HELLOWORLD';
+    print.('custom struct print: {}\n', complex_t { .chars = characters, .len = 10 });
 
     ret 0;
 }

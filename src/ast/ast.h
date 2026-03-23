@@ -127,7 +127,7 @@ typedef enum {
     NodeRetStmt,
     NodeBreakStmt,
     NodeContinueStmt,
-    NodeDebugStmt,
+    NodePrintStmt,
     NodeExprStmt,
     NodeRemStmt,
     NodeMatchStmt,
@@ -253,7 +253,7 @@ struct node {
         struct { node_t *body; } inf_loop;
         struct { node_t *cond; node_t *then_block; node_t *else_block; } if_stmt;
         struct { node_list_t values; } ret_stmt;
-        struct { node_t *value; } debug_stmt;
+        struct { char *fmt; usize_t fmt_len; node_list_t args; } print_stmt;
         struct { node_t *expr; } expr_stmt;
         struct { node_t *ptr; } rem_stmt;
         struct { node_t *body; } defer_stmt;

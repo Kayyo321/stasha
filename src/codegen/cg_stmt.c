@@ -418,37 +418,137 @@ static void gen_ret(cg_t *cg, node_t *node) {
     }
 }
 
-static void gen_debug(cg_t *cg, node_t *node) {
-    LLVMValueRef value = gen_expr(cg, node->as.debug_stmt.value);
-    LLVMTypeRef vtype = LLVMTypeOf(value);
+/* ── print.(fmt, args...) helpers ── */
 
-    const char *fmt;
-    if (llvm_is_ptr(vtype))
-        fmt = "%s\n";
-    else if (llvm_is_float(vtype))
-        fmt = "%f\n";
-    else if (vtype == LLVMInt64TypeInContext(cg->ctx))
-        fmt = "%lld\n";
-    else if (vtype == LLVMInt8TypeInContext(cg->ctx))
-        fmt = "%c\n";
-    else if (vtype == LLVMInt1TypeInContext(cg->ctx))
-        fmt = "%d\n";
-    else
-        fmt = "%d\n";
+static void print_emit_cstr(cg_t *cg, const char *s) {
+    LLVMValueRef str = LLVMBuildGlobalStringPtr(cg->builder, s, "plit");
+    LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, "%s", "pfmt_s");
+    LLVMValueRef pargs[2] = { fmt, str };
+    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
+}
 
-    /* promote small ints for printf */
-    if (llvm_is_int(vtype) && vtype != LLVMInt32TypeInContext(cg->ctx)
-        && vtype != LLVMInt64TypeInContext(cg->ctx)
-        && vtype != LLVMInt8TypeInContext(cg->ctx)) {
-        value = LLVMBuildSExt(cg->builder, value, LLVMInt32TypeInContext(cg->ctx), "dbgext");
+static void print_emit_literal(cg_t *cg, const char *s, usize_t len) {
+    if (len == 0) return;
+    heap_t h = allocate(len + 1, 1);
+    char *buf = h.pointer;
+    memcpy(buf, s, len);
+    buf[len] = '\0';
+    print_emit_cstr(cg, buf);
+    deallocate(h);
+}
+
+static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
+    const char *fmt_str;
+    LLVMValueRef print_val = val;
+
+    if (llvm_is_ptr(ty)) {
+        fmt_str = "%s";
+    } else if (llvm_is_float(ty)) {
+        if (ty == LLVMFloatTypeInContext(cg->ctx))
+            print_val = LLVMBuildFPExt(cg->builder, val,
+                                       LLVMDoubleTypeInContext(cg->ctx), "fpext");
+        fmt_str = "%g";
+    } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+        fmt_str = "%lld";
+    } else if (ty == LLVMInt8TypeInContext(cg->ctx)) {
+        fmt_str = "%c";
+        print_val = LLVMBuildSExt(cg->builder, val,
+                                   LLVMInt32TypeInContext(cg->ctx), "cext");
+    } else if (ty == LLVMInt1TypeInContext(cg->ctx)) {
+        fmt_str = "%d";
+        print_val = LLVMBuildZExt(cg->builder, val,
+                                   LLVMInt32TypeInContext(cg->ctx), "bext");
+    } else {
+        fmt_str = "%d";
+        if (ty != LLVMInt32TypeInContext(cg->ctx))
+            print_val = LLVMBuildSExt(cg->builder, val,
+                                       LLVMInt32TypeInContext(cg->ctx), "iext");
     }
-    if (llvm_is_float(vtype) && vtype != LLVMDoubleTypeInContext(cg->ctx)) {
-        value = LLVMBuildFPExt(cg->builder, value, LLVMDoubleTypeInContext(cg->ctx), "dbgfext");
+
+    LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, fmt_str, "pfmt");
+    LLVMValueRef pargs[2] = { fmt, print_val };
+    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
+}
+
+static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr) {
+    char open[256];
+    snprintf(open, sizeof(open), "%s{", sr->name);
+    print_emit_cstr(cg, open);
+
+    boolean_t first = True;
+    for (usize_t i = 0; i < sr->field_count; i++) {
+        field_info_t *f = &sr->fields[i];
+        if (f->linkage != LinkageExternal) continue;
+
+        if (!first) print_emit_cstr(cg, ", ");
+        first = False;
+
+        char label[256];
+        snprintf(label, sizeof(label), ".%s = ", f->name);
+        print_emit_cstr(cg, label);
+
+        LLVMValueRef fval = LLVMBuildExtractValue(cg->builder, val,
+                                                   (unsigned)f->index, "");
+        print_emit_scalar(cg, fval, LLVMTypeOf(fval));
     }
 
-    LLVMValueRef fmt_str = LLVMBuildGlobalStringPtr(cg->builder, fmt, "dbg_fmt");
-    LLVMValueRef args[2] = { fmt_str, value };
-    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 2, "");
+    print_emit_cstr(cg, "}");
+}
+
+static void gen_print(cg_t *cg, node_t *node) {
+    const char *fmt  = node->as.print_stmt.fmt;
+    usize_t fmt_len  = node->as.print_stmt.fmt_len;
+    node_list_t *args = &node->as.print_stmt.args;
+    usize_t arg_idx  = 0;
+    usize_t seg_start = 0;
+
+    for (usize_t i = 0; i < fmt_len; ) {
+        if (fmt[i] == '{' && i + 1 < fmt_len && fmt[i + 1] == '}') {
+            /* emit literal before this placeholder */
+            if (i > seg_start)
+                print_emit_literal(cg, fmt + seg_start, i - seg_start);
+
+            /* emit argument */
+            if (arg_idx < args->count) {
+                node_t *arg = args->items[arg_idx++];
+                LLVMValueRef val = gen_expr(cg, arg);
+                LLVMTypeRef ty   = LLVMTypeOf(val);
+
+                if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+                    const char *sname = LLVMGetStructName(ty);
+                    if (sname) {
+                        char method_name[256];
+                        snprintf(method_name, sizeof(method_name), "%s.print", sname);
+                        LLVMValueRef print_fn =
+                            LLVMGetNamedFunction(cg->module, method_name);
+                        if (print_fn) {
+                            /* store into a temp alloca so the method gets a self ptr */
+                            LLVMValueRef tmp = alloc_in_entry(cg, ty, "print_self");
+                            LLVMBuildStore(cg->builder, val, tmp);
+                            LLVMTypeRef fn_type = LLVMGlobalGetValueType(print_fn);
+                            LLVMValueRef call_args[1] = { tmp };
+                            LLVMBuildCall2(cg->builder, fn_type, print_fn,
+                                           call_args, 1, "");
+                        } else {
+                            struct_reg_t *sr = find_struct(cg, sname);
+                            if (sr) print_emit_struct_default(cg, val, sr);
+                        }
+                    }
+                } else {
+                    print_emit_scalar(cg, val, ty);
+                }
+            }
+
+            i += 2; /* skip '{}' */
+            seg_start = i;
+        } else {
+            i++;
+        }
+    }
+
+    /* emit any trailing literal */
+    if (seg_start < fmt_len)
+        print_emit_literal(cg, fmt + seg_start, fmt_len - seg_start);
 }
 
 static void gen_multi_assign(cg_t *cg, node_t *node) {
@@ -860,7 +960,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeInfLoop:      gen_inf_loop(cg, node); break;
         case NodeIfStmt:       gen_if(cg, node); break;
         case NodeRetStmt:      gen_ret(cg, node); break;
-        case NodeDebugStmt:    gen_debug(cg, node); break;
+        case NodePrintStmt:    gen_print(cg, node); break;
         case NodeExprStmt:     gen_expr(cg, node->as.expr_stmt.expr); break;
         case NodeRemStmt:      gen_expr(cg, node); break;
         case NodeMatchStmt:    gen_match(cg, node); break;
