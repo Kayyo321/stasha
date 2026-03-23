@@ -18,7 +18,8 @@
       "Bash(printf \"mod hello;\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\")",
       "Bash(./bin/typer)",
       "Bash(/Users/jessicabruce/Documents/stasha/bin/stasha build:*)",
-      "Bash(ls /Users/jessicabruce/Documents/stasha/examples/*.sts)"
+      "Bash(ls /Users/jessicabruce/Documents/stasha/examples/*.sts)",
+      "Bash(/tmp/ex_hash)"
     ],
     "additionalDirectories": [
       "/private/tmp"
