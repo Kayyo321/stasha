@@ -273,6 +273,16 @@ static node_t *parse_primary(parser_t *p) {
     }
 
     /* identifier — may be designated initializer: Type { .x = 1, .y = 2 } */
+    /* soft keywords used as variable names: from, new, rem */
+    if (check(p, TokFrom) || check(p, TokNew) || check(p, TokRem)) {
+        usize_t line = p->current.line;
+        char *name = copy_token_text(p->current);
+        advance_parser(p);
+        node_t *n = make_node(NodeIdentExpr, line);
+        n->as.ident.name = name;
+        return n;
+    }
+
     if (check(p, TokIdent)) {
         advance_parser(p);
         char *name = copy_token_text(p->previous);
@@ -356,6 +366,26 @@ static node_t *parse_postfix(parser_t *p) {
     node_t *expr = parse_primary(p);
 
     for (;;) {
+        /* self-method call: Type.(method)(args) */
+        if (check(p, TokLParen) && expr->kind == NodeSelfMemberExpr) {
+            usize_t line = expr->line;
+            char *type_name = expr->as.self_member.type_name;
+            char *method_name = expr->as.self_member.field;
+            advance_parser(p);
+            node_list_t args;
+            node_list_init(&args);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeSelfMethodCall, line);
+            n->as.self_method_call.type_name = type_name;
+            n->as.self_method_call.method = method_name;
+            n->as.self_method_call.args = args;
+            expr = n;
+            continue;
+        }
+
         /* function call: ident(...) */
         if (check(p, TokLParen) && expr->kind == NodeIdentExpr) {
             char *name = expr->as.ident.name;
@@ -478,6 +508,16 @@ static node_t *parse_unary(parser_t *p) {
         node_t *operand = parse_unary(p);
         node_t *n = make_node(NodeAddrOf, line);
         n->as.addr_of.operand = operand;
+        return n;
+    }
+    /* pointer dereference: *expr */
+    if (check(p, TokStar)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        node_t *operand = parse_unary(p);
+        node_t *n = make_node(NodeUnaryPrefixExpr, line);
+        n->as.unary.op = TokStar;
+        n->as.unary.operand = operand;
         return n;
     }
     if (check(p, TokPlusPlus) || check(p, TokMinusMinus)

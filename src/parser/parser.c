@@ -146,6 +146,11 @@ static type_info_t parse_type(parser_t *p) {
         return info;
     }
 
+    /* optional storage qualifier prefix on pointer return types (e.g. heap u8 *r) */
+    if (check(p, TokHeap) || check(p, TokStack)) {
+        advance_parser(p);
+    }
+
     if (is_builtin_type_token(p->current.kind)) {
         info.base = token_to_type(p->current.kind);
         advance_parser(p);
@@ -221,6 +226,15 @@ static boolean_t can_start_param_type(parser_t *p) {
     boolean_t result = check(p, TokIdent) || check(p, TokStar);
     restore_state(p, snap);
     return result;
+}
+
+/* accept an identifier or a contextual keyword used as a name (from, new, rem) */
+static token_t consume_name(parser_t *p, const char *msg) {
+    if (check(p, TokIdent) || check(p, TokFrom) || check(p, TokNew) || check(p, TokRem)) {
+        advance_parser(p);
+        return p->previous;
+    }
+    return consume(p, TokIdent, msg);
 }
 
 static boolean_t can_start_var_decl(parser_t *p) {

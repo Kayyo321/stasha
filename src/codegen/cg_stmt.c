@@ -189,10 +189,12 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 static void gen_for(cg_t *cg, node_t *node) {
     push_dtor_scope(cg);
 
-    if (node->as.for_stmt.init->kind == NodeVarDecl)
-        gen_local_var(cg, node->as.for_stmt.init);
-    else
-        gen_expr(cg, node->as.for_stmt.init);
+    if (node->as.for_stmt.init) {
+        if (node->as.for_stmt.init->kind == NodeVarDecl)
+            gen_local_var(cg, node->as.for_stmt.init);
+        else
+            gen_expr(cg, node->as.for_stmt.init);
+    }
 
     LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "for.cond");
     LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "for.body");
@@ -208,14 +210,7 @@ static void gen_for(cg_t *cg, node_t *node) {
 
     LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
     LLVMValueRef cond = gen_expr(cg, node->as.for_stmt.cond);
-    if (LLVMTypeOf(cond) != LLVMInt1TypeInContext(cg->ctx)) {
-        if (llvm_is_float(LLVMTypeOf(cond)))
-            cond = LLVMBuildFCmp(cg->builder, LLVMRealONE, cond,
-                                 LLVMConstReal(LLVMTypeOf(cond), 0.0), "tobool");
-        else
-            cond = LLVMBuildICmp(cg->builder, LLVMIntNE, cond,
-                                 LLVMConstInt(LLVMTypeOf(cond), 0, 0), "tobool");
-    }
+    cond = llvm_to_bool(cg, cond);
     LLVMBuildCondBr(cg->builder, cond, body_bb, end_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, body_bb);
@@ -254,9 +249,7 @@ static void gen_while(cg_t *cg, node_t *node) {
 
     LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
     LLVMValueRef cond = gen_expr(cg, node->as.while_stmt.cond);
-    if (LLVMTypeOf(cond) != LLVMInt1TypeInContext(cg->ctx))
-        cond = LLVMBuildICmp(cg->builder, LLVMIntNE, cond,
-                             LLVMConstInt(LLVMTypeOf(cond), 0, 0), "tobool");
+    cond = llvm_to_bool(cg, cond);
     LLVMBuildCondBr(cg->builder, cond, body_bb, end_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, body_bb);
@@ -288,9 +281,7 @@ static void gen_do_while(cg_t *cg, node_t *node) {
 
     LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
     LLVMValueRef cond = gen_expr(cg, node->as.do_while_stmt.cond);
-    if (LLVMTypeOf(cond) != LLVMInt1TypeInContext(cg->ctx))
-        cond = LLVMBuildICmp(cg->builder, LLVMIntNE, cond,
-                             LLVMConstInt(LLVMTypeOf(cond), 0, 0), "tobool");
+    cond = llvm_to_bool(cg, cond);
     LLVMBuildCondBr(cg->builder, cond, body_bb, end_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
@@ -321,14 +312,7 @@ static void gen_inf_loop(cg_t *cg, node_t *node) {
 
 static void gen_if(cg_t *cg, node_t *node) {
     LLVMValueRef cond = gen_expr(cg, node->as.if_stmt.cond);
-    if (LLVMTypeOf(cond) != LLVMInt1TypeInContext(cg->ctx)) {
-        if (llvm_is_float(LLVMTypeOf(cond)))
-            cond = LLVMBuildFCmp(cg->builder, LLVMRealONE, cond,
-                                 LLVMConstReal(LLVMTypeOf(cond), 0.0), "tobool");
-        else
-            cond = LLVMBuildICmp(cg->builder, LLVMIntNE, cond,
-                                 LLVMConstInt(LLVMTypeOf(cond), 0, 0), "tobool");
-    }
+    cond = llvm_to_bool(cg, cond);
 
     LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "if.then");
     LLVMBasicBlockRef else_bb = node->as.if_stmt.else_block

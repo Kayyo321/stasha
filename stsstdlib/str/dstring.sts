@@ -12,17 +12,15 @@ stack:
     int i32 len, cap;
 
     int fn make_space_for(stack u32 add): void {
-        final needed = dstring_t.(len) + add + 1; // +1 for null terminator
+        final i32 needed = dstring_t.(len) + add + 1; // +1 for null terminator
 
-        if (needed <= dstring_t.(cap))
-            ret;
+        if (needed <= dstring_t.(cap)) { ret; }
 
         i32 new_cap = dstring_t.(cap);
 
         new_cap = (new_cap <= 0) ? 8 : new_cap;
 
-        while (new_cap < needed)
-            new_cap <<= 1;
+        while (new_cap < needed) { new_cap <<= 1; }
 
         dstring_t.(chars) = mov.(dstring_t.(chars), new_cap);
         dstring_t.(cap) = new_cap;
@@ -36,7 +34,7 @@ stack:
     }
 
     ext fn append_cstr(stack i8 *r txt): void {
-        final txt_len = byte_cnt_till_term(txt);
+        final i32 txt_len = byte_cnt_till_term(txt);
 
         dstring_t.(make_space_for)(txt_len);
 
@@ -51,8 +49,7 @@ stack:
     }
 
     ext fn append_dstr(stack dstring_t *r other): void {
-        if (other == nil || other.length() == 0)
-            ret;
+        if (other == nil || other.length() == 0) { ret; }
 
         dstring_t.(make_space_for)(other.length());
 
@@ -127,8 +124,7 @@ stack:
     }
 
     ext fn insert_ch(stack i8 ch, stack u32 pos): void {
-        if (pos > dstring_t.(len))
-            pos = dstring_t.(len);
+        if (pos > dstring_t.(len)) { pos = dstring_t.(len); }
 
         dstring_t.(make_space_for)(1);
 
@@ -144,8 +140,7 @@ stack:
     ext fn clear(void): void {
         dstring_t.(len) = 0;
 
-        if (dstring_t.(chars))
-            dstring_t.(chars)[0] = 0;
+        if (dstring_t.(chars)) { dstring_t.(chars)[0] = 0; }
     }
 
     ext fn length(void): u32 {
@@ -165,8 +160,8 @@ ext fn dstring_t.new(void): dstring_t {
     };
 }
 
-ext fn dstring_t.from(stack i8 *r txt): dstring_t {
-    final len = byte_cnt_till_term(txt);
+ext fn dstring_t.from_str(stack i8 *r txt): dstring_t {
+    final i32 len = byte_cnt_till_term(txt);
 
     heap i8 *buf = new.(sizeof.(i8) * (len + 1));
 
@@ -181,8 +176,7 @@ ext fn dstring_t.from(stack i8 *r txt): dstring_t {
 }
 
 ext fn dstring_t.rem(void): void {
-    if (dstring_t.(chars))
-        rem.(dstring_t.(chars));
+    if (dstring_t.(chars)) { rem.(dstring_t.(chars)); }
 
     dstring_t.(chars) = nil;
     dstring_t.(len) = 0;
@@ -193,8 +187,7 @@ ext fn dstring_t.rem(void): void {
 int fn byte_cnt_till_term(stack i8 *r bs): i32 {
     stack i32 i = 0;
 
-    for (; bs && *bs != 0; ++bs)
-        ++i;
+    for (; bs && *bs != 0; ++bs) { ++i; }
 
     ret i;
 }
@@ -203,8 +196,7 @@ int fn byte_cnt_till_term(stack i8 *r bs): i32 {
 int fn cpy_str_from(stack i8 *w dest, stack i8 *r src, stack u32 n): u32 {
     stack u32 written = 0;
 
-    for (; written < n; ++written)
-        dest[written] = src[written];
+    for (; written < n; ++written) { dest[written] = src[written]; }
 
     ret written;
 }

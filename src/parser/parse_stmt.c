@@ -19,11 +19,13 @@ static node_t *parse_for_stmt(parser_t *p) {
     advance_parser(p);
     consume(p, TokLParen, "'('");
 
-    /* init — could be a var decl or expression statement */
-    node_t *init;
-    if (can_start_var_decl(p))
+    /* init — could be a var decl, expression statement, or empty */
+    node_t *init = Null;
+    if (check(p, TokSemicolon)) {
+        advance_parser(p); /* empty init: for (; ...) */
+    } else if (can_start_var_decl(p)) {
         init = parse_var_decl(p, LinkageNone);
-    else {
+    } else {
         init = parse_expr(p);
         consume(p, TokSemicolon, "';'");
     }

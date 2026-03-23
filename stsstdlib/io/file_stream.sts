@@ -2,32 +2,33 @@ mod file_stream;
 
 lib "stdio" = cio;
 
-ext enum {
-    FsEndOfFile = -1,
-
-    FsWrite    = (1),
-    FsRead     = (1 << 1),
-    FsAppend   = (1 << 2),
-    FsAllFlags = (FsWrite | FsRead | FsAppend),
-}
+ext const i32 FsEndOfFile = -1;
+ext const i32 FsWrite     = 1;
+ext const i32 FsRead      = 2;
+ext const i32 FsAppend    = 4;
+ext const i32 FsAllFlags  = 7;
 
 ext type file_stream_t: struct {
 stack:
     int i8 *rw fp;       // FILE* stored as opaque pointer
     int i32 err_flag;
 
-    ext fn read(stack u32 no_bytes, stack i8 *w out_buf, stack u32 out_len): [u32, error] {
+    // Returns bytes read, or 0 on error/EOF.
+    ext fn read(stack u32 no_bytes, stack i8 *w out_buf, stack u32 out_len): u32 {
         final u32 n = cio.fread(out_buf, 1, no_bytes, file_stream_t.(fp));
-        if (cio.ferror(file_stream_t.(fp)) != 0)
+        if (cio.ferror(file_stream_t.(fp)) != 0) {
             file_stream_t.(err_flag) = 1;
-        ret [n, nil];
+        }
+        ret n;
     }
 
-    ext fn write(stack u32 no_bytes, stack i8 *r in_buf, stack u32 in_len): [u32, error] {
+    // Returns bytes written, or 0 on error.
+    ext fn write(stack u32 no_bytes, stack i8 *r in_buf, stack u32 in_len): u32 {
         final u32 n = cio.fwrite(in_buf, 1, no_bytes, file_stream_t.(fp));
-        if (cio.ferror(file_stream_t.(fp)) != 0)
+        if (cio.ferror(file_stream_t.(fp)) != 0) {
             file_stream_t.(err_flag) = 1;
-        ret [n, nil];
+        }
+        ret n;
     }
 
     // Returns the next character as i32, or FsEndOfFile (-1) on EOF/error.
@@ -63,8 +64,7 @@ int fn build_mode_str(stack i32 mode, stack i8 *w out): void {
 
     if (mode & FsAppend) {
         out[mi++] = 'a';
-        if (mode & FsRead)
-            out[mi++] = '+';
+        if (mode & FsRead) { out[mi++] = '+'; }
     } else if ((mode & FsRead) && (mode & FsWrite)) {
         out[mi++] = 'r';
         out[mi++] = '+';

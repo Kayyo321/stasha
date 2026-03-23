@@ -172,6 +172,10 @@ typedef enum {
     NodeExpectEqExpr,   /* expect_eq.(a, b) */
     NodeExpectNeqExpr,  /* expect_neq.(a, b) */
     NodeTestFailExpr,   /* test_fail.('msg') */
+    NodeSelfMethodCall, /* Type.(method)(args) — self method call inside struct body */
+
+    /* added after initial release — keep at end to avoid shifting existing values */
+    NodeLibImp,     /* libimp "name" from "path"|std */
 } node_kind_t;
 
 /* ── node list ── */
@@ -244,6 +248,8 @@ struct node {
         /* lib "name" [from "path"] [= alias] */
         struct { char *name; char *alias; char *path; } lib_decl;
         struct { char *module_name; } imp_decl;
+        /* libimp "name" from "path"|std — lib + imp in one */
+        struct { char *name; char *path; boolean_t from_std; } libimp_decl;
 
         /* ── statements ── */
         struct { node_list_t stmts; } block;
@@ -316,6 +322,7 @@ struct node {
         struct { node_t *left; node_t *right; } expect_eq; /* expect_eq.(a,b) */
         struct { node_t *left; node_t *right; } expect_neq; /* expect_neq.(a,b) */
         struct { node_t *message; } test_fail;        /* test_fail.('msg') */
+        struct { char *type_name; char *method; node_list_t args; } self_method_call; /* Type.(method)(args) */
     } as;
 };
 

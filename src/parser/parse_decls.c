@@ -41,7 +41,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                     else ps = last_ps;
                     if (can_start_param_type(p))
                         ptype = parse_type(p);
-                    token_t pname = consume(p, TokIdent, "parameter name");
+                    token_t pname = consume_name(p, "parameter name");
                     node_t *param = make_node(NodeVarDecl, pname.line);
                     param->as.var_decl.name = copy_token_text(pname);
                     param->as.var_decl.type = ptype;
@@ -331,6 +331,59 @@ static node_t *parse_lib(parser_t *p) {
     return n;
 }
 
+/* ── libimp ──
+ *
+ * Syntax forms:
+ *   libimp "name" from "path";   — lib + imp in one, archive at path
+ *   libimp "name" from std;      — lib + imp in one, archive from stdlib
+ *
+ * The module name is always the same as the library name.
+ */
+static node_t *parse_libimp(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'libimp' */
+
+    if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+        log_err("line %lu: expected library name string after libimp", p->current.line);
+        p->had_error = True;
+        return make_node(NodeLibImp, line);
+    }
+    advance_parser(p);
+    token_t ntok = p->previous;
+    char *name = ast_strdup(ntok.start + 1, ntok.length - 2);
+
+    if (!check(p, TokFrom)) {
+        log_err("line %lu: expected 'from' after libimp name", p->current.line);
+        p->had_error = True;
+        return make_node(NodeLibImp, line);
+    }
+    advance_parser(p); /* consume 'from' */
+
+    boolean_t from_std = False;
+    char *path = Null;
+
+    if (check(p, TokStd)) {
+        from_std = True;
+        advance_parser(p); /* consume 'std' */
+    } else if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+        advance_parser(p);
+        token_t ptok = p->previous;
+        path = ast_strdup(ptok.start + 1, ptok.length - 2);
+    } else {
+        log_err("line %lu: expected path string or 'std' after 'from'", p->current.line);
+        p->had_error = True;
+        return make_node(NodeLibImp, line);
+    }
+
+    consume(p, TokSemicolon, "';'");
+
+    node_t *n = make_node(NodeLibImp, line);
+    n->as.libimp_decl.name     = name;
+    n->as.libimp_decl.path     = path;
+    n->as.libimp_decl.from_std = from_std;
+    return n;
+}
+
 /* ── imp ── */
 
 static node_t *parse_imp(parser_t *p) {
@@ -360,7 +413,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         struct_name = name;
         is_method = True;
 
-        /* method name: allow ident, new, rem, print */
+        /* method name: allow ident and contextual keywords used as method names */
         if (check(p, TokIdent)) {
             name = copy_token_text(p->current);
             advance_parser(p);
@@ -372,6 +425,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             advance_parser(p);
         } else if (check(p, TokPrint)) {
             name = ast_strdup("print", 5);
+            advance_parser(p);
+        } else if (check(p, TokFrom)) {
+            name = ast_strdup("from", 4);
             advance_parser(p);
         } else {
             log_err("line %lu: expected method name after '.'", p->current.line);
@@ -405,7 +461,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             if (match_tok(p, TokRestrict)) is_restrict = True;
             if (can_start_param_type(p))
                 last_type = parse_type(p);
-            token_t pname = consume(p, TokIdent, "parameter name");
+            token_t pname = consume_name(p, "parameter name");
             node_t *param = make_node(NodeVarDecl, pname.line);
             param->as.var_decl.name = copy_token_text(pname);
             param->as.var_decl.type = last_type;
@@ -619,6 +675,9 @@ static node_t *parse_top_decl(parser_t *p) {
 
     /* imp */
     if (check(p, TokImp)) return parse_imp(p);
+
+    /* libimp */
+    if (check(p, TokLibImp)) return parse_libimp(p);
 
     /* test block */
     if (check(p, TokTest)) return parse_test_block(p);

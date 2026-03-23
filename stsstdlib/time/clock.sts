@@ -42,8 +42,8 @@ stack:
 
     // Return elapsed milliseconds and reset the timer.
     ext fn lap(void): f64 {
-        final now = ctime.clock();
-        final ms  = clock_ticks_to_ms(now - stopwatch_t.(t0));
+        final i64 now = ctime.clock();
+        final f64 ms  = clock_ticks_to_ms(now - stopwatch_t.(t0));
         stopwatch_t.(t0) = now;
         ret ms;
     }

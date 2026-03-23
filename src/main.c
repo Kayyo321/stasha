@@ -1,9 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 #  include <unistd.h>
 #  include <sys/wait.h>
+#endif
+#if defined(__APPLE__)
+/* Forward-declare to avoid pulling in mach-o/dyld.h (conflicts with boolean_t). */
+extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #endif
 
 #include "common/common.h"
@@ -12,6 +16,40 @@
 #include "linker/linker.h"
 
 #define STASHA_VERSION "0.1.0"
+
+/* ── binary directory (for stdlib resolution) ── */
+
+static char bin_dir[512] = {0};
+
+/*
+ * Populate bin_dir with the directory containing the stasha binary.
+ * Used to locate bin/stdlib/ for `libimp "name" from std;`.
+ */
+static void init_bin_dir(const char *argv0) {
+#if defined(__APPLE__)
+    char exe[512];
+    uint32_t size = (uint32_t)sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) == 0) {
+        char *sep = strrchr(exe, '/');
+        if (sep) { *sep = '\0'; strncpy(bin_dir, exe, sizeof(bin_dir) - 1); return; }
+    }
+#elif defined(__linux__)
+    char exe[512];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        char *sep = strrchr(exe, '/');
+        if (sep) { *sep = '\0'; strncpy(bin_dir, exe, sizeof(bin_dir) - 1); return; }
+    }
+#endif
+    /* fallback: derive from argv0 */
+    strncpy(bin_dir, argv0, sizeof(bin_dir) - 1);
+    bin_dir[sizeof(bin_dir) - 1] = '\0';
+    char *sep = strrchr(bin_dir, '/');
+    if (!sep) sep = strrchr(bin_dir, '\\');
+    if (sep) *sep = '\0';
+    else { bin_dir[0] = '.'; bin_dir[1] = '\0'; }
+}
 
 static heap_t source_heap = {0};
 
@@ -95,8 +133,39 @@ static boolean_t is_lib_backed(node_t *ast, const char *mod_name) {
         if (d->kind == NodeLib && d->as.lib_decl.path != Null
             && strcmp(d->as.lib_decl.name, mod_name) == 0)
             return True;
+        if (d->kind == NodeLibImp
+            && strcmp(d->as.libimp_decl.name, mod_name) == 0)
+            return True;
     }
     return False;
+}
+
+/*
+ * find_lib_archive_path — return the `from "path"` value for a library-backed
+ * module, or NULL if not found.
+ */
+/* Resolved stdlib archive paths are stored here so the returned pointer stays valid. */
+static char stdlib_arc_path_buf[64][512];
+static usize_t stdlib_arc_path_cnt = 0;
+
+static const char *find_lib_archive_path(node_t *ast, const char *mod_name) {
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *d = ast->as.module.decls.items[i];
+        if (d->kind == NodeLib && d->as.lib_decl.path != Null
+            && strcmp(d->as.lib_decl.name, mod_name) == 0)
+            return d->as.lib_decl.path;
+        if (d->kind == NodeLibImp
+            && strcmp(d->as.libimp_decl.name, mod_name) == 0) {
+            if (d->as.libimp_decl.from_std) {
+                if (stdlib_arc_path_cnt >= 64) return NULL;
+                char *buf = stdlib_arc_path_buf[stdlib_arc_path_cnt++];
+                snprintf(buf, 512, "%s/stdlib/lib%s.a", bin_dir, mod_name);
+                return buf;
+            }
+            return d->as.libimp_decl.path;
+        }
+    }
+    return NULL;
 }
 
 /*
@@ -131,9 +200,11 @@ static void resolve_imports(node_t *ast, const char *input_path) {
      */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeImpDecl) continue;
+        if (decl->kind != NodeImpDecl && decl->kind != NodeLibImp) continue;
 
-        const char *mod_name = decl->as.imp_decl.module_name;
+        const char *mod_name = (decl->kind == NodeLibImp)
+            ? decl->as.libimp_decl.name
+            : decl->as.imp_decl.module_name;
         char mod_path[1024];
         snprintf(mod_path, sizeof(mod_path), "%s/%s.sts", dir, mod_name);
 
@@ -143,6 +214,44 @@ static void resolve_imports(node_t *ast, const char *input_path) {
                 lib_backed ? " (library-backed)" : "");
 
         char *src = read_imp_source(mod_path);
+        if (!src && lib_backed) {
+            /* Fallback 1 (stdlib): check <bin_dir>/stdlib/<name>.sts directly. */
+            if (decl->kind == NodeLibImp && decl->as.libimp_decl.from_std) {
+                char stdlib_src[1024];
+                snprintf(stdlib_src, sizeof(stdlib_src),
+                         "%s/stdlib/%s.sts", bin_dir, mod_name);
+                log_msg("importing '%s' (stdlib, fallback)", stdlib_src);
+                src = read_imp_source(stdlib_src);
+                if (src)
+                    snprintf(mod_path, sizeof(mod_path), "%s", stdlib_src);
+            }
+        }
+        if (!src && lib_backed) {
+            /* Fallback 2: look for the .sts alongside the .a archive.
+             * If the archive path is absolute, use it directly; otherwise
+             * resolve it relative to dir first. */
+            const char *arc = find_lib_archive_path(ast, mod_name);
+            if (arc) {
+                char arc_full[1024];
+                if (arc[0] == '/' || (arc[0] && arc[1] == ':'))
+                    strncpy(arc_full, arc, sizeof(arc_full) - 1);
+                else
+                    snprintf(arc_full, sizeof(arc_full), "%s/%s", dir, arc);
+                arc_full[sizeof(arc_full) - 1] = '\0';
+                char *arc_sep = strrchr(arc_full, '/');
+                if (!arc_sep) arc_sep = strrchr(arc_full, '\\');
+                if (arc_sep) {
+                    *arc_sep = '\0';
+                    char fallback_path[1024];
+                    snprintf(fallback_path, sizeof(fallback_path),
+                             "%s/%s.sts", arc_full, mod_name);
+                    log_msg("importing '%s' (library-backed, fallback)", fallback_path);
+                    src = read_imp_source(fallback_path);
+                    if (src)
+                        snprintf(mod_path, sizeof(mod_path), "%s", fallback_path);
+                }
+            }
+        }
         if (!src) {
             log_err("line %lu: cannot find module '%s' (looked for '%s')",
                     decl->line, mod_name, mod_path);
@@ -258,6 +367,7 @@ static void derive_dylib_name(const char *input_path, char *out, usize_t out_siz
 }
 
 int main(int argc, char **argv) {
+    init_bin_dir(argv[0]);
     if (open_logger() != Ok) return 1;
 
     /* ── early flags that don't need a file ── */
@@ -384,9 +494,21 @@ int main(int argc, char **argv) {
         usize_t extra_lib_count = 0;
         for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
             node_t *d = ast->as.module.decls.items[i];
-            if (d->kind == NodeLib && d->as.lib_decl.path
-                    && extra_lib_count < 63) {
-                const char *lib_path = d->as.lib_decl.path;
+            const char *lib_path = Null;
+            if (d->kind == NodeLib && d->as.lib_decl.path && extra_lib_count < 63)
+                lib_path = d->as.lib_decl.path;
+            else if (d->kind == NodeLibImp && extra_lib_count < 63) {
+                if (d->as.libimp_decl.from_std) {
+                    snprintf(resolved_lib_paths[extra_lib_count],
+                             sizeof(resolved_lib_paths[extra_lib_count]),
+                             "%s/stdlib/lib%s.a", bin_dir, d->as.libimp_decl.name);
+                    extra_lib_buf[extra_lib_count] = resolved_lib_paths[extra_lib_count];
+                    extra_lib_count++;
+                    continue;
+                }
+                lib_path = d->as.libimp_decl.path;
+            }
+            if (lib_path && extra_lib_count < 63) {
                 if (lib_path[0] != '/' && !(lib_path[0] && lib_path[1] == ':')) {
                     snprintf(resolved_lib_paths[extra_lib_count],
                              sizeof(resolved_lib_paths[extra_lib_count]),
@@ -434,15 +556,27 @@ int main(int argc, char **argv) {
         if (input_sep) *input_sep = '\0';
         else { input_dir[0] = '.'; input_dir[1] = '\0'; }
 
-        /* collect custom library paths from `lib "name" from "path"` declarations */
+        /* collect custom library paths from lib/libimp declarations */
         const char *extra_lib_buf[64];
         static char resolved_lib_paths[64][1024];
         usize_t extra_lib_count = 0;
         for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
             node_t *d = ast->as.module.decls.items[i];
-            if (d->kind == NodeLib && d->as.lib_decl.path
-                    && extra_lib_count < 63) {
-                const char *lib_path = d->as.lib_decl.path;
+            const char *lib_path = Null;
+            if (d->kind == NodeLib && d->as.lib_decl.path && extra_lib_count < 63)
+                lib_path = d->as.lib_decl.path;
+            else if (d->kind == NodeLibImp && extra_lib_count < 63) {
+                if (d->as.libimp_decl.from_std) {
+                    snprintf(resolved_lib_paths[extra_lib_count],
+                             sizeof(resolved_lib_paths[extra_lib_count]),
+                             "%s/stdlib/lib%s.a", bin_dir, d->as.libimp_decl.name);
+                    extra_lib_buf[extra_lib_count] = resolved_lib_paths[extra_lib_count];
+                    extra_lib_count++;
+                    continue;
+                }
+                lib_path = d->as.libimp_decl.path;
+            }
+            if (lib_path && extra_lib_count < 63) {
                 if (lib_path[0] != '/' && !(lib_path[0] && lib_path[1] == ':')) {
                     /* relative path — resolve against input file's directory */
                     snprintf(resolved_lib_paths[extra_lib_count],

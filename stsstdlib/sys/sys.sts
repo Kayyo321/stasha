@@ -19,7 +19,8 @@ ext fn sys_abort(void): void {
 
 // Return the value of environment variable `name`, or nil if not set.
 ext fn sys_getenv(stack i8 *r name): i8 *r {
-    ret cstd.getenv(name);
+    stack i8 *r result = cstd.getenv(name);
+    ret result;
 }
 
 // ── Process / user identity ───────────────────────────────────────────────
@@ -49,16 +50,4 @@ ext fn sys_sleep_s(stack u32 secs): void {
 // Sleep for `usecs` microseconds.
 ext fn sys_sleep_us(stack u32 usecs): void {
     cunistd.usleep(usecs);
-}
-
-// ── Memory allocation helpers ─────────────────────────────────────────────
-
-// Allocate `bytes` on the heap; caller must rem.() the result.
-ext fn sys_alloc(stack u32 bytes): heap i8 *rw {
-    ret new.(bytes);
-}
-
-// Free a heap pointer obtained from sys_alloc or new.().
-ext fn sys_free(stack heap i8 *rw ptr): void {
-    rem.(ptr);
 }

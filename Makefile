@@ -44,8 +44,17 @@ STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS),$(dir $(s))lib$(notdir $(basename $(s)
 
 all: $(TARGET)
 
-# Build every .sts under stsstdlib/ into a .a alongside the source.
+# Build every .sts under stsstdlib/ into a .a alongside the source,
+# then install the .a and .sts files into bin/stdlib/ so that
+# `libimp "name" from std;` can find them at runtime.
 stdlib: $(TARGET) $(STDLIB_LIBS)
+	@mkdir -p bin/stdlib
+	@for s in $(STDLIB_SRCS); do \
+	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
+	    cp "$$a" bin/stdlib/; \
+	    cp "$$s" bin/stdlib/; \
+	done
+	@echo "stdlib installed -> bin/stdlib/"
 
 # Generated rule: stsstdlib/<cat>/lib<name>.a  ←  stsstdlib/<cat>/<name>.sts
 define stdlib-rule
@@ -57,11 +66,14 @@ $(foreach s,$(STDLIB_SRCS),$(eval $(call stdlib-rule,$(s))))
 
 clean-stdlib:
 	find stsstdlib -name '*.a' -delete 2>/dev/null; true
+	rm -rf bin/stdlib
 
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
 
-build/obj/%.o: src/%.c
+HDRS := $(shell find src -name '*.h')
+
+build/obj/%.o: src/%.c $(HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

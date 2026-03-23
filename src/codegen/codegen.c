@@ -179,6 +179,7 @@ typedef struct {
     LLVMBasicBlockRef continue_target;
 
     linkage_t current_fn_linkage;   /* linkage of the function being compiled */
+    char *current_struct_name;      /* non-null when inside a struct method body */
 
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
     boolean_t test_mode;            /* True when compiling in test mode */
@@ -243,6 +244,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     cg.builder     = LLVMCreateBuilderInContext(cg.ctx);
     cg.current_fn  = Null;
+    cg.current_struct_name = Null;
     symtab_init(&cg.globals);
     symtab_init(&cg.locals);
 
@@ -777,6 +779,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         symbol_t *sym = cg_lookup(&cg, fn_name);
         cg.current_fn = sym->value;
         cg.current_fn_linkage = decl->as.fn_decl.linkage;
+        cg.current_struct_name = decl->as.fn_decl.is_method ? decl->as.fn_decl.struct_name : Null;
         cg.locals.count = 0;
         cg.dtor_depth = 0;
 
@@ -930,6 +933,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             symbol_t *sym = cg_lookup(&cg, fn_name);
             if (!sym) continue;
             cg.current_fn = sym->value;
+            cg.current_struct_name = decl->as.type_decl.name;
             cg.locals.count = 0;
             cg.dtor_depth = 0;
 

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bin/stasha build:*)",
+      "Bash(lldb ./ex_stdlib_dbg --batch -o run)",
+      "Bash(lldb ./ex_stdlib_dbg --batch -o run -o bt)",
+      "Bash(lldb ./ex_stdlib_dbg --batch -o run -o \"bt all\")",
+      "Bash(lldb ./ex_stdlib_dbg --batch -o run -o \"thread backtrace\")",
+      "Bash(./ex_stdlib_dbg)",
+      "Read(//Users/jessicabruce/Documents/stasha/**)",
+      "Bash(otool -tv test_x_bin)",
+      "Bash(bin/stasha examples/ex_stdlib.sts -o ex_stdlib_out)",
+      "Bash(./ex_stdlib_out)",
+      "Bash(grep -n std /Users/jessicabruce/Documents/stasha/stsstdlib/**/*.sts)",
+      "Bash(xxd stsstdlib/io/console.sts)",
+      "Bash(printf \"mod hello;\\\\n\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\" bin/stasha build /tmp/hello.sts -o /tmp/hello)",
+      "Bash(git stash:*)",
+      "Bash(printf \"mod hello;\\\\nfn main\\(void\\): i32 { ret 0; }\\\\n\")"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
+    ]
+  }
+}

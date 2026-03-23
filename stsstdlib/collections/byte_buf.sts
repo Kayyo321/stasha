@@ -11,99 +11,86 @@ stack:
     int u32 len, cap;
 
     int fn grow_to(stack u32 needed): void {
-        if (needed <= byte_buf_t.(cap)) ret;
+        if (needed <= byte_buf_t.(cap)) { ret; }
 
         stack u32 new_cap = (byte_buf_t.(cap) == 0) ? 16 : byte_buf_t.(cap);
-        while (new_cap < needed)
-            new_cap <<= 1;
+        while (new_cap < needed) { new_cap <<= 1; }
 
         byte_buf_t.(data) = mov.(byte_buf_t.(data), new_cap);
         byte_buf_t.(cap)  = new_cap;
     }
 
-    // Append a single byte.
     ext fn push(stack u8 b): void {
         byte_buf_t.(grow_to)(byte_buf_t.(len) + 1);
         byte_buf_t.(data)[byte_buf_t.(len)++] = b;
     }
 
-    // Remove and return the last byte. Returns 0 if empty.
     ext fn pop(void): u8 {
-        if (byte_buf_t.(len) == 0) ret 0;
+        if (byte_buf_t.(len) == 0) { ret 0; }
         ret byte_buf_t.(data)[--byte_buf_t.(len)];
     }
 
-    // Get byte at `idx` — no bounds check.
     ext fn get(stack u32 idx): u8 {
         ret byte_buf_t.(data)[idx];
     }
 
-    // Set byte at `idx` — no bounds check.
     ext fn set(stack u32 idx, stack u8 val): void {
         byte_buf_t.(data)[idx] = val;
     }
 
-    // Append `n` bytes from the read-only region `src`.
     ext fn push_bytes(stack u8 *r src, stack u32 n): void {
         byte_buf_t.(grow_to)(byte_buf_t.(len) + n);
-        for (u32 i = 0; i < n; ++i)
+        for (u32 i = 0; i < n; ++i) {
             byte_buf_t.(data)[byte_buf_t.(len)++] = src[i];
+        }
     }
 
-    // Fill `n` bytes starting at `offset` with `val`.
     ext fn fill(stack u32 offset, stack u32 n, stack u8 val): void {
-        for (u32 i = 0; i < n; ++i)
+        for (u32 i = 0; i < n; ++i) {
             byte_buf_t.(data)[offset + i] = val;
+        }
     }
 
-    // Reset length to zero without freeing memory.
     ext fn clear(void): void {
         byte_buf_t.(len) = 0;
     }
 
-    // Current number of bytes stored.
     ext fn length(void): u32 {
         ret byte_buf_t.(len);
     }
 
-    // Current allocated capacity.
     ext fn capacity(void): u32 {
         ret byte_buf_t.(cap);
     }
 
-    // True if no bytes are stored.
     ext fn is_empty(void): bool {
         ret byte_buf_t.(len) == 0;
     }
 
-    // Read-only pointer to the start of the buffer.
     ext fn as_ptr(void): heap u8 *r {
         ret byte_buf_t.(data);
     }
 }
 
-// Create an empty buffer (no allocation yet).
 ext fn byte_buf_t.new(void): byte_buf_t {
     ret byte_buf_t{ .data = nil, .len = 0, .cap = 0 };
 }
 
-// Create a buffer pre-allocated to hold at least `cap` bytes.
 ext fn byte_buf_t.with_cap(stack u32 cap): byte_buf_t {
     heap u8 *rw data = new.(cap);
     ret byte_buf_t{ .data = data, .len = 0, .cap = cap };
 }
 
-// Create a buffer initialised from `n` bytes at `src`.
 ext fn byte_buf_t.from_bytes(stack u8 *r src, stack u32 n): byte_buf_t {
     heap u8 *rw data = new.(n);
-    for (u32 i = 0; i < n; ++i)
+    for (u32 i = 0; i < n; ++i) {
         data[i] = src[i];
+    }
     ret byte_buf_t{ .data = data, .len = n, .cap = n };
 }
 
 ext fn byte_buf_t.rem(void): void {
-    if (byte_buf_t.(data) != nil)
-        rem.(byte_buf_t.(data));
+    if (byte_buf_t.(data) != nil) { rem.(byte_buf_t.(data)); }
     byte_buf_t.(data) = nil;
     byte_buf_t.(len)  = 0;
     byte_buf_t.(cap)  = 0;
