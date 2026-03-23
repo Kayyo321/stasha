@@ -389,10 +389,10 @@ static node_t *parse_libimp(parser_t *p) {
 static node_t *parse_imp(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
-    token_t mod_name = consume(p, TokIdent, "module name");
+    char *mod_name = parse_dotted_name(p);
     consume(p, TokSemicolon, "';'");
     node_t *n = make_node(NodeImpDecl, line);
-    n->as.imp_decl.module_name = copy_token_text(mod_name);
+    n->as.imp_decl.module_name = mod_name;
     return n;
 }
 

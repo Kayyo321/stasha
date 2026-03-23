@@ -127,6 +127,40 @@ static usize_t payload_type_size(type_info_t ti) {
     }
 }
 
+/* ── infer type_info_t from an LLVM type (for let bindings) ── */
+
+static type_info_t llvm_type_to_ti(LLVMTypeRef ty) {
+    type_info_t ti = NO_TYPE;
+    if (!ty) return ti;
+    switch (LLVMGetTypeKind(ty)) {
+        case LLVMIntegerTypeKind: {
+            unsigned bits = LLVMGetIntTypeWidth(ty);
+            if (bits == 1)       ti.base = TypeBool;
+            else if (bits == 8)  ti.base = TypeI8;
+            else if (bits == 16) ti.base = TypeI16;
+            else if (bits == 32) ti.base = TypeI32;
+            else                 ti.base = TypeI64;
+            break;
+        }
+        case LLVMFloatTypeKind:   ti.base = TypeF32; break;
+        case LLVMDoubleTypeKind:  ti.base = TypeF64; break;
+        case LLVMPointerTypeKind:
+            ti.base = TypeI8; ti.is_pointer = True;
+            ti.ptr_perm = PtrRead | PtrWrite;
+            break;
+        case LLVMStructTypeKind: {
+            const char *sname = LLVMGetStructName(ty);
+            if (sname) {
+                ti.base = TypeUser;
+                ti.user_name = ast_strdup(sname, strlen(sname));
+            }
+            break;
+        }
+        default: break;
+    }
+    return ti;
+}
+
 /* ── alloca in entry block helper ── */
 
 static LLVMValueRef alloc_in_entry(cg_t *cg, LLVMTypeRef type, const char *name) {

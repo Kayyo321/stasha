@@ -12,9 +12,19 @@ stasha dylib   <file.sts>               # dynamic library
 stasha test    <file.sts>               # run test blocks
 stasha build   <file.sts> -g            # debug info (DWARF + .dSYM on macOS)
 stasha build   <file.sts> --target triple
+stasha                                  # project-mode: reads sts.sproj in CWD
+stasha build                            # project-mode: reads sts.sproj in CWD
 ```
 
 Library workflow: `stasha lib veclib.sts -o examples/libveclib.a` then `lib "veclib" from "libveclib.a"; imp veclib;` — lib path resolved relative to source file directory.
+
+**Project file** (`sts.sproj` in project root):
+```
+main     = "src/main.sts"     # entry point
+binary   = "bin/myapp"        # output executable  (or: library = "bin/lib.a")
+ext_libs = []                 # precompiled libraries
+# ext_libs = [ ("libs/x.a" : "libs/x.sts"), ... ]
+```
 
 ---
 
@@ -137,13 +147,14 @@ test 'name' { expect.(x); expect_eq.(a, b); test_fail.('msg'); }
 // Bitfield: i32 flags: 3;  (inside struct)
 ```
 
-**Module system**: every file starts with `mod name;`. `imp other_mod;` splices that module's types/sigs into the current AST. `int` = module-private, `ext` = exported. Library-backed imports: `lib "x" from "libx.a"; imp x;` — codegen skips bodies, linker resolves from `.a`.
+**Module system**: every file starts with `mod name;` (root) or `mod dir.subdir.name;` (nested). The dotted name mirrors the directory path relative to the entry file: `mod printer.typewriter;` lives at `printer/typewriter.sts`. `imp other.mod;` splices that module's types/sigs into the current AST; dots in the name are converted to path separators for lookup. `int` = module-private, `ext` = exported. Library-backed imports: `lib "x" from "libx.a"; imp x;` — codegen skips bodies, linker resolves from `.a`.
 
 ---
 
 ## TODO
 
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
+- [x] Dotted module names + sts.sproj project file
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler

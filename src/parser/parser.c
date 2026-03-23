@@ -244,6 +244,41 @@ static boolean_t can_start_var_decl(parser_t *p) {
         || is_builtin_type_token(p->current.kind);
 }
 
+/*
+ * Parse a dot-separated module name: ident ('.' ident)*
+ * Returns a heap-allocated string like "printer.typewriter".
+ */
+static char *parse_dotted_name(parser_t *p) {
+    char buf[512];
+    usize_t pos = 0;
+
+    token_t first = consume(p, TokIdent, "module name");
+    usize_t flen = first.length < sizeof(buf) - 1 ? first.length : sizeof(buf) - 1;
+    memcpy(buf, first.start, flen);
+    pos = flen;
+    buf[pos] = '\0';
+
+    while (check(p, TokDot)) {
+        parser_state_t saved = save_state(p);
+        advance_parser(p); /* consume '.' */
+        if (!check(p, TokIdent)) {
+            restore_state(p, saved);
+            break;
+        }
+        token_t seg = p->current;
+        advance_parser(p);
+        usize_t slen = seg.length;
+        if (pos + 1 + slen < sizeof(buf) - 1) {
+            buf[pos++] = '.';
+            memcpy(buf + pos, seg.start, slen);
+            pos += slen;
+            buf[pos] = '\0';
+        }
+    }
+
+    return ast_strdup(buf, pos);
+}
+
 #include "parse_expr.c"
 #include "parse_stmt.c"
 #include "parse_decls.c"
@@ -258,11 +293,11 @@ node_t *parse(const char *source) {
     advance_parser(&p);
 
     consume(&p, TokMod, "'mod'");
-    token_t mod_name = consume(&p, TokIdent, "module name");
+    char *mod_name = parse_dotted_name(&p);
     consume(&p, TokSemicolon, "';'");
 
     node_t *module = make_node(NodeModule, 1);
-    module->as.module.name = copy_token_text(mod_name);
+    module->as.module.name = mod_name;
     node_list_init(&module->as.module.decls);
 
     while (!check(&p, TokEof)) {

@@ -13,6 +13,35 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     if (node->as.var_decl.name && strcmp(node->as.var_decl.name, "_") == 0)
         return;
 
+    /* single-variable let binding: stack let name = expr;
+       Type is inferred from the initializer at codegen time. */
+    if ((node->as.var_decl.flags & VdeclLet)
+            && node->as.var_decl.type.base == TypeVoid
+            && !node->as.var_decl.type.is_pointer
+            && node->as.var_decl.init) {
+        LLVMValueRef init_val = gen_expr(cg, node->as.var_decl.init);
+        LLVMTypeRef  inferred = LLVMTypeOf(init_val);
+        type_info_t  ti       = llvm_type_to_ti(inferred);
+        LLVMValueRef alloca_val = alloc_in_entry(cg, inferred, node->as.var_decl.name);
+        LLVMBuildStore(cg->builder, init_val, alloca_val);
+        {
+            int sym_flags = 0;
+            if (node->as.var_decl.flags & VdeclAtomic)  sym_flags |= SymAtomic;
+            if (node->as.var_decl.flags & VdeclVolatile) sym_flags |= SymVolatile;
+            symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, inferred, ti, sym_flags);
+        }
+        symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
+        symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
+                              node->as.var_decl.flags & VdeclFinal,
+                              node->as.var_decl.linkage, cg->dtor_depth, -1);
+        if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
+            struct_reg_t *sr = find_struct(cg, ti.user_name);
+            if (sr && sr->destructor)
+                add_dtor_var(cg, alloca_val, ti.user_name);
+        }
+        return;
+    }
+
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
     LLVMTypeRef type;
 

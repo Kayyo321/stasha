@@ -176,10 +176,30 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     if (match_tok(p, TokVolatile)) flags |= VdeclVolatile;
     if (match_tok(p, TokTls))      flags |= VdeclTls;
 
-    /* let binding: infer types from multi-return call
-       stack let [x, y] = fn_call(); */
+    /* let binding: infer type(s) from initializer
+       single:  stack let name   = expr;
+       multi:   stack let [x, y] = fn_call(); */
     if (match_tok(p, TokLet)) {
         flags |= VdeclLet;
+
+        /* single-variable form: stack let name = expr; */
+        if (check(p, TokIdent)) {
+            token_t name_tok = p->current;
+            advance_parser(p);
+            consume(p, TokEq, "'='");
+            node_t *init = parse_expr(p);
+            consume(p, TokSemicolon, "';'");
+            node_t *n = make_node(NodeVarDecl, line);
+            n->as.var_decl.name    = copy_token_text(name_tok);
+            n->as.var_decl.type    = NO_TYPE; /* filled in by codegen */
+            n->as.var_decl.storage = storage;
+            n->as.var_decl.linkage = linkage;
+            n->as.var_decl.flags   = flags;
+            n->as.var_decl.init    = init;
+            return n;
+        }
+
+        /* multi-assign form: stack let [x, y] = fn_call(); */
         consume(p, TokLBracket, "'['");
         node_list_t targets;
         node_list_init(&targets);

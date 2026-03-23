@@ -169,9 +169,24 @@ static const char *find_lib_archive_path(node_t *ast, const char *mod_name) {
 }
 
 /*
+ * mod_name_to_rel_path — convert a dotted module name to a relative filesystem
+ * path by replacing '.' separators with '/'.
+ * e.g. "printer.typewriter" -> "printer/typewriter"
+ */
+static void mod_name_to_rel_path(const char *mod_name, char *out, usize_t out_size) {
+    strncpy(out, mod_name, out_size - 1);
+    out[out_size - 1] = '\0';
+    for (char *c = out; *c; c++)
+        if (*c == '.') *c = '/';
+}
+
+/*
  * resolve_imports — walk every NodeImpDecl in `ast`, find the corresponding
- * "<dir>/<modname>.sts" file, parse it, and splice all of its declarations
+ * "<dir>/<mod/path>.sts" file, parse it, and splice all of its declarations
  * (types, functions, variables, lib declarations) into `ast->as.module.decls`.
+ *
+ * Module names are dot-separated paths mirroring the directory structure:
+ * "printer.typewriter" resolves to "<dir>/printer/typewriter.sts".
  *
  * When a module is also declared via `lib "name" from "path.a"`, the module
  * is "library-backed": its compiled code already exists in the .a archive.
@@ -205,8 +220,10 @@ static void resolve_imports(node_t *ast, const char *input_path) {
         const char *mod_name = (decl->kind == NodeLibImp)
             ? decl->as.libimp_decl.name
             : decl->as.imp_decl.module_name;
+        char mod_rel[512];
+        mod_name_to_rel_path(mod_name, mod_rel, sizeof(mod_rel));
         char mod_path[1024];
-        snprintf(mod_path, sizeof(mod_path), "%s/%s.sts", dir, mod_name);
+        snprintf(mod_path, sizeof(mod_path), "%s/%s.sts", dir, mod_rel);
 
         boolean_t lib_backed = is_lib_backed(ast, mod_name);
 
@@ -275,6 +292,152 @@ static void resolve_imports(node_t *ast, const char *input_path) {
             node_list_push(&ast->as.module.decls, d);
         }
     }
+}
+
+/* ── sts.sproj project file ── */
+
+#define SPROJ_MAX_LIBS 64
+
+typedef struct {
+    char arc_path[512]; /* path to .a archive */
+    char sts_path[512]; /* path to .sts interface file (may be empty) */
+} sproj_lib_t;
+
+typedef struct {
+    char        main_path[512];
+    char        output_path[512];
+    boolean_t   is_library;
+    boolean_t   has_output;
+    sproj_lib_t ext_libs[SPROJ_MAX_LIBS];
+    usize_t     ext_lib_count;
+} sproj_t;
+
+/*
+ * Parse a sts.sproj file at `path` into `out`.
+ * Format:
+ *   main     = "src/main.sts"
+ *   binary   = "bin/name"          (or library = "bin/name.a")
+ *   ext_libs = []
+ *   ext_libs = [ ("libs/x.a" : "libs/x.sts"), ... ]
+ *
+ * Lines starting with # are comments.
+ * Returns True if parsing succeeded and a main path was found.
+ */
+static boolean_t parse_sproj(const char *path, sproj_t *out) {
+    FILE *f = fopen(path, "r");
+    if (!f) return False;
+
+    memset(out, 0, sizeof(*out));
+
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        /* strip # comments */
+        char *comment = strchr(line, '#');
+        if (comment) *comment = '\0';
+
+        /* trim leading whitespace */
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '\0' || *s == '\n' || *s == '\r') continue;
+
+        /* find '=' separator */
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+
+        /* extract key */
+        char *kend = eq - 1;
+        while (kend >= s && (*kend == ' ' || *kend == '\t')) kend--;
+        if (kend < s) continue;
+        usize_t klen = (usize_t)(kend - s + 1);
+        char key[64];
+        if (klen >= sizeof(key)) continue;
+        memcpy(key, s, klen);
+        key[klen] = '\0';
+
+        /* skip whitespace after '=' */
+        char *v = eq + 1;
+        while (*v == ' ' || *v == '\t') v++;
+
+        /* string value: "..." or '...' */
+        if (*v == '"' || *v == '\'') {
+            char q = *v++;
+            char *vend = strchr(v, q);
+            if (!vend) continue;
+            usize_t vlen = (usize_t)(vend - v);
+            if (strcmp(key, "main") == 0 && vlen < sizeof(out->main_path)) {
+                memcpy(out->main_path, v, vlen);
+                out->main_path[vlen] = '\0';
+            } else if (strcmp(key, "binary") == 0 && vlen < sizeof(out->output_path)) {
+                memcpy(out->output_path, v, vlen);
+                out->output_path[vlen] = '\0';
+                out->has_output = True;
+                out->is_library = False;
+            } else if (strcmp(key, "library") == 0 && vlen < sizeof(out->output_path)) {
+                memcpy(out->output_path, v, vlen);
+                out->output_path[vlen] = '\0';
+                out->has_output = True;
+                out->is_library = True;
+            }
+            continue;
+        }
+
+        /* array value: [ ... ] — only parse for ext_libs */
+        if (*v != '[' || strcmp(key, "ext_libs") != 0) continue;
+        v++; /* skip '[' */
+
+        /* parse comma-separated ("arc" : "sts") tuples */
+        while (out->ext_lib_count < SPROJ_MAX_LIBS) {
+            while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+            if (*v == ']' || *v == '\0') break;
+            if (*v != '(') { v++; continue; }
+            v++; /* skip '(' */
+
+            /* first string: archive path */
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v != '"' && *v != '\'') { v++; continue; }
+            char q1 = *v++;
+            char *a1end = strchr(v, q1);
+            if (!a1end) break;
+            usize_t a1len = (usize_t)(a1end - v);
+            if (a1len < sizeof(out->ext_libs[out->ext_lib_count].arc_path)) {
+                memcpy(out->ext_libs[out->ext_lib_count].arc_path, v, a1len);
+                out->ext_libs[out->ext_lib_count].arc_path[a1len] = '\0';
+            }
+            v = a1end + 1;
+
+            /* ':' separator */
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v == ':') v++;
+
+            /* second string: .sts interface path */
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v == '"' || *v == '\'') {
+                char q2 = *v++;
+                char *a2end = strchr(v, q2);
+                if (a2end) {
+                    usize_t a2len = (usize_t)(a2end - v);
+                    if (a2len < sizeof(out->ext_libs[out->ext_lib_count].sts_path)) {
+                        memcpy(out->ext_libs[out->ext_lib_count].sts_path, v, a2len);
+                        out->ext_libs[out->ext_lib_count].sts_path[a2len] = '\0';
+                    }
+                    v = a2end + 1;
+                }
+            }
+
+            /* skip to ')' */
+            while (*v && *v != ')') v++;
+            if (*v == ')') v++;
+
+            out->ext_lib_count++;
+
+            /* skip comma */
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v == ',') v++;
+        }
+    }
+
+    fclose(f);
+    return out->main_path[0] != '\0';
 }
 
 /* ── CLI helpers ── */
@@ -406,37 +569,58 @@ int main(int argc, char **argv) {
     }
     /* else: argv[1] is the file — default to EmitExe */
 
+    /* ── project file fallback: look for sts.sproj when no file arg given ── */
+    static char proj_input_buf[512];
+    static char proj_output_buf[512];
+    static sproj_t sproj_cfg;
+
     if (file_arg >= argc) {
-        log_err("expected <file.sts> after '%s'", argv[file_arg - 1]);
-        quit(Err);
+        if (!parse_sproj("sts.sproj", &sproj_cfg)) {
+            log_err("expected <file.sts> after '%s'", argv[file_arg - 1]);
+            quit(Err);
+        }
+        strncpy(proj_input_buf, sproj_cfg.main_path, sizeof(proj_input_buf) - 1);
+        if (sproj_cfg.has_output) {
+            strncpy(proj_output_buf, sproj_cfg.output_path, sizeof(proj_output_buf) - 1);
+            if (sproj_cfg.is_library && mode == EmitExe)
+                mode = EmitLib;
+        }
+        log_msg("project file: main='%s'%s", proj_input_buf,
+                sproj_cfg.has_output ? "" : " (no output specified)");
+        file_arg = -1; /* sentinel: input_path already set */
     }
 
-    const char *input_path = argv[file_arg];
+    const char *input_path = (file_arg == -1) ? proj_input_buf : argv[file_arg];
 
     /* ── default output path ── */
     char lib_name_buf[300];
     const char *output_path;
-    switch (mode) {
-        case EmitLib:
-            derive_lib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
-            output_path = lib_name_buf;
-            break;
-        case EmitDylib:
-            derive_dylib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
-            output_path = lib_name_buf;
-            break;
-        case EmitTest:
-            output_path = "a.test";
-            break;
-        default:
-            output_path = "a.out";
-            break;
+    if (file_arg == -1 && sproj_cfg.has_output) {
+        output_path = proj_output_buf;
+    } else {
+        switch (mode) {
+            case EmitLib:
+                derive_lib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
+                output_path = lib_name_buf;
+                break;
+            case EmitDylib:
+                derive_dylib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
+                output_path = lib_name_buf;
+                break;
+            case EmitTest:
+                output_path = "a.test";
+                break;
+            default:
+                output_path = "a.out";
+                break;
+        }
     }
 
     /* ── parse remaining options ── */
     const char *target_triple = Null;
     boolean_t debug_mode = False;
-    for (int i = file_arg + 1; i < argc; i++) {
+    int opts_start = (file_arg == -1) ? (int)argc : file_arg + 1;
+    for (int i = opts_start; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
             output_path = argv[++i];
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
@@ -520,6 +704,13 @@ int main(int argc, char **argv) {
                 extra_lib_count++;
             }
         }
+        /* append ext_libs from sts.sproj (project-mode) */
+        if (file_arg == -1) {
+            for (usize_t i = 0; i < sproj_cfg.ext_lib_count && extra_lib_count < 63; i++) {
+                if (sproj_cfg.ext_libs[i].arc_path[0])
+                    extra_lib_buf[extra_lib_count++] = sproj_cfg.ext_libs[i].arc_path;
+            }
+        }
         extra_lib_buf[extra_lib_count] = Null;
 
         log_msg("linking dynamic library");
@@ -587,6 +778,13 @@ int main(int argc, char **argv) {
                     extra_lib_buf[extra_lib_count] = lib_path;
                 }
                 extra_lib_count++;
+            }
+        }
+        /* append ext_libs from sts.sproj (project-mode) */
+        if (file_arg == -1) {
+            for (usize_t i = 0; i < sproj_cfg.ext_lib_count && extra_lib_count < 63; i++) {
+                if (sproj_cfg.ext_libs[i].arc_path[0])
+                    extra_lib_buf[extra_lib_count++] = sproj_cfg.ext_libs[i].arc_path;
             }
         }
         extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
