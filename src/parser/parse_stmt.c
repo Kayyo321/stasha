@@ -129,8 +129,11 @@ static node_t *parse_print_stmt(parser_t *p) {
     token_t fmt_tok = p->current;
     advance_parser(p);
 
-    usize_t fmt_len = 0;
-    char *fmt = ast_strdup_escape(fmt_tok.start + 1, fmt_tok.length - 2, &fmt_len);
+    /* Store the raw format string (no escape processing): gen_print handles
+       escape sequences and placeholder scanning in a single pass so that
+       \{ can be distinguished from a real { placeholder. */
+    usize_t fmt_len = fmt_tok.length - 2;
+    char *fmt = ast_strdup(fmt_tok.start + 1, fmt_len);
 
     node_t *n = make_node(NodePrintStmt, line);
     n->as.print_stmt.fmt     = fmt;

@@ -420,21 +420,122 @@ static void gen_ret(cg_t *cg, node_t *node) {
 
 /* ── print.(fmt, args...) helpers ── */
 
+/* Lazily emit (or return the existing) __sts_print_bin(i64) → void.
+   The function writes the minimal binary representation of its argument
+   to a local stack buffer, then calls printf("%s", buf).
+
+   IR sketch:
+     entry:  alloca [65 x i8] buf
+             msb = 63 - ctlz(val | 1)      ; at least bit 0
+             goto loop(msb)
+     loop(bit):
+             digit = ((val >> bit) & 1) + '0'
+             buf[msb - bit] = digit
+             if bit == 0 → exit
+             goto loop(bit - 1)
+     exit:   buf[msb + 1] = '\0'
+             printf("%s", buf)
+             ret void                                                     */
+static LLVMValueRef ensure_print_binary_fn(cg_t *cg) {
+    const char *fname = "__sts_print_bin";
+    LLVMValueRef fn = LLVMGetNamedFunction(cg->module, fname);
+    if (fn) return fn;
+
+    LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg->ctx);
+    LLVMTypeRef i32_t  = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i8_t   = LLVMInt8TypeInContext(cg->ctx);
+    LLVMTypeRef void_t = LLVMVoidTypeInContext(cg->ctx);
+    LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg->ctx, 0);
+
+    LLVMTypeRef fn_type = LLVMFunctionType(void_t, &i64_t, 1, 0);
+    fn = LLVMAddFunction(cg->module, fname, fn_type);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+
+    LLVMBuilderRef b = LLVMCreateBuilderInContext(cg->ctx);
+
+    LLVMBasicBlockRef bb_entry = LLVMAppendBasicBlockInContext(cg->ctx, fn, "entry");
+    LLVMBasicBlockRef bb_loop  = LLVMAppendBasicBlockInContext(cg->ctx, fn, "loop");
+    LLVMBasicBlockRef bb_exit  = LLVMAppendBasicBlockInContext(cg->ctx, fn, "exit");
+
+    LLVMValueRef val = LLVMGetParam(fn, 0);
+
+    /* ── entry ── */
+    LLVMPositionBuilderAtEnd(b, bb_entry);
+
+    /* buf[65] on the stack */
+    LLVMTypeRef buf_ty = LLVMArrayType(i8_t, 65);
+    LLVMValueRef buf   = LLVMBuildAlloca(b, buf_ty, "binbuf");
+
+    /* msb = 63 - ctlz(val | 1, is_zero_undef=false) via llvm.ctlz.i64 */
+    LLVMTypeRef ctlz_param_types[2] = { i64_t, LLVMInt1TypeInContext(cg->ctx) };
+    LLVMTypeRef ctlz_fn_type = LLVMFunctionType(i64_t, ctlz_param_types, 2, 0);
+    LLVMValueRef ctlz_fn = LLVMGetNamedFunction(cg->module, "llvm.ctlz.i64");
+    if (!ctlz_fn) ctlz_fn = LLVMAddFunction(cg->module, "llvm.ctlz.i64", ctlz_fn_type);
+
+    LLVMValueRef val_or1 = LLVMBuildOr(b, val,
+                               LLVMConstInt(i64_t, 1, 0), "or1");
+    LLVMValueRef ctlz_args[2] = { val_or1,
+                                   LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0) };
+    LLVMValueRef lz   = LLVMBuildCall2(b, ctlz_fn_type, ctlz_fn, ctlz_args, 2, "lz");
+    LLVMValueRef msb  = LLVMBuildSub(b, LLVMConstInt(i64_t, 63, 0), lz, "msb");
+
+    LLVMBuildBr(b, bb_loop);
+
+    /* ── loop(bit) ── */
+    LLVMPositionBuilderAtEnd(b, bb_loop);
+    LLVMValueRef bit_phi = LLVMBuildPhi(b, i64_t, "bit");
+    LLVMAddIncoming(bit_phi, &msb, &bb_entry, 1);
+
+    /* digit = ((val >> bit) & 1) + '0' */
+    LLVMValueRef shifted = LLVMBuildLShr(b, val, bit_phi, "sh");
+    LLVMValueRef masked  = LLVMBuildAnd(b, shifted, LLVMConstInt(i64_t, 1, 0), "bit1");
+    LLVMValueRef digit64 = LLVMBuildAdd(b, masked,
+                               LLVMConstInt(i64_t, (unsigned long long)'0', 0), "dig64");
+    LLVMValueRef digit   = LLVMBuildTrunc(b, digit64, i8_t, "dig");
+
+    /* buf[msb - bit] = digit */
+    LLVMValueRef idx64 = LLVMBuildSub(b, msb, bit_phi, "idx64");
+    LLVMValueRef idx32 = LLVMBuildTrunc(b, idx64, i32_t, "idx32");
+    LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
+    LLVMValueRef gep_idx[2] = { zero32, idx32 };
+    LLVMValueRef slot = LLVMBuildGEP2(b, buf_ty, buf, gep_idx, 2, "slot");
+    LLVMBuildStore(b, digit, slot);
+
+    /* if (bit == 0) goto exit; else goto loop(bit - 1) */
+    LLVMValueRef is_zero = LLVMBuildICmp(b, LLVMIntEQ, bit_phi,
+                                          LLVMConstInt(i64_t, 0, 0), "done");
+    LLVMValueRef bit_dec = LLVMBuildSub(b, bit_phi, LLVMConstInt(i64_t, 1, 0), "dec");
+    LLVMAddIncoming(bit_phi, &bit_dec, &bb_loop, 1);
+    LLVMBuildCondBr(b, is_zero, bb_exit, bb_loop);
+
+    /* ── exit ── */
+    LLVMPositionBuilderAtEnd(b, bb_exit);
+
+    /* buf[msb + 1] = '\0' */
+    LLVMValueRef null_idx64 = LLVMBuildAdd(b, msb, LLVMConstInt(i64_t, 1, 0), "nidx64");
+    LLVMValueRef null_idx32 = LLVMBuildTrunc(b, null_idx64, i32_t, "nidx32");
+    LLVMValueRef null_gep_idx[2] = { zero32, null_idx32 };
+    LLVMValueRef null_slot = LLVMBuildGEP2(b, buf_ty, buf, null_gep_idx, 2, "nslot");
+    LLVMBuildStore(b, LLVMConstInt(i8_t, 0, 0), null_slot);
+
+    /* printf("%s", buf_ptr) */
+    LLVMValueRef first_idx[2] = { zero32, zero32 };
+    LLVMValueRef buf_ptr = LLVMBuildGEP2(b, buf_ty, buf, first_idx, 2, "bufptr");
+    LLVMValueRef pfmt = LLVMBuildGlobalStringPtr(b, "%s", "binfmt");
+    LLVMValueRef pargs[2] = { pfmt, buf_ptr };
+    LLVMBuildCall2(b, cg->printf_type, cg->printf_fn, pargs, 2, "");
+
+    LLVMBuildRetVoid(b);
+
+    LLVMDisposeBuilder(b);
+    return fn;
+}
+
 static void print_emit_cstr(cg_t *cg, const char *s) {
     LLVMValueRef str = LLVMBuildGlobalStringPtr(cg->builder, s, "plit");
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, "%s", "pfmt_s");
     LLVMValueRef pargs[2] = { fmt, str };
     LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
-}
-
-static void print_emit_literal(cg_t *cg, const char *s, usize_t len) {
-    if (len == 0) return;
-    heap_t h = allocate(len + 1, 1);
-    char *buf = h.pointer;
-    memcpy(buf, s, len);
-    buf[len] = '\0';
-    print_emit_cstr(cg, buf);
-    deallocate(h);
 }
 
 static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
@@ -470,6 +571,101 @@ static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
     LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
 }
 
+/* emit a value with a format spec (the part after ':' inside {}).
+   Supported specs:
+     x / X       lowercase / uppercase hex
+     b           binary (C23 / clang %b extension)
+     o           octal
+     .N          float with N decimal places  (e.g. .2)
+     N           minimum field width, right-aligned (e.g. 8)
+     0N          zero-padded minimum width     (e.g. 08)
+   Anything unrecognised falls back to the auto format. */
+static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
+                                   const char *spec, usize_t slen) {
+    if (slen == 0) { print_emit_scalar(cg, val, ty); return; }
+
+    /* coerce integer to i64 for non-decimal bases */
+    LLVMValueRef ival = val;
+    if (llvm_is_int(ty) && ty != LLVMInt64TypeInContext(cg->ctx))
+        ival = LLVMBuildSExt(cg->builder, val, LLVMInt64TypeInContext(cg->ctx), "i64e");
+
+    /* single-char base specifier */
+    if (slen == 1) {
+        if (spec[0] == 'b') {
+            LLVMValueRef bfn = ensure_print_binary_fn(cg);
+            LLVMTypeRef bfty = LLVMGlobalGetValueType(bfn);
+            LLVMValueRef a[1] = { ival };
+            LLVMBuildCall2(cg->builder, bfty, bfn, a, 1, "");
+            return;
+        }
+        const char *pfmt = Null;
+        if      (spec[0] == 'x') pfmt = "%llx";
+        else if (spec[0] == 'X') pfmt = "%llX";
+        else if (spec[0] == 'o') pfmt = "%llo";
+        if (pfmt) {
+            LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_base");
+            LLVMValueRef a[2] = { f, ival };
+            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+            return;
+        }
+    }
+
+    /* .N — float precision */
+    if (spec[0] == '.') {
+        usize_t n = 0, k = 1;
+        while (k < slen && spec[k] >= '0' && spec[k] <= '9') n = n * 10 + (usize_t)(spec[k++] - '0');
+        char pfmt[32];
+        snprintf(pfmt, sizeof(pfmt), "%%.%zuf", n);
+        LLVMValueRef dval = val;
+        if (llvm_is_float(ty) && ty == LLVMFloatTypeInContext(cg->ctx))
+            dval = LLVMBuildFPExt(cg->builder, val, LLVMDoubleTypeInContext(cg->ctx), "fpext");
+        else if (llvm_is_int(ty))
+            dval = LLVMBuildSIToFP(cg->builder, val, LLVMDoubleTypeInContext(cg->ctx), "itof");
+        LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_prec");
+        LLVMValueRef a[2] = { f, dval };
+        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+        return;
+    }
+
+    /* [0]N — minimum field width, optionally zero-padded */
+    if (spec[0] == '0' || (spec[0] >= '1' && spec[0] <= '9')) {
+        boolean_t zpad = (spec[0] == '0');
+        usize_t k = zpad ? 1 : 0;
+        usize_t w = 0;
+        while (k < slen && spec[k] >= '0' && spec[k] <= '9') w = w * 10 + (usize_t)(spec[k++] - '0');
+        if (k == slen && w > 0) {
+            char pfmt[32];
+            if (llvm_is_float(ty)) {
+                LLVMValueRef dval = val;
+                if (ty == LLVMFloatTypeInContext(cg->ctx))
+                    dval = LLVMBuildFPExt(cg->builder, val,
+                                          LLVMDoubleTypeInContext(cg->ctx), "fpext");
+                snprintf(pfmt, sizeof(pfmt), zpad ? "%%0%zug" : "%%%zug", w);
+                LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_w");
+                LLVMValueRef a[2] = { f, dval };
+                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+            } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+                snprintf(pfmt, sizeof(pfmt), zpad ? "%%0%zulld" : "%%%zulld", w);
+                LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_w");
+                LLVMValueRef a[2] = { f, ival };
+                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+            } else {
+                LLVMValueRef iv32 = val;
+                if (ty != LLVMInt32TypeInContext(cg->ctx))
+                    iv32 = LLVMBuildSExt(cg->builder, val,
+                                          LLVMInt32TypeInContext(cg->ctx), "iext");
+                snprintf(pfmt, sizeof(pfmt), zpad ? "%%0%zud" : "%%%zud", w);
+                LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_w");
+                LLVMValueRef a[2] = { f, iv32 };
+                LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+            }
+            return;
+        }
+    }
+
+    print_emit_scalar(cg, val, ty); /* unrecognised spec: auto */
+}
+
 static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr) {
     char open[256];
     snprintf(open, sizeof(open), "%s{", sr->name);
@@ -495,60 +691,125 @@ static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *
     print_emit_cstr(cg, "}");
 }
 
+/* Emit one value argument with an optional format spec string.
+   Called after the { ... } has been parsed from the format string. */
+static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen) {
+    LLVMValueRef val = gen_expr(cg, arg);
+    LLVMTypeRef ty   = LLVMTypeOf(val);
+
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        /* struct: format spec is ignored — use print method or default layout */
+        const char *sname = LLVMGetStructName(ty);
+        if (sname) {
+            char mname[256];
+            snprintf(mname, sizeof(mname), "%s.print", sname);
+            LLVMValueRef pfn = LLVMGetNamedFunction(cg->module, mname);
+            if (pfn) {
+                LLVMValueRef tmp = alloc_in_entry(cg, ty, "print_self");
+                LLVMBuildStore(cg->builder, val, tmp);
+                LLVMTypeRef fty = LLVMGlobalGetValueType(pfn);
+                LLVMValueRef ca[1] = { tmp };
+                LLVMBuildCall2(cg->builder, fty, pfn, ca, 1, "");
+            } else {
+                struct_reg_t *sr = find_struct(cg, sname);
+                if (sr) print_emit_struct_default(cg, val, sr);
+            }
+        }
+    } else {
+        print_emit_scalar_spec(cg, val, ty, spec, slen);
+    }
+}
+
+/* Decode a standard backslash escape char (e.g. 'n' -> '\n').
+   Returns the raw char if unrecognised. */
+static char print_decode_esc(char c) {
+    switch (c) {
+        case 'n':  return '\n';
+        case 't':  return '\t';
+        case 'r':  return '\r';
+        case '\\': return '\\';
+        case '\'': return '\'';
+        case '"':  return '"';
+        case 'a':  return '\a';
+        case 'b':  return '\b';
+        case 'f':  return '\f';
+        case 'v':  return '\v';
+        case '0':  return '\0';
+        default:   return c;
+    }
+}
+
 static void gen_print(cg_t *cg, node_t *node) {
-    const char *fmt  = node->as.print_stmt.fmt;
-    usize_t fmt_len  = node->as.print_stmt.fmt_len;
+    const char *fmt   = node->as.print_stmt.fmt;  /* raw: escape seqs not yet decoded */
+    usize_t     flen  = node->as.print_stmt.fmt_len;
     node_list_t *args = &node->as.print_stmt.args;
-    usize_t arg_idx  = 0;
-    usize_t seg_start = 0;
+    usize_t arg_idx   = 0;
 
-    for (usize_t i = 0; i < fmt_len; ) {
-        if (fmt[i] == '{' && i + 1 < fmt_len && fmt[i + 1] == '}') {
-            /* emit literal before this placeholder */
-            if (i > seg_start)
-                print_emit_literal(cg, fmt + seg_start, i - seg_start);
+    /* working buffer for the current literal segment (decoded escapes) */
+    heap_t seg_heap = allocate(flen + 1, 1);
+    char  *seg      = seg_heap.pointer;
+    usize_t seg_len = 0;
 
-            /* emit argument */
-            if (arg_idx < args->count) {
-                node_t *arg = args->items[arg_idx++];
-                LLVMValueRef val = gen_expr(cg, arg);
-                LLVMTypeRef ty   = LLVMTypeOf(val);
+#define FLUSH_SEG() do {                                    \
+    if (seg_len > 0) {                                      \
+        seg[seg_len] = '\0';                                \
+        print_emit_cstr(cg, seg);                           \
+        seg_len = 0;                                        \
+    }                                                       \
+} while (0)
 
-                if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
-                    const char *sname = LLVMGetStructName(ty);
-                    if (sname) {
-                        char method_name[256];
-                        snprintf(method_name, sizeof(method_name), "%s.print", sname);
-                        LLVMValueRef print_fn =
-                            LLVMGetNamedFunction(cg->module, method_name);
-                        if (print_fn) {
-                            /* store into a temp alloca so the method gets a self ptr */
-                            LLVMValueRef tmp = alloc_in_entry(cg, ty, "print_self");
-                            LLVMBuildStore(cg->builder, val, tmp);
-                            LLVMTypeRef fn_type = LLVMGlobalGetValueType(print_fn);
-                            LLVMValueRef call_args[1] = { tmp };
-                            LLVMBuildCall2(cg->builder, fn_type, print_fn,
-                                           call_args, 1, "");
-                        } else {
-                            struct_reg_t *sr = find_struct(cg, sname);
-                            if (sr) print_emit_struct_default(cg, val, sr);
-                        }
-                    }
-                } else {
-                    print_emit_scalar(cg, val, ty);
-                }
+    for (usize_t i = 0; i < flen; ) {
+        /* ── backslash escape ── */
+        if (fmt[i] == '\\' && i + 1 < flen) {
+            char ec = fmt[i + 1];
+            if (ec == '{') {
+                seg[seg_len++] = '{'; /* \{ → literal { */
+            } else if (ec == '}') {
+                seg[seg_len++] = '}'; /* \} → literal } */
+            } else {
+                char decoded = print_decode_esc(ec);
+                /* NUL would cut off printf; flush before it */
+                if (decoded == '\0') { FLUSH_SEG(); }
+                else seg[seg_len++] = decoded;
+            }
+            i += 2;
+            continue;
+        }
+
+        /* ── placeholder { ... } ── */
+        if (fmt[i] == '{') {
+            usize_t j = i + 1;
+            while (j < flen && fmt[j] != '}') j++;
+
+            if (j >= flen) {
+                /* no closing brace — emit as literal */
+                seg[seg_len++] = fmt[i++];
+                continue;
             }
 
-            i += 2; /* skip '{}' */
-            seg_start = i;
-        } else {
-            i++;
+            /* flush literal segment built so far */
+            FLUSH_SEG();
+
+            /* parse spec: skip optional leading ':' */
+            const char *spec = fmt + i + 1;
+            usize_t slen = j - (i + 1);
+            if (slen > 0 && spec[0] == ':') { spec++; slen--; }
+
+            /* emit the argument */
+            if (arg_idx < args->count)
+                print_emit_arg(cg, args->items[arg_idx++], spec, slen);
+
+            i = j + 1;
+            continue;
         }
+
+        seg[seg_len++] = fmt[i++];
     }
 
-    /* emit any trailing literal */
-    if (seg_start < fmt_len)
-        print_emit_literal(cg, fmt + seg_start, fmt_len - seg_start);
+    FLUSH_SEG();
+#undef FLUSH_SEG
+
+    deallocate(seg_heap);
 }
 
 static void gen_multi_assign(cg_t *cg, node_t *node) {

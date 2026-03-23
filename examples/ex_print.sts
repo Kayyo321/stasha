@@ -32,10 +32,13 @@ fn complex_t.print(void): void {
 }
 
 fn main(void): i32 {
+    // basic
     print.('Hello, World!\n');
-
     print.('Nice to meet you, {}!\n', 'Sully!');
     print.('{} + {} * {} = {}\n', 1, 2, 3, 1+2*3);
+
+    // \{ and \} print literal braces
+    print.('set notation: \{ x | x > 0 \}\n');
 
     // default struct print: "simple_t{.x = 1, .y = 2, .z = 3}"
     // (.priv is int so it is omitted)
@@ -44,6 +47,23 @@ fn main(void): i32 {
     // complex_t has a print override, so {} calls complex_t.print(self)
     stack i8 *r characters = 'HELLOWORLD';
     print.('custom struct print: {}\n', complex_t { .chars = characters, .len = 10 });
+
+    // {:x} {:X} — hex
+    print.('255 in hex:        {:x}\n', 255);
+    print.('255 in HEX:        {:X}\n', 255);
+
+    // {:b} — binary
+    print.('10 in binary:      {:b}\n', 10);
+
+    // {:o} — octal
+    print.('8 in octal:        {:o}\n', 8);
+
+    // {:.N} — float precision
+    print.('pi to 4 places:    {:.4}\n', 3.14159265);
+
+    // {:N} — minimum width (right-aligned), {:0N} — zero-padded
+    print.('width 8:           |{:8}|\n', 42);
+    print.('zero-padded:       |{:08}|\n', 42);
 
     ret 0;
 }
