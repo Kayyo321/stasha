@@ -36,7 +36,22 @@ static LLVMValueRef gen_str_lit(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
     symbol_t *sym = cg_lookup(cg, node->as.ident.name);
     if (!sym) {
-        log_err("undefined variable '%s'", node->as.ident.name);
+        diag_begin_error("undefined variable '%s'", node->as.ident.name);
+        diag_span(DIAG_NODE(node), True, "not found in this scope");
+        diag_note("variables must be declared before use");
+        /* Levenshtein suggestion: scan symbol table for close name */
+        usize_t best_dist = 3; /* max edit distance to suggest */
+        const char *best = Null;
+        for (usize_t i = 0; i < cg->locals.count; i++) {
+            usize_t d = levenshtein(node->as.ident.name, cg->locals.entries[i].name);
+            if (d < best_dist) { best_dist = d; best = cg->locals.entries[i].name; }
+        }
+        for (usize_t i = 0; i < cg->globals.count; i++) {
+            usize_t d = levenshtein(node->as.ident.name, cg->globals.entries[i].name);
+            if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+        }
+        if (best) diag_help("did you mean '%s'?", best);
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     if (sym->flags & SymHeapVar) {
@@ -259,7 +274,8 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
         case TokGtGt:  return LLVMBuildAShr(cg->builder, left, right, "shr");
 
         default:
-            log_err("unknown binary operator");
+            diag_begin_error("unknown binary operator");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 }
@@ -270,9 +286,18 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         if (operand->kind == NodeSelfMemberExpr) {
             /* prefix ++/-- on Type.(field) */
             symbol_t *this_sym = cg_lookup(cg, "this");
-            if (!this_sym) { log_err("self-member used outside of method"); goto prefix_incdec_fail; }
+            if (!this_sym) {
+                diag_begin_error("self-member used outside of method");
+                diag_note("'this' is only available inside struct method bodies");
+                diag_finish();
+                goto prefix_incdec_fail;
+            }
             struct_reg_t *sr = find_struct(cg, operand->as.self_member.type_name);
-            if (!sr) { log_err("unknown struct in prefix ++/--"); goto prefix_incdec_fail; }
+            if (!sr) {
+                diag_begin_error("unknown struct in prefix ++/--");
+                diag_finish();
+                goto prefix_incdec_fail;
+            }
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
             for (usize_t i = 0; i < sr->field_count; i++) {
@@ -292,12 +317,18 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         if (operand->kind != NodeIdentExpr) {
-            log_err("prefix ++/-- requires an identifier");
+            diag_begin_error("prefix ++/-- requires an identifier");
+            diag_span(DIAG_NODE(operand), True, "");
+            diag_note("operand of ++/-- must be a variable name");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         symbol_t *sym = cg_lookup(cg, operand->as.ident.name);
         if (!sym) {
-            log_err("undefined variable '%s'", operand->as.ident.name);
+            diag_begin_error("undefined variable '%s'", operand->as.ident.name);
+            diag_span(DIAG_NODE(operand), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         LLVMValueRef store_ptr;
@@ -368,9 +399,18 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
     if (operand->kind == NodeSelfMemberExpr) {
         /* postfix ++/-- on Type.(field) — return old value */
         symbol_t *this_sym = cg_lookup(cg, "this");
-        if (!this_sym) { log_err("self-member used outside of method"); goto postfix_incdec_fail; }
+        if (!this_sym) {
+            diag_begin_error("self-member used outside of method");
+            diag_note("'this' is only available inside struct method bodies");
+            diag_finish();
+            goto postfix_incdec_fail;
+        }
         struct_reg_t *sr = find_struct(cg, operand->as.self_member.type_name);
-        if (!sr) { log_err("unknown struct in postfix ++/--"); goto postfix_incdec_fail; }
+        if (!sr) {
+            diag_begin_error("unknown struct in postfix ++/--");
+            diag_finish();
+            goto postfix_incdec_fail;
+        }
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
         LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
         for (usize_t i = 0; i < sr->field_count; i++) {
@@ -390,12 +430,18 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     if (operand->kind != NodeIdentExpr) {
-        log_err("postfix ++/-- requires an identifier");
+        diag_begin_error("postfix ++/-- requires an identifier");
+        diag_span(DIAG_NODE(operand), True, "");
+        diag_note("operand of ++/-- must be a variable name");
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     symbol_t *sym = cg_lookup(cg, operand->as.ident.name);
     if (!sym) {
-        log_err("undefined variable '%s'", operand->as.ident.name);
+        diag_begin_error("undefined variable '%s'", operand->as.ident.name);
+        diag_span(DIAG_NODE(operand), True, "not found in this scope");
+        diag_note("variables must be declared before use");
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     LLVMValueRef store_ptr;
@@ -439,7 +485,17 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         if (sym) is_sibling_call = True;
     }
     if (!sym) {
-        log_err("undefined function or function pointer '%s'", node->as.call.callee);
+        diag_begin_error("undefined function or function pointer '%s'", node->as.call.callee);
+        diag_span(DIAG_NODE(node), True, "not defined in this module");
+        /* Suggest close names */
+        usize_t best_dist = 3;
+        const char *best = Null;
+        for (usize_t i = 0; i < cg->globals.count; i++) {
+            usize_t d = levenshtein(node->as.call.callee, cg->globals.entries[i].name);
+            if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+        }
+        if (best) diag_help("did you mean '%s'?", best);
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     usize_t user_argc = node->as.call.args.count;
@@ -463,10 +519,11 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
                             && declared != actual) {
                         const char *exp_s = (declared == StorageStack) ? "stack" : "heap";
                         const char *got_s = (actual   == StorageStack) ? "stack" : "heap";
-                        log_err("line %lu: argument %lu to function pointer '%s' has "
+                        diag_begin_error("argument %lu to function pointer '%s' has "
                                 "wrong storage domain (expected %s, got %s)",
-                                node->line, (unsigned long)(i + 1),
+                                (unsigned long)(i + 1),
                                 sym->name, exp_s, got_s);
+                        diag_finish();
                     }
                 }
             }
@@ -708,14 +765,20 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         }
     }
 
-    log_err("cannot resolve method call '%s'", method);
+    diag_begin_error("cannot resolve method call '%s'", method);
+    diag_span(DIAG_NODE(node), True, "");
+    diag_note("check that the field/method exists in the struct definition");
+    diag_finish();
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
 static LLVMValueRef gen_parallel_call(cg_t *cg, node_t *node) {
     symbol_t *sym = cg_lookup(cg, node->as.parallel_call.callee);
     if (!sym) {
-        log_err("undefined function '%s'", node->as.parallel_call.callee);
+        diag_begin_error("undefined function '%s'", node->as.parallel_call.callee);
+        diag_span(DIAG_NODE(node), True, "not defined in this module");
+        diag_note("variables must be declared before use");
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     usize_t argc = node->as.parallel_call.args.count;
@@ -746,7 +809,10 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
     if (target->kind == NodeIdentExpr) {
         sym = cg_lookup(cg, target->as.ident.name);
         if (!sym) {
-            log_err("undefined variable '%s'", target->as.ident.name);
+            diag_begin_error("undefined variable '%s'", target->as.ident.name);
+            diag_span(DIAG_NODE(target), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         if (sym->flags & SymHeapVar) {
@@ -764,7 +830,10 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
         if (obj->kind == NodeIdentExpr) {
             sym = cg_lookup(cg, obj->as.ident.name);
             if (!sym) {
-                log_err("undefined variable '%s'", obj->as.ident.name);
+                diag_begin_error("undefined variable '%s'", obj->as.ident.name);
+                diag_span(DIAG_NODE(obj), True, "not found in this scope");
+                diag_note("variables must be declared before use");
+                diag_finish();
                 return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
             }
             LLVMValueRef index_val = gen_expr(cg, idx);
@@ -792,11 +861,17 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
             }
         }
         if (!store_ptr) {
-            log_err("compound assignment target must be assignable");
+            diag_begin_error("compound assignment target must be assignable");
+            diag_span(DIAG_NODE(target), True, "");
+            diag_note("only variables and fields can appear on the left side of =");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
     } else {
-        log_err("compound assignment target must be assignable");
+        diag_begin_error("compound assignment target must be assignable");
+        diag_span(DIAG_NODE(target), True, "");
+        diag_note("only variables and fields can appear on the left side of =");
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
@@ -848,7 +923,10 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     if (target->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, target->as.ident.name);
         if (!sym) {
-            log_err("undefined variable '%s'", target->as.ident.name);
+            diag_begin_error("undefined variable '%s'", target->as.ident.name);
+            diag_span(DIAG_NODE(target), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
 
@@ -858,12 +936,15 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             if (addr_op->kind == NodeIdentExpr) {
                 symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
                 if (src) {
-                    if (sym->storage == StorageHeap && src->storage == StorageStack)
-                        log_err("line %lu: cannot assign stack address to heap pointer",
-                                node->line);
-                    else if (sym->storage == StorageStack && src->storage == StorageHeap)
-                        log_err("line %lu: cannot assign heap address to stack pointer",
-                                node->line);
+                    if (sym->storage == StorageHeap && src->storage == StorageStack) {
+                        diag_begin_error("cannot assign stack address to heap pointer");
+                        diag_span(DIAG_NODE(node), True, "");
+                        diag_finish();
+                    } else if (sym->storage == StorageStack && src->storage == StorageHeap) {
+                        diag_begin_error("cannot assign heap address to stack pointer");
+                        diag_span(DIAG_NODE(node), True, "");
+                        diag_finish();
+                    }
                 }
             }
         }
@@ -902,7 +983,10 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         if (obj->kind == NodeIdentExpr) {
             symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
             if (!sym) {
-                log_err("undefined variable '%s'", obj->as.ident.name);
+                diag_begin_error("undefined variable '%s'", obj->as.ident.name);
+                diag_span(DIAG_NODE(obj), True, "not found in this scope");
+                diag_note("variables must be declared before use");
+                diag_finish();
                 return rhs;
             }
             /* check if it's an array or pointer */
@@ -1091,7 +1175,10 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         }
     }
 
-    log_err("invalid assignment target");
+    diag_begin_error("invalid assignment target");
+    diag_span(DIAG_NODE(target), True, "");
+    diag_note("only variables and fields can appear on the left side of =");
+    diag_finish();
     return rhs;
 }
 
@@ -1106,7 +1193,10 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
     if (obj->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
         if (!sym) {
-            log_err("undefined variable '%s'", obj->as.ident.name);
+            diag_begin_error("undefined variable '%s'", obj->as.ident.name);
+            diag_span(DIAG_NODE(obj), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
@@ -1194,7 +1284,10 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
         return LLVMBuildLoad2(cg->builder, i8ty, gep, "ch");
     }
 
-    log_err("cannot index non-array/pointer type");
+    diag_begin_error("cannot index a non-array or non-pointer type");
+    diag_span(DIAG_NODE(node), True, "indexing applied here");
+    diag_note("only array types and pointer types support indexing with []");
+    diag_finish();
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
@@ -1289,7 +1382,9 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
         }
     }
 
-    log_err("cannot resolve member '%s'", field);
+    diag_begin_error("cannot resolve member '%s'", field);
+    diag_span(DIAG_NODE(node), True, "member not found");
+    diag_finish();
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
@@ -1304,7 +1399,10 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
     snprintf(mangled, sizeof(mangled), "%s.%s", type_name, method);
     symbol_t *fn_sym = cg_lookup(cg, mangled);
     if (!fn_sym) {
-        log_err("undefined method '%s'", mangled);
+        diag_begin_error("undefined method '%s'", mangled);
+        diag_span(DIAG_NODE(node), True, "method not found on '%s'", type_name);
+        diag_help("define the method with: fn %s.%s(...): ret { ... }", type_name, method);
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
@@ -1354,7 +1452,10 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
     char *field = node->as.self_member.field;
     symbol_t *this_sym = cg_lookup(cg, "this");
     if (!this_sym) {
-        log_err("self-member '%s' used outside of method", field);
+        diag_begin_error("self-member '%s' used outside of method", field);
+        diag_span(DIAG_NODE(node), True, "");
+        diag_note("'this' is only available inside struct method bodies");
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     char *type_name = node->as.self_member.type_name;
@@ -1362,7 +1463,9 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
     if (!type_name) type_name = cg->current_struct_name;
     struct_reg_t *sr = find_struct(cg, type_name);
     if (!sr) {
-        log_err("unknown struct '%s'", type_name);
+        diag_begin_error("unknown struct '%s'", type_name);
+        diag_span(DIAG_NODE(node), True, "");
+        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     /* this is a pointer to struct — load it first if needed */
@@ -1379,7 +1482,10 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
             return LLVMBuildLoad2(cg->builder, ft, gep, field);
         }
     }
-    log_err("unknown field '%s' in struct '%s'", field, type_name);
+    diag_begin_error("unknown field '%s' in struct '%s'", field, type_name);
+    diag_span(DIAG_NODE(node), True, "");
+    diag_note("check that the field/method exists in the struct definition");
+    diag_finish();
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
@@ -1584,7 +1690,10 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
     if (operand->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, operand->as.ident.name);
         if (!sym) {
-            log_err("undefined variable '%s'", operand->as.ident.name);
+            diag_begin_error("undefined variable '%s'", operand->as.ident.name);
+            diag_span(DIAG_NODE(operand), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            diag_finish();
             return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
         }
         if (sym->flags & SymHeapVar) {
@@ -1594,7 +1703,9 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
         }
         return sym->value; /* alloca = address of the stack variable */
     }
-    log_err("address-of requires an lvalue");
+    diag_begin_error("address-of requires an lvalue");
+    diag_span(DIAG_NODE(operand), True, "");
+    diag_finish();
     return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
 }
 
@@ -1904,8 +2015,9 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             /* Type { .x = 1, .y = 2 } — designated initializer */
             struct_reg_t *sr = find_struct(cg, node->as.desig_init.type_name);
             if (!sr) {
-                log_err("line %lu: unknown struct '%s' in designated initializer",
-                        node->line, node->as.desig_init.type_name);
+                diag_begin_error("unknown struct '%s' in designated initializer",
+                        node->as.desig_init.type_name);
+                diag_finish();
                 return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
             }
             LLVMValueRef tmp = alloc_in_entry(cg, sr->llvm_type, "desig_tmp");
@@ -1953,7 +2065,8 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         default:
-            log_err("unexpected node kind %d in expression", node->kind);
+            diag_begin_error("unexpected node kind %d in expression", node->kind);
+            diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 }

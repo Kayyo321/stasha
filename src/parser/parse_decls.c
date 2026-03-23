@@ -93,7 +93,10 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
 
         /* field declaration: [int|ext] type name [, name, ...] ; */
         if (!can_start_type(p)) {
-            log_err("line %lu: expected field type or method in struct", p->current.line);
+            diag_begin_error("expected a field type or method declaration in struct");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a type or 'fn' here");
+            diag_finish();
             p->had_error = True;
             advance_parser(p);
             continue;
@@ -114,7 +117,11 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                     field->as.var_decl.bitfield_width = (int)parse_int_value(p->current);
                     advance_parser(p);
                 } else {
-                    log_err("line %lu: expected bitfield width", p->current.line);
+                    diag_begin_error("expected an integer literal for bitfield width");
+                    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                              True, "expected a number like 3");
+                    diag_help("example: i32 flags: 3;");
+                    diag_finish();
                     p->had_error = True;
                 }
             }
@@ -242,8 +249,11 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
                 }
                 consume(p, TokRParen, "')'");
             } else {
-                log_err("line %lu: unknown attribute '@%.*s'",
-                        p->current.line, (int)len, s);
+                diag_begin_error("unknown attribute '@%.*s'", (int)len, s);
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "not a recognised attribute");
+                diag_note("valid struct attributes: @packed, @c_layout, @align(N)");
+                diag_finish();
                 p->had_error = True;
                 advance_parser(p);
             }
@@ -289,7 +299,11 @@ static node_t *parse_lib(parser_t *p) {
 
     /* library name — accept string literal */
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-        log_err("line %lu: expected library name string after lib", p->current.line);
+        diag_begin_error("expected a library name string after 'lib'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a string literal");
+        diag_help("example: lib \"stdio\" = io;  or  lib \"mylib\" from \"libmylib.a\";");
+        diag_finish();
         p->had_error = True;
         return make_node(NodeLib, line);
     }
@@ -302,7 +316,10 @@ static node_t *parse_lib(parser_t *p) {
     if (check(p, TokFrom)) {
         advance_parser(p); /* consume 'from' */
         if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-            log_err("line %lu: expected path string after 'from'", p->current.line);
+            diag_begin_error("expected a path string after 'from'");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a string literal path to the .a archive");
+            diag_finish();
             p->had_error = True;
             return make_node(NodeLib, line);
         }
@@ -344,7 +361,11 @@ static node_t *parse_libimp(parser_t *p) {
     advance_parser(p); /* consume 'libimp' */
 
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-        log_err("line %lu: expected library name string after libimp", p->current.line);
+        diag_begin_error("expected a library name string after 'libimp'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a string literal");
+        diag_help("example: libimp \"vec\" from \"libvec.a\";");
+        diag_finish();
         p->had_error = True;
         return make_node(NodeLibImp, line);
     }
@@ -353,7 +374,11 @@ static node_t *parse_libimp(parser_t *p) {
     char *name = ast_strdup(ntok.start + 1, ntok.length - 2);
 
     if (!check(p, TokFrom)) {
-        log_err("line %lu: expected 'from' after libimp name", p->current.line);
+        diag_begin_error("expected 'from' after libimp name");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected 'from' here");
+        diag_help("example: libimp \"vec\" from \"libvec.a\";");
+        diag_finish();
         p->had_error = True;
         return make_node(NodeLibImp, line);
     }
@@ -370,7 +395,11 @@ static node_t *parse_libimp(parser_t *p) {
         token_t ptok = p->previous;
         path = ast_strdup(ptok.start + 1, ptok.length - 2);
     } else {
-        log_err("line %lu: expected path string or 'std' after 'from'", p->current.line);
+        diag_begin_error("expected a path string or 'std' after 'from'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a path or 'std'");
+        diag_help("use 'from std' for stdlib modules, or 'from \"path/to/lib.a\"' for custom libraries");
+        diag_finish();
         p->had_error = True;
         return make_node(NodeLibImp, line);
     }
@@ -433,7 +462,10 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             name = ast_strdup("hash", 4);
             advance_parser(p);
         } else {
-            log_err("line %lu: expected method name after '.'", p->current.line);
+            diag_begin_error("expected a method name after '.'");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected an identifier");
+            diag_finish();
             p->had_error = True;
             name = ast_strdup("?", 1);
         }
@@ -552,7 +584,11 @@ static node_t *parse_switch_stmt(parser_t *p) {
             c->as.switch_case.is_default = True;
             consume(p, TokColon, "':'");
         } else {
-            log_err("line %lu: expected 'case' or 'default'", p->current.line);
+            diag_begin_error("expected 'case' or 'default' inside switch block");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "unexpected token");
+            diag_help("switch blocks may only contain 'case <value>:' or 'default:' clauses");
+            diag_finish();
             p->had_error = True;
             advance_parser(p);
             continue;
@@ -583,7 +619,11 @@ static node_t *parse_asm_stmt(parser_t *p) {
             token_t t = p->previous;
             n->as.asm_stmt.code = ast_strdup(t.start + 1, t.length - 2);
         } else {
-            log_err("line %lu: expected assembly string in asm block", p->current.line);
+            diag_begin_error("expected assembly string in asm block");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a string literal");
+            diag_help("example: asm { \"nop\" }");
+            diag_finish();
             p->had_error = True;
             n->as.asm_stmt.code = ast_strdup("", 0);
         }
@@ -633,7 +673,12 @@ static node_t *parse_comptime_if(parser_t *p) {
         token_t t = p->previous;
         value = ast_strdup(t.start + 1, t.length - 2);
     } else {
-        log_err("line %lu: expected string after '==' in comptime_if", p->current.line);
+        diag_begin_error("expected a string literal after '==' in comptime_if");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a string value");
+        diag_note("valid comptime_if keys: os, arch, platform");
+        diag_help("example: #if os == \"macos\" { ... }");
+        diag_finish();
         p->had_error = True;
         value = ast_strdup("", 0);
     }
@@ -658,7 +703,11 @@ static node_t *parse_test_block(parser_t *p) {
     advance_parser(p); /* consume 'test' */
     /* test name is a string literal */
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-        log_err("line %lu: expected test name string after 'test'", p->current.line);
+        diag_begin_error("expected a test name string after 'test'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a string literal");
+        diag_help("example: test 'my test' { expect.(x == 1); }");
+        diag_finish();
         p->had_error = True;
         return make_node(NodeTestBlock, line);
     }
@@ -705,8 +754,11 @@ static node_t *parse_top_decl(parser_t *p) {
                 attr_flags |= AttrHidden;
                 advance_parser(p);
             } else {
-                log_err("line %lu: unknown attribute '@%.*s'",
-                        p->current.line, (int)len, s);
+                diag_begin_error("unknown function/variable attribute '@%.*s'", (int)len, s);
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "not a recognised attribute");
+                diag_note("valid fn/var attributes: @weak, @hidden, @restrict");
+                diag_finish();
                 p->had_error = True;
                 advance_parser(p);
             }

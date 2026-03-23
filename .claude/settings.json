@@ -25,7 +25,21 @@
       "Read(//opt/homebrew/Cellar/openssl@3/3.6.1/**)",
       "Bash(find /Users/jessicabruce/Documents/stasha/stsstdlib/str -name *.sts)",
       "Bash(grep -v \"^--$\")",
-      "Bash(bin/stasha examples/ex_map.sts)"
+      "Bash(bin/stasha examples/ex_map.sts)",
+      "Bash(./bin/stasha tests/diag/error_unknown_variable.sts -o /tmp/test_diag)",
+      "Bash(./bin/stasha tests/diag/error_missing_semicolon.sts -o /tmp/test_diag)",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(do sed:*)",
+      "Bash(done)",
+      "Bash(lldb ./bin/stasha -- tests/diag/error_missing_semicolon.sts -o /tmp/test_diag 2)",
+      "Bash(1:*)",
+      "Bash(lldb -batch -o \"run\" -o \"bt\" -o \"quit\" ./bin/stasha -- tests/diag/error_missing_semicolon.sts -o /tmp/test_diag)",
+      "Bash(lldb -batch -o \"run\" -o \"bt 20\" -o \"quit\" ./bin/stasha -- tests/diag/error_missing_semicolon.sts -o /tmp/test_diag)",
+      "Bash(lldb -batch -s /dev/stdin ./bin/stasha -- tests/diag/error_missing_semicolon.sts -o /tmp/test_diag 2)",
+      "Bash(./bin/stasha tests/diag/error_bad_type.sts -o /tmp/test_diag)",
+      "Bash(wc -l grep -n \"log_err\\\\|log_warn\" /Users/jessicabruce/Documents/stasha/src/codegen/codegen.c)",
+      "Bash(wc -l grep -n \"unused variable\\\\|diag_begin_warning\" /Users/jessicabruce/Documents/stasha/src/codegen/cg_stmt.c)",
+      "Bash(./bin/stasha tests/diag/warn_unused_variable.sts -o /tmp/test_diag)"
     ],
     "additionalDirectories": [
       "/private/tmp"

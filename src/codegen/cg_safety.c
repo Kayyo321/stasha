@@ -9,9 +9,17 @@ static void check_const_addr_of(cg_t *cg, node_t *init, type_info_t target_type,
     if (!src) return;
     boolean_t src_const = (src->flags & SymConst) != 0;
     boolean_t src_final = (src->flags & SymFinal) != 0;
-    if ((src_const || src_final) && (target_type.ptr_perm & (PtrWrite)))
-        log_err("line %lu: cannot derive writable pointer from %s variable '%s'",
-                line, src_const ? "const" : "final", src->name);
+    if ((src_const || src_final) && (target_type.ptr_perm & PtrWrite)) {
+        diag_begin_error("cannot derive a writable pointer from %s variable '%s'",
+                         src_const ? "const" : "final", src->name);
+        diag_span(SRC_LOC(line, 0, 0), True,
+                  "'%s' is declared %s here", src->name,
+                  src_const ? "const" : "final");
+        diag_note("%s variables cannot be mutated through a pointer",
+                  src_const ? "const" : "final");
+        diag_help("use a *r (read-only) pointer instead");
+        diag_finish();
+    }
 }
 
 /* Check: permission widening forbidden (e.g. *r → *rw) */
@@ -22,14 +30,23 @@ static void check_permission_widening(cg_t *cg, node_t *init, type_info_t target
         if (!src || !src->stype.is_pointer) return;
         ptr_perm_t sp = src->stype.ptr_perm;
         ptr_perm_t tp = target_type.ptr_perm;
-        /* a permission bit present in tp but absent in sp is a widening — forbidden */
-        if (tp & ~sp & (PtrRead | PtrWrite | PtrArith))
-            log_err("line %lu: cannot widen pointer permissions (source: %s%s%s → target: %s%s%s)",
-                    line,
-                    (sp & PtrRead)  ? "r" : "", (sp & PtrWrite) ? "w" : "",
-                    (sp & PtrArith) ? "+" : "",
-                    (tp & PtrRead)  ? "r" : "", (tp & PtrWrite) ? "w" : "",
-                    (tp & PtrArith) ? "+" : "");
+        if (tp & ~sp & (PtrRead | PtrWrite | PtrArith)) {
+            char src_perm[8] = {0}, tgt_perm[8] = {0};
+            usize_t si = 0, ti = 0;
+            if (sp & PtrRead)  src_perm[si++] = 'r';
+            if (sp & PtrWrite) src_perm[si++] = 'w';
+            if (sp & PtrArith) src_perm[si++] = '+';
+            if (tp & PtrRead)  tgt_perm[ti++] = 'r';
+            if (tp & PtrWrite) tgt_perm[ti++] = 'w';
+            if (tp & PtrArith) tgt_perm[ti++] = '+';
+            diag_begin_error("cannot widen pointer permissions from *%s to *%s",
+                             src_perm[0] ? src_perm : "none",
+                             tgt_perm[0] ? tgt_perm : "none");
+            diag_span(SRC_LOC(line, 0, 0), True, "permission widening here");
+            diag_note("a pointer may only be used with the permissions it was declared with");
+            diag_help("declare the source pointer with the required permissions");
+            diag_finish();
+        }
     }
 }
 
@@ -40,11 +57,17 @@ static void check_stack_escape(cg_t *cg, node_t *ret_val, usize_t line) {
         node_t *operand = ret_val->as.addr_of.operand;
         if (operand->kind == NodeIdentExpr) {
             symbol_t *src = cg_lookup(cg, operand->as.ident.name);
-            /* locals are stack-allocated; returning their address is always wrong */
             if (src && src->storage == StorageStack
-                && symtab_lookup(&cg->locals, operand->as.ident.name))
-                log_err("line %lu: cannot return pointer to local stack variable '%s'",
-                        line, operand->as.ident.name);
+                && symtab_lookup(&cg->locals, operand->as.ident.name)) {
+                diag_begin_error("cannot return a pointer to local stack variable '%s'",
+                                 operand->as.ident.name);
+                diag_span(SRC_LOC(line, 0, 0), True,
+                          "'%s' is a stack variable — it is freed when the function returns",
+                          operand->as.ident.name);
+                diag_note("stack variables are destroyed when the function returns; the pointer would dangle");
+                diag_help("allocate the variable on the heap instead: heap i32 x = 0;");
+                diag_finish();
+            }
         }
     }
 }
@@ -56,9 +79,15 @@ static void check_ext_returns_int_ptr(cg_t *cg, node_t *ret_val, linkage_t fn_li
         node_t *operand = ret_val->as.addr_of.operand;
         if (operand->kind == NodeIdentExpr) {
             symbol_t *src = symtab_lookup(&cg->globals, operand->as.ident.name);
-            if (src && src->linkage == LinkageInternal)
-                log_err("line %lu: ext function cannot expose pointer to int global '%s'",
-                        line, operand->as.ident.name);
+            if (src && src->linkage == LinkageInternal) {
+                diag_begin_error("ext function cannot expose a pointer to int (private) global '%s'",
+                                 operand->as.ident.name);
+                diag_span(SRC_LOC(line, 0, 0), True,
+                          "returning address of private global here");
+                diag_note("'int' globals are module-private; exposing their address breaks encapsulation");
+                diag_help("declare the global as 'ext' if it is meant to be accessible from outside");
+                diag_finish();
+            }
         }
     }
 }
@@ -70,17 +99,27 @@ static void check_pointer_lifetime(cg_t *cg, node_t *init, usize_t ptr_scope_dep
     if (operand->kind != NodeIdentExpr) return;
     symbol_t *src = cg_lookup(cg, operand->as.ident.name);
     if (!src) return;
-    /* global variables live forever (scope_depth 0); no problem */
-    if (src->scope_depth > ptr_scope_depth)
-        log_err("line %lu: pointer outlives pointee '%s' (scope mismatch)",
-                line, src->name);
+    if (src->scope_depth > ptr_scope_depth) {
+        diag_begin_error("pointer outlives pointee '%s' (scope mismatch)", src->name);
+        diag_span(SRC_LOC(line, 0, 0), True,
+                  "pointer is stored in an outer scope than '%s'", src->name);
+        diag_note("'%s' will be freed before the pointer that holds its address", src->name);
+        diag_help("move the variable to the same or outer scope as the pointer");
+        diag_finish();
+    }
 }
 
 /* Check: null dereference of a statically-nil pointer */
 static void check_null_deref(cg_t *cg, const char *name, usize_t line) {
     symbol_t *sym = cg_lookup(cg, name);
-    if (sym && (sym->flags & SymNil))
-        log_err("line %lu: dereference of nil pointer '%s'", line, name);
+    if (sym && (sym->flags & SymNil)) {
+        diag_begin_error("dereference of nil pointer '%s'", name);
+        diag_span(SRC_LOC(line, 0, 0), True,
+                  "'%s' is statically known to be nil here", name);
+        diag_note("dereferencing a nil pointer is undefined behaviour");
+        diag_help("check the pointer is non-nil before dereferencing it");
+        diag_finish();
+    }
 }
 
 /* Check: pointer arithmetic permission and known array bounds */
@@ -91,15 +130,25 @@ static void check_ptr_arith_bounds(cg_t *cg, node_t *node) {
     if (ptr_node->kind != NodeIdentExpr) return;
     symbol_t *sym = cg_lookup(cg, ptr_node->as.ident.name);
     if (!sym) return;
-    /* enforce + permission for pointer arithmetic */
-    if (sym->stype.is_pointer && !(sym->stype.ptr_perm & PtrArith))
-        log_err("line %lu: pointer arithmetic not permitted on '%s' (pointer lacks '+' permission)",
-                node->line, sym->name);
+    if (sym->stype.is_pointer && !(sym->stype.ptr_perm & PtrArith)) {
+        diag_begin_error("pointer arithmetic not permitted on '%s'", sym->name);
+        diag_span(SRC_LOC(node->line, node->col, 0), True,
+                  "pointer lacks '+' permission");
+        diag_note("'%s' was declared without the '+' permission — pointer arithmetic is disallowed",
+                  sym->name);
+        diag_help("declare the pointer with '+' permission: e.g. *rw+ or *+");
+        diag_finish();
+    }
     if (idx_node->kind != NodeIntLitExpr) return;
-    if (sym->array_size < 0) return; /* unknown size */
+    if (sym->array_size < 0) return;
     long offset = idx_node->as.int_lit.value;
     if (node->as.binary.op == TokMinus) offset = -offset;
-    if (offset < 0 || offset >= sym->array_size)
-        log_err("line %lu: pointer arithmetic index %ld out of bounds for '%s[%ld]'",
-                node->line, offset, sym->name, sym->array_size);
+    if (offset < 0 || offset >= sym->array_size) {
+        diag_begin_error("pointer arithmetic index %ld is out of bounds for '%s[%ld]'",
+                         offset, sym->name, sym->array_size);
+        diag_span(SRC_LOC(node->line, node->col, 0), True,
+                  "index %ld is outside [0, %ld)", offset, sym->array_size);
+        diag_note("accessing outside array bounds is undefined behaviour");
+        diag_finish();
+    }
 }

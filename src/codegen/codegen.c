@@ -45,6 +45,8 @@ typedef struct {
     linkage_t linkage;
     usize_t scope_depth;    /* nesting level for lifetime checks */
     long array_size;        /* ≥0 for known-size arrays, -1 otherwise */
+    boolean_t used;         /* True if the variable has been read at least once */
+    usize_t line;           /* source line where the variable was declared (0 = unknown) */
 } symbol_t;
 
 typedef struct {
@@ -267,7 +269,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     LLVMTargetRef early_target;
     if (LLVMGetTargetFromTriple(triple, &early_target, &early_error)) {
-        log_err("target lookup failed: %s", early_error);
+        diag_begin_error("unknown target triple '%s': %s", triple, early_error);
+        diag_finish();
         LLVMDisposeMessage(early_error);
         LLVMDisposeMessage(triple);
         LLVMContextDispose(cg.ctx);
@@ -1182,7 +1185,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     /* verify */
     char *error = Null;
     if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
-        log_err("LLVM verify: %s", error);
+        diag_begin_error("LLVM IR verification failed: %s", error);
+        diag_finish();
         LLVMDisposeMessage(error);
     } else {
         if (error) LLVMDisposeMessage(error);
@@ -1192,7 +1196,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     error = Null;
     if (LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
                                      LLVMObjectFile, &error)) {
-        log_err("emit failed: %s", error);
+        diag_begin_error("object file emission failed: %s", error);
+        diag_finish();
         LLVMDisposeMessage(error);
         LLVMDisposeTargetMachine(machine);
         LLVMDisposeMessage(triple);

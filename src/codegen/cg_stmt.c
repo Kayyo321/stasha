@@ -34,6 +34,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
                               node->as.var_decl.flags & VdeclFinal,
                               node->as.var_decl.linkage, cg->dtor_depth, -1);
+        symtab_set_last_line(&cg->locals, node->line);
         if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
             struct_reg_t *sr = find_struct(cg, ti.user_name);
             if (sr && sr->destructor)
@@ -43,6 +44,17 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     }
 
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
+
+    /* Catch unknown user-defined types before generating any code. */
+    if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
+        if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
+            diag_begin_error("unknown type '%s'", ti.user_name);
+            diag_span(DIAG_NODE(node), True, "type used here");
+            diag_note("did you forget to define or import the type?");
+            diag_finish();
+        }
+    }
+
     LLVMTypeRef type;
 
     if (node->as.var_decl.flags & VdeclArray) {
@@ -54,8 +66,11 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 LLVMValueRef init = LLVMGetInitializer(sym->value);
                 if (init) array_len = LLVMConstIntGetZExtValue(init);
             } else {
-                log_err("line %lu: undefined constant '%s' used as array size",
-                        node->line, node->as.var_decl.array_size_name);
+                diag_begin_error("undefined constant '%s' used as array size",
+                                 node->as.var_decl.array_size_name);
+                diag_span(DIAG_NODE(node), True, "array declared here");
+                diag_note("array size must be a compile-time constant declared before this point");
+                diag_finish();
             }
         }
         type = LLVMArrayType2(elem, array_len);
@@ -78,9 +93,13 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             node_t *addr_op = node->as.var_decl.init->as.addr_of.operand;
             if (addr_op->kind == NodeIdentExpr) {
                 symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
-                if (src && src->storage == StorageStack)
-                    log_err("line %lu: cannot assign stack address to heap pointer",
-                            node->line);
+                if (src && src->storage == StorageStack) {
+                    diag_begin_error("cannot assign a stack address to a heap pointer");
+                    diag_span(DIAG_NODE(node), True, "heap pointer assigned here");
+                    diag_note("stack variables are freed when their scope ends; the heap pointer would dangle");
+                    diag_help("allocate the source variable on the heap: heap i32 x = 0;");
+                    diag_finish();
+                }
             }
         }
 
@@ -104,6 +123,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
                               node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
                               cg->dtor_depth, -1);
+        symtab_set_last_line(&cg->locals, node->line);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
 
@@ -145,12 +165,18 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
             if (src) {
                 storage_t ptr_domain = node->as.var_decl.storage;
-                if (ptr_domain == StorageHeap && src->storage == StorageStack)
-                    log_err("line %lu: cannot assign stack address to heap pointer",
-                            node->line);
-                else if (ptr_domain == StorageStack && src->storage == StorageHeap)
-                    log_err("line %lu: cannot assign heap address to stack pointer",
-                            node->line);
+                if (ptr_domain == StorageHeap && src->storage == StorageStack) {
+                    diag_begin_error("cannot assign a stack address to a heap pointer");
+                    diag_span(DIAG_NODE(node), True, "assigned here");
+                    diag_note("stack addresses become invalid after their scope ends");
+                    diag_help("use 'heap' storage for the source variable");
+                    diag_finish();
+                } else if (ptr_domain == StorageStack && src->storage == StorageHeap) {
+                    diag_begin_error("cannot assign a heap address to a stack pointer");
+                    diag_span(DIAG_NODE(node), True, "assigned here");
+                    diag_note("mixing stack and heap pointer domains is not allowed");
+                    diag_finish();
+                }
             }
         }
     }
@@ -180,6 +206,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
                               node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
                               cg->dtor_depth, arr_sz);
+        symtab_set_last_line(&cg->locals, node->line);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
     }
@@ -891,8 +918,11 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
 
         if (!fn_decl || fn_decl->as.fn_decl.return_count < 1) {
-            log_err("line %lu: 'let' binding requires a multi-return function call",
-                    node->line);
+            diag_begin_error("'let' binding requires a multi-return function call");
+            diag_span(DIAG_NODE(node), True, "not a multi-return call");
+            diag_note("'let' binds the results of a function that returns multiple values");
+            diag_help("example: stack i32 [lo, hi] = min_max(a, b);");
+            diag_finish();
             return;
         }
 
@@ -1018,8 +1048,10 @@ static void gen_match(cg_t *cg, node_t *node) {
             }
         }
         if (disc_val < 0) {
-            log_err("line %lu: unknown variant '%s'",
-                    arm->line, arm->as.match_arm.variant_name);
+            diag_begin_error("unknown variant '%s'", arm->as.match_arm.variant_name);
+            diag_span(DIAG_NODE(arm), True, "");
+            diag_note("check the enum definition for valid variants");
+            diag_finish();
             continue;
         }
 
@@ -1226,11 +1258,14 @@ static void gen_comptime_assert(cg_t *cg, node_t *node) {
                 LLVMGetModuleDataLayout(cg->module), ty);
             if (sz != (unsigned long long)r->as.int_lit.value) {
                 if (message)
-                    log_err("comptime_assert failed: %s (sizeof = %llu, expected %ld)",
+                    diag_begin_error("comptime_assert failed: %s (sizeof = %llu, expected %ld)",
                             message, sz, r->as.int_lit.value);
                 else
-                    log_err("comptime_assert failed: sizeof = %llu, expected %ld",
+                    diag_begin_error("comptime_assert failed: sizeof = %llu, expected %ld",
                             sz, r->as.int_lit.value);
+                diag_span(DIAG_NODE(node), True, "assertion failed here");
+                diag_note("the assertion evaluated at compile time and did not hold");
+                diag_finish();
             }
             return;
         }
@@ -1238,11 +1273,14 @@ static void gen_comptime_assert(cg_t *cg, node_t *node) {
         if (l->kind == NodeIntLitExpr && r->kind == NodeIntLitExpr) {
             if (l->as.int_lit.value != r->as.int_lit.value) {
                 if (message)
-                    log_err("comptime_assert failed: %s (%ld != %ld)",
+                    diag_begin_error("comptime_assert failed: %s (%ld != %ld)",
                             message, l->as.int_lit.value, r->as.int_lit.value);
                 else
-                    log_err("comptime_assert failed: %ld != %ld",
+                    diag_begin_error("comptime_assert failed: %ld != %ld",
                             l->as.int_lit.value, r->as.int_lit.value);
+                diag_span(DIAG_NODE(node), True, "assertion failed here");
+                diag_note("the assertion evaluated at compile time and did not hold");
+                diag_finish();
             }
             return;
         }
@@ -1251,13 +1289,19 @@ static void gen_comptime_assert(cg_t *cg, node_t *node) {
     if (expr->kind == NodeBoolLitExpr) {
         if (!expr->as.bool_lit.value) {
             if (message)
-                log_err("comptime_assert failed: %s", message);
+                diag_begin_error("comptime_assert failed: %s", message);
             else
-                log_err("comptime_assert failed");
+                diag_begin_error("comptime_assert failed");
+            diag_span(DIAG_NODE(node), True, "assertion failed here");
+            diag_note("the assertion evaluated at compile time and did not hold");
+            diag_finish();
         }
         return;
     }
-    log_err("comptime_assert: expression too complex to evaluate at compile time");
+    diag_begin_error("comptime_assert: expression too complex to evaluate at compile time");
+    diag_span(DIAG_NODE(node), True, "unsupported expression");
+    diag_note("only constants, sizeof, and arithmetic are supported in comptime_assert");
+    diag_finish();
 }
 
 static void gen_stmt(cg_t *cg, node_t *node) {
@@ -1293,14 +1337,22 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeBreakStmt:
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);
-            else
-                log_err("break outside of loop");
+            else {
+                diag_begin_error("'break' used outside of a loop or switch");
+                diag_span(DIAG_NODE(node), True, "break here");
+                diag_note("'break' can only appear inside for, while, do-while, inf, or switch");
+                diag_finish();
+            }
             break;
         case NodeContinueStmt:
             if (cg->continue_target)
                 LLVMBuildBr(cg->builder, cg->continue_target);
-            else
-                log_err("continue outside of loop");
+            else {
+                diag_begin_error("'continue' used outside of a loop");
+                diag_span(DIAG_NODE(node), True, "continue here");
+                diag_note("'continue' can only appear inside for, while, do-while, or inf loops");
+                diag_finish();
+            }
             break;
         case NodeDeferStmt:
             add_deferred_stmt(cg, node->as.defer_stmt.body);
@@ -1309,14 +1361,29 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             gen_block(cg, node);
             break;
         default:
-            log_err("unexpected statement kind %d", node->kind);
+            diag_begin_error("unexpected statement kind %d", node->kind);
+            diag_finish();
             break;
     }
 }
 
 static void gen_block(cg_t *cg, node_t *node) {
+    usize_t old_count = cg->locals.count;
     push_dtor_scope(cg);
     for (usize_t i = 0; i < node->as.block.stmts.count; i++)
         gen_stmt(cg, node->as.block.stmts.items[i]);
+    /* emit unused variable warnings for locals added in this block */
+    for (usize_t i = old_count; i < cg->locals.count; i++) {
+        symbol_t *entry = &cg->locals.entries[i];
+        if (!entry->used && entry->name && entry->name[0] != '_') {
+            diag_begin_warning("unused variable '%s'", entry->name);
+            if (entry->line > 0)
+                diag_span(SRC_LOC(entry->line, 0, strlen(entry->name)), True,
+                          "variable declared here");
+            diag_note("prefix the name with '_' to suppress this warning");
+            diag_finish();
+        }
+    }
     pop_dtor_scope(cg);
+    cg->locals.count = old_count;
 }

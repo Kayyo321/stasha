@@ -123,7 +123,11 @@ static node_t *parse_print_stmt(parser_t *p) {
     consume(p, TokLParen, "'('");
 
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-        log_err("line %lu: print.() requires a string literal as the first argument", line);
+        diag_begin_error("print.() requires a string literal as the first argument");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a string literal here");
+        diag_help("example: print.('value = {x}')");
+        diag_finish();
         p->had_error = True;
         return make_node(NodePrintStmt, line);
     }
@@ -226,7 +230,11 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     }
 
     if (!can_start_type(p)) {
-        log_err("line %lu: expected type", p->current.line);
+        diag_begin_error("expected a type in variable declaration");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a type here");
+        diag_note("variable declarations require a storage qualifier and type: stack i32 x = 0;");
+        diag_finish();
         p->had_error = True;
         advance_parser(p); /* skip bad token to avoid infinite loop */
         return make_node(NodeVarDecl, line);

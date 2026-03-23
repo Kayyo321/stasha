@@ -1,0 +1,13 @@
+// Diagnostic test: calling an undefined function
+// Expected: "undefined function or function pointer 'compute'" with a suggestion
+mod diag_unknown_function;
+
+int fn add(stack i32 a, stack i32 b): i32 {
+    ret a + b;
+}
+
+int fn main(void): i32 {
+    // 'compute' is not defined — should suggest 'add' (small edit distance)
+    stack i32 result = compute(10, 20);
+    ret result;
+}

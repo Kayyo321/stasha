@@ -1,0 +1,10 @@
+// Diagnostic test: invalid type in variable declaration
+// Expected: "expected a type, found 'xyz'" on line 8
+mod diag_bad_type;
+
+int fn main(void): i32 {
+    stack i32 a = 1;
+    // 'xyz' is not a valid type keyword
+    stack xyz b = 2;
+    ret a + b;
+}

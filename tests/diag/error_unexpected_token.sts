@@ -1,0 +1,11 @@
+// Diagnostic test: unexpected token — missing closing brace
+// Expected: parse error at end of file or at wrong token
+mod diag_unexpected_token;
+
+int fn add(stack i32 a, stack i32 b): i32 {
+    ret a + b;
+// Missing closing brace here — should produce a clear diagnostic
+
+int fn main(void): i32 {
+    ret add(3, 4);
+}

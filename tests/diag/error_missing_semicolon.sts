@@ -1,0 +1,9 @@
+// Diagnostic test: missing semicolon after variable declaration
+// Expected: "expected ';'" error pointing at the next token on line 8
+mod diag_missing_semicolon;
+
+int fn main(void): i32 {
+    stack i32 x = 5
+    stack i32 y = 10;
+    ret x + y;
+}

@@ -194,7 +194,8 @@ typedef struct {
 
 struct node {
     node_kind_t kind;
-    usize_t line;
+    usize_t line;        /* 1-based source line (0 = unknown)   */
+    usize_t col;         /* 1-based source column (0 = unknown) */
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
 
     union {

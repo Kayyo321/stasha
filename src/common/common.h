@@ -53,4 +53,7 @@ result_t scan_and_deallocate(void); // returns Err if any leaked bytes are recla
 #define free(...) UseDeallocateInsteadOfFree
 #endif
 
+/* ── Rich diagnostic system (Rust-style errors with source snippets) ── */
+#include "diagnostic.h"
+
 #endif

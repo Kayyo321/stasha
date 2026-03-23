@@ -38,8 +38,13 @@ static symbol_t *symtab_lookup(symtab_t *st, const char *name) {
 }
 static symbol_t *cg_lookup(cg_t *cg, const char *name) {
     symbol_t *s = symtab_lookup(&cg->locals, name);
-    if (s) return s;
+    if (s) { s->used = True; return s; }
     return symtab_lookup(&cg->globals, name);
+}
+
+static void symtab_set_last_line(symtab_t *st, usize_t line) {
+    if (st->count > 0)
+        st->entries[st->count - 1].line = line;
 }
 
 static void symtab_set_last_storage(symtab_t *st, storage_t storage, boolean_t is_heap_var) {

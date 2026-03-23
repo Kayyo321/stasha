@@ -54,3 +54,4 @@ static heap_list_t *heap_list_last = Null;
 
 #include "logger.c"
 #include "heap.c"
+#include "diagnostic.c"

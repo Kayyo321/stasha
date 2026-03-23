@@ -275,7 +275,11 @@ static void resolve_imports(node_t *ast, const char *input_path) {
             continue;
         }
 
+        /* Point diagnostics at the imported file while parsing it. */
+        diag_set_file(mod_path);
         node_t *mod_ast = parse(src);
+        /* Restore primary file context. */
+        diag_set_file(input_path);
         if (!mod_ast) {
             log_err("line %lu: failed to parse module '%s'", decl->line, mod_name);
             continue;
@@ -632,6 +636,9 @@ int main(int argc, char **argv) {
     /* ── compile ── */
     char *source = read_file(input_path);
     if (!source) quit(Err);
+
+    /* Set diagnostic context so error messages can show source snippets. */
+    diag_set_file(input_path);
 
     log_msg("parsing '%s'", input_path);
     node_t *ast = parse(source);

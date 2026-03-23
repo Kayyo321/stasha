@@ -159,7 +159,11 @@ static node_t *parse_primary(parser_t *p) {
         consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
         if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
-            log_err("line %lu: error.() requires a string literal as the first argument", line);
+            diag_begin_error("error.() requires a string literal as the first argument");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a string literal here");
+            diag_help("example: error.('something went wrong')");
+            diag_finish();
             p->had_error = True;
             return make_node(NodeErrorExpr, line);
         }
@@ -387,8 +391,11 @@ static node_t *parse_primary(parser_t *p) {
         return expr;
     }
 
-    log_err("line %lu: expected expression, got '%.*s'",
-            p->current.line, (int)p->current.length, p->current.start);
+    diag_begin_error("expected an expression, found '%.*s'",
+                     (int)p->current.length, p->current.start);
+    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+              True, "not a valid expression start");
+    diag_finish();
     p->had_error = True;
     advance_parser(p); /* skip the bad token so we don't loop forever */
     return make_node(NodeIntLitExpr, p->previous.line);
@@ -467,7 +474,10 @@ static node_t *parse_postfix(parser_t *p) {
                     advance_parser(p);
                 } else {
                     field_name = ast_strdup("?", 1);
-                    log_err("line %lu: expected field or method name after 'this.'", p->current.line);
+                    diag_begin_error("expected field or method name after 'this.'");
+                    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                              True, "expected an identifier here");
+                    diag_finish();
                     p->had_error = True;
                 }
                 /* this.method(args) → NodeSelfMethodCall with type_name = NULL */
@@ -525,7 +535,10 @@ static node_t *parse_postfix(parser_t *p) {
                 advance_parser(p);
             } else {
                 field_name = ast_strdup("?", 1);
-                log_err("line %lu: expected field or method name", p->current.line);
+                diag_begin_error("expected field or method name after '.'");
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "expected an identifier here");
+                diag_finish();
                 p->had_error = True;
             }
 

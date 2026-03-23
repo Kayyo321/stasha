@@ -172,11 +172,13 @@ typedef struct {
     const char *start;
     usize_t length;
     usize_t line;
+    usize_t col;    /* 1-based column of the first character of this token */
 } token_t;
 
 typedef struct {
-    const char *start;
-    const char *current;
+    const char *start;       /* beginning of entire source buffer            */
+    const char *current;     /* current scan position                        */
+    const char *line_start;  /* pointer to first char of the current line    */
     usize_t line;
 } lexer_t;
 

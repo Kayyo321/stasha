@@ -35,8 +35,10 @@ static void advance_parser(parser_t *p) {
     for (;;) {
         p->current = next_token(&p->lexer);
         if (p->current.kind != TokError) break;
-        log_err("line %lu: %.*s", p->current.line,
-                (int)p->current.length, p->current.start);
+        /* Lexer errors: unterminated string, unexpected character, etc. */
+        diag_begin_error("%.*s", (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, 1), True, "here");
+        diag_finish();
         p->had_error = True;
     }
 }
@@ -56,9 +58,17 @@ static token_t consume(parser_t *p, token_kind_t kind, const char *msg) {
         advance_parser(p);
         return p->previous;
     }
-    log_err("line %lu: expected %s, got '%.*s'",
-            p->current.line, msg,
-            (int)p->current.length, p->current.start);
+    if (p->current.kind == TokEof) {
+        diag_begin_error("unexpected end of file, expected %s", msg);
+        diag_span(SRC_LOC(p->current.line, p->current.col, 1), True,
+                  "expected %s here", msg);
+    } else {
+        diag_begin_error("expected %s, found '%.*s'",
+                         msg, (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected %s", msg);
+    }
+    diag_finish();
     p->had_error = True;
     return p->current;
 }
@@ -100,7 +110,11 @@ static type_info_t parse_type(parser_t *p) {
         advance_parser(p); /* consume 'fn' */
 
         if (!check(p, TokStar)) {
-            log_err("line %lu: expected '*' after 'fn' in function pointer type", line);
+            diag_begin_error("expected '*' after 'fn' in function pointer type");
+            diag_span(SRC_LOC(line, p->previous.col, 2), True,
+                      "add '*' here to make a function pointer");
+            diag_help("function pointer syntax: fn*(params): ret_type");
+            diag_finish();
             p->had_error = True;
             return info;
         }
@@ -115,7 +129,9 @@ static type_info_t parse_type(parser_t *p) {
         if (!check(p, TokRParen) && !check(p, TokVoid)) {
             do {
                 if (param_count >= 32) {
-                    log_err("line %lu: function pointer type exceeds maximum of 32 parameters", line);
+                    diag_begin_error("function pointer type exceeds maximum of 32 parameters");
+                    diag_span(SRC_LOC(line, 1, 0), True, "in this function pointer type");
+                    diag_finish();
                     p->had_error = True;
                     break;
                 }
@@ -159,7 +175,12 @@ static type_info_t parse_type(parser_t *p) {
         info.user_name = copy_token_text(p->current);
         advance_parser(p);
     } else {
-        log_err("line %lu: expected type", p->current.line);
+        diag_begin_error("expected a type, found '%.*s'",
+                         (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a type here");
+        diag_note("valid types: i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, void, error, or a struct/enum name");
+        diag_finish();
         p->had_error = True;
         return info;
     }
@@ -286,6 +307,9 @@ static char *parse_dotted_name(parser_t *p) {
 /* ── entry point ── */
 
 node_t *parse(const char *source) {
+    /* Register source text so diagnostics can print code snippets. */
+    diag_set_source(source);
+
     parser_t p;
     init_lexer(&p.lexer, source);
     p.had_error = False;
