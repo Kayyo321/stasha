@@ -236,6 +236,7 @@ static void             di_set_location(cg_t *cg, usize_t line);
 result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                  const char *target_triple, const char *source_file,
                  boolean_t debug_mode) {
+    usize_t errors_before = get_error_count();
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
     cg.ast         = ast;
@@ -1227,5 +1228,5 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     if (cg.dtor_stack_heap.pointer) deallocate(cg.dtor_stack_heap);
     if (cg.di_types_heap.pointer) deallocate(cg.di_types_heap);
 
-    return Ok;
+    return get_error_count() > errors_before ? Err : Ok;
 }

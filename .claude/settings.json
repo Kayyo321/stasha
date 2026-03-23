@@ -39,7 +39,8 @@
       "Bash(./bin/stasha tests/diag/error_bad_type.sts -o /tmp/test_diag)",
       "Bash(wc -l grep -n \"log_err\\\\|log_warn\" /Users/jessicabruce/Documents/stasha/src/codegen/codegen.c)",
       "Bash(wc -l grep -n \"unused variable\\\\|diag_begin_warning\" /Users/jessicabruce/Documents/stasha/src/codegen/cg_stmt.c)",
-      "Bash(./bin/stasha tests/diag/warn_unused_variable.sts -o /tmp/test_diag)"
+      "Bash(./bin/stasha tests/diag/warn_unused_variable.sts -o /tmp/test_diag)",
+      "Bash(./bin/stasha tests/diag/error_unknown_function.sts)"
     ],
     "additionalDirectories": [
       "/private/tmp"
