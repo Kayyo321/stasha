@@ -1,0 +1,5 @@
+mod map;
+
+type map_t: struct {
+    
+}

@@ -1,0 +1,41 @@
+mod buffer;
+
+ext type byte: i8;
+
+ext type buffer_t: struct {
+heap:
+    int byte *bytes;
+
+stack:
+    int u32 length, capacity, size_of_one_item;
+
+    ext fn at(stack u32 idx): [heap byte *r, error] {
+        if (idx >= buffer_t.(length)) {
+            return nil, error.('index {} is out of bounds in buffer with length of: {}', idx, buffer_t.(length));
+        }
+
+        return buffer_t.(bytes) + (idx * buffer_t.(size_of_one_item)), nil;
+    }
+}
+
+ext fn buffer_t.new(stack u32 size_of_one_item): buffer_t {
+    stack buffer_t b;
+
+    b.length = 0;
+    b.capacity = 2 * size_of_one_item;
+    b.size_of_one_item = size_of_one_item;
+    b.bytes = new.(b.capacity);
+
+    return b;
+}
+
+ext fn buffer_t.rem(void): void {
+    if (buffer_t.(bytes) != nil) {
+        rem.(buffer_t.(bytes));
+    }
+
+    buffer_t.(length) = 0;
+    buffer_t.(capacity) = 0;
+    buffer_t.(size_of_one_item) = 0;
+    buffer_t.(bytes) = nil;
+}
