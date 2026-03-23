@@ -152,16 +152,28 @@ static node_t *parse_primary(parser_t *p) {
         return make_node(NodeNilExpr, line);
     }
 
-    /* error.('message') — create an error value */
+    /* error.('fmt', args...) — create an error value with a formatted message */
     if (check(p, TokErrorType)) {
         usize_t line = p->current.line;
         advance_parser(p);
         consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
-        node_t *msg = parse_expr(p);
-        consume(p, TokRParen, "')'");
+        if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+            log_err("line %lu: error.() requires a string literal as the first argument", line);
+            p->had_error = True;
+            return make_node(NodeErrorExpr, line);
+        }
+        token_t fmt_tok = p->current;
+        advance_parser(p);
+        usize_t fmt_len = fmt_tok.length - 2;
+        char *fmt = ast_strdup(fmt_tok.start + 1, fmt_len);
         node_t *n = make_node(NodeErrorExpr, line);
-        n->as.error_expr.message = msg;
+        n->as.error_expr.fmt     = fmt;
+        n->as.error_expr.fmt_len = fmt_len;
+        node_list_init(&n->as.error_expr.args);
+        while (match_tok(p, TokComma))
+            node_list_push(&n->as.error_expr.args, parse_expr(p));
+        consume(p, TokRParen, "')'");
         return n;
     }
 
@@ -282,6 +294,15 @@ static node_t *parse_primary(parser_t *p) {
         n->as.parallel_call.is_gpu = is_gpu;
         n->as.parallel_call.callee = name;
         n->as.parallel_call.args = args;
+        return n;
+    }
+
+    /* this — self-reference inside method bodies */
+    if (check(p, TokThis)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        node_t *n = make_node(NodeIdentExpr, line);
+        n->as.ident.name = ast_strdup("this", 4);
         return n;
     }
 
@@ -434,6 +455,44 @@ static node_t *parse_postfix(parser_t *p) {
         if (check(p, TokDot)) {
             usize_t line = p->current.line;
             advance_parser(p);
+
+            /* this.field / this.method() — self-access via 'this' keyword */
+            if (expr->kind == NodeIdentExpr
+                    && strcmp(expr->as.ident.name, "this") == 0
+                    && !check(p, TokLParen)) {
+                /* consume method/field name */
+                char *field_name;
+                if (check(p, TokIdent)) {
+                    field_name = copy_token_text(p->current);
+                    advance_parser(p);
+                } else {
+                    field_name = ast_strdup("?", 1);
+                    log_err("line %lu: expected field or method name after 'this.'", p->current.line);
+                    p->had_error = True;
+                }
+                /* this.method(args) → NodeSelfMethodCall with type_name = NULL */
+                if (check(p, TokLParen)) {
+                    advance_parser(p);
+                    node_list_t args;
+                    node_list_init(&args);
+                    if (!check(p, TokRParen)) {
+                        do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+                    }
+                    consume(p, TokRParen, "')'");
+                    node_t *n = make_node(NodeSelfMethodCall, line);
+                    n->as.self_method_call.type_name = Null;
+                    n->as.self_method_call.method = field_name;
+                    n->as.self_method_call.args = args;
+                    expr = n;
+                    continue;
+                }
+                /* this.field → NodeSelfMemberExpr with type_name = NULL */
+                node_t *n = make_node(NodeSelfMemberExpr, line);
+                n->as.self_member.type_name = Null;
+                n->as.self_member.field = field_name;
+                expr = n;
+                continue;
+            }
 
             /* self-member: Type.(field) */
             if (check(p, TokLParen)) {

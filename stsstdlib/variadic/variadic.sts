@@ -1,0 +1,47 @@
+mod variadic;
+
+type variadic_t: struct {
+stack:
+    int i8 *last_seen_arg;
+
+    /// Returns a pointer to the next argument of the given size, or error if out of bounds.
+    ext fn next(stack u32 bytes): [stack i8 *r, error] {
+        // Implementation is platform-specific; placeholder logic
+        if (last_seen_arg == nil) {
+            ret nil, error.(1, "No more arguments");
+        }
+        stack i8 *r arg_ptr = last_seen_arg;
+        last_seen_arg = last_seen_arg + bytes;
+        ret arg_ptr, error.(0, "");
+    }
+
+    /// Resets the variadic argument pointer to a new start
+    ext fn reset(stack i8 *new_start): void {
+        last_seen_arg = new_start;
+    }
+
+    /// Ends variadic argument processing (no-op for most ABIs)
+    ext fn end(void): void {
+        last_seen_arg = nil;
+    }
+}
+
+/// Creates a new variadic_t starting at the given argument pointer
+ext fn variadic_t.new(stack i8 *last_seen_arg): variadic_t {
+    stack variadic_t v;
+    v.last_seen_arg = last_seen_arg;
+    ret v;
+}
+
+// Example usage:
+// fn sum(stack i32 n, ...): i32 {
+//     stack variadic_t va = variadic_t.new(&n + sizeof.(i32));
+//     stack i32 total = 0;
+//     for (stack i32 i = 0; i < n; i++) {
+//         stack let res = va.next_typed<i32>();
+//         if (res[1].code != 0) break;
+//         total = total + *res[0];
+//     }
+//     va.end();
+//     ret total;
+// }

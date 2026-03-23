@@ -317,7 +317,7 @@ struct node {
         struct { type_info_t type; } sizeof_expr;
         struct { node_t *ptr; node_t *size; } mov_expr;
         struct { node_t *operand; } addr_of;
-        struct { node_t *message; } error_expr;       /* error.('msg') */
+        struct { char *fmt; usize_t fmt_len; node_list_t args; } error_expr; /* error.('fmt', ...) */
         struct { char *name; node_t *body; } test_block; /* test 'name' { ... } */
         struct { node_t *expr; } expect_expr;         /* expect.(expr) */
         struct { node_t *left; node_t *right; } expect_eq; /* expect_eq.(a,b) */

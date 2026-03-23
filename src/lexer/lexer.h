@@ -164,6 +164,7 @@ typedef enum {
     TokLibImp,      /* libimp */
     TokStd,         /* std (stdlib source specifier) */
     TokHash,        /* hash */
+    TokThis,        /* this — self-reference inside method bodies */
 } token_kind_t;
 
 typedef struct {

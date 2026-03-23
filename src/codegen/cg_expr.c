@@ -989,10 +989,12 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         }
 
         if (obj->kind == NodeSelfMemberExpr) {
-            /* Type.(field)[idx] = rhs — pointer field of current struct instance */
+            /* Type.(field)[idx] / this.field[idx] = rhs — pointer field of current struct instance */
             symbol_t *this_sym = cg_lookup(cg, "this");
             if (this_sym) {
-                struct_reg_t *sr = find_struct(cg, obj->as.self_member.type_name);
+                char *smtn = obj->as.self_member.type_name;
+                if (!smtn) smtn = cg->current_struct_name;
+                struct_reg_t *sr = find_struct(cg, smtn);
                 if (sr) {
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
                     LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
@@ -1066,6 +1068,7 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     if (target->kind == NodeSelfMemberExpr) {
         char *field = target->as.self_member.field;
         char *type_name = target->as.self_member.type_name;
+        if (!type_name) type_name = cg->current_struct_name;
         symbol_t *this_sym = cg_lookup(cg, "this");
         if (this_sym) {
             struct_reg_t *sr = find_struct(cg, type_name);
@@ -1291,9 +1294,11 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
-    /* Type.(method)(args) — call a method on the current struct instance */
+    /* Type.(method)(args) / this.method(args) — call a method on the current struct instance */
     char *type_name = node->as.self_method_call.type_name;
     char *method    = node->as.self_method_call.method;
+    /* NULL type_name means 'this' keyword was used — resolve from current struct context */
+    if (!type_name) type_name = cg->current_struct_name;
 
     char mangled[256];
     snprintf(mangled, sizeof(mangled), "%s.%s", type_name, method);
@@ -1345,7 +1350,7 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
-    /* Type.(field) — resolve to this->field */
+    /* Type.(field) / this.field — resolve to this->field */
     char *field = node->as.self_member.field;
     symbol_t *this_sym = cg_lookup(cg, "this");
     if (!this_sym) {
@@ -1353,6 +1358,8 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     char *type_name = node->as.self_member.type_name;
+    /* NULL type_name means 'this' keyword was used — resolve from current struct context */
+    if (!type_name) type_name = cg->current_struct_name;
     struct_reg_t *sr = find_struct(cg, type_name);
     if (!sr) {
         log_err("unknown struct '%s'", type_name);
@@ -1548,7 +1555,15 @@ static LLVMValueRef gen_hash(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_sizeof(cg_t *cg, node_t *node) {
-    LLVMTypeRef ty = get_llvm_type(cg, node->as.sizeof_expr.type);
+    type_info_t ti = node->as.sizeof_expr.type;
+    /* If the "type" is a bare user name with no pointer qualifier, check whether
+       it is actually a variable — if so, use the variable's LLVM type instead.
+       This makes sizeof.(my_var) work alongside sizeof.(MyStruct). */
+    if (ti.base == TypeUser && !ti.is_pointer && ti.user_name) {
+        symbol_t *sym = cg_lookup(cg, ti.user_name);
+        if (sym) return LLVMSizeOf(sym->type);
+    }
+    LLVMTypeRef ty = get_llvm_type(cg, ti);
     return LLVMSizeOf(ty);
 }
 
@@ -1583,6 +1598,163 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
     return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
 }
 
+/* ── error expression ── */
+
+static char error_decode_esc(char c) {
+    switch (c) {
+        case 'n': return '\n'; case 't': return '\t'; case 'r': return '\r';
+        case '\\': return '\\'; case '\'': return '\''; case '"': return '"';
+        case 'a': return '\a'; case 'b': return '\b'; case '0': return '\0';
+        default: return c;
+    }
+}
+
+static LLVMValueRef gen_error_expr(cg_t *cg, node_t *node) {
+    const char  *fmt  = node->as.error_expr.fmt;
+    usize_t      flen = node->as.error_expr.fmt_len;
+    node_list_t *args = &node->as.error_expr.args;
+
+    LLVMValueRef msg_ptr;
+
+    if (args->count == 0) {
+        /* No format args: decode escape sequences and store as a static string. */
+        heap_t bh = allocate(flen + 1, 1);
+        char *buf = bh.pointer;
+        usize_t blen = 0;
+        for (usize_t i = 0; i < flen; ) {
+            if (fmt[i] == '\\' && i + 1 < flen) {
+                char d = error_decode_esc(fmt[i + 1]);
+                if (d != '\0') buf[blen++] = d;
+                i += 2;
+            } else {
+                buf[blen++] = fmt[i++];
+            }
+        }
+        buf[blen] = '\0';
+        msg_ptr = LLVMBuildGlobalStringPtr(cg->builder, buf, "errmsg");
+        deallocate(bh);
+    } else {
+        /* Format args: build a C printf format string at compile time, then call
+           malloc + snprintf at runtime to produce the formatted error message. */
+        usize_t argc = args->count;
+
+        /* Evaluate all argument expressions. */
+        heap_t vh = allocate(argc, sizeof(LLVMValueRef));
+        LLVMValueRef *vals = vh.pointer;
+        for (usize_t i = 0; i < argc; i++)
+            vals[i] = gen_expr(cg, args->items[i]);
+
+        /* Build the C printf format string from the stasha format template.
+           Each {} placeholder is translated to an appropriate printf specifier
+           based on the LLVM type of the corresponding argument. */
+        heap_t fh = allocate(flen * 4 + 64, 1);
+        char *cfmt = fh.pointer;
+        usize_t cfmt_len = 0;
+        usize_t arg_idx = 0;
+
+        for (usize_t i = 0; i < flen; ) {
+            /* backslash escape */
+            if (fmt[i] == '\\' && i + 1 < flen) {
+                char ec = fmt[i + 1];
+                if (ec == '{' || ec == '}') { cfmt[cfmt_len++] = ec; }
+                else if (ec == '%')         { cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%'; }
+                else {
+                    char d = error_decode_esc(ec);
+                    if (d != '\0') cfmt[cfmt_len++] = d;
+                }
+                i += 2; continue;
+            }
+            /* literal '%' must be doubled for printf */
+            if (fmt[i] == '%') { cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%'; i++; continue; }
+            /* {} placeholder */
+            if (fmt[i] == '{') {
+                usize_t j = i + 1;
+                while (j < flen && fmt[j] != '}') j++;
+                if (j < flen && arg_idx < argc) {
+                    LLVMTypeRef ty = LLVMTypeOf(vals[arg_idx]);
+                    const char *spec = fmt + i + 1;
+                    usize_t slen = j - (i + 1);
+                    if (slen > 0 && spec[0] == ':') { spec++; slen--; }
+                    cfmt[cfmt_len++] = '%';
+                    if (slen > 0) {
+                        for (usize_t k = 0; k < slen; k++) cfmt[cfmt_len++] = spec[k];
+                    } else if (llvm_is_ptr(ty)) {
+                        cfmt[cfmt_len++] = 's';
+                    } else if (llvm_is_float(ty)) {
+                        cfmt[cfmt_len++] = 'g';
+                        if (ty == LLVMFloatTypeInContext(cg->ctx))
+                            vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
+                                                            LLVMDoubleTypeInContext(cg->ctx), "fpext");
+                    } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+                        cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'd';
+                    } else if (ty == LLVMInt8TypeInContext(cg->ctx)) {
+                        cfmt[cfmt_len++] = 'c';
+                        vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                       LLVMInt32TypeInContext(cg->ctx), "cext");
+                    } else if (ty == LLVMInt1TypeInContext(cg->ctx)) {
+                        cfmt[cfmt_len++] = 'd';
+                        vals[arg_idx] = LLVMBuildZExt(cg->builder, vals[arg_idx],
+                                                       LLVMInt32TypeInContext(cg->ctx), "bext");
+                    } else {
+                        cfmt[cfmt_len++] = 'd';
+                        if (ty != LLVMInt32TypeInContext(cg->ctx))
+                            vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                           LLVMInt32TypeInContext(cg->ctx), "iext");
+                    }
+                    arg_idx++;
+                    i = j + 1;
+                    continue;
+                }
+                /* no closing brace or ran out of args: emit literal '{' */
+                cfmt[cfmt_len++] = fmt[i++];
+                continue;
+            }
+            cfmt[cfmt_len++] = fmt[i++];
+        }
+        cfmt[cfmt_len] = '\0';
+
+        /* Declare snprintf if not already in the module. */
+        LLVMValueRef snprintf_fn = LLVMGetNamedFunction(cg->module, "snprintf");
+        if (!snprintf_fn) {
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+            LLVMTypeRef fixed[2] = { ptr_ty, i64_ty };
+            LLVMTypeRef snfty = LLVMFunctionType(
+                LLVMInt32TypeInContext(cg->ctx), fixed, 2, /*varargs=*/True);
+            snprintf_fn = LLVMAddFunction(cg->module, "snprintf", snfty);
+        }
+        LLVMTypeRef snprintf_type = LLVMGlobalGetValueType(snprintf_fn);
+
+        /* Allocate a 512-byte heap buffer for the formatted message. */
+        LLVMValueRef buf_size = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), 512, 0);
+        LLVMValueRef buf = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
+                                          &buf_size, 1, "errbuf");
+
+        /* Call snprintf(buf, 512, cfmt_str, arg0, arg1, ...) */
+        usize_t sn_argc = 3 + arg_idx;
+        heap_t sah = allocate(sn_argc, sizeof(LLVMValueRef));
+        LLVMValueRef *sn_args = sah.pointer;
+        sn_args[0] = buf;
+        sn_args[1] = buf_size;
+        sn_args[2] = LLVMBuildGlobalStringPtr(cg->builder, cfmt, "errfmt");
+        for (usize_t i = 0; i < arg_idx; i++)
+            sn_args[3 + i] = vals[i];
+        LLVMBuildCall2(cg->builder, snprintf_type, snprintf_fn,
+                       sn_args, (unsigned)sn_argc, "");
+
+        msg_ptr = buf;
+        deallocate(sah);
+        deallocate(fh);
+        deallocate(vh);
+    }
+
+    LLVMValueRef err = LLVMGetUndef(cg->error_type);
+    err = LLVMBuildInsertValue(cg->builder, err,
+        LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0), 0, "err.has");
+    err = LLVMBuildInsertValue(cg->builder, err, msg_ptr, 1, "err.msg");
+    return err;
+}
+
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
     switch (node->kind) {
         case NodeIntLitExpr:       return gen_int_lit(cg, node);
@@ -1611,15 +1783,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeNilExpr:          return gen_nil(cg);
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);
-        case NodeErrorExpr: {
-            /* error.('message') → {i1 true, ptr message} */
-            LLVMValueRef msg = gen_expr(cg, node->as.error_expr.message);
-            LLVMValueRef err = LLVMGetUndef(cg->error_type);
-            err = LLVMBuildInsertValue(cg->builder, err,
-                LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0), 0, "err.has");
-            err = LLVMBuildInsertValue(cg->builder, err, msg, 1, "err.msg");
-            return err;
-        }
+        case NodeErrorExpr:        return gen_error_expr(cg, node);
         case NodeExpectExpr: {
             /* expect.(expr) — if !expr, print failure and increment fail count */
             LLVMValueRef val = gen_expr(cg, node->as.expect_expr.expr);
