@@ -76,3 +76,72 @@ ext fn buffer_t.rem(void): void {
     buffer_t.(size_of_one_item) = 0;
     buffer_t.(bytes) = nil;
 }
+
+test 'buffer is_empty after new' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    expect.(buf.is_empty());
+    expect_eq.(buf.length(), 0);
+}
+
+test 'buffer push and length' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack i32 v1 = 10; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 20; stack i32 *rw p2 = &v2;
+    buf.push((u8 *r)p1);
+    buf.push((u8 *r)p2);
+    expect_eq.(buf.length(), 2);
+    expect.(!buf.is_empty());
+}
+
+test 'buffer at reads correct value' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack i32 v = 42; stack i32 *rw vp = &v;
+    buf.push((u8 *r)vp);
+    stack let [ptr, e] = buf.at(0);
+    expect.(e == nil);
+    expect_eq.(((i32 *r)ptr)[0], 42);
+}
+
+test 'buffer pop decrements length' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack i32 v = 7; stack i32 *rw vp = &v;
+    buf.push((u8 *r)vp);
+    buf.push((u8 *r)vp);
+    buf.pop();
+    expect_eq.(buf.length(), 1);
+}
+
+test 'buffer clear resets length' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack i32 v = 1; stack i32 *rw vp = &v;
+    buf.push((u8 *r)vp);
+    buf.push((u8 *r)vp);
+    buf.clear();
+    expect_eq.(buf.length(), 0);
+    expect.(buf.is_empty());
+}
+
+test 'buffer at out of bounds returns error' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack let [ptr, e] = buf.at(0);
+    expect.(e != nil);
+}
+
+test 'buffer multiple values' {
+    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack i32 a = 11; stack i32 *rw ap = &a;
+    stack i32 b = 22; stack i32 *rw bp = &b;
+    stack i32 c = 33; stack i32 *rw cp = &c;
+    buf.push((u8 *r)ap);
+    buf.push((u8 *r)bp);
+    buf.push((u8 *r)cp);
+    stack let [p0, e0] = buf.at(0);
+    stack let [p1, e1] = buf.at(1);
+    stack let [p2, e2] = buf.at(2);
+    expect.(e0 == nil);
+    expect.(e1 == nil);
+    expect.(e2 == nil);
+    expect_eq.(((i32 *r)p0)[0], 11);
+    expect_eq.(((i32 *r)p1)[0], 22);
+    expect_eq.(((i32 *r)p2)[0], 33);
+}

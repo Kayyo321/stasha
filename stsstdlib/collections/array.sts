@@ -1,0 +1,302 @@
+mod array;
+
+// Typed dynamic array — generic via byte-blob storage.
+// Items are fixed-size byte blobs of size item_size.
+// Supports push/pop/insert/remove/swap/reverse/set/at/ensure_capacity.
+
+lib "string" = cstring;
+lib "stdlib" = cstdlib;
+
+ext type array_t: struct {
+heap:
+    int u8 *rw bytes;
+
+stack:
+    int u32 length, capacity, item_size;
+
+    // Internal: copy n bytes from src to dst.
+    int fn copy_bytes(stack u8 *w dst, stack u8 *r src, stack u32 n): void {
+        for (u32 i = 0; i < n; i++) { dst[i] = src[i]; }
+    }
+
+    // Internal: grow if needed so that length < capacity.
+    int fn maybe_grow(void): void {
+        if (array_t.(length) < array_t.(capacity)) { ret; }
+        final u32 new_cap = array_t.(capacity) == 0 ? 8 : array_t.(capacity) * 2;
+        array_t.(bytes)    = (u8 *rw)mov.(array_t.(bytes), new_cap * array_t.(item_size));
+        array_t.(capacity) = new_cap;
+    }
+
+    // Pre-allocate so that capacity >= min_cap.
+    ext fn ensure_capacity(stack u32 min_cap): void {
+        if (array_t.(capacity) >= min_cap) { ret; }
+        stack u32 new_cap = array_t.(capacity) == 0 ? 8 : array_t.(capacity);
+        while (new_cap < min_cap) { new_cap = new_cap * 2; }
+        array_t.(bytes)    = (u8 *rw)mov.(array_t.(bytes), new_cap * array_t.(item_size));
+        array_t.(capacity) = new_cap;
+    }
+
+    // Append item: copy item_size bytes from src.
+    ext fn push(stack u8 *r src): void {
+        array_t.(maybe_grow)();
+        final u32 offset = array_t.(length) * array_t.(item_size);
+        array_t.(copy_bytes)(array_t.(bytes) + offset, src, array_t.(item_size));
+        array_t.(length)++;
+    }
+
+    // Remove last element. No-op if empty.
+    ext fn pop(void): void {
+        if (array_t.(length) > 0) { array_t.(length)--; }
+    }
+
+    // Get read-only pointer to element at idx, or error if out of bounds.
+    ext fn at(stack u32 idx): [u8 *r, error] {
+        if (idx >= array_t.(length)) {
+            ret nil, error.('index out of bounds');
+        }
+        ret array_t.(bytes) + idx * array_t.(item_size), nil;
+    }
+
+    // Overwrite element at idx with src. Returns error if out of bounds.
+    ext fn set(stack u32 idx, stack u8 *r src): error {
+        if (idx >= array_t.(length)) {
+            ret error.('index out of bounds');
+        }
+        final u32 offset = idx * array_t.(item_size);
+        array_t.(copy_bytes)(array_t.(bytes) + offset, src, array_t.(item_size));
+        ret nil;
+    }
+
+    // Insert item at idx, shifting elements right.
+    ext fn insert(stack u32 idx, stack u8 *r src): void {
+        if (idx > array_t.(length)) { idx = array_t.(length); }
+        array_t.(maybe_grow)();
+        final u32 sz = array_t.(item_size);
+        // shift right
+        stack u32 i = array_t.(length);
+        while (i > idx) {
+            array_t.(copy_bytes)(
+                array_t.(bytes) + i * sz,
+                array_t.(bytes) + (i - 1) * sz,
+                sz
+            );
+            i--;
+        }
+        array_t.(copy_bytes)(array_t.(bytes) + idx * sz, src, sz);
+        array_t.(length)++;
+    }
+
+    // Remove element at idx, shifting elements left. No-op if out of bounds.
+    ext fn remove(stack u32 idx): void {
+        if (idx >= array_t.(length)) { ret; }
+        final u32 sz = array_t.(item_size);
+        for (u32 i = idx; i + 1 < array_t.(length); i++) {
+            array_t.(copy_bytes)(
+                array_t.(bytes) + i * sz,
+                array_t.(bytes) + (i + 1) * sz,
+                sz
+            );
+        }
+        array_t.(length)--;
+    }
+
+    // Swap elements at indices i and j. Returns error if either is out of bounds.
+    ext fn swap(stack u32 i, stack u32 j): error {
+        if (i >= array_t.(length) || j >= array_t.(length)) {
+            ret error.('index out of bounds');
+        }
+        if (i == j) { ret nil; }
+        final u32 sz = array_t.(item_size);
+        heap u8 *rw tmp = new.(sz);
+        array_t.(copy_bytes)(tmp, array_t.(bytes) + i * sz, sz);
+        array_t.(copy_bytes)(array_t.(bytes) + i * sz, array_t.(bytes) + j * sz, sz);
+        array_t.(copy_bytes)(array_t.(bytes) + j * sz, tmp, sz);
+        rem.(tmp);
+        ret nil;
+    }
+
+    // Reverse the array in place.
+    ext fn reverse(void): void {
+        if (array_t.(length) <= 1) { ret; }
+        final u32 sz = array_t.(item_size);
+        heap u8 *rw tmp = new.(sz);
+        stack u32 lo = 0;
+        stack u32 hi = array_t.(length) - 1;
+        while (lo < hi) {
+            array_t.(copy_bytes)(tmp, array_t.(bytes) + lo * sz, sz);
+            array_t.(copy_bytes)(array_t.(bytes) + lo * sz, array_t.(bytes) + hi * sz, sz);
+            array_t.(copy_bytes)(array_t.(bytes) + hi * sz, tmp, sz);
+            lo++;
+            hi--;
+        }
+        rem.(tmp);
+    }
+
+    // Reset length to zero without freeing memory.
+    ext fn clear(void): void {
+        array_t.(length) = 0;
+    }
+
+    ext fn length(void): u32 {
+        ret array_t.(length);
+    }
+
+    ext fn capacity(void): u32 {
+        ret array_t.(capacity);
+    }
+
+    ext fn is_empty(void): bool {
+        ret array_t.(length) == 0;
+    }
+}
+
+ext fn array_t.new(stack u32 item_size): array_t {
+    ret array_t{
+        .bytes     = nil,
+        .length    = 0,
+        .capacity  = 0,
+        .item_size = item_size
+    };
+}
+
+ext fn array_t.rem(void): void {
+    if (array_t.(bytes) != nil) { rem.(array_t.(bytes)); }
+    array_t.(bytes)     = nil;
+    array_t.(length)    = 0;
+    array_t.(capacity)  = 0;
+    array_t.(item_size) = 0;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'push and length' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v1 = 10; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 20; stack i32 *rw p2 = &v2;
+    stack i32 v3 = 30; stack i32 *rw p3 = &v3;
+    a.push((u8 *r)p1);
+    a.push((u8 *r)p2);
+    a.push((u8 *r)p3);
+    expect_eq.(a.length(), 3);
+    expect.(a.is_empty() == false);
+}
+
+test 'at and set' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v = 42; stack i32 *rw vp = &v;
+    a.push((u8 *r)vp);
+    stack let [ptr, e] = a.at(0);
+    expect.(e == nil);
+    expect_eq.(((i32 *r)ptr)[0], 42);
+
+    stack i32 nv = 99; stack i32 *rw nvp = &nv;
+    stack error se = a.set(0, (u8 *r)nvp);
+    expect.(se == nil);
+    stack let [ptr2, e2] = a.at(0);
+    expect.(e2 == nil);
+    expect_eq.(((i32 *r)ptr2)[0], 99);
+}
+
+test 'at out of bounds' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack let [ptr, e] = a.at(0);
+    expect.(e != nil);
+}
+
+test 'pop' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v1 = 1; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 2; stack i32 *rw p2 = &v2;
+    a.push((u8 *r)p1);
+    a.push((u8 *r)p2);
+    a.pop();
+    expect_eq.(a.length(), 1);
+    stack let [ptr, e] = a.at(0);
+    expect.(e == nil);
+    expect_eq.(((i32 *r)ptr)[0], 1);
+}
+
+test 'insert' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v1 = 1; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 3; stack i32 *rw p2 = &v2;
+    stack i32 v3 = 2; stack i32 *rw p3 = &v3;
+    a.push((u8 *r)p1);
+    a.push((u8 *r)p2);
+    a.insert(1, (u8 *r)p3);
+    expect_eq.(a.length(), 3);
+    stack let [r0, e0] = a.at(0);
+    stack let [r1, e1] = a.at(1);
+    stack let [r2, e2] = a.at(2);
+    expect.(e0 == nil); expect.(e1 == nil); expect.(e2 == nil);
+    expect_eq.(((i32 *r)r0)[0], 1);
+    expect_eq.(((i32 *r)r1)[0], 2);
+    expect_eq.(((i32 *r)r2)[0], 3);
+}
+
+test 'remove' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v1 = 10; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 20; stack i32 *rw p2 = &v2;
+    stack i32 v3 = 30; stack i32 *rw p3 = &v3;
+    a.push((u8 *r)p1);
+    a.push((u8 *r)p2);
+    a.push((u8 *r)p3);
+    a.remove(1);
+    expect_eq.(a.length(), 2);
+    stack let [r0, e0] = a.at(0);
+    stack let [r1, e1] = a.at(1);
+    expect.(e0 == nil); expect.(e1 == nil);
+    expect_eq.(((i32 *r)r0)[0], 10);
+    expect_eq.(((i32 *r)r1)[0], 30);
+}
+
+test 'swap' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v1 = 1; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 2; stack i32 *rw p2 = &v2;
+    a.push((u8 *r)p1);
+    a.push((u8 *r)p2);
+    stack error se = a.swap(0, 1);
+    expect.(se == nil);
+    stack let [r0, e0] = a.at(0);
+    stack let [r1, e1] = a.at(1);
+    expect.(e0 == nil); expect.(e1 == nil);
+    expect_eq.(((i32 *r)r0)[0], 2);
+    expect_eq.(((i32 *r)r1)[0], 1);
+}
+
+test 'reverse' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v1 = 1; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 2; stack i32 *rw p2 = &v2;
+    stack i32 v3 = 3; stack i32 *rw p3 = &v3;
+    a.push((u8 *r)p1);
+    a.push((u8 *r)p2);
+    a.push((u8 *r)p3);
+    a.reverse();
+    stack let [r0, e0] = a.at(0);
+    stack let [r1, e1] = a.at(1);
+    stack let [r2, e2] = a.at(2);
+    expect.(e0 == nil); expect.(e1 == nil); expect.(e2 == nil);
+    expect_eq.(((i32 *r)r0)[0], 3);
+    expect_eq.(((i32 *r)r1)[0], 2);
+    expect_eq.(((i32 *r)r2)[0], 1);
+}
+
+test 'ensure_capacity' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    a.ensure_capacity(100);
+    expect.(a.capacity() >= 100);
+    expect_eq.(a.length(), 0);
+}
+
+test 'clear' {
+    heap array_t a = array_t.new(sizeof.(i32));
+    stack i32 v = 5; stack i32 *rw vp = &v;
+    a.push((u8 *r)vp);
+    a.push((u8 *r)vp);
+    a.clear();
+    expect_eq.(a.length(), 0);
+    expect.(a.is_empty());
+}

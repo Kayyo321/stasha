@@ -95,3 +95,70 @@ int fn sv_byte_len(stack i8 *r s): i32 {
     for (; s && s[i] != 0; ++i) {}
     ret i;
 }
+
+test 'str_view new length' {
+    stack str_view_t v = str_view_t.new("hello");
+    expect_eq.(v.length(), 5);
+}
+
+test 'str_view at' {
+    stack str_view_t v = str_view_t.new("abc");
+    expect_eq.(v.at(0), (i8)97);
+    expect_eq.(v.at(1), (i8)98);
+    expect_eq.(v.at(2), (i8)99);
+}
+
+test 'str_view starts_with' {
+    stack str_view_t v = str_view_t.new("hello world");
+    expect.(v.starts_with("hello"));
+    expect.(!v.starts_with("world"));
+}
+
+test 'str_view ends_with' {
+    stack str_view_t v = str_view_t.new("hello world");
+    expect.(v.ends_with("world"));
+    expect.(!v.ends_with("hello"));
+}
+
+test 'str_view find_ch found' {
+    stack str_view_t v = str_view_t.new("hello");
+    stack i8 ch_l = (i8)108;
+    stack i32 idx = v.find_ch(ch_l);
+    expect_eq.(idx, 2);
+}
+
+test 'str_view find_ch not found' {
+    stack str_view_t v = str_view_t.new("hello");
+    stack i8 ch_z = (i8)122;
+    stack i32 idx = v.find_ch(ch_z);
+    expect_eq.(idx, -1);
+}
+
+test 'str_view slice' {
+    stack str_view_t v = str_view_t.new("hello");
+    stack str_view_t s = v.slice(1, 4);
+    expect_eq.(s.length(), 3);
+    expect_eq.(s.at(0), (i8)101);
+    expect_eq.(s.at(2), (i8)108);
+}
+
+test 'str_view equals_cstr' {
+    stack str_view_t v = str_view_t.new("hi");
+    expect.(v.equals_cstr("hi"));
+    expect.(!v.equals_cstr("bye"));
+}
+
+test 'str_view is_empty' {
+    stack str_view_t v = str_view_t.new("");
+    expect.(v.is_empty());
+    stack str_view_t v2 = str_view_t.new("x");
+    expect.(!v2.is_empty());
+}
+
+test 'str_view equals' {
+    stack str_view_t a = str_view_t.new("foo");
+    stack str_view_t b = str_view_t.new("foo");
+    stack str_view_t c = str_view_t.new("bar");
+    expect.(a.equals(&b));
+    expect.(!a.equals(&c));
+}

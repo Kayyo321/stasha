@@ -200,3 +200,55 @@ int fn cpy_str_from(stack i8 *w dest, stack i8 *r src, stack u32 n): u32 {
 
     ret written;
 }
+
+test 'dstring new is empty' {
+    heap dstring_t ds = dstring_t.new();
+    expect_eq.(ds.length(), 0);
+}
+
+test 'dstring append_cstr' {
+    heap dstring_t ds = dstring_t.new();
+    ds.append_cstr("hello");
+    expect_eq.(ds.length(), 5);
+}
+
+test 'dstring append_ch' {
+    heap dstring_t ds = dstring_t.new();
+    ds.append_ch((i8)65);
+    ds.append_ch((i8)66);
+    expect_eq.(ds.length(), 2);
+}
+
+test 'dstring append_i32' {
+    heap dstring_t ds = dstring_t.new();
+    ds.append_i32(42);
+    expect.(ds.length() > 0);
+}
+
+test 'dstring clear resets length' {
+    heap dstring_t ds = dstring_t.new();
+    ds.append_cstr("test");
+    ds.clear();
+    expect_eq.(ds.length(), 0);
+}
+
+test 'dstring from_str' {
+    heap dstring_t ds = dstring_t.from_str("world");
+    expect_eq.(ds.length(), 5);
+}
+
+test 'dstring append multiple' {
+    heap dstring_t ds = dstring_t.new();
+    ds.append_cstr("foo");
+    ds.append_ch((i8)33);
+    expect_eq.(ds.length(), 4);
+}
+
+test 'dstring characters not nil after append' {
+    heap dstring_t ds = dstring_t.new();
+    ds.append_cstr("hi");
+    stack i8 *r chars = ds.characters();
+    expect.(chars != nil);
+    expect_eq.(chars[0], (i8)104);
+    expect_eq.(chars[1], (i8)105);
+}

@@ -1,0 +1,155 @@
+mod process;
+
+lib "stdlib" = cstdlib;
+lib "unistd" = cunistd;
+lib "stdio"  = cio;
+lib "string" = cstring;
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+ext const i32 ProcOk = 0;
+
+// ── Environment ────────────────────────────────────────────────────────────
+
+// Return value of environment variable name, or nil if not set.
+ext fn proc_getenv(stack i8 *r name): i8 *r {
+    ret cstdlib.getenv(name);
+}
+
+// Return value of environment variable name, or fallback if not set.
+ext fn proc_getenv_or(stack i8 *r name, stack i8 *r fallback): i8 *r {
+    stack i8 *r result = cstdlib.getenv(name);
+    if (result == nil) { ret fallback; }
+    ret result;
+}
+
+// Set environment variable name=val (overwrite=1). Returns error on failure.
+ext fn proc_setenv(stack i8 *r name, stack i8 *r val): error {
+    stack i32 rc = cstdlib.setenv(name, val, 1);
+    if (rc != 0) {
+        ret error.('setenv failed');
+    }
+    ret nil;
+}
+
+// ── Process identity ───────────────────────────────────────────────────────
+
+// Current process ID.
+ext fn proc_getpid(void): i32 {
+    ret cunistd.getpid();
+}
+
+// Parent process ID.
+ext fn proc_getppid(void): i32 {
+    ret cunistd.getppid();
+}
+
+// Current user ID.
+ext fn proc_getuid(void): u32 {
+    ret cunistd.getuid();
+}
+
+// ── Process control ────────────────────────────────────────────────────────
+
+// Exit the process with the given code.
+ext fn proc_exit(stack i32 code): void {
+    cstdlib.exit(code);
+}
+
+// Run shell command, return exit code.
+ext fn proc_system(stack i8 *r cmd): i32 {
+    ret cstdlib.system(cmd);
+}
+
+// ── Working directory ──────────────────────────────────────────────────────
+
+// Get current working directory into buf. Returns error if getcwd fails.
+ext fn proc_getcwd(stack i8 *w buf, stack u32 len): error {
+    stack i8 *rw result = cunistd.getcwd(buf, len);
+    if (result == nil) {
+        ret error.('getcwd failed');
+    }
+    ret nil;
+}
+
+// ── Command execution with output capture ─────────────────────────────────
+
+// Run cmd, capture stdout into buf (up to buf_len-1 bytes).
+// Returns [exit_code, nil] on success, [exit_code, error] on failure.
+ext fn proc_run(stack i8 *r cmd, stack i8 *w buf, stack u32 buf_len): [i32, error] {
+    stack i8 *rw fp = cio.popen(cmd, "r");
+    if (fp == nil) {
+        ret -1, error.('popen failed');
+    }
+
+    stack u32 total = 0;
+    stack i32 ch = cio.fgetc(fp);
+    while (ch != -1 && total < buf_len - 1) {
+        buf[total] = (i8)ch;
+        total++;
+        ch = cio.fgetc(fp);
+    }
+    buf[total] = 0;
+
+    stack i32 rc = cio.pclose(fp);
+    ret rc, nil;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+test 'proc_getenv PATH is set' {
+    stack i8 *r path = proc_getenv("PATH");
+    expect.(path != nil);
+}
+
+test 'proc_getenv_or fallback on missing var' {
+    stack i8 *r val = proc_getenv_or("STASHA_TEST_MISSING_VAR_XYZ", "fallback");
+    // Check 'f' = 102
+    expect_eq.(val[0], 102);
+}
+
+test 'proc_getenv_or returns actual value when set' {
+    proc_setenv("STASHA_TEST_VAR", "hello");
+    stack i8 *r val = proc_getenv_or("STASHA_TEST_VAR", "fallback");
+    // Check 'h' = 104
+    expect_eq.(val[0], 104);
+}
+
+test 'proc_getpid returns positive integer' {
+    stack i32 pid = proc_getpid();
+    expect.(pid > 0);
+}
+
+test 'proc_getppid returns positive integer' {
+    stack i32 ppid = proc_getppid();
+    expect.(ppid > 0);
+}
+
+test 'proc_getuid returns valid uid' {
+    stack u32 _uid = proc_getuid();
+    // uid is always >= 0 since it's unsigned; just verify it doesn't crash
+    expect.(true);
+}
+
+test 'proc_system echo returns 0' {
+    stack i32 rc = proc_system("echo hello > /tmp/proc_test.txt");
+    expect_eq.(rc, 0);
+}
+
+test 'proc_run captures output' {
+    heap u8 *rw buf = new.(256);
+    stack let [rc, e] = proc_run("echo hello", (i8 *w)buf, 256);
+    expect.(e == nil);
+    // 'h' = 104
+    expect_eq.(buf[0], 104);
+    rem.(buf);
+}
+
+test 'proc_setenv and proc_getenv roundtrip' {
+    stack error e = proc_setenv("STASHA_TEST_KEY", "testvalue");
+    expect.(e == nil);
+    stack i8 *r val = proc_getenv("STASHA_TEST_KEY");
+    expect.(val != nil);
+    // 't' = 116
+    expect_eq.(val[0], 116);
+}

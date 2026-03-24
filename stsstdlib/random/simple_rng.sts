@@ -21,3 +21,31 @@ ext fn random_seed(stack u32 seed): void {
 ext fn random_set_seed_to_time(void): void {
     crng.srand(ctime.time(0));
 }
+
+test 'random_range in bounds' {
+    random_seed(42);
+    stack i32 v = random_range(1, 10);
+    expect.(v >= 1);
+    expect.(v <= 10);
+}
+
+test 'random_range lower bound' {
+    random_seed(99);
+    stack i32 v = random_range(5, 5);
+    expect_eq.(v, 5);
+}
+
+test 'random_frange in bounds' {
+    random_seed(123);
+    stack f32 v = random_frange(0.0, 1.0);
+    expect.(v >= 0.0);
+    expect.(v <= 1.0);
+}
+
+test 'random_seed deterministic' {
+    random_seed(7);
+    stack i32 a = random_range(0, 1000000);
+    random_seed(7);
+    stack i32 b = random_range(0, 1000000);
+    expect_eq.(a, b);
+}

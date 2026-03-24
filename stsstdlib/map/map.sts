@@ -211,3 +211,75 @@ ext fn map_t.rem(void): void {
     map_t.(key_size) = 0;
     map_t.(val_size) = 0;
 }
+
+test 'map new is empty' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    expect.(m.is_empty());
+    expect_eq.(m.count(), 0);
+}
+
+test 'map insert and contains' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    stack i32 key = 42; stack i32 *rw kp = &key;
+    stack i32 val = 100; stack i32 *rw vp = &val;
+    m.insert((u8 *r)kp, (u8 *r)vp);
+    expect.(m.contains((u8 *r)kp));
+    expect_eq.(m.count(), 1);
+}
+
+test 'map get_or_nil found' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    stack i32 key = 7; stack i32 *rw kp = &key;
+    stack i32 val = 99; stack i32 *rw vp = &val;
+    m.insert((u8 *r)kp, (u8 *r)vp);
+    stack u8 *r ptr = m.get_or_nil((u8 *r)kp);
+    expect.(ptr != nil);
+    expect_eq.(((i32 *r)ptr)[0], 99);
+}
+
+test 'map get_or_nil missing returns nil' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    stack i32 key = 5; stack i32 *rw kp = &key;
+    stack u8 *r ptr = m.get_or_nil((u8 *r)kp);
+    expect.(ptr == nil);
+}
+
+test 'map insert updates existing key' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    stack i32 key = 1; stack i32 *rw kp = &key;
+    stack i32 val1 = 10; stack i32 *rw vp1 = &val1;
+    stack i32 val2 = 20; stack i32 *rw vp2 = &val2;
+    m.insert((u8 *r)kp, (u8 *r)vp1);
+    m.insert((u8 *r)kp, (u8 *r)vp2);
+    expect_eq.(m.count(), 1);
+    stack u8 *r ptr = m.get_or_nil((u8 *r)kp);
+    expect.(ptr != nil);
+    expect_eq.(((i32 *r)ptr)[0], 20);
+}
+
+test 'map remove' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    stack i32 key = 3; stack i32 *rw kp = &key;
+    stack i32 val = 30; stack i32 *rw vp = &val;
+    m.insert((u8 *r)kp, (u8 *r)vp);
+    m.remove((u8 *r)kp);
+    expect.(!m.contains((u8 *r)kp));
+    expect_eq.(m.count(), 0);
+}
+
+test 'map multiple entries' {
+    heap map_t m = map_t.new(sizeof.(i32), sizeof.(i32));
+    stack i32 k1 = 1; stack i32 *rw kp1 = &k1; stack i32 v1 = 100; stack i32 *rw vp1 = &v1;
+    stack i32 k2 = 2; stack i32 *rw kp2 = &k2; stack i32 v2 = 200; stack i32 *rw vp2 = &v2;
+    stack i32 k3 = 3; stack i32 *rw kp3 = &k3; stack i32 v3 = 300; stack i32 *rw vp3 = &v3;
+    m.insert((u8 *r)kp1, (u8 *r)vp1);
+    m.insert((u8 *r)kp2, (u8 *r)vp2);
+    m.insert((u8 *r)kp3, (u8 *r)vp3);
+    expect_eq.(m.count(), 3);
+    stack u8 *r p1 = m.get_or_nil((u8 *r)kp1);
+    stack u8 *r p2 = m.get_or_nil((u8 *r)kp2);
+    stack u8 *r p3 = m.get_or_nil((u8 *r)kp3);
+    expect_eq.(((i32 *r)p1)[0], 100);
+    expect_eq.(((i32 *r)p2)[0], 200);
+    expect_eq.(((i32 *r)p3)[0], 300);
+}

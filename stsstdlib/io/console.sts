@@ -72,3 +72,13 @@ int fn con_str_len(stack i8 *r s): u32 {
     while (s != nil && s[n] != 0) { ++n; }
     ret n;
 }
+
+test 'console module loads' {
+    expect.(true);
+}
+
+test 'con_str_len basic' {
+    expect_eq.(con_str_len("hello"), 5);
+    expect_eq.(con_str_len(""), 0);
+    expect_eq.(con_str_len("ab"), 2);
+}

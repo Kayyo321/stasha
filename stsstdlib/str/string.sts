@@ -1,0 +1,239 @@
+mod string;
+
+lib "string"  = cstring;
+lib "stdlib"  = cstdlib;
+lib "stdio"   = cio;
+
+// ── Basic wrappers ────────────────────────────────────────────────────────
+
+// strlen wrapper — returns byte length of null-terminated string.
+ext fn str_len(stack i8 *r+ s): u32 {
+    if (s == nil) { ret 0; }
+    ret (u32)cstring.strlen(s);
+}
+
+// strncpy wrapper — copies up to max bytes from src into dst.
+ext fn str_copy(stack i8 *w+ dst, stack i8 *r+ src, stack u32 max): void {
+    cstring.strncpy(dst, src, max);
+}
+
+// strncat wrapper — appends up to max bytes from src onto dst.
+ext fn str_concat(stack i8 *w+ dst, stack i8 *r+ src, stack u32 max): void {
+    cstring.strncat(dst, src, max);
+}
+
+// strcmp wrapper — returns <0, 0, or >0.
+ext fn str_compare(stack i8 *r+ a, stack i8 *r+ b): i32 {
+    ret cstring.strcmp(a, b);
+}
+
+// strncmp wrapper — compares at most n bytes.
+ext fn str_compare_n(stack i8 *r+ a, stack i8 *r+ b, stack u32 n): i32 {
+    ret cstring.strncmp(a, b, n);
+}
+
+// Find needle in haystack using strstr. Returns byte offset, or -1 if not found.
+ext fn str_find(stack i8 *r+ haystack, stack i8 *r+ needle): i32 {
+    if (haystack == nil || needle == nil) { ret -1; }
+    stack i8 *r+ result = (i8 *r+)cstring.strstr(haystack, needle);
+    if (result == nil) { ret -1; }
+    ret (i32)(result - haystack);
+}
+
+// True if needle appears anywhere in haystack.
+ext fn str_contains(stack i8 *r+ haystack, stack i8 *r+ needle): bool {
+    ret str_find(haystack, needle) >= 0;
+}
+
+// True if s starts with prefix.
+ext fn str_starts_with(stack i8 *r+ s, stack i8 *r+ prefix): bool {
+    if (s == nil || prefix == nil) { ret false; }
+    stack u32 plen = (u32)cstring.strlen(prefix);
+    if (plen == 0) { ret true; }
+    ret cstring.strncmp(s, prefix, plen) == 0;
+}
+
+// True if s ends with suffix.
+ext fn str_ends_with(stack i8 *r+ s, stack i8 *r+ suffix): bool {
+    if (s == nil || suffix == nil) { ret false; }
+    stack u32 slen = (u32)cstring.strlen(s);
+    stack u32 suflen = (u32)cstring.strlen(suffix);
+    if (suflen == 0) { ret true; }
+    if (suflen > slen) { ret false; }
+    ret cstring.strcmp(s + (slen - suflen), suffix) == 0;
+}
+
+// ── Conversion ────────────────────────────────────────────────────────────
+
+// Parse s as a decimal integer. Returns [value, nil] or [0, error].
+ext fn str_to_i32(stack i8 *r+ s): [i32, error] {
+    if (s == nil || *s == 0) { ret 0, error.('empty string'); }
+    // check for valid integer characters
+    stack i8 *r+ p = s;
+    if (*p == 43 || *p == 45) { p++; } // + or -
+    if (*p == 0) { ret 0, error.('no digits'); }
+    stack i8 *r+ q = p;
+    while (*q >= 48 && *q <= 57) { q++; } // '0'–'9'
+    if (*q != 0) { ret 0, error.('invalid integer'); }
+    ret cstdlib.atoi(s), nil;
+}
+
+// Parse s as a double. Returns [value, nil] or [0.0, error].
+ext fn str_to_f64(stack i8 *r+ s): [f64, error] {
+    if (s == nil || *s == 0) { ret 0.0, error.('empty string'); }
+    ret cstdlib.atof(s), nil;
+}
+
+// Format integer val into buf (snprintf wrapper).
+ext fn str_from_i32(stack i32 val, stack i8 *w+ buf, stack u32 buf_len): void {
+    cio.snprintf(buf, buf_len, "%d", val);
+}
+
+// Format float val into buf.
+ext fn str_from_f64(stack f64 val, stack i8 *w+ buf, stack u32 buf_len): void {
+    cio.snprintf(buf, buf_len, "%g", val);
+}
+
+// ── Navigation / inspection ───────────────────────────────────────────────
+
+// Return pointer past leading whitespace (space=32, tab=9).
+ext fn str_trim_start(stack i8 *r+ s): i8 *r+ {
+    if (s == nil) { ret s; }
+    while (*s == 32 || *s == 9) { s++; }
+    ret s;
+}
+
+// True if s is nil or points to a NUL byte.
+ext fn str_is_empty(stack i8 *r+ s): bool {
+    ret s == nil || *s == 0;
+}
+
+// Get byte at index idx. Returns [byte, nil] or [0, error] if out of bounds.
+ext fn str_char_at(stack i8 *r+ s, stack u32 idx): [u8, error] {
+    if (s == nil) { ret 0, error.('null string'); }
+    stack u32 i = 0;
+    while (s[i] != 0) {
+        if (i == idx) { ret (u8)s[i], nil; }
+        i++;
+    }
+    ret 0, error.('index out of bounds');
+}
+
+// Count occurrences of byte c in s.
+ext fn str_count_char(stack i8 *r+ s, stack u8 c): u32 {
+    if (s == nil) { ret 0; }
+    stack u32 count = 0;
+    stack u32 i = 0;
+    while (s[i] != 0) {
+        if ((u8)s[i] == c) { count++; }
+        i++;
+    }
+    ret count;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'str_len' {
+    expect_eq.(str_len("hello"), 5);
+    expect_eq.(str_len(""), 0);
+}
+
+test 'str_compare' {
+    expect_eq.(str_compare("abc", "abc"), 0);
+    expect.(str_compare("abc", "abd") < 0);
+    expect.(str_compare("abd", "abc") > 0);
+}
+
+test 'str_compare_n' {
+    expect_eq.(str_compare_n("abcXX", "abcYY", 3), 0);
+    expect.(str_compare_n("abc", "abd", 3) < 0);
+}
+
+test 'str_find' {
+    expect_eq.(str_find("hello world", "world"), 6);
+    expect_eq.(str_find("hello", "xyz"), -1);
+    expect_eq.(str_find("abcabc", "b"), 1);
+}
+
+test 'str_contains' {
+    expect.(str_contains("hello world", "world"));
+    expect.(str_contains("hello", "xyz") == false);
+}
+
+test 'str_starts_with' {
+    expect.(str_starts_with("foobar", "foo"));
+    expect.(str_starts_with("foobar", "bar") == false);
+    expect.(str_starts_with("foobar", ""));
+}
+
+test 'str_ends_with' {
+    expect.(str_ends_with("foobar", "bar"));
+    expect.(str_ends_with("foobar", "foo") == false);
+    expect.(str_ends_with("foobar", ""));
+}
+
+test 'str_to_i32' {
+    stack let [v, e] = str_to_i32("42");
+    expect.(e == nil);
+    expect_eq.(v, 42);
+
+    stack let [v2, e2] = str_to_i32("-100");
+    expect.(e2 == nil);
+    expect_eq.(v2, -100);
+
+    stack let [v3, e3] = str_to_i32("abc");
+    expect.(e3 != nil);
+}
+
+test 'str_to_f64' {
+    stack let [v, e] = str_to_f64("3.14");
+    expect.(e == nil);
+    expect.(v > 3.0 && v < 4.0);
+}
+
+test 'str_from_i32' {
+    stack i8 buf[32];
+    str_from_i32(123, buf, 32);
+    expect_eq.(str_compare(buf, "123"), 0);
+}
+
+test 'str_from_f64' {
+    stack i8 buf[32];
+    str_from_f64(3.14, buf, 32);
+    expect.(str_len(buf) > 0);
+}
+
+test 'str_trim_start' {
+    stack i8 *r+ p = str_trim_start("   hello");
+    expect_eq.(str_compare(p, "hello"), 0);
+    stack i8 *r+ p2 = str_trim_start("nospace");
+    expect_eq.(str_compare(p2, "nospace"), 0);
+}
+
+test 'str_is_empty' {
+    expect.(str_is_empty("") == true);
+    expect.(str_is_empty(nil) == true);
+    expect.(str_is_empty("x") == false);
+}
+
+test 'str_char_at' {
+    stack let [c, e] = str_char_at("hello", 1);
+    expect.(e == nil);
+    expect_eq.(c, 101); // 'e'
+
+    stack let [c2, e2] = str_char_at("hello", 10);
+    expect.(e2 != nil);
+}
+
+test 'str_count_char' {
+    expect_eq.(str_count_char("banana", 97), 3); // 'a' = 97
+    expect_eq.(str_count_char("hello", 120), 0); // 'x' = 120
+}
+
+test 'str_copy and str_concat' {
+    stack i8 buf[64];
+    str_copy(buf, "hello", 64);
+    expect_eq.(str_compare(buf, "hello"), 0);
+    str_concat(buf, " world", 64);
+    expect_eq.(str_compare(buf, "hello world"), 0);
+}

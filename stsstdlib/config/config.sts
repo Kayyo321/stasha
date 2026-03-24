@@ -1,0 +1,283 @@
+mod config;
+
+lib "stdio"   = cio;
+lib "string"  = cstring;
+lib "stdlib"  = cstdlib;
+
+// ── config_t ──────────────────────────────────────────────────────────────
+// Stores up to 64 key=value pairs.
+// Keys occupy 64-byte slots, values occupy 256-byte slots.
+
+ext const u32 ConfigMaxEntries = 64;
+ext const u32 ConfigKeySlot    = 64;
+ext const u32 ConfigValSlot    = 256;
+
+ext type config_t: struct {
+heap:
+    int u8 *rw keys;  // ConfigMaxEntries * ConfigKeySlot bytes
+    int u8 *rw vals;  // ConfigMaxEntries * ConfigValSlot bytes
+
+stack:
+    int u32 count;
+
+    // Internal: return pointer to key slot i.
+    int fn key_ptr(stack u32 i): i8 *rw {
+        ret (i8 *rw)(config_t.(keys) + i * ConfigKeySlot);
+    }
+
+    // Internal: return pointer to value slot i.
+    int fn val_ptr(stack u32 i): i8 *rw {
+        ret (i8 *rw)(config_t.(vals) + i * ConfigValSlot);
+    }
+
+    // Find index of key, or -1 if not found.
+    int fn find_key(stack i8 *r key): i32 {
+        for (u32 i = 0; i < config_t.(count); i++) {
+            if (cstring.strncmp(config_t.(key_ptr)(i), key, ConfigKeySlot) == 0) {
+                ret (i32)i;
+            }
+        }
+        ret -1;
+    }
+
+    // Internal: parse and store a single "key = value" line.
+    // Skips blank lines and # comments.
+    int fn parse_line(stack i8 *r+ line): void {
+        // skip leading whitespace
+        stack i8 *r+ p = line;
+        while (*p == 32 || *p == 9) { p++; } // space or tab
+
+        // blank or comment
+        if (*p == 0 || *p == 35 || *p == 13 || *p == 10) { ret; } // # \r \n
+
+        // find '='
+        stack i8 *r+ eq = (i8 *r+)cstring.strchr(p, 61); // '='
+        if (eq == nil) { ret; }
+
+        // key: from p to eq, strip trailing whitespace
+        stack u32 key_len = (u32)(eq - p);
+        while (key_len > 0 && (p[key_len - 1] == 32 || p[key_len - 1] == 9)) {
+            key_len--;
+        }
+        if (key_len == 0 || key_len >= ConfigKeySlot) { ret; }
+
+        // value: after '=', strip leading whitespace
+        stack i8 *r+ vp = eq + 1;
+        while (*vp == 32 || *vp == 9) { vp++; }
+
+        // strip trailing \r\n and whitespace from value
+        stack u32 val_len = 0;
+        for (u32 i = 0; vp[i] != 0 && vp[i] != 10 && vp[i] != 13; i++) {
+            val_len++;
+        }
+        while (val_len > 0 && (vp[val_len - 1] == 32 || vp[val_len - 1] == 9)) {
+            val_len--;
+        }
+        if (val_len >= ConfigValSlot) { val_len = ConfigValSlot - 1; }
+
+        // check if key already exists
+        stack i8 tmp_key[64];
+        cstring.strncpy(tmp_key, p, key_len);
+        tmp_key[key_len] = 0;
+
+        stack i32 idx = config_t.(find_key)(tmp_key);
+        if (idx < 0) {
+            if (config_t.(count) >= ConfigMaxEntries) { ret; }
+            idx = (i32)config_t.(count);
+            config_t.(count)++;
+        }
+
+        // store key
+        stack i8 *rw kp = config_t.(key_ptr)((u32)idx);
+        cstring.strncpy(kp, p, key_len);
+        kp[key_len] = 0;
+
+        // store value
+        stack i8 *rw vslot = config_t.(val_ptr)((u32)idx);
+        cstring.strncpy(vslot, vp, val_len);
+        vslot[val_len] = 0;
+    }
+
+    // Parse a string containing newline-separated key=value lines.
+    ext fn load_string(stack i8 *r+ src): error {
+        if (src == nil) { ret error.('null source'); }
+        stack i8 *r+ p = src;
+        stack i8 line[512];
+        stack u32 li = 0;
+        while (*p != 0) {
+            if (*p == 10 || *p == 13) {
+                line[li] = 0;
+                config_t.(parse_line)(line);
+                li = 0;
+                // skip \r\n pair
+                if (*p == 13 && *(p + 1) == 10) { p++; }
+            } else {
+                if (li < 511) { line[li++] = *p; }
+            }
+            p++;
+        }
+        // flush last line if no trailing newline
+        if (li > 0) {
+            line[li] = 0;
+            config_t.(parse_line)(line);
+        }
+        ret nil;
+    }
+
+    // Parse a key=value file.
+    ext fn load_file(stack i8 *r+ path): error {
+        stack void *rw f = cio.fopen(path, "r");
+        if (f == nil) { ret error.('cannot open file'); }
+        stack i8 line[512];
+        stack i8 *rw fgets_ret = cio.fgets(line, 512, f);
+        while (fgets_ret != nil) {
+            config_t.(parse_line)(line);
+            fgets_ret = cio.fgets(line, 512, f);
+        }
+        cio.fclose(f);
+        ret nil;
+    }
+
+    // Look up key, return pointer to value string or error.
+    ext fn get(stack i8 *r key): [i8 *r, error] {
+        stack i32 idx = config_t.(find_key)(key);
+        if (idx < 0) { ret nil, error.('key not found'); }
+        ret (i8 *r)config_t.(val_ptr)((u32)idx), nil;
+    }
+
+    // Look up key, parse value as integer.
+    ext fn get_int(stack i8 *r key): [i32, error] {
+        stack i32 idx = config_t.(find_key)(key);
+        if (idx < 0) { ret 0, error.('key not found'); }
+        stack i8 *r v = (i8 *r)config_t.(val_ptr)((u32)idx);
+        ret cstdlib.atoi(v), nil;
+    }
+
+    // Add or overwrite a key=value entry.
+    ext fn set(stack i8 *r key, stack i8 *r val): error {
+        if (key == nil) { ret error.('null key'); }
+        stack i32 idx = config_t.(find_key)(key);
+        if (idx < 0) {
+            if (config_t.(count) >= ConfigMaxEntries) {
+                ret error.('config full');
+            }
+            idx = (i32)config_t.(count);
+            config_t.(count)++;
+        }
+        stack u32 key_len = (u32)cstring.strlen(key);
+        if (key_len >= ConfigKeySlot) { key_len = ConfigKeySlot - 1; }
+        stack u32 val_len = (u32)cstring.strlen(val);
+        if (val_len >= ConfigValSlot) { val_len = ConfigValSlot - 1; }
+
+        stack i8 *rw kp = config_t.(key_ptr)((u32)idx);
+        cstring.strncpy(kp, key, key_len);
+        kp[key_len] = 0;
+
+        stack i8 *rw vp2 = config_t.(val_ptr)((u32)idx);
+        cstring.strncpy(vp2, val, val_len);
+        vp2[val_len] = 0;
+
+        ret nil;
+    }
+
+    // Return number of stored entries.
+    ext fn count(void): u32 {
+        ret config_t.(count);
+    }
+
+    // Return true if key exists.
+    ext fn has(stack i8 *r key): bool {
+        ret config_t.(find_key)(key) >= 0;
+    }
+}
+
+ext fn config_t.new(void): config_t {
+    heap u8 *rw keys = new.(ConfigMaxEntries * ConfigKeySlot);
+    heap u8 *rw vals = new.(ConfigMaxEntries * ConfigValSlot);
+    // zero out
+    for (u32 i = 0; i < ConfigMaxEntries * ConfigKeySlot; i++) { keys[i] = 0; }
+    for (u32 i = 0; i < ConfigMaxEntries * ConfigValSlot; i++) { vals[i] = 0; }
+    ret config_t{
+        .keys  = keys,
+        .vals  = vals,
+        .count = 0
+    };
+}
+
+ext fn config_t.rem(void): void {
+    if (config_t.(keys) != nil) { rem.(config_t.(keys)); }
+    if (config_t.(vals) != nil) { rem.(config_t.(vals)); }
+    config_t.(keys)  = nil;
+    config_t.(vals)  = nil;
+    config_t.(count) = 0;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'load_string basic' {
+    heap config_t c = config_t.new();
+    stack error e = c.load_string("name = Alice\nage = 30\n");
+    expect.(e == nil);
+    expect_eq.(c.count(), 2);
+}
+
+test 'get existing key' {
+    heap config_t c = config_t.new();
+    c.load_string("host = localhost\nport = 8080\n");
+    stack let [v, e] = c.get("host");
+    expect.(e == nil);
+    expect.(cstring.strcmp(v, "localhost") == 0);
+}
+
+test 'get_int' {
+    heap config_t c = config_t.new();
+    c.load_string("timeout = 42\n");
+    stack let [v, e] = c.get_int("timeout");
+    expect.(e == nil);
+    expect_eq.(v, 42);
+}
+
+test 'has and missing key' {
+    heap config_t c = config_t.new();
+    c.load_string("key1 = val1\n");
+    expect.(c.has("key1"));
+    expect.(c.has("key2") == false);
+    stack let [v, e] = c.get("key2");
+    expect.(e != nil);
+}
+
+test 'set new key' {
+    heap config_t c = config_t.new();
+    stack error e = c.set("newkey", "newval");
+    expect.(e == nil);
+    expect.(c.has("newkey"));
+    stack let [v, e2] = c.get("newkey");
+    expect.(e2 == nil);
+    expect.(cstring.strcmp(v, "newval") == 0);
+}
+
+test 'set overwrites existing' {
+    heap config_t c = config_t.new();
+    c.load_string("x = 1\n");
+    c.set("x", "99");
+    stack let [v, e] = c.get("x");
+    expect.(e == nil);
+    expect.(cstring.strcmp(v, "99") == 0);
+    expect_eq.(c.count(), 1);
+}
+
+test 'comment and blank lines' {
+    heap config_t c = config_t.new();
+    c.load_string("# this is a comment\n\nfoo = bar\n");
+    expect_eq.(c.count(), 1);
+    expect.(c.has("foo"));
+}
+
+test 'spaces around equals' {
+    heap config_t c = config_t.new();
+    c.load_string("  key  =  value  \n");
+    expect.(c.has("key"));
+    stack let [v, e] = c.get("key");
+    expect.(e == nil);
+    expect.(cstring.strcmp(v, "value") == 0);
+}

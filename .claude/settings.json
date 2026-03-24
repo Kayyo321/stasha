@@ -46,7 +46,9 @@
       "Bash(./bin/stasha build:*)",
       "Bash(nm /Users/jessicabruce/Documents/stasha/bin/thread_runtime.a)",
       "Bash(/tmp/thread_many_jobs)",
-      "Bash(./bin/stasha lib:*)"
+      "Bash(./bin/stasha lib:*)",
+      "Bash(./bin/stasha test:*)",
+      "Bash(make stdlib-test:*)"
     ],
     "additionalDirectories": [
       "/private/tmp"

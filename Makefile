@@ -73,14 +73,13 @@ else
   endif
 endif
 
-.PHONY: all stdlib thread-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads
+.PHONY: all stdlib stdlib-test thread-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads
 
 all: $(TARGET) thread-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
-# then install the .a and .sts files into bin/stdlib/ so that
-# `libimp "name" from std;` can find them at runtime.
-stdlib: $(TARGET) $(STDLIB_LIBS)
+# then install the .a and .sts files into bin/stdlib/, then run all tests.
+stdlib: $(TARGET) $(STDLIB_LIBS) stdlib-test
 	@mkdir -p bin/stdlib
 	@for s in $(STDLIB_SRCS); do \
 	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
@@ -88,6 +87,43 @@ stdlib: $(TARGET) $(STDLIB_LIBS)
 	    cp "$$s" bin/stdlib/; \
 	done
 	@echo "stdlib installed -> bin/stdlib/"
+
+# Modules that require platform-specific external libs not available everywhere.
+# These are compiled into .a files but skipped during 'make stdlib-test'.
+STDLIB_TEST_SKIP = stsstdlib/random/complex_rng.sts
+
+# Run 'stasha test' on every stdlib source file.
+# Prints a pass/fail summary and exits non-zero if any test fails.
+stdlib-test: $(TARGET)
+	@echo ""
+	@echo "=== stdlib tests ==="
+	@pass=0; fail=0; skip=0; \
+	for f in $(STDLIB_SRCS); do \
+	    skip_this=0; \
+	    for s in $(STDLIB_TEST_SKIP); do \
+	        if [ "$$f" = "$$s" ]; then skip_this=1; fi; \
+	    done; \
+	    if [ $$skip_this -eq 1 ]; then \
+	        printf "  %-55s" "$$f ..."; echo "SKIP"; skip=$$((skip+1)); continue; \
+	    fi; \
+	    printf "  %-55s" "$$f ..."; \
+	    out=$$($(TARGET) test "$$f" 2>&1); \
+	    code=$$?; \
+	    if [ $$code -eq 0 ]; then \
+	        echo "PASS"; pass=$$((pass+1)); \
+	    else \
+	        echo "FAIL"; fail=$$((fail+1)); \
+	        echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    fi; \
+	done; \
+	echo ""; \
+	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
+	echo ""; \
+	if [ $$fail -gt 0 ]; then \
+	    echo "=== STDLIB TESTS FAILED ==="; exit 1; \
+	else \
+	    echo "=== All stdlib tests passed ==="; \
+	fi
 
 # Generated rule: stsstdlib/<cat>/lib<name>.a  ←  stsstdlib/<cat>/<name>.sts
 define stdlib-rule

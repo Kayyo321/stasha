@@ -1,0 +1,100 @@
+mod error_helpers;
+
+lib "stdlib" = cstdlib;
+lib "stdio" = cio;
+
+// Return nil (no error).
+ext fn err_ok(void): error {
+    ret nil;
+}
+
+// Create a generic error sentinel (message is fixed; use error.('...') directly for custom messages).
+ext fn err_new(stack i8 *r msg): error {
+    // error.() requires a string literal, so we return a generic error sentinel
+    ret error.('error');
+}
+
+// True if e is nil (no error).
+ext fn err_is_ok(stack error e): bool {
+    ret e == nil;
+}
+
+// True if e is non-nil (there is an error).
+ext fn err_is_err(stack error e): bool {
+    ret e != nil;
+}
+
+// If err is non-nil, return fallback; otherwise return 0.
+ext fn err_unwrap_or(stack error e, stack i32 fallback): i32 {
+    if (e != nil) {
+        ret fallback;
+    }
+    ret 0;
+}
+
+// Return first if non-nil, else second.
+ext fn err_chain(stack error first, stack error second): error {
+    if (first != nil) {
+        ret first;
+    }
+    ret second;
+}
+
+// If e is non-nil, print to stderr and abort.
+ext fn err_assert(stack error e): void {
+    if (e != nil) {
+        cio.printf("err_assert: assertion failed\n");
+        cstdlib.abort();
+    }
+}
+
+test 'err_ok returns nil' {
+    stack error e = err_ok();
+    expect.(e == nil);
+}
+
+test 'err_new creates a non-nil error' {
+    stack error e = err_new("something went wrong");
+    expect.(e != nil);
+}
+
+test 'err_is_ok and err_is_err' {
+    stack error ok = err_ok();
+    stack error bad = err_new("fail");
+    expect.(err_is_ok(ok));
+    expect.(err_is_err(bad));
+    expect.(err_is_ok(bad) == false);
+    expect.(err_is_err(ok) == false);
+}
+
+test 'err_unwrap_or returns fallback on error' {
+    stack error e = err_new("oops");
+    stack i32 result = err_unwrap_or(e, 42);
+    expect_eq.(result, 42);
+}
+
+test 'err_unwrap_or returns 0 on ok' {
+    stack error e = err_ok();
+    stack i32 result = err_unwrap_or(e, 42);
+    expect_eq.(result, 0);
+}
+
+test 'err_chain returns first if non-nil' {
+    stack error first = err_new("first");
+    stack error second = err_new("second");
+    stack error result = err_chain(first, second);
+    expect.(result != nil);
+}
+
+test 'err_chain returns second if first is nil' {
+    stack error first = err_ok();
+    stack error second = err_new("second");
+    stack error result = err_chain(first, second);
+    expect.(result != nil);
+}
+
+test 'err_assert does not abort on ok' {
+    stack error e = err_ok();
+    err_assert(e);
+    expect.(true);
+}

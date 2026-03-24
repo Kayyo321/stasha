@@ -1,0 +1,348 @@
+mod json;
+
+lib "stdio" = cio;
+lib "string" = cstring;
+lib "stdlib" = cstdlib;
+
+// ── JSON builder ─────────────────────────────────────────────────────────────
+
+ext type json_builder_t: struct {
+heap:
+    ext u8 *rw buf;
+
+stack:
+    ext u32 buf_len;
+    ext u32 buf_cap;
+    ext u32 depth;
+    ext bool needs_comma;
+    ext bool pretty;
+
+    // Ensure there's room for n more bytes
+    int fn ensure(stack u32 n): void {
+        if (json_builder_t.(buf_len) + n + 1 < json_builder_t.(buf_cap)) { ret; }
+        stack u32 new_cap = json_builder_t.(buf_cap) * 2;
+        if (new_cap < json_builder_t.(buf_len) + n + 1) {
+            new_cap = json_builder_t.(buf_len) + n + 128;
+        }
+        json_builder_t.(buf) = mov.(json_builder_t.(buf), new_cap);
+        json_builder_t.(buf_cap) = new_cap;
+    }
+
+    // Append a single byte
+    int fn append_ch(stack u8 c): void {
+        json_builder_t.(ensure)(1);
+        json_builder_t.(buf)[json_builder_t.(buf_len)] = c;
+        json_builder_t.(buf_len)++;
+        json_builder_t.(buf)[json_builder_t.(buf_len)] = 0;
+    }
+
+    // Append a C string
+    int fn append_str(stack i8 *r+ s): void {
+        stack u32 slen = (u32)cstring.strlen(s);
+        json_builder_t.(ensure)(slen);
+        for (u32 i = 0; i < slen; i++) {
+            json_builder_t.(buf)[json_builder_t.(buf_len) + i] = (u8)s[i];
+        }
+        json_builder_t.(buf_len) += slen;
+        json_builder_t.(buf)[json_builder_t.(buf_len)] = 0;
+    }
+
+    // Add indent (2 spaces per depth level) if pretty mode
+    int fn add_indent(void): void {
+        if (!json_builder_t.(pretty)) { ret; }
+        json_builder_t.(append_ch)(10); // newline
+        for (u32 i = 0; i < json_builder_t.(depth); i++) {
+            json_builder_t.(append_ch)(32); // space
+            json_builder_t.(append_ch)(32); // space
+        }
+    }
+
+    // Add comma before value if needed
+    int fn append_comma_if_needed(void): void {
+        if (json_builder_t.(needs_comma)) {
+            json_builder_t.(append_ch)(44); // ','
+        }
+        json_builder_t.(needs_comma) = false;
+    }
+
+    ext fn begin_object(void): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty) && json_builder_t.(buf_len) > 0) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_ch)(123); // '{'
+        json_builder_t.(depth)++;
+        json_builder_t.(needs_comma) = false;
+    }
+
+    ext fn end_object(void): void {
+        if (json_builder_t.(depth) > 0) {
+            json_builder_t.(depth)--;
+        }
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_ch)(125); // '}'
+        json_builder_t.(needs_comma) = true;
+    }
+
+    ext fn begin_array(void): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty) && json_builder_t.(buf_len) > 0) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_ch)(91); // '['
+        json_builder_t.(depth)++;
+        json_builder_t.(needs_comma) = false;
+    }
+
+    ext fn end_array(void): void {
+        if (json_builder_t.(depth) > 0) {
+            json_builder_t.(depth)--;
+        }
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_ch)(93); // ']'
+        json_builder_t.(needs_comma) = true;
+    }
+
+    // Append "key": (note: comma before key if needed)
+    ext fn key(stack i8 *r+ k): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_ch)(34); // '"'
+        json_builder_t.(append_str)(k);
+        json_builder_t.(append_ch)(34); // '"'
+        json_builder_t.(append_ch)(58); // ':'
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(append_ch)(32); // space
+        }
+        // key doesn't set needs_comma — the value following will
+        json_builder_t.(needs_comma) = false;
+    }
+
+    // Append a JSON string value with basic escaping
+    ext fn value_str(stack i8 *r+ s): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_ch)(34); // '"'
+        stack i32 i = 0;
+        while (s[i] != 0) {
+            stack i8 ch = s[i];
+            if (ch == 34) {  // '"'
+                json_builder_t.(append_ch)(92); // '\'
+                json_builder_t.(append_ch)(34); // '"'
+            } else if (ch == 92) { // '\'
+                json_builder_t.(append_ch)(92); // '\'
+                json_builder_t.(append_ch)(92); // '\'
+            } else {
+                json_builder_t.(append_ch)((u8)ch);
+            }
+            i++;
+        }
+        json_builder_t.(append_ch)(34); // '"'
+        json_builder_t.(needs_comma) = true;
+    }
+
+    // Append an integer value
+    ext fn value_i64(stack i64 n): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        stack i8 tmp[32];
+        cio.snprintf(tmp, 32, "%lld", n);
+        json_builder_t.(append_str)(tmp);
+        json_builder_t.(needs_comma) = true;
+    }
+
+    // Append a float value
+    ext fn value_f64(stack f64 v): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        stack i8 tmp[64];
+        cio.snprintf(tmp, 64, "%g", v);
+        json_builder_t.(append_str)(tmp);
+        json_builder_t.(needs_comma) = true;
+    }
+
+    // Append true or false
+    ext fn value_bool(stack bool b): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        if (b) {
+            json_builder_t.(append_str)("true");
+        } else {
+            json_builder_t.(append_str)("false");
+        }
+        json_builder_t.(needs_comma) = true;
+    }
+
+    // Append null
+    ext fn value_null(void): void {
+        json_builder_t.(append_comma_if_needed)();
+        if (json_builder_t.(pretty)) {
+            json_builder_t.(add_indent)();
+        }
+        json_builder_t.(append_str)("null");
+        json_builder_t.(needs_comma) = true;
+    }
+
+    // Return current buffer as C string pointer
+    ext fn get_string(void): i8 *r {
+        ret (i8 *r)json_builder_t.(buf);
+    }
+
+    ext fn get_length(void): u32 {
+        ret json_builder_t.(buf_len);
+    }
+}
+
+ext fn json_builder_t.new(void): json_builder_t {
+    stack u32 cap = 256;
+    heap u8 *rw b = new.(cap);
+    b[0] = 0;
+    ret json_builder_t{
+        .buf         = b,
+        .buf_len     = 0,
+        .buf_cap     = cap,
+        .depth       = 0,
+        .needs_comma = false,
+        .pretty      = false
+    };
+}
+
+ext fn json_builder_t.new_pretty(void): json_builder_t {
+    stack u32 cap = 256;
+    heap u8 *rw b = new.(cap);
+    b[0] = 0;
+    ret json_builder_t{
+        .buf         = b,
+        .buf_len     = 0,
+        .buf_cap     = cap,
+        .depth       = 0,
+        .needs_comma = false,
+        .pretty      = true
+    };
+}
+
+ext fn json_builder_t.rem(void): void {
+    if (json_builder_t.(buf) != nil) {
+        rem.(json_builder_t.(buf));
+        json_builder_t.(buf) = nil;
+    }
+    json_builder_t.(buf_len) = 0;
+    json_builder_t.(buf_cap) = 0;
+}
+
+// Simple JSON validation: check bracket balance
+ext fn json_is_valid_string(stack i8 *r+ s, stack u32 len): bool {
+    stack i32 brace_depth  = 0;
+    stack i32 bracket_depth = 0;
+    for (u32 i = 0; i < len; i++) {
+        stack i8 ch = s[i];
+        if (ch == 123) { brace_depth++;   } // '{'
+        if (ch == 125) { brace_depth--;   } // '}'
+        if (ch == 91)  { bracket_depth++; } // '['
+        if (ch == 93)  { bracket_depth--; } // ']'
+        if (brace_depth < 0 || bracket_depth < 0) { ret false; }
+    }
+    ret brace_depth == 0 && bracket_depth == 0;
+}
+
+// Helper: compare two C strings for equality
+int fn cstr_eq(stack i8 *r+ a, stack i8 *r+ b): bool {
+    stack i32 i = 0;
+    while (a[i] != 0 && b[i] != 0) {
+        if (a[i] != b[i]) { ret false; }
+        i++;
+    }
+    ret a[i] == b[i];
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+test 'basic object' {
+    stack json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("name"); jb.value_str("Alice");
+    jb.key("age");  jb.value_i64((i64)30);
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"name\":\"Alice\",\"age\":30}"));
+    jb.rem();
+}
+
+test 'array values' {
+    stack json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("scores");
+    jb.begin_array();
+    jb.value_i64((i64)1);
+    jb.value_i64((i64)2);
+    jb.value_i64((i64)3);
+    jb.end_array();
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"scores\":[1,2,3]}"));
+    jb.rem();
+}
+
+test 'bool and null' {
+    stack json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("active"); jb.value_bool(true);
+    jb.key("data");   jb.value_null();
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"active\":true,\"data\":null}"));
+    jb.rem();
+}
+
+test 'full object' {
+    // Build {"name":"Alice","age":30,"scores":[1,2,3],"active":true}
+    stack json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("name");   jb.value_str("Alice");
+    jb.key("age");    jb.value_i64((i64)30);
+    jb.key("scores"); jb.begin_array();
+    jb.value_i64((i64)1); jb.value_i64((i64)2); jb.value_i64((i64)3);
+    jb.end_array();
+    jb.key("active"); jb.value_bool(true);
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"name\":\"Alice\",\"age\":30,\"scores\":[1,2,3],\"active\":true}"));
+    jb.rem();
+}
+
+test 'nested objects' {
+    stack json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("person");
+    jb.begin_object();
+    jb.key("id"); jb.value_i64((i64)1);
+    jb.end_object();
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"person\":{\"id\":1}}"));
+    jb.rem();
+}
+
+test 'json_is_valid_string' {
+    stack i8 valid[32];
+    valid[0] = 123; valid[1] = 125; valid[2] = 0; // {}
+    expect.(json_is_valid_string(valid, 2));
+
+    stack i8 invalid[32];
+    invalid[0] = 123; invalid[1] = 91; invalid[2] = 125; invalid[3] = 0; // {[}  -- unbalanced
+    expect.(!json_is_valid_string(invalid, 3));
+}

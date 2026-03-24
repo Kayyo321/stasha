@@ -95,3 +95,60 @@ ext fn math_near_eq(stack f64 a, b, eps): bool {
 ext fn math_sign_f64(stack f64 x): f64 {
     ret (x > 0.0) ? 1.0 : (x < 0.0) ? -1.0 : 0.0;
 }
+
+test 'math_abs_f64' {
+    expect.(math_near_eq(math_abs_f64(-3.14), 3.14, 0.001));
+    expect.(math_near_eq(math_abs_f64(2.5), 2.5, 0.001));
+    expect.(math_near_eq(math_abs_f64(0.0), 0.0, 0.001));
+}
+
+test 'math_min_max_f64' {
+    expect.(math_near_eq(math_min_f64(3.0, 5.0), 3.0, 0.001));
+    expect.(math_near_eq(math_max_f64(3.0, 5.0), 5.0, 0.001));
+    expect.(math_near_eq(math_min_f64(-1.0, 1.0), -1.0, 0.001));
+}
+
+test 'math_clamp_f64' {
+    expect.(math_near_eq(math_clamp_f64(5.0, 0.0, 3.0), 3.0, 0.001));
+    expect.(math_near_eq(math_clamp_f64(-1.0, 0.0, 3.0), 0.0, 0.001));
+    expect.(math_near_eq(math_clamp_f64(1.5, 0.0, 3.0), 1.5, 0.001));
+}
+
+test 'math_sqrt' {
+    stack f64 r = math_sqrt(4.0);
+    stack f64 diff = r - 2.0;
+    if (diff < 0.0) { diff = diff * -1.0; }
+    expect.(diff < 0.001);
+}
+
+test 'math_pow' {
+    stack f64 r = math_pow(2.0, 10.0);
+    expect.(math_near_eq(r, 1024.0, 0.001));
+}
+
+test 'math_sin_cos' {
+    expect.(math_near_eq(math_sin(0.0), 0.0, 0.001));
+    expect.(math_near_eq(math_cos(0.0), 1.0, 0.001));
+}
+
+test 'math_floor_ceil' {
+    expect.(math_near_eq(math_floor(2.9), 2.0, 0.001));
+    expect.(math_near_eq(math_ceil(2.1), 3.0, 0.001));
+}
+
+test 'math_near_eq' {
+    expect.(math_near_eq(1.0, 1.0001, 0.001));
+    expect.(!math_near_eq(1.0, 2.0, 0.001));
+}
+
+test 'math_lerp' {
+    expect.(math_near_eq(math_lerp(0.0, 10.0, 0.5), 5.0, 0.001));
+    expect.(math_near_eq(math_lerp(0.0, 10.0, 0.0), 0.0, 0.001));
+    expect.(math_near_eq(math_lerp(0.0, 10.0, 1.0), 10.0, 0.001));
+}
+
+test 'math_sign_f64' {
+    expect.(math_near_eq(math_sign_f64(5.0), 1.0, 0.001));
+    expect.(math_near_eq(math_sign_f64(-3.0), -1.0, 0.001));
+    expect.(math_near_eq(math_sign_f64(0.0), 0.0, 0.001));
+}

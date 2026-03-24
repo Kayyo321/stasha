@@ -1,0 +1,130 @@
+mod memory;
+
+lib "string" = cstring;
+lib "stdlib" = cstdlib;
+
+// Copy n bytes from src to dst. Regions must not overlap.
+ext fn mem_copy(stack u8 *w+ dst, stack u8 *r+ src, stack u64 n): void {
+    cstring.memcpy(dst, src, n);
+}
+
+// Copy n bytes from src to dst. Handles overlapping regions.
+ext fn mem_move(stack u8 *w+ dst, stack u8 *r+ src, stack u64 n): void {
+    cstring.memmove(dst, src, n);
+}
+
+// Fill n bytes at dst with the value val.
+ext fn mem_set(stack u8 *w+ dst, stack i32 val, stack u64 n): void {
+    cstring.memset(dst, val, n);
+}
+
+// Compare n bytes at a and b. Returns 0 if equal, <0 or >0 otherwise.
+ext fn mem_compare(stack u8 *r+ a, stack u8 *r+ b, stack u64 n): i32 {
+    ret cstring.memcmp(a, b, n);
+}
+
+// Zero n bytes at dst.
+ext fn mem_zero(stack u8 *w+ dst, stack u64 n): void {
+    cstring.memset(dst, 0, n);
+}
+
+// Allocate n bytes. Returns a heap pointer.
+ext fn mem_alloc(stack u64 n): u8 *rw {
+    ret new.(n);
+}
+
+// Free a heap pointer.
+ext fn mem_free(heap u8 *rw ptr): void {
+    rem.(ptr);
+}
+
+// Reallocate ptr to n bytes.
+ext fn mem_realloc(heap u8 *rw ptr, stack u64 n): u8 *rw {
+    ret mov.(ptr, n);
+}
+
+// Allocate count*size zeroed bytes.
+ext fn mem_calloc(stack u64 count, stack u64 size): u8 *rw {
+    stack u64 total = count * size;
+    heap u8 *rw ptr = new.(total);
+    cstring.memset(ptr, 0, total);
+    ret ptr;
+}
+
+test 'mem_copy copies bytes correctly' {
+    heap u8 *rw+ src = new.(4);
+    heap u8 *rw+ dst = new.(4);
+    src[0] = 10; src[1] = 20; src[2] = 30; src[3] = 40;
+    mem_copy(dst, src, 4);
+    expect_eq.(dst[0], 10);
+    expect_eq.(dst[1], 20);
+    expect_eq.(dst[2], 30);
+    expect_eq.(dst[3], 40);
+    rem.(src);
+    rem.(dst);
+}
+
+test 'mem_move handles overlapping regions' {
+    heap u8 *rw+ buf = new.(8);
+    buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4;
+    // move 4 bytes from offset 0 to offset 2 (overlapping)
+    mem_move(buf + 2, buf, 4);
+    expect_eq.(buf[2], 1);
+    expect_eq.(buf[3], 2);
+    expect_eq.(buf[4], 3);
+    expect_eq.(buf[5], 4);
+    rem.(buf);
+}
+
+test 'mem_set fills bytes with value' {
+    heap u8 *rw+ buf = new.(5);
+    mem_set(buf, 0xFF, 5);
+    expect_eq.(buf[0], 0xFF);
+    expect_eq.(buf[4], 0xFF);
+    rem.(buf);
+}
+
+test 'mem_compare compares bytes' {
+    heap u8 *rw+ a = new.(3);
+    heap u8 *rw+ b = new.(3);
+    a[0] = 1; a[1] = 2; a[2] = 3;
+    b[0] = 1; b[1] = 2; b[2] = 3;
+    expect_eq.(mem_compare(a, b, 3), 0);
+    b[2] = 99;
+    stack bool different = mem_compare(a, b, 3) != 0;
+    expect.(different);
+    rem.(a);
+    rem.(b);
+}
+
+test 'mem_zero zeroes bytes' {
+    heap u8 *rw+ buf = new.(4);
+    buf[0] = 5; buf[1] = 6; buf[2] = 7; buf[3] = 8;
+    mem_zero(buf, 4);
+    expect_eq.(buf[0], 0);
+    expect_eq.(buf[3], 0);
+    rem.(buf);
+}
+
+test 'mem_alloc and mem_free work' {
+    heap u8 *rw+ p = mem_alloc(16);
+    expect.(p != nil);
+    mem_free(p);
+}
+
+test 'mem_realloc grows buffer' {
+    heap u8 *rw+ p = mem_alloc(4);
+    p[0] = 42;
+    p = mem_realloc(p, 8);
+    expect.(p != nil);
+    expect_eq.(p[0], 42);
+    mem_free(p);
+}
+
+test 'mem_calloc returns zeroed memory' {
+    heap u8 *rw+ p = mem_calloc(4, 4);
+    expect.(p != nil);
+    expect_eq.(p[0], 0);
+    expect_eq.(p[15], 0);
+    mem_free(p);
+}

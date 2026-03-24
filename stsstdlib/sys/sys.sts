@@ -51,3 +51,23 @@ ext fn sys_sleep_s(stack u32 secs): void {
 ext fn sys_sleep_us(stack u32 usecs): void {
     cunistd.usleep(usecs);
 }
+
+test 'sys_getpid positive' {
+    stack i32 pid = sys_getpid();
+    expect.(pid > 0);
+}
+
+test 'sys_getenv PATH not nil' {
+    stack i8 *r p = sys_getenv("PATH");
+    expect.(p != nil);
+}
+
+test 'sys_getuid non-negative' {
+    stack u32 uid = sys_getuid();
+    expect.(uid >= 0);
+}
+
+test 'sys_getppid positive' {
+    stack i32 ppid = sys_getppid();
+    expect.(ppid > 0);
+}

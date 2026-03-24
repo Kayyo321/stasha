@@ -1,0 +1,460 @@
+mod list;
+
+// Singly-linked list, stack (LIFO), and queue (FIFO) data structures.
+
+lib "stdlib" = cstdlib;
+lib "string" = cstring;
+
+// ── slist_node_t — singly-linked list node ────────────────────────────────
+// NOTE: 'next' is declared as u8 *rw because the parser does not support
+// direct self-referential struct pointer fields by name in the type body.
+// We store the next pointer as raw bytes and reload it via assignment.
+
+int type slist_node_t: struct {
+heap:
+    int u8 *rw data;    // item_size bytes of user data
+    int u8 *rw next_raw; // stores next slist_node_t *rw as raw bytes
+stack:
+    // empty
+}
+
+// ── slist_t — singly-linked list ─────────────────────────────────────────
+
+ext type slist_t: struct {
+heap:
+    int u8 *rw head_raw; // stores head slist_node_t *rw as raw bytes
+
+stack:
+    int u32 length, item_size;
+
+    // Internal: copy n bytes.
+    int fn copy_bytes(stack u8 *w dst, stack u8 *r src, stack u32 n): void {
+        for (u32 i = 0; i < n; i++) { dst[i] = src[i]; }
+    }
+
+    // Internal: get head as node pointer.
+    int fn get_head(void): slist_node_t *rw {
+        ret slist_t.(head_raw);
+    }
+
+    // Internal: set head from node pointer.
+    int fn set_head(stack slist_node_t *rw node): void {
+        slist_t.(head_raw) = node;
+    }
+
+    // Internal: get next node from a node.
+    int fn get_next(stack slist_node_t *rw node): slist_node_t *rw {
+        ret node.next_raw;
+    }
+
+    // Internal: set next pointer of a node.
+    int fn set_next(stack slist_node_t *rw node, stack slist_node_t *rw nxt): void {
+        node.next_raw = nxt;
+    }
+
+    // Internal: allocate and init a new node with data copied from src.
+    int fn alloc_node(stack u8 *r src): slist_node_t *rw {
+        heap slist_node_t *rw node = new.(sizeof.(slist_node_t));
+        node.data     = new.(slist_t.(item_size));
+        node.next_raw = nil;
+        slist_t.(copy_bytes)(node.data, src, slist_t.(item_size));
+        ret node;
+    }
+
+    // Prepend item.
+    ext fn push_front(stack u8 *r src): void {
+        heap slist_node_t *rw node = slist_t.(alloc_node)(src);
+        slist_t.(set_next)(node, slist_t.(get_head)());
+        slist_t.(set_head)(node);
+        slist_t.(length)++;
+    }
+
+    // Append item.
+    ext fn push_back(stack u8 *r src): void {
+        heap slist_node_t *rw node = slist_t.(alloc_node)(src);
+        if (slist_t.(get_head)() == nil) {
+            slist_t.(set_head)(node);
+        } else {
+            heap slist_node_t *rw cur = slist_t.(get_head)();
+            while (slist_t.(get_next)(cur) != nil) {
+                cur = slist_t.(get_next)(cur);
+            }
+            slist_t.(set_next)(cur, node);
+        }
+        slist_t.(length)++;
+    }
+
+    // Remove head node. Returns error if list is empty.
+    ext fn pop_front(void): error {
+        if (slist_t.(get_head)() == nil) { ret error.('list is empty'); }
+        heap slist_node_t *rw old = slist_t.(get_head)();
+        slist_t.(set_head)(slist_t.(get_next)(old));
+        rem.(old.data);
+        rem.(old);
+        slist_t.(length)--;
+        ret nil;
+    }
+
+    // Peek at head data. Returns error if empty.
+    ext fn peek_front(void): [heap u8 *r, error] {
+        heap slist_node_t *rw h = slist_t.(get_head)();
+        if (h == nil) { ret nil, error.('list is empty'); }
+        ret h.data, nil;
+    }
+
+    ext fn length(void): u32 { ret slist_t.(length); }
+    ext fn is_empty(void): bool { ret slist_t.(length) == 0; }
+
+    // Free all nodes and reset to empty.
+    ext fn clear(void): void {
+        heap slist_node_t *rw cur = slist_t.(get_head)();
+        while (cur != nil) {
+            heap slist_node_t *rw nxt = slist_t.(get_next)(cur);
+            rem.(cur.data);
+            rem.(cur);
+            cur = nxt;
+        }
+        slist_t.(head_raw) = nil;
+        slist_t.(length)   = 0;
+    }
+}
+
+ext fn slist_t.new(stack u32 item_size): slist_t {
+    ret slist_t{
+        .head_raw  = nil,
+        .length    = 0,
+        .item_size = item_size
+    };
+}
+
+ext fn slist_t.rem(void): void {
+    heap slist_node_t *rw cur = slist_t.(head_raw);
+    while (cur != nil) {
+        heap slist_node_t *rw nxt = cur.next_raw;
+        rem.(cur.data);
+        rem.(cur);
+        cur = nxt;
+    }
+    slist_t.(head_raw)  = nil;
+    slist_t.(length)    = 0;
+    slist_t.(item_size) = 0;
+}
+
+// ── stack_t — LIFO stack backed by a heap byte array ─────────────────────
+
+ext type stack_t: struct {
+heap:
+    int u8 *rw bytes;
+
+stack:
+    int u32 length, capacity, item_size;
+
+    int fn copy_bytes(stack u8 *w dst, stack u8 *r src, stack u32 n): void {
+        for (u32 i = 0; i < n; i++) { dst[i] = src[i]; }
+    }
+
+    int fn maybe_grow(void): void {
+        if (stack_t.(length) < stack_t.(capacity)) { ret; }
+        final u32 new_cap = stack_t.(capacity) == 0 ? 8 : stack_t.(capacity) * 2;
+        stack_t.(bytes)    = (u8 *rw)mov.(stack_t.(bytes), new_cap * stack_t.(item_size));
+        stack_t.(capacity) = new_cap;
+    }
+
+    // Push item onto top.
+    ext fn push(stack u8 *r src): void {
+        stack_t.(maybe_grow)();
+        final u32 offset = stack_t.(length) * stack_t.(item_size);
+        stack_t.(copy_bytes)(stack_t.(bytes) + offset, src, stack_t.(item_size));
+        stack_t.(length)++;
+    }
+
+    // Pop top item into dst. Returns error if empty.
+    ext fn pop(stack u8 *w dst): error {
+        if (stack_t.(length) == 0) { ret error.('stack is empty'); }
+        stack_t.(length)--;
+        final u32 offset = stack_t.(length) * stack_t.(item_size);
+        stack_t.(copy_bytes)(dst, stack_t.(bytes) + offset, stack_t.(item_size));
+        ret nil;
+    }
+
+    // Peek at top without removing. Returns error if empty.
+    ext fn peek(void): [heap u8 *r, error] {
+        if (stack_t.(length) == 0) { ret nil, error.('stack is empty'); }
+        final u32 offset = (stack_t.(length) - 1) * stack_t.(item_size);
+        ret stack_t.(bytes) + offset, nil;
+    }
+
+    ext fn length(void): u32 { ret stack_t.(length); }
+    ext fn is_empty(void): bool { ret stack_t.(length) == 0; }
+
+    ext fn clear(void): void { stack_t.(length) = 0; }
+}
+
+ext fn stack_t.new(stack u32 item_size): stack_t {
+    ret stack_t{
+        .bytes     = nil,
+        .length    = 0,
+        .capacity  = 0,
+        .item_size = item_size
+    };
+}
+
+ext fn stack_t.rem(void): void {
+    if (stack_t.(bytes) != nil) { rem.(stack_t.(bytes)); }
+    stack_t.(bytes)     = nil;
+    stack_t.(length)    = 0;
+    stack_t.(capacity)  = 0;
+    stack_t.(item_size) = 0;
+}
+
+// ── queue_t — FIFO queue backed by a ring buffer ──────────────────────────
+
+ext type queue_t: struct {
+heap:
+    int u8 *rw data;
+
+stack:
+    int u32 head_idx, tail_idx, length, capacity, item_size;
+
+    int fn copy_bytes(stack u8 *w dst, stack u8 *r src, stack u32 n): void {
+        for (u32 i = 0; i < n; i++) { dst[i] = src[i]; }
+    }
+
+    // Grow ring buffer when full.
+    int fn maybe_grow(void): void {
+        if (queue_t.(length) < queue_t.(capacity)) { ret; }
+        final u32 old_cap = queue_t.(capacity);
+        final u32 new_cap = old_cap == 0 ? 8 : old_cap * 2;
+        final u32 sz      = queue_t.(item_size);
+        heap u8 *rw+ new_data = new.(new_cap * sz);
+        // copy items in order from head around ring
+        for (u32 i = 0; i < queue_t.(length); i++) {
+            final u32 src_idx = (queue_t.(head_idx) + i) % old_cap;
+            queue_t.(copy_bytes)(new_data + i * sz, queue_t.(data) + src_idx * sz, sz);
+        }
+        if (queue_t.(data) != nil) { rem.(queue_t.(data)); }
+        queue_t.(data)     = new_data;
+        queue_t.(head_idx) = 0;
+        queue_t.(tail_idx) = queue_t.(length);
+        queue_t.(capacity) = new_cap;
+    }
+
+    // Enqueue (append to tail).
+    ext fn enqueue(stack u8 *r src): void {
+        queue_t.(maybe_grow)();
+        final u32 sz = queue_t.(item_size);
+        queue_t.(copy_bytes)(queue_t.(data) + queue_t.(tail_idx) * sz, src, sz);
+        queue_t.(tail_idx) = (queue_t.(tail_idx) + 1) % queue_t.(capacity);
+        queue_t.(length)++;
+    }
+
+    // Dequeue (remove from head) into dst. Returns error if empty.
+    ext fn dequeue(stack u8 *w dst): error {
+        if (queue_t.(length) == 0) { ret error.('queue is empty'); }
+        final u32 sz = queue_t.(item_size);
+        queue_t.(copy_bytes)(dst, queue_t.(data) + queue_t.(head_idx) * sz, sz);
+        queue_t.(head_idx) = (queue_t.(head_idx) + 1) % queue_t.(capacity);
+        queue_t.(length)--;
+        ret nil;
+    }
+
+    // Peek at front without removing. Returns error if empty.
+    ext fn peek_front(void): [heap u8 *r, error] {
+        if (queue_t.(length) == 0) { ret nil, error.('queue is empty'); }
+        final u32 sz = queue_t.(item_size);
+        ret queue_t.(data) + queue_t.(head_idx) * sz, nil;
+    }
+
+    ext fn length(void): u32 { ret queue_t.(length); }
+    ext fn is_empty(void): bool { ret queue_t.(length) == 0; }
+
+    ext fn clear(void): void {
+        queue_t.(head_idx) = 0;
+        queue_t.(tail_idx) = 0;
+        queue_t.(length)   = 0;
+    }
+}
+
+ext fn queue_t.new(stack u32 item_size): queue_t {
+    ret queue_t{
+        .data      = nil,
+        .head_idx  = 0,
+        .tail_idx  = 0,
+        .length    = 0,
+        .capacity  = 0,
+        .item_size = item_size
+    };
+}
+
+ext fn queue_t.rem(void): void {
+    if (queue_t.(data) != nil) { rem.(queue_t.(data)); }
+    queue_t.(data)      = nil;
+    queue_t.(head_idx)  = 0;
+    queue_t.(tail_idx)  = 0;
+    queue_t.(length)    = 0;
+    queue_t.(capacity)  = 0;
+    queue_t.(item_size) = 0;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'slist push_front and push_back' {
+    heap slist_t lst = slist_t.new(sizeof.(i32));
+    stack i32 a = 10; stack i32 *rw ap = &a;
+    stack i32 b = 20; stack i32 *rw bp = &b;
+    stack i32 c = 5;  stack i32 *rw cp = &c;
+    lst.push_back((u8 *r)ap);
+    lst.push_back((u8 *r)bp);
+    lst.push_front((u8 *r)cp);
+    expect_eq.(lst.length(), 3);
+    // order: 5 -> 10 -> 20
+    stack let [front, ef] = lst.peek_front();
+    expect.(ef == nil);
+    expect_eq.(((i32 *r)front)[0], 5);
+}
+
+test 'slist pop_front' {
+    heap slist_t lst = slist_t.new(sizeof.(i32));
+    stack i32 v1 = 1; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 2; stack i32 *rw p2 = &v2;
+    lst.push_back((u8 *r)p1);
+    lst.push_back((u8 *r)p2);
+    stack error e = lst.pop_front();
+    expect.(e == nil);
+    expect_eq.(lst.length(), 1);
+    stack let [front, ef2] = lst.peek_front();
+    expect.(ef2 == nil);
+    expect_eq.(((i32 *r)front)[0], 2);
+}
+
+test 'slist empty error' {
+    heap slist_t lst = slist_t.new(sizeof.(i32));
+    stack error e = lst.pop_front();
+    expect.(e != nil);
+    stack let [_, ep] = lst.peek_front();
+    expect.(ep != nil);
+}
+
+test 'slist clear' {
+    heap slist_t lst = slist_t.new(sizeof.(i32));
+    stack i32 v = 7; stack i32 *rw vp = &v;
+    lst.push_back((u8 *r)vp);
+    lst.push_back((u8 *r)vp);
+    lst.clear();
+    expect_eq.(lst.length(), 0);
+    expect.(lst.is_empty());
+}
+
+test 'stack push pop peek' {
+    heap stack_t s = stack_t.new(sizeof.(i32));
+    stack i32 v1 = 100; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 200; stack i32 *rw p2 = &v2;
+    s.push((u8 *r)p1);
+    s.push((u8 *r)p2);
+    expect_eq.(s.length(), 2);
+
+    stack let [top, ep] = s.peek();
+    expect.(ep == nil);
+    expect_eq.(((i32 *r)top)[0], 200);
+
+    heap u8 *rw buf = new.(sizeof.(i32));
+    stack error e = s.pop((u8 *w)buf);
+    expect.(e == nil);
+    expect_eq.(((i32 *r)buf)[0], 200);
+    expect_eq.(s.length(), 1);
+    rem.(buf);
+}
+
+test 'stack empty error' {
+    heap stack_t s = stack_t.new(sizeof.(i32));
+    heap u8 *rw buf = new.(sizeof.(i32));
+    stack error e = s.pop((u8 *w)buf);
+    expect.(e != nil);
+    stack let [_, ep] = s.peek();
+    expect.(ep != nil);
+    rem.(buf);
+}
+
+test 'stack clear' {
+    heap stack_t s = stack_t.new(sizeof.(i32));
+    stack i32 v = 3; stack i32 *rw vp = &v;
+    s.push((u8 *r)vp);
+    s.clear();
+    expect_eq.(s.length(), 0);
+    expect.(s.is_empty());
+}
+
+test 'queue enqueue dequeue' {
+    heap queue_t q = queue_t.new(sizeof.(i32));
+    stack i32 v1 = 1; stack i32 *rw p1 = &v1;
+    stack i32 v2 = 2; stack i32 *rw p2 = &v2;
+    stack i32 v3 = 3; stack i32 *rw p3 = &v3;
+    q.enqueue((u8 *r)p1);
+    q.enqueue((u8 *r)p2);
+    q.enqueue((u8 *r)p3);
+    expect_eq.(q.length(), 3);
+
+    heap u8 *rw buf = new.(sizeof.(i32));
+    stack error e1 = q.dequeue((u8 *w)buf);
+    expect.(e1 == nil);
+    expect_eq.(((i32 *r)buf)[0], 1);
+
+    stack error e2 = q.dequeue((u8 *w)buf);
+    expect.(e2 == nil);
+    expect_eq.(((i32 *r)buf)[0], 2);
+
+    expect_eq.(q.length(), 1);
+    rem.(buf);
+}
+
+test 'queue peek_front' {
+    heap queue_t q = queue_t.new(sizeof.(i32));
+    stack i32 v = 42; stack i32 *rw vp = &v;
+    q.enqueue((u8 *r)vp);
+    stack let [front, ef] = q.peek_front();
+    expect.(ef == nil);
+    expect_eq.(((i32 *r)front)[0], 42);
+    expect_eq.(q.length(), 1);
+}
+
+test 'queue empty error' {
+    heap queue_t q = queue_t.new(sizeof.(i32));
+    heap u8 *rw buf = new.(sizeof.(i32));
+    stack error e = q.dequeue((u8 *w)buf);
+    expect.(e != nil);
+    rem.(buf);
+}
+
+test 'queue clear' {
+    heap queue_t q = queue_t.new(sizeof.(i32));
+    stack i32 v = 9; stack i32 *rw vp = &v;
+    q.enqueue((u8 *r)vp);
+    q.enqueue((u8 *r)vp);
+    q.clear();
+    expect_eq.(q.length(), 0);
+    expect.(q.is_empty());
+}
+
+test 'queue wrap-around ring buffer' {
+    heap queue_t q = queue_t.new(sizeof.(i32));
+    for (u32 i = 0; i < 8; i++) {
+        stack i32 val = (i32)i;
+        stack i32 *rw vp = &val;
+        q.enqueue((u8 *r)vp);
+    }
+    heap u8 *rw buf = new.(sizeof.(i32));
+    for (u32 i = 0; i < 4; i++) {
+        q.dequeue((u8 *w)buf);
+    }
+    for (u32 i = 8; i < 12; i++) {
+        stack i32 val = (i32)i;
+        stack i32 *rw vp = &val;
+        q.enqueue((u8 *r)vp);
+    }
+    expect_eq.(q.length(), 8);
+    for (u32 i = 4; i < 12; i++) {
+        q.dequeue((u8 *w)buf);
+        expect_eq.(((i32 *r)buf)[0], (i32)i);
+    }
+    rem.(buf);
+}

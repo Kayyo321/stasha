@@ -910,11 +910,16 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         && (targets->items[0]->as.var_decl.flags & VdeclLet);
 
     if (is_let && values->count == 1) {
-        /* Extract the callee name from the single RHS expression */
+        /* Extract the callee name from the single RHS expression.
+           Supports plain calls, instance method calls, and self-method calls. */
         node_t *rhs = values->items[0];
         const char *callee = Null;
         if (rhs->kind == NodeCallExpr)
             callee = rhs->as.call.callee;
+        else if (rhs->kind == NodeMethodCall)
+            callee = rhs->as.method_call.method;
+        else if (rhs->kind == NodeSelfMethodCall)
+            callee = rhs->as.self_method_call.method;
 
         node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
 

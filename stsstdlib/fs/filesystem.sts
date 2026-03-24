@@ -1,0 +1,320 @@
+mod filesystem;
+
+lib "stdio"   = cio;
+lib "stdlib"  = cstdlib;
+lib "string"  = cstring;
+lib "unistd"  = cunistd;
+
+// ── Seek constants ─────────────────────────────────────────────────────────
+
+ext const i32 FsSeekSet = 0;
+ext const i32 FsSeekCur = 1;
+ext const i32 FsSeekEnd = 2;
+
+// ── Internal helpers ───────────────────────────────────────────────────────
+
+int fn fs_strlen(stack i8 *r+ s): u32 {
+    stack u32 n = 0;
+    while (s[n] != 0) { n++; }
+    ret n;
+}
+
+// ── Path utilities ─────────────────────────────────────────────────────────
+
+// Join base path and name with a '/'. Result written into dst (dst_len bytes).
+ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, stack u32 dst_len): void {
+    stack u32 bi = 0;
+    stack u32 di = 0;
+
+    // Copy base into dst
+    while (base[bi] != 0 && di < dst_len - 2) {
+        dst[di] = base[bi];
+        bi++;
+        di++;
+    }
+
+    // Add separator if base doesn't end with '/' and there's room
+    if (di > 0 && dst[di - 1] != 47 && di < dst_len - 2) {
+        dst[di] = 47;   // '/'
+        di++;
+    }
+
+    // Append name
+    stack u32 ni = 0;
+    while (name[ni] != 0 && di < dst_len - 1) {
+        dst[di] = name[ni];
+        ni++;
+        di++;
+    }
+
+    dst[di] = 0;
+}
+
+// Extract directory component of path into dst.
+ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, stack u32 dst_len): void {
+    stack u32 len = fs_strlen(path);
+    stack i32 last_slash = -1;
+    stack u32 i = 0;
+
+    while (i < len) {
+        if (path[i] == 47) { last_slash = (i32)i; }  // '/'
+        i++;
+    }
+
+    if (last_slash < 0) {
+        // No slash: dirname is "."
+        dst[0] = 46;  // '.'
+        dst[1] = 0;
+        ret;
+    }
+
+    if (last_slash == 0) {
+        // Root slash
+        dst[0] = 47;  // '/'
+        dst[1] = 0;
+        ret;
+    }
+
+    stack u32 copy_len = (u32)last_slash;
+    if (copy_len >= dst_len) { copy_len = dst_len - 1; }
+
+    i = 0;
+    while (i < copy_len) {
+        dst[i] = path[i];
+        i++;
+    }
+    dst[copy_len] = 0;
+}
+
+// Return pointer to the filename component (after last '/'), or path itself.
+ext fn fs_path_basename(stack i8 *r+ path): i8 *r+ {
+    stack u32 len = fs_strlen(path);
+    stack i32 last_slash = -1;
+    stack u32 i = 0;
+
+    while (i < len) {
+        if (path[i] == 47) { last_slash = (i32)i; }  // '/'
+        i++;
+    }
+
+    if (last_slash < 0) { ret path; }
+    ret path + (u32)(last_slash + 1);
+}
+
+// Return pointer to the extension (last '.'), or nil if none.
+ext fn fs_path_extension(stack i8 *r+ path): i8 *r+ {
+    stack u32 len = fs_strlen(path);
+    stack i32 last_dot = -1;
+    stack u32 i = 0;
+
+    while (i < len) {
+        if (path[i] == 46) { last_dot = (i32)i; }  // '.'
+        i++;
+    }
+
+    if (last_dot < 0) { ret nil; }
+    ret path + (u32)last_dot;
+}
+
+// Return true if path starts with '/'.
+ext fn fs_path_is_absolute(stack i8 *r+ path): bool {
+    ret path[0] == 47;  // '/'
+}
+
+// ── File existence / access checks ────────────────────────────────────────
+
+// Return true if path exists (F_OK = 0).
+ext fn fs_exists(stack i8 *r+ path): bool {
+    ret cunistd.access(path, 0) == 0;
+}
+
+// Return true if path is readable (R_OK = 4).
+ext fn fs_is_readable(stack i8 *r+ path): bool {
+    ret cunistd.access(path, 4) == 0;
+}
+
+// Return true if path is writable (W_OK = 2).
+ext fn fs_is_writable(stack i8 *r+ path): bool {
+    ret cunistd.access(path, 2) == 0;
+}
+
+// ── Current working directory ──────────────────────────────────────────────
+
+// Fill buf with the CWD. Return error if getcwd returns nil.
+ext fn fs_getcwd(stack i8 *w+ buf, stack u32 buf_len): error {
+    stack i8 *rw result = cunistd.getcwd(buf, buf_len);
+    if (result == nil) {
+        ret error.('getcwd failed');
+    }
+    ret nil;
+}
+
+// ── File size ──────────────────────────────────────────────────────────────
+
+// Get file size in bytes. Returns [size, nil] on success, [-1, error] on fail.
+ext fn fs_file_size(stack i8 *r+ path): [i64, error] {
+    stack i8 *rw fp = cio.fopen(path, "rb");
+    if (fp == nil) {
+        ret -1, error.('fopen failed');
+    }
+    cio.fseek(fp, 0, FsSeekEnd);
+    stack i64 sz = cio.ftell(fp);
+    cio.fclose(fp);
+    if (sz < 0) {
+        ret -1, error.('ftell failed');
+    }
+    ret sz, nil;
+}
+
+// ── Read / write entire file ───────────────────────────────────────────────
+
+// Read entire file into a heap buffer. Caller must rem() the buffer.
+// Returns [buf, byte_count, nil] on success or [nil, 0, error] on failure.
+ext fn fs_read_all(stack i8 *r+ path): [u8 *rw, u64, error] {
+    stack i8 *rw fp = cio.fopen(path, "rb");
+    if (fp == nil) {
+        ret nil, 0, error.('fs_read_all: fopen failed');
+    }
+    cio.fseek(fp, 0, FsSeekEnd);
+    stack i64 sz = cio.ftell(fp);
+    cio.rewind(fp);
+    if (sz < 0) {
+        cio.fclose(fp);
+        ret nil, 0, error.('fs_read_all: ftell failed');
+    }
+    heap u8 *rw buf = new.((u64)sz + 1);
+    stack u64 nread = cio.fread(buf, 1, (u64)sz, fp);
+    cio.fclose(fp);
+    buf[nread] = 0;
+    ret buf, nread, nil;
+}
+
+// Write buffer to file (overwrite). Return nil on success, error on failure.
+ext fn fs_write_all(stack i8 *r+ path, stack u8 *r+ data, stack u64 len): error {
+    stack i8 *rw fp = cio.fopen(path, "wb");
+    if (fp == nil) {
+        ret error.('fs_write_all: fopen failed');
+    }
+    stack u64 nwritten = cio.fwrite(data, 1, len, fp);
+    cio.fclose(fp);
+    if (nwritten != len) {
+        ret error.('fs_write_all: write incomplete');
+    }
+    ret nil;
+}
+
+// Copy src file to dst. Return nil on success.
+ext fn fs_copy(stack i8 *r+ src, stack i8 *r+ dst): error {
+    stack let [buf, sz, e] = fs_read_all(src);
+    if (e != nil) { ret e; }
+    stack error we = fs_write_all(dst, buf, sz);
+    rem.(buf);
+    ret we;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+test 'fs_path_join basic' {
+    heap u8 *rw dst = new.(256);
+    fs_path_join("/tmp", "hello.txt", (i8 *w+)dst, 256);
+    // dst should be "/tmp/hello.txt"
+    expect_eq.(dst[0], 47);   // '/'
+    expect_eq.(dst[1], 116);  // 't'
+    expect_eq.(dst[4], 47);   // '/'
+    rem.(dst);
+}
+
+test 'fs_path_join no double slash' {
+    heap u8 *rw dst = new.(256);
+    fs_path_join("/tmp/", "hello.txt", (i8 *w+)dst, 256);
+    // "/tmp/" + "hello.txt" = "/tmp/hello.txt", h at index 5
+    expect_eq.(dst[5], 104);  // 'h' at index 5
+    rem.(dst);
+}
+
+test 'fs_path_dirname basic' {
+    heap u8 *rw dst = new.(256);
+    fs_path_dirname("/tmp/hello.txt", (i8 *w+)dst, 256);
+    expect_eq.(dst[0], 47);   // '/'
+    expect_eq.(dst[1], 116);  // 't'
+    expect_eq.(dst[2], 109);  // 'm'
+    expect_eq.(dst[3], 112);  // 'p'
+    expect_eq.(dst[4], 0);    // null terminator
+    rem.(dst);
+}
+
+test 'fs_path_dirname no slash returns dot' {
+    heap u8 *rw dst = new.(256);
+    fs_path_dirname("hello.txt", (i8 *w+)dst, 256);
+    expect_eq.(dst[0], 46);  // '.'
+    expect_eq.(dst[1], 0);
+    rem.(dst);
+}
+
+test 'fs_path_basename basic' {
+    stack i8 *r+ base = fs_path_basename("/tmp/hello.txt");
+    // 'h' = 104
+    expect_eq.(base[0], 104);
+}
+
+test 'fs_path_basename no slash returns path itself' {
+    stack i8 *r+ base = fs_path_basename("hello.txt");
+    expect_eq.(base[0], 104);  // 'h'
+}
+
+test 'fs_path_extension basic' {
+    stack i8 *r+ file_ext = fs_path_extension("/tmp/hello.txt");
+    expect.(file_ext != nil);
+    // '.' = 46
+    expect_eq.(file_ext[0], 46);
+    // 't' = 116
+    expect_eq.(file_ext[1], 116);
+}
+
+test 'fs_path_extension no ext returns nil' {
+    stack i8 *r+ file_ext = fs_path_extension("/tmp/hello");
+    expect.(file_ext == nil);
+}
+
+test 'fs_path_is_absolute true for slash' {
+    expect.(fs_path_is_absolute("/tmp/hello"));
+}
+
+test 'fs_path_is_absolute false for relative' {
+    expect.(fs_path_is_absolute("relative/path") == false);
+}
+
+test 'fs_exists on existing path' {
+    expect.(fs_exists("/tmp"));
+}
+
+test 'fs_exists on nonexistent path' {
+    expect.(fs_exists("/nonexistent_xyz_abc_stasha") == false);
+}
+
+test 'fs_write_all and fs_read_all roundtrip' {
+    stack i8 *r test_path = "/tmp/stasha_fs_test.txt";
+    stack i8 *r content   = "hello stasha filesystem";
+    stack u64 content_len = 23;
+
+    stack error we = fs_write_all(test_path, (u8 *r+)content, content_len);
+    expect.(we == nil);
+
+    stack let [buf, sz, re] = fs_read_all(test_path);
+    expect.(re == nil);
+    expect_eq.(sz, content_len);
+    // Check first byte 'h' = 104
+    expect_eq.(buf[0], 104);
+    rem.(buf);
+}
+
+test 'fs_file_size' {
+    stack i8 *r test_path = "/tmp/stasha_fs_test.txt";
+    // Write known content first
+    stack i8 *r content = "hello stasha filesystem";
+    fs_write_all(test_path, (u8 *r+)content, 23);
+
+    stack let [sz, e] = fs_file_size(test_path);
+    expect.(e == nil);
+    expect_eq.(sz, 23);
+}
