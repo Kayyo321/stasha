@@ -1,0 +1,21 @@
+mod ex_json;
+
+libimp "json" from std;
+
+fn main(void): i32 {
+    stack let [j, err] = json.open('ex_json_file.json'); // json_t j
+    if (err != nil) {
+        print.('json failed with: {}\n', err);
+        ret 1;
+    }
+
+    stack let [key, serr] = j.get_string('key');
+    if (serr != nil) {
+        print.('could not find key: {}\n', serr);
+        ret 1;
+    }
+
+    print.('key = {}\n', key);
+
+    ret 0;
+}
