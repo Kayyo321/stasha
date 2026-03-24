@@ -48,7 +48,12 @@
       "Bash(/tmp/thread_many_jobs)",
       "Bash(./bin/stasha lib:*)",
       "Bash(./bin/stasha test:*)",
-      "Bash(make stdlib-test:*)"
+      "Bash(make stdlib-test:*)",
+      "Bash(/Users/jessicabruce/Documents/stasha/bin/stasha /tmp/test_print_error.sts -o /tmp/test_print_error)",
+      "Bash(/tmp/test_print_error)",
+      "Bash(git -C /Users/jessicabruce/Documents/stasha log --oneline -5 -- src/codegen/cg_expr.c)",
+      "Bash(llvm-objdump -d /tmp/test_crash)",
+      "Bash(xcrun llvm-objdump:*)"
     ],
     "additionalDirectories": [
       "/private/tmp"

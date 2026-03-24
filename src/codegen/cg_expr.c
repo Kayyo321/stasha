@@ -2058,9 +2058,10 @@ static LLVMValueRef gen_error_expr(cg_t *cg, node_t *node) {
         if (!snprintf_fn) {
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
-            LLVMTypeRef fixed[2] = { ptr_ty, i64_ty };
+            /* snprintf(char *buf, size_t n, const char *fmt, ...) — fmt is fixed */
+            LLVMTypeRef fixed[3] = { ptr_ty, i64_ty, ptr_ty };
             LLVMTypeRef snfty = LLVMFunctionType(
-                LLVMInt32TypeInContext(cg->ctx), fixed, 2, /*varargs=*/True);
+                LLVMInt32TypeInContext(cg->ctx), fixed, 3, /*varargs=*/True);
             snprintf_fn = LLVMAddFunction(cg->module, "snprintf", snfty);
         }
         LLVMTypeRef snprintf_type = LLVMGlobalGetValueType(snprintf_fn);

@@ -8,12 +8,6 @@ ext fn err_ok(void): error {
     ret nil;
 }
 
-// Create a generic error sentinel (message is fixed; use error.('...') directly for custom messages).
-ext fn err_new(stack i8 *r msg): error {
-    // error.() requires a string literal, so we return a generic error sentinel
-    ret error.('error');
-}
-
 // True if e is nil (no error).
 ext fn err_is_ok(stack error e): bool {
     ret e == nil;

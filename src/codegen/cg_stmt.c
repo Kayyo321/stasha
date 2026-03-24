@@ -786,7 +786,16 @@ static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen
     LLVMValueRef val = gen_expr(cg, arg);
     LLVMTypeRef ty   = LLVMTypeOf(val);
 
-    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind && ty == cg->error_type) {
+        /* error type: print the message string, or "(nil error)" if nil */
+        LLVMValueRef has_err = LLVMBuildExtractValue(cg->builder, val, 0, "err_flag");
+        LLVMValueRef msg_ptr = LLVMBuildExtractValue(cg->builder, val, 1, "err_msg");
+        LLVMValueRef nil_str = LLVMBuildGlobalStringPtr(cg->builder, "(nil error)", "nil_err_str");
+        LLVMValueRef selected = LLVMBuildSelect(cg->builder, has_err, msg_ptr, nil_str, "err_sel");
+        LLVMValueRef efmt = LLVMBuildGlobalStringPtr(cg->builder, "%s", "err_pfmt");
+        LLVMValueRef eargs[2] = { efmt, selected };
+        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, eargs, 2, "");
+    } else if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
         /* struct: format spec is ignored — use print method or default layout */
         const char *sname = LLVMGetStructName(ty);
         if (sname) {
