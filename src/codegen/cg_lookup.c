@@ -22,14 +22,23 @@ static type_info_t resolve_alias(cg_t *cg, type_info_t ti) {
     return ti;
 }
 
-static const char *find_lib_alias(cg_t *cg, const char *alias) {
+/* Return the full lib_entry_t for an alias, or NULL if not found.
+   Used by gen_method_call to distinguish Stasha module aliases
+   (mod_prefix != NULL) from C lib aliases (mod_prefix == NULL). */
+static lib_entry_t *find_lib_entry(cg_t *cg, const char *alias) {
     for (usize_t i = 0; i < cg->lib_count; i++) {
         if (cg->libs[i].alias && strcmp(cg->libs[i].alias, alias) == 0)
-            return cg->libs[i].name;
+            return &cg->libs[i];
         if (!cg->libs[i].alias && strcmp(cg->libs[i].name, alias) == 0)
-            return cg->libs[i].name;
+            return &cg->libs[i];
     }
     return Null;
+}
+
+/* Kept for call-sites that only need the library name string. */
+static const char *find_lib_alias(cg_t *cg, const char *alias) {
+    lib_entry_t *e = find_lib_entry(cg, alias);
+    return e ? e->name : Null;
 }
 
 /* Walk the module's flat declaration list and return the NodeFnDecl whose

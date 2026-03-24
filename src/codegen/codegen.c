@@ -69,7 +69,8 @@ typedef struct {
 } field_info_t;
 
 typedef struct {
-    char *name;
+    char *name;         /* source name, e.g. "Vec2" */
+    char *mod_prefix;   /* mangled module prefix, e.g. "geom"; NULL for root module */
     LLVMTypeRef llvm_type;
     field_info_t *fields;
     usize_t field_count;
@@ -100,9 +101,11 @@ typedef struct {
 /* ── lib registry ── */
 
 typedef struct {
-    char *name;     /* library name, e.g. "stdio" or "raylib" */
-    char *alias;    /* namespace alias used in source, e.g. "io" */
-    char *path;     /* path to .a file for custom libs; null for C stdlib headers */
+    char *name;       /* library name, e.g. "stdio" or "raylib" */
+    char *alias;      /* namespace alias used in source, e.g. "io" */
+    char *path;       /* path to .a file for custom libs; null for C stdlib headers */
+    char *mod_prefix; /* mangled module prefix for Stasha modules, e.g. "net__socket";
+                         NULL for C libs — determines whether to mangle call-site symbols */
 } lib_entry_t;
 
 /* ── destructor scope tracking ── */
@@ -192,6 +195,9 @@ typedef struct {
 
     linkage_t current_fn_linkage;   /* linkage of the function being compiled */
     char *current_struct_name;      /* non-null when inside a struct method body */
+    char current_module_prefix[512]; /* mangled prefix of module being compiled, e.g. "net__socket";
+                                        empty string for root module — used by gen_call for
+                                        unqualified intra-module function resolution */
 
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
 
@@ -250,6 +256,7 @@ static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti);
 static LLVMMetadataRef di_make_location(cg_t *cg, usize_t line);
 static void             di_set_location(cg_t *cg, usize_t line);
 
+#include "name_mangle.c"
 #include "cg_symtab.c"
 #include "cg_safety.c"
 #include "cg_lookup.c"
@@ -464,21 +471,45 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
 
         /* imp a.b.c: register the last segment as a module alias so that
-           qualified calls like "typewriter.scribe()" resolve correctly. */
+           qualified calls like "typewriter.scribe()" resolve correctly.
+           We also store the mangled module prefix (e.g. "printer__typewriter")
+           so gen_method_call can mangle Stasha symbols rather than
+           auto-declaring them as C externs. */
         if (decl->kind == NodeImpDecl) {
             const char *mod = decl->as.imp_decl.module_name;
             const char *dot = strrchr(mod, '.');
             const char *alias = dot ? dot + 1 : mod;
+
+            /* allow "imp mod = alias" syntax: the AST stores alias in module_name
+               only when explicitly provided; fall back to last segment otherwise */
+            char mod_pfx_buf[512];
+            mangle_module_prefix(mod, mod_pfx_buf, sizeof(mod_pfx_buf));
+            char *mod_pfx_copy = ast_strdup(mod_pfx_buf, strlen(mod_pfx_buf));
+
             register_lib(&cg, alias, alias, Null);
+            /* set mod_prefix on the entry we just added */
+            if (cg.lib_count > 0)
+                cg.libs[cg.lib_count - 1].mod_prefix = mod_pfx_copy;
             continue;
         }
 
         if (decl->kind == NodeTypeDecl) {
             if (decl->as.type_decl.decl_kind == TypeDeclStruct
                 || decl->as.type_decl.decl_kind == TypeDeclUnion) {
-                LLVMTypeRef stype = LLVMStructCreateNamed(cg.ctx, decl->as.type_decl.name);
+                /* Use mangled LLVM type name to avoid collisions across modules */
+                char llvm_type_name[512];
+                mangle_type(decl->module_name, decl->as.type_decl.name,
+                            llvm_type_name, sizeof(llvm_type_name));
+                LLVMTypeRef stype = LLVMStructCreateNamed(cg.ctx, llvm_type_name);
                 register_struct(&cg, decl->as.type_decl.name, stype,
                                 decl->as.type_decl.decl_kind == TypeDeclUnion);
+                /* store module prefix on the struct entry for method lookup */
+                if (cg.struct_count > 0 && decl->module_name) {
+                    char pfx[512];
+                    mangle_module_prefix(decl->module_name, pfx, sizeof(pfx));
+                    cg.structs[cg.struct_count - 1].mod_prefix =
+                        ast_strdup(pfx, strlen(pfx));
+                }
             } else if (decl->as.type_decl.decl_kind == TypeDeclEnum) {
                 register_enum(&cg, decl->as.type_decl.name,
                               &decl->as.type_decl.variants);
@@ -603,7 +634,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
             LLVMTypeRef type = get_llvm_type(&cg, ti);
-            LLVMValueRef global = LLVMAddGlobal(cg.module, type, decl->as.var_decl.name);
+            /* mangle the LLVM symbol name for imported-module globals */
+            char var_llvm_name[512];
+            mangle_global(decl->is_c_extern ? Null : decl->module_name,
+                          decl->as.var_decl.name,
+                          var_llvm_name, sizeof(var_llvm_name));
+            LLVMValueRef global = LLVMAddGlobal(cg.module, type, var_llvm_name);
 
             /* linkage: int → internal, ext → external (default) */
             if (decl->as.var_decl.linkage == LinkageInternal)
@@ -653,7 +689,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
             if (decl->as.var_decl.flags & VdeclVolatile)  sym_flags |= SymVolatile;
             if (decl->as.var_decl.flags & VdeclTls)       sym_flags |= SymTls;
-            symtab_add(&cg.globals, decl->as.var_decl.name, global, type, ti, sym_flags);
+            /* store under the mangled name so lookups by alias prefix work */
+            symtab_add(&cg.globals, var_llvm_name, global, type, ti, sym_flags);
             symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
@@ -690,16 +727,20 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->from_lib && decl->as.fn_decl.linkage == LinkageInternal)
                 continue;
 
-            char fn_name[256];
+            /* build the LLVM symbol name: mangle for imported Stasha modules,
+               leave raw for root-module and C extern symbols */
+            char fn_name[512];
+            const char *fn_module = decl->is_c_extern ? Null : decl->module_name;
             if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name) {
-                snprintf(fn_name, sizeof(fn_name), "%s.%s",
-                         decl->as.fn_decl.struct_name, decl->as.fn_decl.name);
+                mangle_method(fn_module, decl->as.fn_decl.struct_name,
+                              decl->as.fn_decl.name, fn_name, sizeof(fn_name));
             } else {
-                snprintf(fn_name, sizeof(fn_name), "%s", decl->as.fn_decl.name);
+                mangle_fn(fn_module, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
             }
 
             /* in test mode, skip the user's main — we generate our own */
-            if (cg.test_mode && strcmp(fn_name, "main") == 0) continue;
+            if (cg.test_mode && strcmp(decl->as.fn_decl.name, "main") == 0
+                    && decl->module_name == Null) continue;
 
             /* build param types */
             usize_t pc = decl->as.fn_decl.params.count;
@@ -726,7 +767,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             /* return type */
             LLVMTypeRef ret_type;
-            boolean_t is_main = strcmp(fn_name, "main") == 0;
+            /* is_main: only the root module's "main" function is the C entry point */
+            boolean_t is_main = (decl->module_name == Null)
+                             && strcmp(decl->as.fn_decl.name, "main") == 0;
             if (is_main) {
                 ret_type = LLVMInt32TypeInContext(cg.ctx);
             } else if (decl->as.fn_decl.return_count > 1) {
@@ -798,9 +841,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* library-backed internal inline methods live in the .a — skip */
             if (decl->from_lib && method->as.fn_decl.linkage == LinkageInternal)
                 continue;
-            char fn_name[256];
-            snprintf(fn_name, sizeof(fn_name), "%s.%s",
-                     decl->as.type_decl.name, method->as.fn_decl.name);
+            char fn_name[512];
+            mangle_method(decl->module_name, decl->as.type_decl.name,
+                          method->as.fn_decl.name, fn_name, sizeof(fn_name));
 
             /* all inline methods are instance methods: get implicit this */
             usize_t pc = method->as.fn_decl.params.count;
@@ -855,15 +898,24 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         /* library-backed functions: body lives in the .a — skip codegen */
         if (decl->from_lib) continue;
 
-        char fn_name[256];
+        /* rebuild the mangled name the same way pass 1 did */
+        char fn_name[512];
+        const char *fn_module2 = decl->is_c_extern ? Null : decl->module_name;
         if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name)
-            snprintf(fn_name, sizeof(fn_name), "%s.%s",
-                     decl->as.fn_decl.struct_name, decl->as.fn_decl.name);
+            mangle_method(fn_module2, decl->as.fn_decl.struct_name,
+                          decl->as.fn_decl.name, fn_name, sizeof(fn_name));
         else
-            snprintf(fn_name, sizeof(fn_name), "%s", decl->as.fn_decl.name);
+            mangle_fn(fn_module2, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
 
         /* in test mode, skip the user's main — we generate our own */
-        if (cg.test_mode && strcmp(fn_name, "main") == 0) continue;
+        if (cg.test_mode && strcmp(decl->as.fn_decl.name, "main") == 0
+                && decl->module_name == Null) continue;
+
+        /* track which module we are currently compiling so gen_call can
+           resolve unqualified intra-module calls correctly */
+        mangle_module_prefix(decl->module_name ? decl->module_name : "",
+                             cg.current_module_prefix,
+                             sizeof(cg.current_module_prefix));
 
         symbol_t *sym = cg_lookup(&cg, fn_name);
         cg.current_fn = sym->value;
@@ -1015,14 +1067,17 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
-            char fn_name[256];
-            snprintf(fn_name, sizeof(fn_name), "%s.%s",
-                     decl->as.type_decl.name, method->as.fn_decl.name);
+            char fn_name[512];
+            mangle_method(decl->module_name, decl->as.type_decl.name,
+                          method->as.fn_decl.name, fn_name, sizeof(fn_name));
 
             symbol_t *sym = cg_lookup(&cg, fn_name);
             if (!sym) continue;
             cg.current_fn = sym->value;
             cg.current_struct_name = decl->as.type_decl.name;
+            mangle_module_prefix(decl->module_name ? decl->module_name : "",
+                                 cg.current_module_prefix,
+                                 sizeof(cg.current_module_prefix));
             cg.locals.count = 0;
             cg.dtor_depth = 0;
 

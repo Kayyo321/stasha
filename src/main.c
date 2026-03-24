@@ -298,6 +298,19 @@ static void resolve_imports(node_t *ast, const char *input_path) {
             if (lib_backed)
                 d->from_lib = True;
 
+            /* tag every spliced declaration with its source module name so
+             * codegen can mangle symbols correctly (e.g. "net.socket" →
+             * "net__socket__symbol").  module_name stays NULL for root-module
+             * declarations so they are never mangled. */
+            d->module_name = ast_strdup(mod_name, strlen(mod_name));
+
+            /* propagate module_name into inline struct/union methods so their
+             * mangled names include the module prefix */
+            if (d->kind == NodeTypeDecl) {
+                for (usize_t m = 0; m < d->as.type_decl.methods.count; m++)
+                    d->as.type_decl.methods.items[m]->module_name = d->module_name;
+            }
+
             node_list_push(&ast->as.module.decls, d);
         }
     }

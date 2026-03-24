@@ -475,12 +475,29 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
     symbol_t *sym = cg_lookup(cg, node->as.call.callee);
-    /* sibling method call: inside a struct method, plain name resolves to struct.name */
+
+    /* intra-module unqualified call: try module__callee when inside an
+       imported module (current_module_prefix is non-empty) */
+    if (!sym && cg->current_module_prefix[0]) {
+        char mod_mangled[512];
+        snprintf(mod_mangled, sizeof(mod_mangled), "%s__%s",
+                 cg->current_module_prefix, node->as.call.callee);
+        sym = cg_lookup(cg, mod_mangled);
+    }
+
+    /* sibling method call: inside a struct method, plain name resolves to
+       the mangled method or legacy "Struct.method" form */
     boolean_t is_sibling_call = False;
     if (!sym && cg->current_struct_name) {
-        char mangled[256];
-        snprintf(mangled, sizeof(mangled), "%s.%s",
-                 cg->current_struct_name, node->as.call.callee);
+        char mangled[512];
+        if (cg->current_module_prefix[0]) {
+            snprintf(mangled, sizeof(mangled), "%s__%s__%s",
+                     cg->current_module_prefix,
+                     cg->current_struct_name, node->as.call.callee);
+        } else {
+            snprintf(mangled, sizeof(mangled), "%s.%s",
+                     cg->current_struct_name, node->as.call.callee);
+        }
         sym = cg_lookup(cg, mangled);
         if (sym) is_sibling_call = True;
     }
@@ -618,92 +635,137 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         }
     }
 
-    /* check if object is a lib alias: alias.func(args) */
+    /* check if object is a lib/module alias: alias.func(args) */
     if (obj->kind == NodeIdentExpr) {
-        const char *header = find_lib_alias(cg, obj->as.ident.name);
-        if (header) {
-            /* generate args first so we can inspect their types */
-            usize_t argc = node->as.method_call.args.count;
-            heap_t args_heap = NullHeap;
-            LLVMValueRef *args = Null;
-            if (argc > 0) {
-                args_heap = allocate(argc, sizeof(LLVMValueRef));
-                args = args_heap.pointer;
-                for (usize_t i = 0; i < argc; i++)
-                    args[i] = gen_expr(cg, node->as.method_call.args.items[i]);
-            }
-
-            /* auto-declare C function from actual arg types */
-            symbol_t *fn_sym = cg_lookup(cg, method);
-            if (!fn_sym) {
-                LLVMTypeRef ret_type;
-                LLVMTypeRef *param_types = Null;
-                heap_t ptypes_heap = NullHeap;
-                unsigned param_count = 0;
-                boolean_t is_varargs = False;
-
-                ret_type = LLVMInt32TypeInContext(cg->ctx);
-                if (argc > 0) {
-                    /*
-                     * Infer the C function signature from the call-site arg types.
-                     *
-                     * Strategy: find the last pointer argument.  If there are
-                     * non-pointer args *after* it, the function is printf-style
-                     * varargs and everything up to (and including) that last
-                     * pointer is a fixed param.  Otherwise use an exact signature.
-                     *
-                     * Examples:
-                     *   printf(ptr, i32)         → last ptr=0, non-ptr after → (ptr,...) varargs
-                     *   snprintf(ptr, i64, ptr, i32) → last ptr=2 → (ptr,i64,ptr,...) varargs
-                     *   puts(ptr)                → last ptr=0, no non-ptr after → (ptr) exact
-                     *   memcpy(ptr, ptr, i64)    → last ptr=1, non-ptr after → (ptr,ptr,...) varargs
-                     */
-                    usize_t last_ptr_idx = 0;
-                    boolean_t has_ptr = False;
-                    boolean_t non_ptr_after = False;
-                    for (usize_t i = 0; i < argc; i++) {
-                        if (LLVMGetTypeKind(LLVMTypeOf(args[i])) == LLVMPointerTypeKind) {
-                            last_ptr_idx = i;
-                            has_ptr = True;
-                            non_ptr_after = False;
-                        } else if (has_ptr) {
-                            non_ptr_after = True;
-                        }
+        lib_entry_t *lib_ent = find_lib_entry(cg, obj->as.ident.name);
+        if (lib_ent) {
+            if (lib_ent->mod_prefix && lib_ent->mod_prefix[0]) {
+                /* ── Stasha module alias: look up the mangled symbol ──────── */
+                char mangled_sym[512];
+                snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s",
+                         lib_ent->mod_prefix, method);
+                symbol_t *fn_sym = cg_lookup(cg, mangled_sym);
+                if (fn_sym) {
+                    usize_t user_argc = node->as.method_call.args.count;
+                    LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                    unsigned n_params = LLVMCountParamTypes(fn_type);
+                    usize_t argc = user_argc;
+                    heap_t args_heap = NullHeap;
+                    LLVMValueRef *args = Null;
+                    if (argc > 0) {
+                        args_heap = allocate(argc, sizeof(LLVMValueRef));
+                        args = args_heap.pointer;
+                        for (usize_t i = 0; i < user_argc; i++)
+                            args[i] = gen_expr(cg, node->as.method_call.args.items[i]);
                     }
-
-                    usize_t fixed_count = (has_ptr && non_ptr_after)
-                                         ? last_ptr_idx + 1
-                                         : argc;
-                    is_varargs = (has_ptr && non_ptr_after);
-
-                    ptypes_heap = allocate(fixed_count, sizeof(LLVMTypeRef));
-                    param_types = ptypes_heap.pointer;
-                    for (usize_t i = 0; i < fixed_count; i++)
-                        param_types[i] = LLVMTypeOf(args[i]);
-                    param_count = (unsigned)fixed_count;
-                } else {
-                    ret_type = LLVMInt32TypeInContext(cg->ctx);
+                    /* coerce args to declared param types */
+                    if (argc > 0 && n_params > 0) {
+                        heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
+                        LLVMTypeRef *ptypes = pt_heap.pointer;
+                        LLVMGetParamTypes(fn_type, ptypes);
+                        for (usize_t i = 0; i < argc && i < (usize_t)n_params; i++)
+                            args[i] = coerce_int(cg, args[i], ptypes[i]);
+                        deallocate(pt_heap);
+                    }
+                    LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type,
+                                                       fn_sym->value, args,
+                                                       (unsigned)argc, "");
+                    if (argc > 0) deallocate(args_heap);
+                    return ret;
+                }
+                /* fall through to error at the bottom */
+            } else {
+                /* ── C lib alias: auto-declare function with raw symbol name ─ */
+                usize_t argc = node->as.method_call.args.count;
+                heap_t args_heap = NullHeap;
+                LLVMValueRef *args = Null;
+                if (argc > 0) {
+                    args_heap = allocate(argc, sizeof(LLVMValueRef));
+                    args = args_heap.pointer;
+                    for (usize_t i = 0; i < argc; i++)
+                        args[i] = gen_expr(cg, node->as.method_call.args.items[i]);
                 }
 
-                LLVMTypeRef ftype = LLVMFunctionType(ret_type, param_types,
-                                                      param_count, is_varargs);
-                LLVMValueRef fn = LLVMAddFunction(cg->module, method, ftype);
-                type_info_t dummy = {TypeI32, Null, False, PtrNone, Null};
-                symtab_add(&cg->globals, method, fn, Null, dummy, False);
-                fn_sym = cg_lookup(cg, method);
-                if (ptypes_heap.pointer) deallocate(ptypes_heap);
-            }
+                symbol_t *fn_sym = cg_lookup(cg, method);
+                if (!fn_sym) {
+                    LLVMTypeRef ret_type;
+                    LLVMTypeRef *param_types = Null;
+                    heap_t ptypes_heap = NullHeap;
+                    unsigned param_count = 0;
+                    boolean_t is_varargs = False;
 
-            LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
-            LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_sym->value,
-                                               args, (unsigned)argc, "");
-            if (argc > 0) deallocate(args_heap);
-            return ret;
+                    ret_type = LLVMInt32TypeInContext(cg->ctx);
+                    if (argc > 0) {
+                        /*
+                         * Infer the C function signature from the call-site arg types.
+                         *
+                         * Strategy: find the last pointer argument.  If there are
+                         * non-pointer args *after* it, the function is printf-style
+                         * varargs and everything up to (and including) that last
+                         * pointer is a fixed param.  Otherwise use an exact signature.
+                         *
+                         * Examples:
+                         *   printf(ptr, i32)         → last ptr=0, non-ptr after → (ptr,...) varargs
+                         *   snprintf(ptr, i64, ptr, i32) → last ptr=2 → (ptr,i64,ptr,...) varargs
+                         *   puts(ptr)                → last ptr=0, no non-ptr after → (ptr) exact
+                         *   memcpy(ptr, ptr, i64)    → last ptr=1, non-ptr after → (ptr,ptr,...) varargs
+                         */
+                        usize_t last_ptr_idx = 0;
+                        boolean_t has_ptr = False;
+                        boolean_t non_ptr_after = False;
+                        for (usize_t i = 0; i < argc; i++) {
+                            if (LLVMGetTypeKind(LLVMTypeOf(args[i])) == LLVMPointerTypeKind) {
+                                last_ptr_idx = i;
+                                has_ptr = True;
+                                non_ptr_after = False;
+                            } else if (has_ptr) {
+                                non_ptr_after = True;
+                            }
+                        }
+
+                        usize_t fixed_count = (has_ptr && non_ptr_after)
+                                             ? last_ptr_idx + 1
+                                             : argc;
+                        is_varargs = (has_ptr && non_ptr_after);
+
+                        ptypes_heap = allocate(fixed_count, sizeof(LLVMTypeRef));
+                        param_types = ptypes_heap.pointer;
+                        for (usize_t i = 0; i < fixed_count; i++)
+                            param_types[i] = LLVMTypeOf(args[i]);
+                        param_count = (unsigned)fixed_count;
+                    } else {
+                        ret_type = LLVMInt32TypeInContext(cg->ctx);
+                    }
+
+                    LLVMTypeRef ftype = LLVMFunctionType(ret_type, param_types,
+                                                          param_count, is_varargs);
+                    LLVMValueRef fn = LLVMAddFunction(cg->module, method, ftype);
+                    type_info_t dummy = {TypeI32, Null, False, PtrNone, Null};
+                    symtab_add(&cg->globals, method, fn, Null, dummy, False);
+                    fn_sym = cg_lookup(cg, method);
+                    if (ptypes_heap.pointer) deallocate(ptypes_heap);
+                }
+
+                LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_sym->value,
+                                                   args, (unsigned)argc, "");
+                if (argc > 0) deallocate(args_heap);
+                return ret;
+            }
         }
 
-        /* check if it's a static method call: Type.method(args) */
-        char mangled[256];
-        snprintf(mangled, sizeof(mangled), "%s.%s", obj->as.ident.name, method);
+        /* check if it's a static method call: Type.method(args)
+           First try the struct registry to get the module prefix for correct mangling,
+           then fall back to the legacy "Type.method" symtab key for root-module types. */
+        {
+        char mangled[512];
+        struct_reg_t *sr_static = find_struct(cg, obj->as.ident.name);
+        if (sr_static && sr_static->mod_prefix && sr_static->mod_prefix[0]) {
+            snprintf(mangled, sizeof(mangled), "%s__%s__%s",
+                     sr_static->mod_prefix, obj->as.ident.name, method);
+        } else {
+            snprintf(mangled, sizeof(mangled), "%s.%s", obj->as.ident.name, method);
+        }
         symbol_t *fn_sym = cg_lookup(cg, mangled);
         if (fn_sym) {
             usize_t user_argc = node->as.method_call.args.count;
@@ -740,14 +802,24 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
             if (argc > 0) deallocate(args_heap);
             return ret;
         }
+        } /* close extra scope block for static-method mangling vars */
     }
 
-    /* instance method call: obj.method(args) — pass &obj as first arg */
+    /* instance method call: obj.method(args) — pass &obj as first arg.
+       Use the struct registry's mod_prefix so that methods on imported types
+       resolve to the correct mangled symbol (e.g. geom__Vec2__len). */
     if (obj->kind == NodeIdentExpr) {
         symbol_t *obj_sym = cg_lookup(cg, obj->as.ident.name);
         if (obj_sym && obj_sym->stype.base == TypeUser && obj_sym->stype.user_name) {
-            char mangled[256];
-            snprintf(mangled, sizeof(mangled), "%s.%s", obj_sym->stype.user_name, method);
+            char mangled[512];
+            struct_reg_t *sr_inst = find_struct(cg, obj_sym->stype.user_name);
+            if (sr_inst && sr_inst->mod_prefix && sr_inst->mod_prefix[0]) {
+                snprintf(mangled, sizeof(mangled), "%s__%s__%s",
+                         sr_inst->mod_prefix, obj_sym->stype.user_name, method);
+            } else {
+                snprintf(mangled, sizeof(mangled), "%s.%s",
+                         obj_sym->stype.user_name, method);
+            }
             symbol_t *fn_sym = cg_lookup(cg, mangled);
             if (fn_sym) {
                 usize_t argc = node->as.method_call.args.count + 1;

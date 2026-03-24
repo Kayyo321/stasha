@@ -208,6 +208,8 @@ struct node {
     usize_t line;        /* 1-based source line (0 = unknown)   */
     usize_t col;         /* 1-based source column (0 = unknown) */
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
+    char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */
+    boolean_t is_c_extern; /* True if symbol must not be mangled (C library symbol) */
 
     union {
         /* ── top-level ── */

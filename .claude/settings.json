@@ -53,7 +53,18 @@
       "Bash(/tmp/test_print_error)",
       "Bash(git -C /Users/jessicabruce/Documents/stasha log --oneline -5 -- src/codegen/cg_expr.c)",
       "Bash(llvm-objdump -d /tmp/test_crash)",
-      "Bash(xcrun llvm-objdump:*)"
+      "Bash(xcrun llvm-objdump:*)",
+      "Bash(echo 'mod main;:*)",
+      "Bash(bin/stasha /tmp/smoke_test.sts -o /tmp/smoke_test)",
+      "Bash(/tmp/smoke_test)",
+      "Bash(bin/stasha /tmp/nstest/main.sts -o /tmp/nstest/out)",
+      "Bash(/tmp/nstest/out)",
+      "Bash(nm /tmp/nstest/out)",
+      "Bash(bin/stasha test:*)",
+      "Bash(/tmp/ex1)",
+      "Bash(bin/stasha examples/ex2.sts -o /tmp/ex2)",
+      "Bash(bin/stasha examples/ex3_structs.sts -o /tmp/ex3)",
+      "Bash(/tmp/final_test/out)"
     ],
     "additionalDirectories": [
       "/private/tmp"
