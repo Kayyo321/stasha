@@ -126,10 +126,21 @@ if (x) {} else if (y) {} else {}
 match s { Shape.Circle(r) => { } _ => {} }
 switch (x) { case 0: break; default: }
 defer rem.(buf);
+break;      // exit innermost for/while/do-while/inf/switch
+continue;   // next iteration of innermost loop (not valid in switch)
 
 // Operators: + - * / %  +% -% *% (wrap)  +! -! *! (trap)
 //            & | ^ ~ << >>  && || !  < > <= >= == !=
 //            &x (addr-of)   x[i] (index)
+
+// Built-in formatted output (no import required)
+// First arg must be a string literal; {} inserts the next argument.
+// Format specs after ':' inside {}: x/X (hex), b (binary), o (octal),
+//   .N (float precision), <N (left-align width N), N (right-align width N),
+//   0N (zero-padded width), + (force sign), # (alt prefix: 0x/0b/0).
+//   Flags compose: {:+#08x}  Literal brace: \{
+print.('hello\n');
+print.('x = {}, y = {:08x}\n', x, y);
 
 // C interop
 lib "stdio" = io;    lib "math";    lib "mylib" from "libmylib.a";
@@ -160,6 +171,13 @@ future.drop(f);                    // wait + free future
 ```
 
 **Module system**: every file starts with `mod name;` (root) or `mod dir.subdir.name;` (nested). The dotted name mirrors the directory path relative to the entry file: `mod printer.typewriter;` lives at `printer/typewriter.sts`. `imp other.mod;` splices that module's types/sigs into the current AST; dots in the name are converted to path separators for lookup. `int` = module-private, `ext` = exported. Library-backed imports: `lib "x" from "libx.a"; imp x;` — codegen skips bodies, linker resolves from `.a`.
+
+**`libimp` — combined lib+imp shorthand**:
+```
+libimp "name" from "path/libname.a";   // load archive from explicit path
+libimp "name" from std;                // load from <bin_dir>/stdlib/libname.a
+```
+Equivalent to writing `lib "name" from <path>; imp name;` but in one declaration. The module name is always the same as the library name. `from std` resolves the archive to `<bin_dir>/stdlib/lib<name>.a` and looks up the interface source at `<bin_dir>/stdlib/<name>.sts`. Build stdlib modules with `make stdlib` before using `from std` imports.
 
 ---
 
