@@ -66,6 +66,7 @@ typedef struct {
     storage_t storage;  /* StorageStack or StorageHeap — from struct memory section */
     int bit_offset;     /* bit position within backing field (0 if not a bitfield) */
     int bit_width;      /* bitfield width in bits (0 = not a bitfield) */
+    long array_size;    /* > 0 if field is a fixed-size array, 0 otherwise */
 } field_info_t;
 
 typedef struct {
@@ -200,6 +201,7 @@ typedef struct {
                                         unqualified intra-module function resolution */
 
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
+    LLVMTypeRef hint_ret_type;      /* hint for C lib call return type (set by gen_local_var) */
 
     /* ── thread runtime function declarations ── */
     LLVMValueRef thread_dispatch_fn;
@@ -463,10 +465,17 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         }
 
-        /* libimp "name" from ...: register as both lib alias and module alias */
+        /* libimp "name" from ...: register as a Stasha module alias so that
+           qualified calls like "json.parse()" resolve via the mangled symtab
+           entry rather than being treated as a plain C extern declaration. */
         if (decl->kind == NodeLibImp) {
             register_lib(&cg, decl->as.libimp_decl.name,
                          decl->as.libimp_decl.name, decl->as.libimp_decl.path);
+            if (cg.lib_count > 0) {
+                char pfx[512];
+                mangle_module_prefix(decl->as.libimp_decl.name, pfx, sizeof(pfx));
+                cg.libs[cg.lib_count - 1].mod_prefix = ast_strdup(pfx, strlen(pfx));
+            }
             continue;
         }
 
@@ -590,11 +599,22 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     } else {
                         /* normal (non-bitfield) field */
                         type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
-                        field_types[llvm_field_count] = get_llvm_type(&cg, fti);
+                        long arr_sz = (field->as.var_decl.flags & VdeclArray)
+                                      ? field->as.var_decl.array_size : 0;
+                        if (arr_sz > 0) {
+                            LLVMTypeRef elem_t = get_llvm_type(&cg, fti);
+                            field_types[llvm_field_count] = LLVMArrayType2(
+                                elem_t, (unsigned long long)arr_sz);
+                        } else {
+                            field_types[llvm_field_count] = get_llvm_type(&cg, fti);
+                        }
                         struct_add_field(sr, field->as.var_decl.name, fti,
                                          llvm_field_count,
                                          field->as.var_decl.linkage,
                                          field->as.var_decl.storage);
+                        /* store array size in the field_info so GEP can decay */
+                        if (arr_sz > 0 && sr->field_count > 0)
+                            sr->fields[sr->field_count - 1].array_size = arr_sz;
                         llvm_field_count++;
                         j++;
                     }
@@ -689,8 +709,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
             if (decl->as.var_decl.flags & VdeclVolatile)  sym_flags |= SymVolatile;
             if (decl->as.var_decl.flags & VdeclTls)       sym_flags |= SymTls;
-            /* store under the mangled name so lookups by alias prefix work */
-            symtab_add(&cg.globals, var_llvm_name, global, type, ti, sym_flags);
+            /* store under the mangled name so lookups by alias prefix work.
+               ast_strdup is required: var_llvm_name is a stack-local buffer that
+               gets reused on each loop iteration — without a copy, all entries
+               would point to the same address (containing only the last name). */
+            symtab_add(&cg.globals, ast_strdup(var_llvm_name, strlen(var_llvm_name)),
+                       global, type, ti, sym_flags);
             symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,

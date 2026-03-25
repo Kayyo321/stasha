@@ -24,6 +24,25 @@ CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
 CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) $(LLD_CFLAGS)
 LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lc++
 
+# ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────
+EXTLIB_CFLAGS = -std=c11 -O2 -fPIC
+
+# ── cJSON (single-file C library) ─────────────────────────────────────────────
+CJSON_SRC = extlib/cjson/cJSON.c
+CJSON_OBJ = build/obj/extlib/cjson.o
+
+# ── JSON wrapper ───────────────────────────────────────────────────────────────
+JSON_WRAP_SRC = std/json/json_wrapper.c
+JSON_WRAP_OBJ = build/obj/std/json/json_wrapper.o
+
+# ── Mongoose (single-file C library) ──────────────────────────────────────────
+MONGOOSE_SRC = extlib/mongoose/mongoose.c
+MONGOOSE_OBJ = build/obj/extlib/mongoose.o
+
+# ── HTTP wrapper ───────────────────────────────────────────────────────────────
+HTTP_WRAP_SRC = std/http/http_wrapper.c
+HTTP_WRAP_OBJ = build/obj/std/http/http_wrapper.o
+
 SRCS = src/main.c         \
        src/common/common.c \
        src/lexer/lexer.c   \
@@ -49,8 +68,16 @@ THREAD_TEST_SRCS = examples/thread_basic.sts    \
                    examples/future_wait.sts
 
 # ── Standard library ──────────────────────────────────────────────────────
-STDLIB_SRCS := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
-STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS),$(dir $(s))lib$(notdir $(basename $(s))).a)
+STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
+
+# Modules that have custom bundled-archive rules (exclude from default foreach).
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts
+
+# Files for the default compile-only rule.
+STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
+
+# All .a targets (used by 'stdlib' phony target to know what to build).
+STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS_ALL),$(dir $(s))lib$(notdir $(basename $(s))).a)
 
 UNAME_S := $(shell uname -s)
 
@@ -79,22 +106,31 @@ all: $(TARGET) thread-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
-stdlib: $(TARGET) $(STDLIB_LIBS) stdlib-test
+stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stdlib-test
 	@mkdir -p bin/stdlib
 	@for s in $(STDLIB_SRCS); do \
 	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
 	    cp "$$a" bin/stdlib/; \
 	    cp "$$s" bin/stdlib/; \
 	done
+	@cp stsstdlib/serial/libjson.a bin/stdlib/
+	@cp stsstdlib/serial/json.sts  bin/stdlib/
+	@cp stsstdlib/net/libhttp.a    bin/stdlib/
+	@cp stsstdlib/net/http.sts     bin/stdlib/
 	@echo "stdlib installed -> bin/stdlib/"
 
 # Modules that require platform-specific external libs not available everywhere.
 # These are compiled into .a files but skipped during 'make stdlib-test'.
 STDLIB_TEST_SKIP = stsstdlib/random/complex_rng.sts
 
+# Bundled modules need their fat archive passed via -l during test.
+# They are excluded from the generic loop and tested separately below.
+STDLIB_TEST_BUNDLED_JSON = stsstdlib/serial/json.sts
+STDLIB_TEST_BUNDLED_HTTP = stsstdlib/net/http.sts
+
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
-stdlib-test: $(TARGET)
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a
 	@echo ""
 	@echo "=== stdlib tests ==="
 	@pass=0; fail=0; skip=0; \
@@ -116,6 +152,24 @@ stdlib-test: $(TARGET)
 	        echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
 	    fi; \
 	done; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_JSON) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_JSON)" -l stsstdlib/serial/libjson.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_HTTP) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_HTTP)" -l stsstdlib/net/libhttp.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	fi; \
 	echo ""; \
 	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
 	echo ""; \
@@ -125,13 +179,54 @@ stdlib-test: $(TARGET)
 	    echo "=== All stdlib tests passed ==="; \
 	fi
 
-# Generated rule: stsstdlib/<cat>/lib<name>.a  ←  stsstdlib/<cat>/<name>.sts
+# ── Extlib C object rules ──────────────────────────────────────────────────────
+
+$(CJSON_OBJ): $(CJSON_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
+
+$(JSON_WRAP_OBJ): $(JSON_WRAP_SRC) std/json/json_wrapper.h extlib/cjson/cJSON.h
+	@mkdir -p $(dir $@)
+	$(CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
+
+$(MONGOOSE_OBJ): $(MONGOOSE_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -DMG_ENABLE_LINES=1 -c -o $@ $<
+
+$(HTTP_WRAP_OBJ): $(HTTP_WRAP_SRC) std/http/http_wrapper.h extlib/mongoose/mongoose.h
+	@mkdir -p $(dir $@)
+	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
+
+# ── Generated rule: stsstdlib/<cat>/lib<name>.a ← stsstdlib/<cat>/<name>.sts ─
+#
+# Default: compile the .sts into a .a.  JSON and HTTP are overridden below to
+# also bundle cJSON/mongoose + their C wrappers into the same archive so users
+# only need a single libjson.a / libhttp.a with no extra dependencies.
+
 define stdlib-rule
 $(dir $(1))lib$(notdir $(basename $(1))).a: $(1) $(TARGET)
 	@mkdir -p $$(dir $$@)
 	$(TARGET) lib $$< -o $$@
 endef
 $(foreach s,$(STDLIB_SRCS),$(eval $(call stdlib-rule,$(s))))
+
+# ── JSON: bundle cJSON + wrapper into the archive ─────────────────────────────
+
+stsstdlib/serial/libjson.a: stsstdlib/serial/json.sts $(TARGET) \
+                              $(CJSON_OBJ) $(JSON_WRAP_OBJ)
+	@mkdir -p stsstdlib/serial
+	$(TARGET) lib stsstdlib/serial/json.sts -o $@
+	ar q $@ $(CJSON_OBJ) $(JSON_WRAP_OBJ)
+	ranlib $@
+
+# ── HTTP: bundle mongoose + wrapper into the archive ──────────────────────────
+
+stsstdlib/net/libhttp.a: stsstdlib/net/http.sts $(TARGET) \
+                           $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
+	@mkdir -p stsstdlib/net
+	$(TARGET) lib stsstdlib/net/http.sts -o $@
+	ar q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
+	ranlib $@
 
 clean-stdlib:
 	find stsstdlib -name '*.a' -delete 2>/dev/null; true

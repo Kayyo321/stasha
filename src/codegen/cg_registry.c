@@ -39,8 +39,9 @@ static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t 
     sr->fields[sr->field_count].storage = storage;
     sr->fields[sr->field_count].index = index;
     sr->fields[sr->field_count].linkage = linkage;
-    sr->fields[sr->field_count].bit_offset = bit_offset;
-    sr->fields[sr->field_count].bit_width  = bit_width;
+    sr->fields[sr->field_count].bit_offset  = bit_offset;
+    sr->fields[sr->field_count].bit_width   = bit_width;
+    sr->fields[sr->field_count].array_size  = 0;
     sr->field_count++;
 }
 

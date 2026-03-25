@@ -641,6 +641,9 @@ int main(int argc, char **argv) {
     /* ── parse remaining options ── */
     const char *target_triple = Null;
     boolean_t debug_mode = False;
+    /* Extra archives supplied with -l path on the command line. */
+    const char *cli_extra_libs[32];
+    usize_t cli_extra_lib_count = 0;
     int opts_start = (file_arg == -1) ? (int)argc : file_arg + 1;
     for (int i = opts_start; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
@@ -649,6 +652,8 @@ int main(int argc, char **argv) {
             target_triple = argv[++i];
         else if (strcmp(argv[i], "-g") == 0)
             debug_mode = True;
+        else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 32)
+            cli_extra_libs[cli_extra_lib_count++] = argv[++i];
     }
 
     /* ── compile ── */
@@ -664,6 +669,29 @@ int main(int argc, char **argv) {
         log_err("parsing failed");
         compile_cleanup();
         quit(Err);
+    }
+
+    /* When building a library (stasha lib), propagate the module's own name
+     * to its root declarations so the archive uses consistent mangled symbols
+     * (e.g. "json__parse") that importers can find via `libimp "json" from std`. */
+    if (mode == EmitLib) {
+        const char *self_mod = ast->as.module.name;
+        if (self_mod && self_mod[0]) {
+            node_list_t *rdecls = &ast->as.module.decls;
+            for (usize_t i = 0; i < rdecls->count; i++) {
+                node_t *d = rdecls->items[i];
+                if (!d->module_name) {
+                    d->module_name = ast_strdup(self_mod, strlen(self_mod));
+                    if (d->kind == NodeTypeDecl) {
+                        for (usize_t m = 0; m < d->as.type_decl.methods.count; m++) {
+                            node_t *meth = d->as.type_decl.methods.items[m];
+                            if (!meth->module_name)
+                                meth->module_name = d->module_name;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     resolve_imports(ast, input_path);
@@ -739,6 +767,8 @@ int main(int argc, char **argv) {
                     extra_lib_buf[extra_lib_count++] = sproj_cfg.ext_libs[i].arc_path;
             }
         }
+        for (usize_t i = 0; i < cli_extra_lib_count && extra_lib_count < 63; i++)
+            extra_lib_buf[extra_lib_count++] = cli_extra_libs[i];
         extra_lib_buf[extra_lib_count] = Null;
 
         log_msg("linking dynamic library");
@@ -824,6 +854,9 @@ int main(int argc, char **argv) {
             extra_lib_buf[extra_lib_count] = resolved_lib_paths[extra_lib_count];
             extra_lib_count++;
         }
+        /* append -l extra libs passed on the command line */
+        for (usize_t i = 0; i < cli_extra_lib_count && extra_lib_count < 63; i++)
+            extra_lib_buf[extra_lib_count++] = cli_extra_libs[i];
         extra_lib_buf[extra_lib_count] = Null; /* NULL-terminate */
 
         log_msg("linking");

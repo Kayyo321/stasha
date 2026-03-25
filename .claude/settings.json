@@ -67,7 +67,19 @@
       "Bash(/tmp/final_test/out)",
       "Bash(git submodule:*)",
       "Bash(git rm:*)",
-      "Bash(grep -l '^imp ' /Users/jessicabruce/Documents/stasha/stsstdlib/**/*.sts)"
+      "Bash(grep -l '^imp ' /Users/jessicabruce/Documents/stasha/stsstdlib/**/*.sts)",
+      "Bash(cat /Users/jessicabruce/Documents/stasha/stsstdlib/io/*.sts)",
+      "Bash(find /Users/jessicabruce/Documents/stasha/stsstdlib -name json* -o -name http*)",
+      "Bash(xargs ls:*)",
+      "Bash(clang -std=c11 -O2 -Iextlib/cjson -c std/json/json_wrapper.c -o /tmp/json_wrapper_test.o)",
+      "Bash(clang -std=c11 -O2 -Iextlib/cjson -c extlib/cjson/cJSON.c -o /tmp/cjson_test.o)",
+      "Bash(clang -std=c11 -O2 -Iextlib/mongoose -DMG_ENABLE_LINES=1 -c extlib/mongoose/mongoose.c -o /tmp/mongoose_test.o)",
+      "Bash(clang -std=c11 -O2 -Iextlib/mongoose -c std/http/http_wrapper.c -o /tmp/http_wrapper_test.o)",
+      "Bash(make build/obj/extlib/cjson.o build/obj/std/json/json_wrapper.o)",
+      "Bash(make stsstdlib/serial/libjson.a)",
+      "Bash(make stsstdlib/net/libhttp.a)",
+      "Bash(make stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a)",
+      "Bash(nm -j bin/stdlib/libjson.a)"
     ],
     "additionalDirectories": [
       "/private/tmp"

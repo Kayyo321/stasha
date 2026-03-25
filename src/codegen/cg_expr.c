@@ -35,6 +35,14 @@ static LLVMValueRef gen_str_lit(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
     symbol_t *sym = cg_lookup(cg, node->as.ident.name);
+    /* module-level globals are stored under the mangled name (e.g. "config__MathPI").
+       When inside a function in the same module, try the prefixed form as fallback. */
+    if (!sym && cg->current_module_prefix[0]) {
+        char mangled[512];
+        snprintf(mangled, sizeof(mangled), "%s__%s",
+                 cg->current_module_prefix, node->as.ident.name);
+        sym = cg_lookup(cg, mangled);
+    }
     if (!sym) {
         diag_begin_error("undefined variable '%s'", node->as.ident.name);
         diag_span(DIAG_NODE(node), True, "not found in this scope");
@@ -694,7 +702,10 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     unsigned param_count = 0;
                     boolean_t is_varargs = False;
 
-                    ret_type = LLVMInt32TypeInContext(cg->ctx);
+                    /* Use hint from LHS context if available (e.g. ptr return for *rw vars) */
+                    ret_type = (cg->hint_ret_type)
+                               ? cg->hint_ret_type
+                               : LLVMInt32TypeInContext(cg->ctx);
                     if (argc > 0) {
                         /*
                          * Infer the C function signature from the call-site arg types.
@@ -733,8 +744,6 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                         for (usize_t i = 0; i < fixed_count; i++)
                             param_types[i] = LLVMTypeOf(args[i]);
                         param_count = (unsigned)fixed_count;
-                    } else {
-                        ret_type = LLVMInt32TypeInContext(cg->ctx);
                     }
 
                     LLVMTypeRef ftype = LLVMFunctionType(ret_type, param_types,
@@ -1578,6 +1587,13 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
                         LLVMValueRef gep = LLVMBuildStructGEP2(
                             cg->builder, sr->llvm_type, sym->value,
                             (unsigned)sr->fields[i].index, field);
+                        /* array field: return pointer to first element (array decay) */
+                        if (sr->fields[i].array_size > 0) {
+                            LLVMTypeRef elem_t = get_llvm_type(cg, sr->fields[i].type);
+                            LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                            LLVMTypeRef arr_t = LLVMArrayType2(elem_t, (unsigned long long)sr->fields[i].array_size);
+                            return LLVMBuildGEP2(cg->builder, arr_t, gep, &zero, 1, field);
+                        }
                         LLVMTypeRef ft = get_llvm_type(cg, sr->fields[i].type);
                         LLVMValueRef val = LLVMBuildLoad2(cg->builder, ft, gep, field);
                         /* bitfield: extract bits via shift+mask */
@@ -1669,8 +1685,22 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
     if (!type_name) type_name = cg->current_struct_name;
 
     char mangled[256];
-    snprintf(mangled, sizeof(mangled), "%s.%s", type_name, method);
-    symbol_t *fn_sym = cg_lookup(cg, mangled);
+    symbol_t *fn_sym = Null;
+    /* Try module-prefixed form first (when struct has mod_prefix or current module prefix) */
+    {
+        struct_reg_t *sr_self = find_struct(cg, type_name);
+        const char *pfx = (sr_self && sr_self->mod_prefix && sr_self->mod_prefix[0])
+                          ? sr_self->mod_prefix
+                          : (cg->current_module_prefix[0] ? cg->current_module_prefix : Null);
+        if (pfx) {
+            snprintf(mangled, sizeof(mangled), "%s__%s__%s", pfx, type_name, method);
+            fn_sym = cg_lookup(cg, mangled);
+        }
+    }
+    if (!fn_sym) {
+        snprintf(mangled, sizeof(mangled), "%s.%s", type_name, method);
+        fn_sym = cg_lookup(cg, mangled);
+    }
     if (!fn_sym) {
         diag_begin_error("undefined method '%s'", mangled);
         diag_span(DIAG_NODE(node), True, "method not found on '%s'", type_name);

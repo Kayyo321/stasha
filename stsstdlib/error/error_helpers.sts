@@ -48,13 +48,13 @@ test 'err_ok returns nil' {
 }
 
 test 'err_new creates a non-nil error' {
-    stack error e = err_new("something went wrong");
+    stack error e = error.('something went wrong');
     expect.(e != nil);
 }
 
 test 'err_is_ok and err_is_err' {
     stack error ok = err_ok();
-    stack error bad = err_new("fail");
+    stack error bad = error.('fail');
     expect.(err_is_ok(ok));
     expect.(err_is_err(bad));
     expect.(err_is_ok(bad) == false);
@@ -62,7 +62,7 @@ test 'err_is_ok and err_is_err' {
 }
 
 test 'err_unwrap_or returns fallback on error' {
-    stack error e = err_new("oops");
+    stack error e = error.('oops');
     stack i32 result = err_unwrap_or(e, 42);
     expect_eq.(result, 42);
 }
@@ -74,15 +74,15 @@ test 'err_unwrap_or returns 0 on ok' {
 }
 
 test 'err_chain returns first if non-nil' {
-    stack error first = err_new("first");
-    stack error second = err_new("second");
+    stack error first = error.('first');
+    stack error second = error.('second');
     stack error result = err_chain(first, second);
     expect.(result != nil);
 }
 
 test 'err_chain returns second if first is nil' {
     stack error first = err_ok();
-    stack error second = err_new("second");
+    stack error second = error.('second');
     stack error result = err_chain(first, second);
     expect.(result != nil);
 }

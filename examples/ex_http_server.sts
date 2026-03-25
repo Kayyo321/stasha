@@ -1,0 +1,74 @@
+mod ex_http_server;
+
+// A simple HTTP server demonstrating routing, request inspection,
+// and response helpers.
+
+libimp "http" from std;
+
+lib "stdio" = cio;
+
+// ── Route handlers ────────────────────────────────────────────────────────────
+// Each handler receives raw req/res context pointers from the C wrapper.
+// Use the standalone helpers (http.req_*, http.res_*) or wrap with
+// http_req_t / http_res_t for method-call syntax.
+
+ext fn handle_root(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
+    stack http_req_t req = http_req_t.from(raw_req);
+    stack http_res_t res = http_res_t.from(raw_res);
+    res.html("<h1>Welcome to Stasha HTTP</h1><p>Visit <a href='/hello'>/hello</a></p>");
+}
+
+ext fn handle_hello(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
+    stack http_res_t res = http_res_t.from(raw_res);
+    res.send("Hello, world!");
+}
+
+ext fn handle_greet(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
+    stack http_req_t req = http_req_t.from(raw_req);
+    stack http_res_t res = http_res_t.from(raw_res);
+
+    stack i8 *r name = req.param("name");
+    if (name == nil) {
+        res.send("Hello, stranger!");
+    } else {
+        // Build response with snprintf into a stack buffer.
+        stack i8 buf[128];
+        cio.snprintf(buf, 128, "Hello, %s!", name);
+        res.send(buf);
+    }
+}
+
+ext fn handle_status(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
+    stack http_res_t res = http_res_t.from(raw_res);
+    res.json("{\"status\":\"ok\",\"server\":\"stasha-http\"}");
+}
+
+ext fn handle_not_found(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
+    stack http_res_t res = http_res_t.from(raw_res);
+    res.not_found();
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+fn main(void): i32 {
+    stack i32 port = 8080;
+    stack http_server_t server = http_server_t.new(port);
+
+    server.get("/",            handle_root);
+    server.get("/hello",       handle_hello);
+    server.get("/greet/:name", handle_greet);
+    server.get("/status",      handle_status);
+    server.any("/*",           handle_not_found);
+
+    cio.printf("Listening on http://localhost:%d\n", port);
+    cio.printf("Routes:\n");
+    cio.printf("  GET /\n");
+    cio.printf("  GET /hello\n");
+    cio.printf("  GET /greet/:name\n");
+    cio.printf("  GET /status\n");
+
+    stack i32 rc = server.listen();
+
+    server.rem();
+    ret rc;
+}

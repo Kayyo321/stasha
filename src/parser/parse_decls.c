@@ -111,6 +111,18 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             field->as.var_decl.storage = current_section;
             field->as.var_decl.linkage = field_link;
             field->as.var_decl.bitfield_width = 0;
+            /* array field: type name[size] */
+            if (match_tok(p, TokLBracket)) {
+                field->as.var_decl.flags |= VdeclArray;
+                if (check(p, TokIntLit)) {
+                    field->as.var_decl.array_size = parse_int_value(p->current);
+                    advance_parser(p);
+                } else if (check(p, TokIdent)) {
+                    field->as.var_decl.array_size_name = copy_token_text(p->current);
+                    advance_parser(p);
+                }
+                consume(p, TokRBracket, "']'");
+            }
             /* bitfield: type name: width */
             if (match_tok(p, TokColon)) {
                 if (check(p, TokIntLit)) {

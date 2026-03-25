@@ -113,7 +113,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         LLVMBuildStore(cg->builder, heap_ptr, alloca_val);
 
         if (node->as.var_decl.init) {
+            cg->hint_ret_type = type;
             LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
+            cg->hint_ret_type = Null;
             init = coerce_int(cg, init, type);
             LLVMBuildStore(cg->builder, init, heap_ptr);
         }
@@ -188,7 +190,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         if (node->as.var_decl.init->kind == NodeNilExpr && ti.base == TypeError) {
             init = make_nil_error(cg);
         } else {
+            cg->hint_ret_type = type;
             init = gen_expr(cg, node->as.var_decl.init);
+            cg->hint_ret_type = Null;
             if (!(node->as.var_decl.flags & VdeclArray))
                 init = coerce_int(cg, init, type);
         }
@@ -434,7 +438,9 @@ static void gen_ret(cg_t *cg, node_t *node) {
             && ret_type == cg->error_type) {
             val = make_nil_error(cg);
         } else {
+            cg->hint_ret_type = ret_type;
             val = gen_expr(cg, node->as.ret_stmt.values.items[0]);
+            cg->hint_ret_type = Null;
             val = coerce_int(cg, val, ret_type);
         }
         LLVMBuildRet(cg->builder, val);
@@ -450,7 +456,9 @@ static void gen_ret(cg_t *cg, node_t *node) {
                 && field_type == cg->error_type) {
                 val = make_nil_error(cg);
             } else {
+                cg->hint_ret_type = field_type;
                 val = gen_expr(cg, node->as.ret_stmt.values.items[i]);
+                cg->hint_ret_type = Null;
                 val = coerce_int(cg, val, field_type);
             }
             agg = LLVMBuildInsertValue(cg->builder, agg, val, (unsigned)i, "");

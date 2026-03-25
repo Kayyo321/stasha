@@ -1,0 +1,99 @@
+mod ex_json_parse;
+
+libimp "json" from std;
+
+lib "stdio" = cio;
+
+fn main(void): i32 {
+    // ── Parse from string ────────────────────────────────────────────────────
+
+    stack let [person, pe] = json.parse("{\"name\":\"Alice\",\"age\":30,\"active\":true,\"score\":98.5}");
+    if (pe != nil) {
+        cio.printf("parse error: %s\n", pe);
+        ret 1;
+    }
+
+    stack let [name, ne] = person.get_string("name");
+    if (ne == nil) { cio.printf("name: %s\n", name); }
+
+    stack let [age, ae] = person.get_number("age");
+    if (ae == nil) { cio.printf("age: %g\n", age); }
+
+    stack let [active, be] = person.get_bool("active");
+    if (be == nil) { cio.printf("active: %s\n", active ? "true" : "false"); }
+
+    // ── Mutate ───────────────────────────────────────────────────────────────
+
+    person.set_i64("age", (i64)31);
+    person.set_string("city", "Paris");
+
+    // ── Serialize ────────────────────────────────────────────────────────────
+
+    stack i8 *rw out = person.stringify_compact();
+    if (out != nil) {
+        cio.printf("serialized: %s\n", out);
+        json.json_free_str(out);
+    }
+
+    person.free();
+
+    // ── Parse array ─────────────────────────────────────────────────────────
+
+    stack let [arr, arrerr] = json.parse("[10, 20, 30, 40]");
+    if (arrerr != nil) {
+        cio.printf("array parse error: %s\n", arrerr);
+        ret 1;
+    }
+
+    cio.printf("array length: %d\n", arr.array_len());
+    for (i32 i = 0; i < arr.array_len(); i++) {
+        stack let [elem, ee] = arr.array_get(i);
+        if (ee == nil) {
+            cio.printf("  [%d] = %g\n", i, elem.as_number());
+        }
+    }
+    arr.free();
+
+    // ── Build programmatically ────────────────────────────────────────────────
+
+    stack json_t obj = json.obj();
+    obj.set_string("lang", "Stasha");
+    obj.set_i64("version", (i64)1);
+
+    stack json_t tags = json.array();
+    tags.array_push_string("systems");
+    tags.array_push_string("native");
+    tags.array_push_string("fast");
+    obj.set_item("tags", tags);
+
+    stack i8 *rw pretty = obj.stringify();
+    if (pretty != nil) {
+        cio.printf("built:\n%s\n", pretty);
+        json.json_free_str(pretty);
+    }
+    obj.free();
+
+    // ── Write to file, re-read ────────────────────────────────────────────────
+
+    stack json_t payload = json.obj();
+    payload.set_string("status", "ok");
+    payload.set_i64("code", (i64)200);
+
+    stack error we = json.write_file("/tmp/stasha_test.json", payload);
+    payload.free();
+
+    if (we == nil) {
+        stack let [read_back, re] = json.open("/tmp/stasha_test.json");
+        if (re == nil) {
+            stack let [status, se] = read_back.get_string("status");
+            if (se == nil) { cio.printf("read back status: %s\n", status); }
+            read_back.free();
+        } else {
+            cio.printf("open error: %s\n", re);
+        }
+    } else {
+        cio.printf("write error: %s\n", we);
+    }
+
+    ret 0;
+}
