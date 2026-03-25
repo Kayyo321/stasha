@@ -82,7 +82,7 @@ STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS_ALL),$(dir $(s))lib$(notdir $(basename 
 UNAME_S := $(shell uname -s)
 
 # ── OpenSSL (static libcrypto) ────────────────────────────────────────────
-OPENSSL_SRC   = extlib/extlib/openssl
+OPENSSL_SRC   = extlib/openssl
 OPENSSL_BUILD = build/openssl
 OPENSSL_LIB   = $(OPENSSL_BUILD)/lib/libcrypto.a
 
