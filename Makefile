@@ -71,7 +71,7 @@ THREAD_TEST_SRCS = examples/thread_basic.sts    \
 STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 
 # Modules that have custom bundled-archive rules (exclude from default foreach).
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts
 
 # Files for the default compile-only rule.
 STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
@@ -80,6 +80,7 @@ STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
 STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS_ALL),$(dir $(s))lib$(notdir $(basename $(s))).a)
 
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
 # ── OpenSSL (static libcrypto) ────────────────────────────────────────────
 OPENSSL_SRC   = extlib/openssl
@@ -121,16 +122,18 @@ stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhtt
 
 # Modules that require platform-specific external libs not available everywhere.
 # These are compiled into .a files but skipped during 'make stdlib-test'.
-STDLIB_TEST_SKIP = stsstdlib/random/complex_rng.sts
+STDLIB_TEST_SKIP =
 
 # Bundled modules need their fat archive passed via -l during test.
 # They are excluded from the generic loop and tested separately below.
-STDLIB_TEST_BUNDLED_JSON = stsstdlib/serial/json.sts
-STDLIB_TEST_BUNDLED_HTTP = stsstdlib/net/http.sts
+STDLIB_TEST_BUNDLED_JSON      = stsstdlib/serial/json.sts
+STDLIB_TEST_BUNDLED_HTTP      = stsstdlib/net/http.sts
+STDLIB_TEST_BUNDLED_CRNG      = stsstdlib/random/complex_rng.sts
+STDLIB_BUNDLED_CRNG_LIB       = stsstdlib/random/libcomplex_rng.a
 
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a $(STDLIB_BUNDLED_CRNG_LIB)
 	@echo ""
 	@echo "=== stdlib tests ==="
 	@pass=0; fail=0; skip=0; \
@@ -163,6 +166,15 @@ stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_HTTP) ..."; \
 	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_HTTP)" -l stsstdlib/net/libhttp.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRNG) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRNG)" -l $(STDLIB_BUNDLED_CRNG_LIB) 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -226,6 +238,13 @@ stsstdlib/net/libhttp.a: stsstdlib/net/http.sts $(TARGET) \
 	@mkdir -p stsstdlib/net
 	$(TARGET) lib stsstdlib/net/http.sts -o $@
 	ar q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
+	ranlib $@
+
+# ── complex_rng: bundle OpenSSL libcrypto into the archive ────────────────────
+
+$(STDLIB_BUNDLED_CRNG_LIB): stsstdlib/random/complex_rng.sts $(TARGET) $(OPENSSL_LIB)
+	@mkdir -p stsstdlib/random
+	$(TARGET) lib stsstdlib/random/complex_rng.sts -o $@
 	ranlib $@
 
 clean-stdlib:
