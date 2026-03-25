@@ -1340,6 +1340,18 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                     LLVMValueRef field_gep = LLVMBuildStructGEP2(
                         cg->builder, base_sr->llvm_type, base_alloca,
                         (unsigned)base_sr->fields[fi].index, mfield);
+                    if (base_sr->fields[fi].array_size > 0) {
+                        /* inline array field: 2-index GEP into the array */
+                        LLVMTypeRef elem_t = get_llvm_type(cg, base_sr->fields[fi].type);
+                        LLVMTypeRef arr_t = LLVMArrayType2(elem_t, (unsigned long long)base_sr->fields[fi].array_size);
+                        LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                        index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
+                        LLVMValueRef indices[2] = { zero, index_val };
+                        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_t, field_gep, indices, 2, "aidx");
+                        rhs = coerce_int(cg, rhs, elem_t);
+                        LLVMBuildStore(cg->builder, rhs, gep);
+                        return rhs;
+                    }
                     LLVMTypeRef ptr_type = get_llvm_type(cg, base_sr->fields[fi].type);
                     LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
                     type_info_t elem_ti = base_sr->fields[fi].type;
@@ -1545,6 +1557,16 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
                 LLVMValueRef field_gep = LLVMBuildStructGEP2(
                     cg->builder, base_sr->llvm_type, base_alloca,
                     (unsigned)base_sr->fields[fi].index, mfield);
+                if (base_sr->fields[fi].array_size > 0) {
+                    /* inline array field: 2-index GEP into the array */
+                    LLVMTypeRef elem_t = get_llvm_type(cg, base_sr->fields[fi].type);
+                    LLVMTypeRef arr_t = LLVMArrayType2(elem_t, (unsigned long long)base_sr->fields[fi].array_size);
+                    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                    index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
+                    LLVMValueRef indices[2] = { zero, index_val };
+                    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_t, field_gep, indices, 2, "aidx");
+                    return LLVMBuildLoad2(cg->builder, elem_t, gep, "aelem");
+                }
                 LLVMTypeRef ptr_type = get_llvm_type(cg, base_sr->fields[fi].type);
                 LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
                 type_info_t elem_ti = base_sr->fields[fi].type;
