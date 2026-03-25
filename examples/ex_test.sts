@@ -52,6 +52,6 @@ test 'inequality checks' {
 
 // A normal main — only used in non-test builds
 fn main(void): i16 {
-    debug add(10, 20);
+    print.('{}\n', add(10, 20));
     ret 0;
 }

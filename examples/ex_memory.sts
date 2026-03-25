@@ -1,0 +1,144 @@
+mod ex_memory;
+
+lib "stdio" = io;
+
+// ── Memory management ──────────────────────────────────────────────────────
+//
+//   new.(bytes)            — heap allocate; returns *rw pointer
+//   rem.(ptr)              — free heap allocation (safe with nil)
+//   mov.(ptr, new_bytes)   — realloc: resize heap block in place
+//   sizeof.(Type)          — compile-time byte size of a type
+//
+// Pointer permissions:
+//   *rw   — read + write (no arithmetic)
+//   *r    — read-only
+//   *w    — write-only
+//   *rw+  — read + write + arithmetic (p + n, p - n)
+//   *r+   — read-only + arithmetic
+//   Permissions narrow only: *rw → *r is fine; *r → *rw is a compile error.
+
+// ── Heap primitives: auto-allocated, auto-freed ────────────────────────────
+//
+// `heap i32 x = 0` implicitly mallocs storage and frees it at scope exit.
+// Call rem.(x) to free early; the auto-free at scope exit is then a no-op.
+
+int fn sum_to(stack i32 n): i32 {
+    heap i32 acc = 0;           // malloc'd here
+    for (stack i32 i = 1; i <= n; ++i) {
+        acc = acc + i;          // transparent load/store through pointer
+    }
+    ret acc;
+    // acc freed here at scope exit
+}
+
+// ── Nil pointers ────────────────────────────────────────────────────────────
+
+int fn fill_squares(stack i32 *rw buf, stack i32 n): i32 {
+    if buf == nil { ret 0; }
+    for (stack i32 i = 0; i < n; ++i) {
+        buf[i] = i * i;
+    }
+    ret 1;
+}
+
+// ── Pointer permissions ─────────────────────────────────────────────────────
+
+int fn fill(heap i32 *w buf, stack i32 count): void {
+    for (stack i32 i = 0; i < count; ++i) {
+        buf[i] = (i + 1) * 10;   // write-only is enough here
+    }
+}
+
+int fn sum(heap i32 *r buf, stack i32 count): i32 {
+    stack i32 total = 0;
+    for (stack i32 i = 0; i < count; ++i) {
+        total += buf[i];          // read-only is enough here
+    }
+    ret total;
+}
+
+// ── Defer: guaranteed cleanup on any exit path ──────────────────────────────
+
+int fn process(stack i32 *rw data, stack i32 n): i32 {
+    stack i32 *rw tmp = new.(sizeof.(i32) * n);
+    defer rem.(tmp);   // registered here; runs on every exit, even early return
+
+    if data == nil { ret -1; }
+
+    for (stack i32 i = 0; i < n; ++i) { tmp[i] = data[i] * 2; }
+
+    stack i32 s = 0;
+    for (stack i32 i = 0; i < n; ++i) { s += tmp[i]; }
+    ret s;   // tmp freed here too
+}
+
+fn main(void): i16 {
+    io.printf('--- heap primitives ---\n');
+    heap i32 a = 10;
+    heap i32 b = 20;
+    heap i32 c = a + b;
+    io.printf('a + b = %d\n', c);                    // 30
+    io.printf('sum_to(10) = %d\n', sum_to(10));      // 55
+    rem.(c);   // early free; auto-free at scope exit is then a safe no-op
+
+    io.printf('\n--- nil ---\n');
+    stack i32 *rw p = nil;
+    io.printf('fill(nil) = %d\n', fill_squares(nil, 5));   // 0
+    p = new.(sizeof.(i32) * 5);
+    io.printf('fill(buf) = %d: ', fill_squares(p, 5));     // 1
+    for (stack i32 i = 0; i < 5; ++i) { io.printf('%d ', p[i]); }  // 0 1 4 9 16
+    io.printf('\n');
+    rem.(p); p = nil;   // clear after free
+
+    // addr-of: take address of a stack variable
+    stack i32 x = 42;
+    stack i32 *rw xp = &x;
+    xp[0] = 100;
+    io.printf('x via pointer = %d\n', x);   // 100
+
+    io.printf('\n--- pointer permissions (*r / *w / *rw) ---\n');
+    stack i32 count = 8;
+    heap i32 *rw data = new.(sizeof.(i32) * count);
+    fill(data, count);                           // *rw narrows to *w for fill()
+    stack i32 total = sum(data, count);          // *rw narrows to *r for sum()
+    io.printf('sum = %d\n', total);              // 10+20+...+80 = 360
+    rem.(data);
+
+    // Arithmetic requires + permission
+    stack i32 arr[4];
+    arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4;
+    stack i32 *rw+ q = &arr;
+    q = q + 2;
+    io.printf('arr[2] via *rw+ = %d\n', q[0]);  // 3
+    // stack i32 *rw  p = &arr; p = p + 1;   // ERROR: *rw lacks '+' permission
+    // stack i32 *r   r = &arr; r = data;     // ERROR: widening *r → domain cross
+
+    io.printf('\n--- defer ---\n');
+    stack i32 nums[5];
+    nums[0] = 1; nums[1] = 2; nums[2] = 3; nums[3] = 4; nums[4] = 5;
+    io.printf('process(nums,5) = %d\n', process(nums, 5));  // 30
+    io.printf('process(nil,5)  = %d\n', process(nil,  5));  // -1 (defer still fires)
+
+    // defer with block — LIFO ordering
+    {
+        stack i32 *rw buf = new.(64);
+        defer {
+            io.printf('block defer: freeing buf\n');
+            rem.(buf);
+        }
+        buf[0] = 42;
+    }   // block defer fires here
+
+    io.printf('\n--- mov (realloc) ---\n');
+    stack i32 cap = 4;
+    stack i32 *rw buf = new.(sizeof.(i32) * cap);
+    for (stack i32 i = 0; i < cap; ++i) { buf[i] = (i + 1) * 10; }   // 10..40
+    cap = 8;
+    buf = mov.(buf, sizeof.(i32) * cap);   // grow; old pointer invalid after this
+    for (stack i32 i = 4; i < cap; ++i) { buf[i] = (i + 1) * 10; }   // 50..80
+    for (stack i32 i = 0; i < cap; ++i) { io.printf('%d ', buf[i]); }
+    io.printf('\n');   // 10 20 30 40 50 60 70 80
+    rem.(buf);
+
+    ret 0;
+}
