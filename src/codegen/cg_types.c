@@ -13,6 +13,89 @@ static boolean_t is_integer_type(type_info_t ti) {
     return ti.base >= TypeI8 && ti.base <= TypeU64;
 }
 
+/* ── generic name substitution helper ──
+ * Apply active generic substitutions to a (possibly mangled) type name.
+ * Handles both simple params ("T" → "i32") and embedded params ("arr_t_G_T" → "arr_t_G_i32").
+ * Returns the input pointer if no substitution needed, or a new ast_strdup'd string.
+ */
+static const char *cg_subst_name(cg_t *cg, const char *name) {
+    if (!name || cg->generic_n == 0) return name;
+    /* direct match: name is a bare type param */
+    for (usize_t i = 0; i < cg->generic_n; i++) {
+        if (strcmp(name, cg->generic_params[i]) == 0) {
+            /* return concrete type name */
+            type_info_t c = cg->generic_concs[i];
+            if (c.base == TypeUser && c.user_name) return c.user_name;
+            /* use the comptime_type_name encoding */
+            switch (c.base) {
+                case TypeI8:  return "i8";   case TypeU8:  return "u8";
+                case TypeI16: return "i16";  case TypeU16: return "u16";
+                case TypeI32: return "i32";  case TypeU32: return "u32";
+                case TypeI64: return "i64";  case TypeU64: return "u64";
+                case TypeF32: return "f32";  case TypeF64: return "f64";
+                case TypeBool: return "bool"; case TypeVoid: return "void";
+                default: return "type";
+            }
+        }
+    }
+    /* check if name contains _G_<param> patterns — substitute each */
+    boolean_t changed = False;
+    char result[512];
+    usize_t rlen = 0;
+    const char *p = name;
+    usize_t nlen = strlen(name);
+    while (rlen < sizeof(result) - 1 && (usize_t)(p - name) < nlen) {
+        /* look for _G_ separator */
+        const char *g = strstr(p, "_G_");
+        if (!g) {
+            /* copy remainder */
+            usize_t rem = nlen - (usize_t)(p - name);
+            if (rlen + rem >= sizeof(result)) rem = sizeof(result) - 1 - rlen;
+            memcpy(result + rlen, p, rem); rlen += rem; p += rem;
+            break;
+        }
+        /* copy up to and including "_G_" */
+        usize_t prefix_len = (usize_t)(g - p) + 3;
+        if (rlen + prefix_len >= sizeof(result)) break;
+        memcpy(result + rlen, p, prefix_len); rlen += prefix_len;
+        p = g + 3;
+        /* p now points at the component after _G_ — check if it's a param */
+        boolean_t subst = False;
+        for (usize_t i = 0; i < cg->generic_n; i++) {
+            usize_t plen = strlen(cg->generic_params[i]);
+            /* component ends at next _G_ or end of string */
+            const char *next_g = strstr(p, "_G_");
+            usize_t comp_len = next_g ? (usize_t)(next_g - p) : strlen(p);
+            if (comp_len == plen && memcmp(p, cg->generic_params[i], plen) == 0) {
+                /* substitute with concrete type name */
+                const char *rep = cg_subst_name(cg, cg->generic_params[i]);
+                usize_t rlen2 = strlen(rep);
+                if (rlen + rlen2 < sizeof(result)) {
+                    memcpy(result + rlen, rep, rlen2); rlen += rlen2;
+                }
+                p += comp_len;
+                changed = True;
+                subst = True;
+                break;
+            }
+        }
+        if (!subst) {
+            /* not a param — copy the component as-is up to next _G_ or end */
+            const char *next_g = strstr(p, "_G_");
+            usize_t comp_len = next_g ? (usize_t)(next_g - p) : strlen(p);
+            if (rlen + comp_len >= sizeof(result)) break;
+            memcpy(result + rlen, p, comp_len); rlen += comp_len;
+            p += comp_len;
+        }
+    }
+    if (!changed) return name;
+    result[rlen] = '\0';
+    return ast_strdup(result, rlen);
+}
+
+/* forward declaration — defined in cg_generics.c */
+static void try_instantiate_generic(cg_t *cg, const char *mangled_name);
+
 static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
     ti = resolve_alias(cg, ti);
     if (ti.is_pointer)
@@ -27,9 +110,29 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         case TypeF32: return LLVMFloatTypeInContext(cg->ctx);
         case TypeF64: return LLVMDoubleTypeInContext(cg->ctx);
         case TypeUser: {
-            struct_reg_t *sr = ti.user_name ? find_struct(cg, ti.user_name) : Null;
+            /* apply generic param substitution if active */
+            const char *uname = ti.user_name;
+            if (cg->generic_n > 0 && uname) {
+                /* direct type param substitution: T → i32 */
+                for (usize_t i = 0; i < cg->generic_n; i++) {
+                    if (strcmp(uname, cg->generic_params[i]) == 0) {
+                        type_info_t sub = cg->generic_concs[i];
+                        if (ti.is_pointer) { sub.is_pointer = True; sub.ptr_perm = ti.ptr_perm; }
+                        return get_llvm_base_type(cg, sub);
+                    }
+                }
+                /* embedded substitution: arr_t_G_T → arr_t_G_i32 */
+                const char *subst = cg_subst_name(cg, uname);
+                if (subst != uname) uname = subst;
+            }
+            struct_reg_t *sr = uname ? find_struct(cg, uname) : Null;
+            if (!sr && uname && strstr(uname, "_G_")) {
+                /* lazy generic instantiation */
+                try_instantiate_generic(cg, uname);
+                sr = find_struct(cg, uname);
+            }
             if (sr) return sr->llvm_type;
-            enum_reg_t *er = ti.user_name ? find_enum(cg, ti.user_name) : Null;
+            enum_reg_t *er = uname ? find_enum(cg, uname) : Null;
             if (er) return er->llvm_type;
             return LLVMInt32TypeInContext(cg->ctx);
         }

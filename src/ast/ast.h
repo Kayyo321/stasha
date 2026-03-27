@@ -81,14 +81,15 @@ typedef enum {
 /* ── var_decl attribute flags ── */
 
 enum {
-    VdeclAtomic   = (1 << 0),  /* atomic qualifier   */
-    VdeclConst    = (1 << 1),  /* const qualifier    */
-    VdeclFinal    = (1 << 2),  /* final qualifier    */
-    VdeclArray    = (1 << 3),  /* array declaration  */
-    VdeclVolatile = (1 << 4),  /* volatile qualifier */
-    VdeclTls      = (1 << 5),  /* thread-local storage */
-    VdeclRestrict = (1 << 6),  /* restrict pointer hint */
-    VdeclLet      = (1 << 7),  /* type-inferred (let binding) */
+    VdeclAtomic        = (1 << 0),  /* atomic qualifier              */
+    VdeclConst         = (1 << 1),  /* const qualifier               */
+    VdeclFinal         = (1 << 2),  /* final qualifier               */
+    VdeclArray         = (1 << 3),  /* array declaration             */
+    VdeclVolatile      = (1 << 4),  /* volatile qualifier            */
+    VdeclTls           = (1 << 5),  /* thread-local storage          */
+    VdeclRestrict      = (1 << 6),  /* restrict pointer hint         */
+    VdeclLet           = (1 << 7),  /* type-inferred (let binding)   */
+    VdeclComptimeField = (1 << 8),  /* @comptime: section — compile-time only, excluded from runtime layout */
 };
 
 /* ── type declaration flavours ── */
@@ -226,6 +227,8 @@ struct node {
             char *struct_name;          /* the Type part (null if !is_method) */
             boolean_t is_variadic;      /* fn foo(stack i32 n, ...): void */
             int attr_flags;             /* AttrWeak | AttrHidden */
+            char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
+            usize_t type_param_count;
         } fn_decl;
 
         struct {
@@ -251,6 +254,8 @@ struct node {
             type_info_t alias_type;     /* for TypeDeclAlias */
             int attr_flags;             /* AttrPacked | AttrCLayout */
             unsigned align_value;       /* @align(N): 0 = default */
+            char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
+            usize_t type_param_count;
         } type_decl;
 
         struct {

@@ -102,6 +102,28 @@ static type_kind_t token_to_type(token_kind_t k) {
     }
 }
 
+/* ── comptime_type_name: convert a type_info_t to a short name for generic mangling ── */
+
+static const char *comptime_type_name(type_info_t ti) {
+    if (ti.is_pointer) return "ptr";
+    switch (ti.base) {
+        case TypeVoid:  return "void";
+        case TypeBool:  return "bool";
+        case TypeI8:    return "i8";
+        case TypeI16:   return "i16";
+        case TypeI32:   return "i32";
+        case TypeI64:   return "i64";
+        case TypeU8:    return "u8";
+        case TypeU16:   return "u16";
+        case TypeU32:   return "u32";
+        case TypeU64:   return "u64";
+        case TypeF32:   return "f32";
+        case TypeF64:   return "f64";
+        case TypeUser:  return ti.user_name ? ti.user_name : "user";
+        default:        return "type";
+    }
+}
+
 static type_info_t parse_type(parser_t *p) {
     type_info_t info = NO_TYPE;
 
@@ -175,6 +197,34 @@ static type_info_t parse_type(parser_t *p) {
         info.base = TypeUser;
         info.user_name = copy_token_text(p->current);
         advance_parser(p);
+
+        /* generic instantiation: TypeName.[T1, T2, ...] → "TypeName_G_T1_G_T2" */
+        if (check(p, TokDot)) {
+            parser_state_t snap = save_state(p);
+            advance_parser(p); /* consume '.' */
+            if (check(p, TokLBracket)) {
+                advance_parser(p); /* consume '[' */
+                char mangled[512];
+                usize_t mlen = strlen(info.user_name);
+                if (mlen < sizeof(mangled) - 1)
+                    memcpy(mangled, info.user_name, mlen);
+                while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    type_info_t arg = parse_type(p);
+                    const char *aname = comptime_type_name(arg);
+                    usize_t alen = strlen(aname);
+                    if (mlen + 3 + alen < sizeof(mangled) - 1) {
+                        memcpy(mangled + mlen, "_G_", 3); mlen += 3;
+                        memcpy(mangled + mlen, aname, alen); mlen += alen;
+                    }
+                    if (!match_tok(p, TokComma)) break;
+                }
+                consume(p, TokRBracket, "']'");
+                mangled[mlen] = '\0';
+                info.user_name = ast_strdup(mangled, mlen);
+            } else {
+                restore_state(p, snap);
+            }
+        }
     } else {
         diag_begin_error("expected a type, found '%.*s'",
                          (int)p->current.length, p->current.start);
@@ -230,7 +280,9 @@ static node_t *parse_storage_group(parser_t *p, storage_t storage);
 static node_t *parse_switch_stmt(parser_t *p);
 static node_t *parse_asm_stmt(parser_t *p);
 static node_t *parse_comptime_if(parser_t *p);
+static node_t *parse_comptime_if_body(parser_t *p);
 static node_t *parse_comptime_assert(parser_t *p);
+static node_t *parse_at_comptime_assert(parser_t *p);
 
 static boolean_t can_start_type(parser_t *p) {
     return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn);

@@ -1,18 +1,165 @@
+/* ── compile-time condition evaluator (used at parse time for @comptime if in structs) ── */
+
+static boolean_t eval_comptime_condition(const char *key, const char *value) {
+    if (strcmp(key, "os") == 0 || strcmp(key, "platform") == 0) {
+#if defined(__APPLE__)
+        return strcmp(value, "macos") == 0 || strcmp(value, "darwin") == 0;
+#elif defined(__linux__)
+        return strcmp(value, "linux") == 0;
+#elif defined(_WIN32)
+        return strcmp(value, "windows") == 0;
+#else
+        return False;
+#endif
+    }
+    if (strcmp(key, "arch") == 0) {
+#if defined(__x86_64__) || defined(_M_X64)
+        return strcmp(value, "x86_64") == 0 || strcmp(value, "amd64") == 0;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+        return strcmp(value, "aarch64") == 0 || strcmp(value, "arm64") == 0;
+#elif defined(__i386__) || defined(_M_IX86)
+        return strcmp(value, "x86") == 0 || strcmp(value, "i386") == 0;
+#else
+        return False;
+#endif
+    }
+    return False;
+}
+
+/* ── parse a list of generic type parameter names: [T, U, ...] ── */
+/* Called after '[' has been consumed. Fills in type_params/type_param_count on node. */
+static void parse_type_params_into(parser_t *p,
+                                   char **params_out, usize_t *count_out,
+                                   usize_t max_params) {
+    *count_out = 0;
+    while (!check(p, TokRBracket) && !check(p, TokEof)) {
+        if (*count_out >= max_params) {
+            diag_begin_error("too many type parameters (max %zu)", max_params);
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "too many parameters");
+            diag_finish();
+            break;
+        }
+        token_t ptok = consume(p, TokIdent, "type parameter name");
+        params_out[(*count_out)++] = copy_token_text(ptok);
+        if (!match_tok(p, TokComma)) break;
+    }
+    consume(p, TokRBracket, "']'");
+}
+
 /* ── struct body parsing ── */
 
 static void parse_struct_body(parser_t *p, node_t *decl) {
     consume(p, TokLBrace, "'{'");
     storage_t current_section = StorageStack;
+    boolean_t in_comptime_section = False;
 
     while (!check(p, TokRBrace) && !check(p, TokEof)) {
-        /* section markers: stack: / heap: */
+        /* section markers: stack: / heap: / @comptime: */
         if (check(p, TokStack) || check(p, TokHeap)) {
             boolean_t is_heap = check(p, TokHeap);
             parser_state_t saved = save_state(p);
             advance_parser(p);
             if (match_tok(p, TokColon)) {
                 current_section = is_heap ? StorageHeap : StorageStack;
+                in_comptime_section = False;
                 continue;
+            }
+            restore_state(p, saved);
+        }
+
+        /* @comptime: section marker OR @comptime if inside a @comptime: section */
+        if (check(p, TokAt)) {
+            parser_state_t saved = save_state(p);
+            advance_parser(p); /* consume '@' */
+            if (check(p, TokIdent) && p->current.length == 8
+                    && memcmp(p->current.start, "comptime", 8) == 0) {
+                advance_parser(p); /* consume 'comptime' */
+                if (match_tok(p, TokColon)) {
+                    /* @comptime: — enter comptime section */
+                    in_comptime_section = True;
+                    continue;
+                }
+                if (check(p, TokIf) && in_comptime_section) {
+                    /* @comptime if inside @comptime: section — evaluate at parse time */
+                    advance_parser(p); /* consume 'if' */
+                    token_t key_tok = consume(p, TokIdent, "comptime key");
+                    char *key = copy_token_text(key_tok);
+                    consume(p, TokEqEq, "'=='");
+                    char *value = Null;
+                    if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                        advance_parser(p);
+                        token_t t = p->previous;
+                        value = ast_strdup(t.start + 1, t.length - 2);
+                    } else {
+                        value = ast_strdup("", 0);
+                        p->had_error = True;
+                    }
+                    boolean_t cond_match = eval_comptime_condition(key, value);
+
+                    /* parse then-block fields */
+                    consume(p, TokLBrace, "'{'");
+                    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+                        if (cond_match) {
+                            /* parse and keep the field */
+                            linkage_t fl = LinkageNone;
+                            if (check(p, TokInt) || check(p, TokExt)) {
+                                fl = check(p, TokInt) ? LinkageInternal : LinkageExternal;
+                                advance_parser(p);
+                            }
+                            type_info_t ftype = parse_type(p);
+                            token_t fname = consume(p, TokIdent, "field name");
+                            node_t *field = make_node(NodeVarDecl, fname.line);
+                            field->as.var_decl.name = copy_token_text(fname);
+                            field->as.var_decl.type = ftype;
+                            field->as.var_decl.storage = current_section;
+                            field->as.var_decl.linkage = fl;
+                            field->as.var_decl.flags |= VdeclComptimeField;
+                            if (match_tok(p, TokEq))
+                                field->as.var_decl.init = parse_expr(p);
+                            consume(p, TokSemicolon, "';'");
+                            node_list_push(&decl->as.type_decl.fields, field);
+                        } else {
+                            /* skip to ';' */
+                            while (!check(p, TokSemicolon) && !check(p, TokRBrace) && !check(p, TokEof))
+                                advance_parser(p);
+                            match_tok(p, TokSemicolon);
+                        }
+                    }
+                    consume(p, TokRBrace, "'}'");
+
+                    /* optional else branch */
+                    if (match_tok(p, TokElse)) {
+                        consume(p, TokLBrace, "'{'");
+                        while (!check(p, TokRBrace) && !check(p, TokEof)) {
+                            if (!cond_match) {
+                                linkage_t fl = LinkageNone;
+                                if (check(p, TokInt) || check(p, TokExt)) {
+                                    fl = check(p, TokInt) ? LinkageInternal : LinkageExternal;
+                                    advance_parser(p);
+                                }
+                                type_info_t ftype = parse_type(p);
+                                token_t fname = consume(p, TokIdent, "field name");
+                                node_t *field = make_node(NodeVarDecl, fname.line);
+                                field->as.var_decl.name = copy_token_text(fname);
+                                field->as.var_decl.type = ftype;
+                                field->as.var_decl.storage = current_section;
+                                field->as.var_decl.linkage = fl;
+                                field->as.var_decl.flags |= VdeclComptimeField;
+                                if (match_tok(p, TokEq))
+                                    field->as.var_decl.init = parse_expr(p);
+                                consume(p, TokSemicolon, "';'");
+                                node_list_push(&decl->as.type_decl.fields, field);
+                            } else {
+                                while (!check(p, TokSemicolon) && !check(p, TokRBrace) && !check(p, TokEof))
+                                    advance_parser(p);
+                                match_tok(p, TokSemicolon);
+                            }
+                        }
+                        consume(p, TokRBrace, "'}'");
+                    }
+                    continue;
+                }
             }
             restore_state(p, saved);
         }
@@ -23,10 +170,15 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             advance_parser(p);
         }
 
-        /* inline method */
+        /* inline method — not allowed in @comptime: section */
         if (check(p, TokFn)) {
             advance_parser(p);
             token_t fn_name = consume(p, TokIdent, "method name");
+            /* allow "fn struct_name.method_name" — skip the struct_name. prefix */
+            if (check(p, TokDot)) {
+                advance_parser(p); /* consume '.' */
+                fn_name = consume(p, TokIdent, "method name");
+            }
             consume(p, TokLParen, "'('");
             node_list_t params;
             node_list_init(&params);
@@ -111,8 +263,10 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             field->as.var_decl.storage = current_section;
             field->as.var_decl.linkage = field_link;
             field->as.var_decl.bitfield_width = 0;
+            if (in_comptime_section)
+                field->as.var_decl.flags |= VdeclComptimeField;
             /* array field: type name[size] */
-            if (match_tok(p, TokLBracket)) {
+            if (!in_comptime_section && match_tok(p, TokLBracket)) {
                 field->as.var_decl.flags |= VdeclArray;
                 if (check(p, TokIntLit)) {
                     field->as.var_decl.array_size = parse_int_value(p->current);
@@ -124,7 +278,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                 consume(p, TokRBracket, "']'");
             }
             /* bitfield: type name: width */
-            if (match_tok(p, TokColon)) {
+            if (!in_comptime_section && match_tok(p, TokColon)) {
                 if (check(p, TokIntLit)) {
                     field->as.var_decl.bitfield_width = (int)parse_int_value(p->current);
                     advance_parser(p);
@@ -137,6 +291,9 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                     p->had_error = True;
                 }
             }
+            /* @comptime: fields may have a constant initializer: = <expr> */
+            if (in_comptime_section && match_tok(p, TokEq))
+                field->as.var_decl.init = parse_expr(p);
             node_list_push(&decl->as.type_decl.fields, field);
         } while (match_tok(p, TokComma));
         consume(p, TokSemicolon, "';'");
@@ -240,7 +397,7 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
     node_list_init(&n->as.type_decl.methods);
     node_list_init(&n->as.type_decl.variants);
 
-    /* parse attributes before struct/union keyword: @packed @align(N) @c_layout */
+    /* parse attributes before struct/union keyword: @packed @align(N) @c_layout @comptime[T] */
     while (check(p, TokAt)) {
         advance_parser(p); /* consume '@' */
         if (check(p, TokIdent)) {
@@ -260,11 +417,18 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
                     advance_parser(p);
                 }
                 consume(p, TokRParen, "')'");
+            } else if (len == 8 && memcmp(s, "comptime", 8) == 0) {
+                /* @comptime[T, U, ...] — generic type parameters */
+                advance_parser(p); /* consume 'comptime' */
+                if (match_tok(p, TokLBracket)) {
+                    parse_type_params_into(p, n->as.type_decl.type_params,
+                                          &n->as.type_decl.type_param_count, 8);
+                }
             } else {
                 diag_begin_error("unknown attribute '@%.*s'", (int)len, s);
                 diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                           True, "not a recognised attribute");
-                diag_note("valid struct attributes: @packed, @c_layout, @align(N)");
+                diag_note("valid struct attributes: @packed, @c_layout, @align(N), @comptime[T]");
                 diag_finish();
                 p->had_error = True;
                 advance_parser(p);
@@ -443,6 +607,26 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'fn' */
 
+    /* optional @comptime[T, U, ...] type parameters after 'fn' */
+    char *fn_type_params[8];
+    usize_t fn_type_param_count = 0;
+    if (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* consume '@' */
+        if (check(p, TokIdent) && p->current.length == 8
+                && memcmp(p->current.start, "comptime", 8) == 0) {
+            advance_parser(p); /* consume 'comptime' */
+            if (check(p, TokLBracket)) {
+                advance_parser(p); /* consume '[' */
+                parse_type_params_into(p, fn_type_params, &fn_type_param_count, 8);
+            } else {
+                restore_state(p, snap);
+            }
+        } else {
+            restore_state(p, snap);
+        }
+    }
+
     token_t name_tok = consume(p, TokIdent, "function name");
     char *name = copy_token_text(name_tok);
 
@@ -559,6 +743,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     n->as.fn_decl.is_method = is_method;
     n->as.fn_decl.struct_name = struct_name;
     n->as.fn_decl.is_variadic = is_variadic;
+    n->as.fn_decl.type_param_count = fn_type_param_count;
+    for (usize_t _i = 0; _i < fn_type_param_count; _i++)
+        n->as.fn_decl.type_params[_i] = fn_type_params[_i];
     return n;
 }
 
@@ -668,12 +855,11 @@ static node_t *parse_asm_stmt(parser_t *p) {
 
 /* ── compile-time conditional compilation ── */
 /*
- * comptime_if platform == "macos" { ... }
- * comptime_if arch == "aarch64" { ... } else { ... }
+ * The body parser: key == "value" { ... } [else { ... } | else @comptime if ...]
+ * Called after the 'comptime_if' / '@comptime if' keyword has been consumed.
  */
-static node_t *parse_comptime_if(parser_t *p) {
+static node_t *parse_comptime_if_body(parser_t *p) {
     usize_t line = p->current.line;
-    advance_parser(p); /* consume 'comptime_if' */
 
     /* key == "value" */
     token_t key_tok = consume(p, TokIdent, "comptime key (platform, arch, os)");
@@ -689,7 +875,7 @@ static node_t *parse_comptime_if(parser_t *p) {
         diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                   True, "expected a string value");
         diag_note("valid comptime_if keys: os, arch, platform");
-        diag_help("example: #if os == \"macos\" { ... }");
+        diag_help("example: @comptime if os == \"macos\" { ... }");
         diag_finish();
         p->had_error = True;
         value = ast_strdup("", 0);
@@ -697,14 +883,77 @@ static node_t *parse_comptime_if(parser_t *p) {
 
     node_t *body = parse_block(p);
     node_t *else_body = Null;
-    if (match_tok(p, TokElse))
-        else_body = parse_block(p);
+    if (match_tok(p, TokElse)) {
+        /* Allow chaining: else @comptime if ... { ... } */
+        if (check(p, TokAt)) {
+            parser_state_t snap = save_state(p);
+            advance_parser(p);
+            if (check(p, TokIdent) && p->current.length == 8
+                    && memcmp(p->current.start, "comptime", 8) == 0) {
+                advance_parser(p);
+                if (check(p, TokIf)) {
+                    advance_parser(p);
+                    else_body = parse_comptime_if_body(p);
+                } else {
+                    restore_state(p, snap);
+                    else_body = parse_block(p);
+                }
+            } else {
+                restore_state(p, snap);
+                else_body = parse_block(p);
+            }
+        } else if (check(p, TokComptimeIf)) {
+            else_body = parse_comptime_if(p); /* old-style chaining */
+        } else {
+            else_body = parse_block(p);
+        }
+    }
 
     node_t *n = make_node(NodeComptimeIf, line);
     n->as.comptime_if.key = key;
     n->as.comptime_if.value = value;
     n->as.comptime_if.body = body;
     n->as.comptime_if.else_body = else_body;
+    return n;
+}
+
+/*
+ * Old-style keyword: comptime_if platform == "macos" { ... }
+ */
+static node_t *parse_comptime_if(parser_t *p) {
+    advance_parser(p); /* consume 'comptime_if' */
+    return parse_comptime_if_body(p);
+}
+
+/* parse @comptime assert.(expr [, 'msg']) — returns NodeComptimeAssert */
+static node_t *parse_at_comptime_assert(parser_t *p) {
+    usize_t line = p->previous.line; /* line of '@' */
+    /* caller has consumed '@' and 'comptime'; we must consume 'assert' */
+    if (!check(p, TokIdent) || p->current.length != 6
+            || memcmp(p->current.start, "assert", 6) != 0) {
+        diag_begin_error("expected 'assert' after '@comptime'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected 'assert' here");
+        diag_finish();
+        p->had_error = True;
+        return make_node(NodeComptimeAssert, line);
+    }
+    advance_parser(p); /* consume 'assert' */
+    consume(p, TokDot, "'.'");
+    consume(p, TokLParen, "'('");
+    node_t *expr = parse_expr(p);
+    char *msg = Null;
+    if (match_tok(p, TokComma)) {
+        if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+            advance_parser(p);
+            token_t t = p->previous;
+            msg = ast_strdup(t.start + 1, t.length - 2);
+        }
+    }
+    consume(p, TokRParen, "')'");
+    node_t *n = make_node(NodeComptimeAssert, line);
+    n->as.comptime_assert.expr = expr;
+    n->as.comptime_assert.message = msg;
     return n;
 }
 
@@ -746,11 +995,53 @@ static node_t *parse_top_decl(parser_t *p) {
     /* test block */
     if (check(p, TokTest)) return parse_test_block(p);
 
-    /* comptime_if at top level */
+    /* comptime_if at top level (old keyword style) */
     if (check(p, TokComptimeIf)) return parse_comptime_if(p);
 
-    /* comptime_assert at top level (as statement) */
-    if (check(p, TokComptimeAssert)) return parse_expr_stmt(p);
+    /* comptime_assert at top level (old keyword style) */
+    if (check(p, TokComptimeAssert)) {
+        /* parse directly to NodeComptimeAssert so the codegen loop finds it */
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *expr = parse_expr(p);
+        char *msg = Null;
+        if (match_tok(p, TokComma)) {
+            if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                advance_parser(p);
+                token_t t = p->previous;
+                msg = ast_strdup(t.start + 1, t.length - 2);
+            }
+        }
+        consume(p, TokRParen, "')'");
+        consume(p, TokSemicolon, "';'");
+        node_t *n = make_node(NodeComptimeAssert, line);
+        n->as.comptime_assert.expr = expr;
+        n->as.comptime_assert.message = msg;
+        return n;
+    }
+
+    /* @comptime if / @comptime assert at top level (new attribute syntax) */
+    if (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* consume '@' */
+        if (check(p, TokIdent) && p->current.length == 8
+                && memcmp(p->current.start, "comptime", 8) == 0) {
+            advance_parser(p); /* consume 'comptime' */
+            if (check(p, TokIf)) {
+                advance_parser(p); /* consume 'if' */
+                return parse_comptime_if_body(p);
+            }
+            if (check(p, TokIdent) && p->current.length == 6
+                    && memcmp(p->current.start, "assert", 6) == 0) {
+                node_t *ca = parse_at_comptime_assert(p);
+                consume(p, TokSemicolon, "';'");
+                return ca;
+            }
+        }
+        restore_state(p, snap);
+    }
 
     /* attributes: @weak, @hidden (collected and passed to fn/var decl) */
     int attr_flags = 0;

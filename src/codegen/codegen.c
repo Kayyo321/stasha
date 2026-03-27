@@ -69,6 +69,12 @@ typedef struct {
     long array_size;    /* > 0 if field is a fixed-size array, 0 otherwise */
 } field_info_t;
 
+/* compile-time-only field (from @comptime: section) — excluded from runtime layout */
+typedef struct {
+    char *name;
+    long  value;
+} comptime_field_t;
+
 typedef struct {
     char *name;         /* source name, e.g. "Vec2" */
     char *mod_prefix;   /* mangled module prefix, e.g. "geom"; NULL for root module */
@@ -79,6 +85,9 @@ typedef struct {
     heap_t fields_heap;
     LLVMValueRef destructor;
     boolean_t is_union;     /* True if this is a union type */
+    /* @comptime: fields — compile-time metadata, excluded from runtime layout */
+    comptime_field_t ct_fields[16];
+    usize_t ct_field_count;
 } struct_reg_t;
 
 /* ── enum registry ── */
@@ -225,6 +234,20 @@ typedef struct {
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
 
+    /* ── generics / @comptime[T] ── */
+    /* names of generic template struct types (not instantiated — skipped in passes) */
+    char *generic_templates[64];
+    node_t *generic_template_decls[64]; /* parallel AST decl nodes */
+    usize_t generic_template_count;
+    /* active generic substitution context (set during instantiation of a generic struct) */
+    char *generic_params[8];        /* formal param names, e.g. "T", "K", "V" */
+    type_info_t generic_concs[8];   /* concrete types, e.g. TypeI32 */
+    usize_t generic_n;              /* number of active substitutions */
+    char *generic_tmpl_name;        /* template struct name, e.g. "arr_t" */
+    char *generic_inst_name;        /* instantiated struct name, e.g. "arr_t_G_i32" */
+    /* root AST — used by cg_generics.c to scan top-level decls */
+    node_t *root_ast;
+
     /* ── DWARF debug info (active only when debug_mode is True) ── */
     boolean_t debug_mode;
     const char *source_file;        /* absolute/relative path to the source file */
@@ -238,6 +261,15 @@ typedef struct {
     usize_t di_type_cap;
     heap_t di_types_heap;
 } cg_t;
+
+/* ── helpers ── */
+
+/* check whether a struct name is a registered generic template */
+static boolean_t is_generic_template(cg_t *cg, const char *name) {
+    for (usize_t i = 0; i < cg->generic_template_count; i++)
+        if (strcmp(cg->generic_templates[i], name) == 0) return True;
+    return False;
+}
 
 /* gen_stmt forward declaration (emit_dtor_calls calls it for deferred stmts) */
 static void gen_stmt(cg_t *cg, node_t *node);
@@ -264,9 +296,10 @@ static void             di_set_location(cg_t *cg, usize_t line);
 #include "cg_lookup.c"
 #include "cg_dtors.c"
 #include "cg_types.c"
+#include "cg_registry.c"
 #include "cg_expr.c"
 #include "cg_stmt.c"
-#include "cg_registry.c"
+#include "cg_generics.c"
 #include "cg_debug.c"
 
 /* ── top-level codegen ── */
@@ -278,6 +311,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
     cg.ast         = ast;
+    cg.root_ast    = ast;
     cg.test_mode   = test_mode;
     cg.debug_mode  = debug_mode;
     cg.source_file = source_file;
@@ -505,6 +539,18 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->kind == NodeTypeDecl) {
             if (decl->as.type_decl.decl_kind == TypeDeclStruct
                 || decl->as.type_decl.decl_kind == TypeDeclUnion) {
+
+                /* @comptime[T] generic template structs — register name but skip LLVM type */
+                if (decl->as.type_decl.type_param_count > 0) {
+                    if (cg.generic_template_count < 64) {
+                        cg.generic_templates[cg.generic_template_count] =
+                            decl->as.type_decl.name;
+                        cg.generic_template_decls[cg.generic_template_count] = decl;
+                        cg.generic_template_count++;
+                    }
+                    continue;
+                }
+
                 /* Use mangled LLVM type name to avoid collisions across modules */
                 char llvm_type_name[512];
                 mangle_type(decl->module_name, decl->as.type_decl.name,
@@ -535,6 +581,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->as.type_decl.decl_kind != TypeDeclStruct
             && decl->as.type_decl.decl_kind != TypeDeclUnion)
             continue;
+
+        /* skip generic template structs — they have no concrete LLVM type */
+        if (decl->as.type_decl.type_param_count > 0) continue;
 
         struct_reg_t *sr = find_struct(&cg, decl->as.type_decl.name);
         if (!sr) continue;
@@ -567,12 +616,29 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             heap_t ft_heap = NullHeap;
             usize_t llvm_field_count = 0;
 
+            /* first pass: collect @comptime: fields */
+            for (usize_t j = 0; j < fc; j++) {
+                node_t *field = decl->as.type_decl.fields.items[j];
+                if (!(field->as.var_decl.flags & VdeclComptimeField)) continue;
+                if (sr->ct_field_count >= 16) continue;
+                long val = 0;
+                if (field->as.var_decl.init && field->as.var_decl.init->kind == NodeIntLitExpr)
+                    val = field->as.var_decl.init->as.int_lit.value;
+                sr->ct_fields[sr->ct_field_count].name = field->as.var_decl.name;
+                sr->ct_fields[sr->ct_field_count].value = val;
+                sr->ct_field_count++;
+            }
+
             if (fc > 0) {
                 ft_heap = allocate(fc, sizeof(LLVMTypeRef));
                 field_types = ft_heap.pointer;
                 usize_t j = 0;
                 while (j < fc) {
                     node_t *field = decl->as.type_decl.fields.items[j];
+
+                    /* skip @comptime: fields — they have no runtime layout */
+                    if (field->as.var_decl.flags & VdeclComptimeField) { j++; continue; }
+
                     int bw = field->as.var_decl.bitfield_width;
                     if (bw > 0) {
                         /* start of a bitfield group — pack consecutive bitfields
@@ -751,6 +817,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->from_lib && decl->as.fn_decl.linkage == LinkageInternal)
                 continue;
 
+            /* skip generic template functions (methods of generic structs) */
+            if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name
+                    && is_generic_template(&cg, decl->as.fn_decl.struct_name))
+                continue;
+            /* skip functions with their own @comptime[T] params
+               (they get generated on demand during generic instantiation) */
+            if (decl->as.fn_decl.type_param_count > 0) continue;
+
             /* build the LLVM symbol name: mangle for imported Stasha modules,
                leave raw for root-module and C extern symbols */
             char fn_name[512];
@@ -859,6 +933,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->as.type_decl.decl_kind != TypeDeclStruct
             && decl->as.type_decl.decl_kind != TypeDeclUnion)
             continue;
+        /* skip generic template structs */
+        if (decl->as.type_decl.type_param_count > 0) continue;
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
 
@@ -921,6 +997,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         /* library-backed functions: body lives in the .a — skip codegen */
         if (decl->from_lib) continue;
+
+        /* skip generic template functions */
+        if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name
+                && is_generic_template(&cg, decl->as.fn_decl.struct_name))
+            continue;
+        if (decl->as.fn_decl.type_param_count > 0) continue;
 
         /* rebuild the mangled name the same way pass 1 did */
         char fn_name[512];
@@ -1088,6 +1170,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         /* library-backed: all method bodies live in the .a — skip */
         if (decl->from_lib) continue;
+
+        /* skip generic template structs — methods generated lazily */
+        if (decl->as.type_decl.type_param_count > 0) continue;
 
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];

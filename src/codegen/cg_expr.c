@@ -1372,6 +1372,10 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             if (this_sym) {
                 char *smtn = obj->as.self_member.type_name;
                 if (!smtn) smtn = cg->current_struct_name;
+                /* apply generic substitution */
+                if (smtn && cg->generic_tmpl_name && cg->generic_inst_name
+                        && strcmp(smtn, cg->generic_tmpl_name) == 0)
+                    smtn = cg->generic_inst_name;
                 struct_reg_t *sr = find_struct(cg, smtn);
                 if (sr) {
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
@@ -1447,6 +1451,9 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         char *field = target->as.self_member.field;
         char *type_name = target->as.self_member.type_name;
         if (!type_name) type_name = cg->current_struct_name;
+        if (type_name && cg->generic_tmpl_name && cg->generic_inst_name
+                && strcmp(type_name, cg->generic_tmpl_name) == 0)
+            type_name = cg->generic_inst_name;
         symbol_t *this_sym = cg_lookup(cg, "this");
         if (this_sym) {
             struct_reg_t *sr = find_struct(cg, type_name);
@@ -1786,6 +1793,10 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
     char *type_name = node->as.self_member.type_name;
     /* NULL type_name means 'this' keyword was used — resolve from current struct context */
     if (!type_name) type_name = cg->current_struct_name;
+    /* apply generic substitution: during instantiation the template name is mapped to the inst name */
+    if (cg->generic_tmpl_name && cg->generic_inst_name && type_name
+            && strcmp(type_name, cg->generic_tmpl_name) == 0)
+        type_name = cg->generic_inst_name;
     struct_reg_t *sr = find_struct(cg, type_name);
     if (!sr) {
         diag_begin_error("unknown struct '%s'", type_name);
@@ -2368,7 +2379,18 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         }
         case NodeDesigInit: {
             /* Type { .x = 1, .y = 2 } — designated initializer */
-            struct_reg_t *sr = find_struct(cg, node->as.desig_init.type_name);
+            const char *di_name = node->as.desig_init.type_name;
+            /* apply generic substitution if active */
+            if (di_name && cg->generic_n > 0) {
+                const char *sub = cg_subst_name(cg, di_name);
+                if (sub != di_name) di_name = sub;
+            }
+            if (di_name && cg->generic_tmpl_name && cg->generic_inst_name
+                    && strcmp(di_name, cg->generic_tmpl_name) == 0)
+                di_name = cg->generic_inst_name;
+            struct_reg_t *sr = find_struct(cg, di_name);
+            if (!sr && di_name != node->as.desig_init.type_name)
+                sr = find_struct(cg, node->as.desig_init.type_name);
             if (!sr) {
                 diag_begin_error("unknown struct '%s' in designated initializer",
                         node->as.desig_init.type_name);

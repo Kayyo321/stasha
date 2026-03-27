@@ -46,13 +46,18 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
 
-    /* Catch unknown user-defined types before generating any code. */
+    /* Catch unknown user-defined types before generating any code.
+     * For generic instantiations (name contains _G_), trigger lazy instantiation first. */
     if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
         if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
-            diag_begin_error("unknown type '%s'", ti.user_name);
-            diag_span(DIAG_NODE(node), True, "type used here");
-            diag_note("did you forget to define or import the type?");
-            diag_finish();
+            if (strstr(ti.user_name, "_G_"))
+                try_instantiate_generic(cg, ti.user_name);
+            if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
+                diag_begin_error("unknown type '%s'", ti.user_name);
+                diag_span(DIAG_NODE(node), True, "type used here");
+                diag_note("did you forget to define or import the type?");
+                diag_finish();
+            }
         }
     }
 
@@ -1266,64 +1271,167 @@ static void gen_comptime_if(cg_t *cg, node_t *node) {
     }
 }
 
+/* ── comptime expression evaluator ── */
+
+static boolean_t eval_comptime_expr(cg_t *cg, node_t *expr, long *out);
+
+static boolean_t lookup_comptime_field(cg_t *cg, const char *struct_name,
+                                       const char *field, long *out) {
+    /* strip generic suffix: "table_t_G_i32_G_f32" → "table_t" */
+    const char *g = strstr(struct_name, "_G_");
+    char template_name[256];
+    const char *lookup_name = struct_name;
+    if (g) {
+        usize_t prefix_len = (usize_t)(g - struct_name);
+        if (prefix_len < sizeof(template_name)) {
+            memcpy(template_name, struct_name, prefix_len);
+            template_name[prefix_len] = '\0';
+            lookup_name = template_name;
+        }
+    }
+    /* search registered struct comptime fields */
+    struct_reg_t *sr = find_struct(cg, lookup_name);
+    if (!sr && lookup_name != struct_name) sr = find_struct(cg, struct_name);
+    if (sr) {
+        for (usize_t i = 0; i < sr->ct_field_count; i++) {
+            if (strcmp(sr->ct_fields[i].name, field) == 0) {
+                *out = sr->ct_fields[i].value;
+                return True;
+            }
+        }
+    }
+    /* search AST directly for @comptime: field with matching name */
+    if (cg->root_ast) {
+        node_t *root = cg->root_ast;
+        for (usize_t di = 0; di < root->as.module.decls.count; di++) {
+            node_t *d = root->as.module.decls.items[di];
+            if (d->kind != NodeTypeDecl) continue;
+            const char *dname = d->as.type_decl.name;
+            if (strcmp(dname, lookup_name) != 0 && strcmp(dname, struct_name) != 0) continue;
+            for (usize_t fi = 0; fi < d->as.type_decl.fields.count; fi++) {
+                node_t *f = d->as.type_decl.fields.items[fi];
+                if (f->kind != NodeVarDecl) continue;
+                if (!(f->as.var_decl.flags & VdeclComptimeField)) continue;
+                if (strcmp(f->as.var_decl.name, field) != 0) continue;
+                if (f->as.var_decl.init && f->as.var_decl.init->kind == NodeIntLitExpr) {
+                    *out = f->as.var_decl.init->as.int_lit.value;
+                    return True;
+                }
+                if (f->as.var_decl.init && f->as.var_decl.init->kind == NodeBoolLitExpr) {
+                    *out = f->as.var_decl.init->as.bool_lit.value ? 1 : 0;
+                    return True;
+                }
+            }
+        }
+    }
+    return False;
+}
+
+static boolean_t eval_comptime_expr(cg_t *cg, node_t *expr, long *out) {
+    if (!expr) return False;
+    switch (expr->kind) {
+        case NodeIntLitExpr:
+            *out = expr->as.int_lit.value;
+            return True;
+        case NodeBoolLitExpr:
+            *out = expr->as.bool_lit.value ? 1 : 0;
+            return True;
+        case NodeSizeofExpr: {
+            LLVMTypeRef ty = get_llvm_type(cg, expr->as.sizeof_expr.type);
+            *out = (long)LLVMABISizeOfType(LLVMGetModuleDataLayout(cg->module), ty);
+            return True;
+        }
+        case NodeMemberExpr: {
+            node_t *obj = expr->as.member_expr.object;
+            if (obj && obj->kind == NodeIdentExpr) {
+                return lookup_comptime_field(cg, obj->as.ident.name,
+                                            expr->as.member_expr.field, out);
+            }
+            return False;
+        }
+        case NodeUnaryPrefixExpr:
+            if (expr->as.unary.op == TokMinus) {
+                long v;
+                if (!eval_comptime_expr(cg, expr->as.unary.operand, &v)) return False;
+                *out = -v;
+                return True;
+            }
+            if (expr->as.unary.op == TokBang) {
+                long v;
+                if (!eval_comptime_expr(cg, expr->as.unary.operand, &v)) return False;
+                *out = !v;
+                return True;
+            }
+            return False;
+        case NodeBinaryExpr: {
+            long l, r;
+            if (!eval_comptime_expr(cg, expr->as.binary.left, &l)) return False;
+            if (!eval_comptime_expr(cg, expr->as.binary.right, &r)) return False;
+            switch (expr->as.binary.op) {
+                case TokPlus:    *out = l + r;  return True;
+                case TokMinus:   *out = l - r;  return True;
+                case TokStar:    *out = l * r;  return True;
+                case TokSlash:   if (!r) return False; *out = l / r; return True;
+                case TokPercent: if (!r) return False; *out = l % r; return True;
+                case TokEqEq:    *out = l == r; return True;
+                case TokBangEq:  *out = l != r; return True;
+                case TokLt:      *out = l < r;  return True;
+                case TokLtEq:    *out = l <= r; return True;
+                case TokGt:      *out = l > r;  return True;
+                case TokGtEq:    *out = l >= r; return True;
+                case TokAmpAmp:  *out = l && r; return True;
+                case TokPipePipe:*out = l || r; return True;
+                case TokAmp:     *out = l & r;  return True;
+                case TokPipe:    *out = l | r;  return True;
+                case TokCaret:   *out = l ^ r;  return True;
+                case TokLtLt:    *out = l << r; return True;
+                case TokGtGt:    *out = l >> r; return True;
+                default: return False;
+            }
+        }
+        default:
+            return False;
+    }
+}
+
+static void comptime_assert_fail(cg_t *cg, node_t *node,
+                                  const char *message, const char *detail) {
+    (void)cg;
+    if (message && detail)
+        diag_begin_error("comptime_assert failed: %s (%s)", message, detail);
+    else if (message)
+        diag_begin_error("comptime_assert failed: %s", message);
+    else if (detail)
+        diag_begin_error("comptime_assert failed (%s)", detail);
+    else
+        diag_begin_error("comptime_assert failed");
+    diag_span(DIAG_NODE(node), True, "assertion failed here");
+    diag_note("the assertion evaluated at compile time and did not hold");
+    diag_finish();
+}
+
 static void gen_comptime_assert(cg_t *cg, node_t *node) {
-    /* compile-time assertion: evaluate constant expression */
     node_t *expr = node->as.comptime_assert.expr;
     char *message = node->as.comptime_assert.message;
 
-    /* try to evaluate simple constant comparisons */
-    if (expr->kind == NodeBinaryExpr && expr->as.binary.op == TokEqEq) {
-        node_t *l = expr->as.binary.left;
-        node_t *r = expr->as.binary.right;
-        if (l->kind == NodeSizeofExpr && r->kind == NodeIntLitExpr) {
-            LLVMTypeRef ty = get_llvm_type(cg, l->as.sizeof_expr.type);
-            unsigned long long sz = LLVMABISizeOfType(
-                LLVMGetModuleDataLayout(cg->module), ty);
-            if (sz != (unsigned long long)r->as.int_lit.value) {
-                if (message)
-                    diag_begin_error("comptime_assert failed: %s (sizeof = %llu, expected %ld)",
-                            message, sz, r->as.int_lit.value);
-                else
-                    diag_begin_error("comptime_assert failed: sizeof = %llu, expected %ld",
-                            sz, r->as.int_lit.value);
-                diag_span(DIAG_NODE(node), True, "assertion failed here");
-                diag_note("the assertion evaluated at compile time and did not hold");
-                diag_finish();
+    long val;
+    if (eval_comptime_expr(cg, expr, &val)) {
+        if (!val) {
+            /* build a detail string for binary comparisons */
+            char detail[128] = {0};
+            if (expr->kind == NodeBinaryExpr) {
+                long l, r;
+                if (eval_comptime_expr(cg, expr->as.binary.left, &l) &&
+                    eval_comptime_expr(cg, expr->as.binary.right, &r))
+                    snprintf(detail, sizeof(detail), "%ld vs %ld", l, r);
             }
-            return;
-        }
-        /* int == int */
-        if (l->kind == NodeIntLitExpr && r->kind == NodeIntLitExpr) {
-            if (l->as.int_lit.value != r->as.int_lit.value) {
-                if (message)
-                    diag_begin_error("comptime_assert failed: %s (%ld != %ld)",
-                            message, l->as.int_lit.value, r->as.int_lit.value);
-                else
-                    diag_begin_error("comptime_assert failed: %ld != %ld",
-                            l->as.int_lit.value, r->as.int_lit.value);
-                diag_span(DIAG_NODE(node), True, "assertion failed here");
-                diag_note("the assertion evaluated at compile time and did not hold");
-                diag_finish();
-            }
-            return;
-        }
-    }
-    /* boolean literal */
-    if (expr->kind == NodeBoolLitExpr) {
-        if (!expr->as.bool_lit.value) {
-            if (message)
-                diag_begin_error("comptime_assert failed: %s", message);
-            else
-                diag_begin_error("comptime_assert failed");
-            diag_span(DIAG_NODE(node), True, "assertion failed here");
-            diag_note("the assertion evaluated at compile time and did not hold");
-            diag_finish();
+            comptime_assert_fail(cg, node, message, detail[0] ? detail : Null);
         }
         return;
     }
     diag_begin_error("comptime_assert: expression too complex to evaluate at compile time");
     diag_span(DIAG_NODE(node), True, "unsupported expression");
-    diag_note("only constants, sizeof, and arithmetic are supported in comptime_assert");
+    diag_note("only constants, sizeof, struct @comptime fields, and arithmetic are supported");
     diag_finish();
 }
 

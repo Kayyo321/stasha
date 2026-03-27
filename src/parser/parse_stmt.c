@@ -353,6 +353,27 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokAsm))          return parse_asm_stmt(p);
     if (check(p, TokComptimeIf))   return parse_comptime_if(p);
 
+    /* @comptime if / @comptime assert in statement context */
+    if (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* consume '@' */
+        if (check(p, TokIdent) && p->current.length == 8
+                && memcmp(p->current.start, "comptime", 8) == 0) {
+            advance_parser(p); /* consume 'comptime' */
+            if (check(p, TokIf)) {
+                advance_parser(p); /* consume 'if' */
+                return parse_comptime_if_body(p);
+            }
+            if (check(p, TokIdent) && p->current.length == 6
+                    && memcmp(p->current.start, "assert", 6) == 0) {
+                node_t *ca = parse_at_comptime_assert(p);
+                consume(p, TokSemicolon, "';'");
+                return ca;
+            }
+        }
+        restore_state(p, snap);
+    }
+
     if (check(p, TokBreak)) {
         usize_t line = p->current.line;
         advance_parser(p);

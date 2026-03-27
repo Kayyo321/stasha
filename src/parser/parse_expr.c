@@ -517,6 +517,53 @@ static node_t *parse_postfix(parser_t *p) {
             usize_t line = p->current.line;
             advance_parser(p);
 
+            /* generic instantiation in expression context: ident.[T1, T2] → ident_G_T1_G_T2 */
+            if (check(p, TokLBracket) && expr->kind == NodeIdentExpr) {
+                advance_parser(p); /* consume '[' */
+                char mangled[512];
+                usize_t mlen = strlen(expr->as.ident.name);
+                if (mlen < sizeof(mangled) - 1)
+                    memcpy(mangled, expr->as.ident.name, mlen);
+                while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    type_info_t arg = parse_type(p);
+                    const char *aname = comptime_type_name(arg);
+                    usize_t alen = strlen(aname);
+                    if (mlen + 3 + alen < sizeof(mangled) - 1) {
+                        memcpy(mangled + mlen, "_G_", 3); mlen += 3;
+                        memcpy(mangled + mlen, aname, alen); mlen += alen;
+                    }
+                    if (!match_tok(p, TokComma)) break;
+                }
+                consume(p, TokRBracket, "']'");
+                mangled[mlen] = '\0';
+                expr->as.ident.name = ast_strdup(mangled, mlen);
+                /* check for designated initializer: Type.[T] { .field = val, ... } */
+                if (check(p, TokLBrace)) {
+                    parser_state_t di_snap = save_state(p);
+                    advance_parser(p); /* consume '{' */
+                    if (check(p, TokDot)) {
+                        node_t *di = make_node(NodeDesigInit, expr->line);
+                        di->as.desig_init.type_name = expr->as.ident.name;
+                        node_list_init(&di->as.desig_init.fields);
+                        node_list_init(&di->as.desig_init.values);
+                        do {
+                            consume(p, TokDot, "'.'");
+                            token_t fname = consume(p, TokIdent, "field name");
+                            node_t *fn_node = make_node(NodeIdentExpr, fname.line);
+                            fn_node->as.ident.name = copy_token_text(fname);
+                            node_list_push(&di->as.desig_init.fields, fn_node);
+                            consume(p, TokEq, "'='");
+                            node_list_push(&di->as.desig_init.values, parse_expr(p));
+                        } while (match_tok(p, TokComma) && check(p, TokDot));
+                        consume(p, TokRBrace, "'}'");
+                        expr = di;
+                        continue;
+                    }
+                    restore_state(p, di_snap);
+                }
+                continue;
+            }
+
             /* this.field / this.method() — self-access via 'this' keyword */
             if (expr->kind == NodeIdentExpr
                     && strcmp(expr->as.ident.name, "this") == 0
