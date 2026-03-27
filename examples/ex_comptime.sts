@@ -96,9 +96,13 @@ heap:
 stack:
     ext i32 len, cap;
 
-    fn arr_t.push(stack T val): void { // gets T from line 93
+    fn push(stack T val): void { // gets T from line 93
         arr_t.(buf)[arr_t.(len)] = val;
         arr_t.(len) = arr_t.(len) + 1;
+    }
+
+    fn at(stack u32 idx): T {
+        ret this.buf[idx];
     }
 }
 
@@ -176,6 +180,8 @@ fn main(void): i32 {
     nums.push(10);
     nums.push(20);
     print.('nums.len={}\n', nums.len); // destructor called by default
+
+    print.('nums[0] = {}\nnums[1] = {}\n', nums.at(0), nums.at(1));
 
     // Two-parameter instantiation.
     stack pair_t.[i32, f32] p = pair_t.[i32, f32].new(1, 3.14);

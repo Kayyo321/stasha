@@ -1586,6 +1586,38 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
         }
     }
 
+    /* self-member pointer indexing: this.field[idx] inside a method */
+    if (obj->kind == NodeSelfMemberExpr) {
+        symbol_t *this_sym = cg_lookup(cg, "this");
+        if (this_sym) {
+            char *type_name = obj->as.self_member.type_name;
+            if (!type_name) type_name = cg->current_struct_name;
+            /* apply generic substitution: template name → instantiated name */
+            if (type_name && cg->generic_tmpl_name && cg->generic_inst_name
+                    && strcmp(type_name, cg->generic_tmpl_name) == 0)
+                type_name = cg->generic_inst_name;
+            struct_reg_t *sr = type_name ? find_struct(cg, type_name) : Null;
+            if (sr) {
+                LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
+                const char *fname = obj->as.self_member.field;
+                for (usize_t fi = 0; fi < sr->field_count; fi++) {
+                    if (strcmp(sr->fields[fi].name, fname) != 0) continue;
+                    LLVMValueRef field_gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
+                        this_ptr, (unsigned)sr->fields[fi].index, fname);
+                    LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
+                    LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "smfptr");
+                    type_info_t elem_ti = sr->fields[fi].type;
+                    elem_ti.is_pointer = False;
+                    LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
+                    index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "smidx");
+                    return LLVMBuildLoad2(cg->builder, elem_type, gep, "smelem");
+                }
+            }
+        }
+    }
+
     /* string literal indexing: expr[idx] where expr might be a str_lit */
     LLVMValueRef obj_val = gen_expr(cg, obj);
     if (llvm_is_ptr(LLVMTypeOf(obj_val))) {
