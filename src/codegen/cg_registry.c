@@ -13,6 +13,7 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
     }
     struct_reg_t *sr = &cg->structs[cg->struct_count++];
     sr->name = (char *)name;
+    sr->mod_prefix = Null;
     sr->llvm_type = llvm_type;
     sr->fields = Null;
     sr->field_count = 0;
@@ -20,6 +21,7 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
     sr->fields_heap = NullHeap;
     sr->destructor = Null;
     sr->is_union = is_union;
+    sr->ct_field_count = 0;
 }
 
 static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t type,
