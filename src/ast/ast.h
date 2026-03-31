@@ -179,6 +179,7 @@ typedef enum {
     /* added after initial release — keep at end to avoid shifting existing values */
     NodeLibImp,     /* libimp "name" from "path"|std */
     NodeHashExpr,   /* hash.(expr) — universal hash */
+    NodeEquExpr,    /* equ.(a, b) — universal equality */
     NodeFutureOp,   /* future.wait/ready/get/drop(handle) */
 } node_kind_t;
 
@@ -349,6 +350,7 @@ struct node {
         struct { node_t *message; } test_fail;        /* test_fail.('msg') */
         struct { char *type_name; char *method; node_list_t args; } self_method_call; /* Type.(method)(args) */
         struct { node_t *operand; } hash_expr;   /* hash.(expr) */
+        struct { node_t *left; node_t *right; } equ_expr; /* equ.(a, b) */
     } as;
 };
 

@@ -1,5 +1,19 @@
 /* ── expressions ── */
 
+/* forward declaration — defined in cg_generics.c */
+static type_info_t subst_type_info(cg_t *cg, type_info_t ti);
+
+/* Find the struct registry entry whose LLVM type matches ty.
+ * This is more reliable than LLVMGetStructName + find_struct because the
+ * LLVM struct name is mangled (e.g. "dstring__dstring_t") while the registry
+ * key is the plain name (e.g. "dstring_t"). */
+static struct_reg_t *find_struct_by_llvm_type(cg_t *cg, LLVMTypeRef ty) {
+    for (usize_t i = 0; i < cg->struct_count; i++) {
+        if (cg->structs[i].llvm_type == ty) return &cg->structs[i];
+    }
+    return Null;
+}
+
 /* convert any value to i1 for use as a boolean condition */
 static LLVMValueRef llvm_to_bool(cg_t *cg, LLVMValueRef val) {
     LLVMTypeRef t = LLVMTypeOf(val);
@@ -414,6 +428,10 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
             goto postfix_incdec_fail;
         }
         struct_reg_t *sr = find_struct(cg, operand->as.self_member.type_name);
+        /* In a generic instantiation the AST still holds the template base name;
+         * fall back to the mangled instantiated name stored in current_struct_name. */
+        if (!sr && cg->current_struct_name)
+            sr = find_struct(cg, cg->current_struct_name);
         if (!sr) {
             diag_begin_error("unknown struct in postfix ++/--");
             diag_finish();
@@ -768,6 +786,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
            then fall back to the legacy "Type.method" symtab key for root-module types. */
         {
         char mangled[512];
+        /* lazily instantiate generic if needed (e.g. map_t_G_K_G_V.new()) */
+        if (strstr(obj->as.ident.name, "_G_"))
+            try_instantiate_generic(cg, obj->as.ident.name);
         struct_reg_t *sr_static = find_struct(cg, obj->as.ident.name);
         if (sr_static && sr_static->mod_prefix && sr_static->mod_prefix[0]) {
             snprintf(mangled, sizeof(mangled), "%s__%s__%s",
@@ -821,6 +842,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         symbol_t *obj_sym = cg_lookup(cg, obj->as.ident.name);
         if (obj_sym && obj_sym->stype.base == TypeUser && obj_sym->stype.user_name) {
             char mangled[512];
+            /* lazily instantiate generic if needed (e.g. map_t_G_K_G_V instance method) */
+            if (strstr(obj_sym->stype.user_name, "_G_"))
+                try_instantiate_generic(cg, obj_sym->stype.user_name);
             struct_reg_t *sr_inst = find_struct(cg, obj_sym->stype.user_name);
             if (sr_inst && sr_inst->mod_prefix && sr_inst->mod_prefix[0]) {
                 snprintf(mangled, sizeof(mangled), "%s__%s__%s",
@@ -834,7 +858,14 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 usize_t argc = node->as.method_call.args.count + 1;
                 heap_t args_heap = allocate(argc, sizeof(LLVMValueRef));
                 LLVMValueRef *args = args_heap.pointer;
-                args[0] = obj_sym->value; /* pass pointer to struct */
+                /* For pointer-type variables (e.g. other: dstring_t *r), the alloca
+                 * holds the pointer value — load it first to get the actual struct ptr. */
+                if (obj_sym->stype.is_pointer) {
+                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                    args[0] = LLVMBuildLoad2(cg->builder, ptr_ty, obj_sym->value, "obj_ptr");
+                } else {
+                    args[0] = obj_sym->value; /* alloca = pointer to struct */
+                }
                 for (usize_t i = 0; i < node->as.method_call.args.count; i++)
                     args[i + 1] = gen_expr(cg, node->as.method_call.args.items[i]);
                 LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
@@ -1618,13 +1649,25 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
         }
     }
 
-    /* string literal indexing: expr[idx] where expr might be a str_lit */
+    /* general pointer indexing — try to recover element type from a cast expression
+     * (e.g. ((K *r)(slot + 1))[0] in generic bodies), otherwise default to i8. */
     LLVMValueRef obj_val = gen_expr(cg, obj);
     if (llvm_is_ptr(LLVMTypeOf(obj_val))) {
-        LLVMTypeRef i8ty = LLVMInt8TypeInContext(cg->ctx);
+        LLVMTypeRef elem_ty = Null;
+        if (obj->kind == NodeCastExpr) {
+            type_info_t cti = subst_type_info(cg, obj->as.cast_expr.target);
+            if (cti.is_pointer) {
+                cti.is_pointer = False;
+                elem_ty = get_llvm_type(cg, cti);
+                /* only use the type if it resolves to something useful (not opaque ptr) */
+                if (LLVMGetTypeKind(elem_ty) == LLVMPointerTypeKind)
+                    elem_ty = Null; /* unknown sub-type, fall back to i8 */
+            }
+        }
+        if (!elem_ty) elem_ty = LLVMInt8TypeInContext(cg->ctx);
         index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, i8ty, obj_val, &index_val, 1, "stridx");
-        return LLVMBuildLoad2(cg->builder, i8ty, gep, "ch");
+        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, obj_val, &index_val, 1, "stridx");
+        return LLVMBuildLoad2(cg->builder, elem_ty, gep, "ch");
     }
 
     diag_begin_error("cannot index a non-array or non-pointer type");
@@ -1744,6 +1787,11 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
     char *method    = node->as.self_method_call.method;
     /* NULL type_name means 'this' keyword was used — resolve from current struct context */
     if (!type_name) type_name = cg->current_struct_name;
+    /* In a generic instantiation the AST still holds the template base name;
+     * remap to the mangled instantiated name so struct/method lookups succeed. */
+    if (type_name && cg->generic_tmpl_name && cg->current_struct_name &&
+            strcmp(type_name, cg->generic_tmpl_name) == 0)
+        type_name = cg->current_struct_name;
 
     char mangled[256];
     symbol_t *fn_sym = Null;
@@ -1968,11 +2016,21 @@ static LLVMValueRef hash_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t
 static LLVMValueRef hash_value(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
     LLVMTypeRef i64 = LLVMInt64TypeInContext(cg->ctx);
     if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
-        const char *sname = LLVMGetStructName(ty);
-        if (sname) {
-            char mname[256];
-            snprintf(mname, sizeof(mname), "%s.hash", sname);
-            LLVMValueRef hfn = LLVMGetNamedFunction(cg->module, mname);
+        /* look up by LLVM type pointer — avoids mismatch between LLVM struct
+         * name (e.g. "dstring__dstring_t") and registry key ("dstring_t") */
+        struct_reg_t *sr = find_struct_by_llvm_type(cg, ty);
+        if (sr) {
+            LLVMValueRef hfn = Null;
+            if (sr->mod_prefix && sr->mod_prefix[0]) {
+                char mname[512];
+                snprintf(mname, sizeof(mname), "%s__%s__hash", sr->mod_prefix, sr->name);
+                hfn = LLVMGetNamedFunction(cg->module, mname);
+            }
+            if (!hfn) {
+                char mname[256];
+                snprintf(mname, sizeof(mname), "%s.hash", sr->name);
+                hfn = LLVMGetNamedFunction(cg->module, mname);
+            }
             if (hfn) {
                 LLVMValueRef tmp = alloc_in_entry(cg, ty, "hs_tmp");
                 LLVMBuildStore(cg->builder, val, tmp);
@@ -1981,8 +2039,7 @@ static LLVMValueRef hash_value(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
                 LLVMValueRef r = LLVMBuildCall2(cg->builder, fty, hfn, ca, 1, "fh");
                 return coerce_int(cg, r, i64);
             }
-            struct_reg_t *fsr = find_struct(cg, sname);
-            if (fsr) return hash_struct_default(cg, val, fsr);
+            return hash_struct_default(cg, val, sr);
         }
         return LLVMConstInt(i64, 0, 0);
     }
@@ -2007,11 +2064,19 @@ static LLVMValueRef gen_hash(cg_t *cg, node_t *node) {
     LLVMTypeRef  i64 = LLVMInt64TypeInContext(cg->ctx);
 
     if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
-        const char *sname = LLVMGetStructName(ty);
-        if (sname) {
-            char mname[256];
-            snprintf(mname, sizeof(mname), "%s.hash", sname);
-            LLVMValueRef hfn = LLVMGetNamedFunction(cg->module, mname);
+        struct_reg_t *sr = find_struct_by_llvm_type(cg, ty);
+        if (sr) {
+            LLVMValueRef hfn = Null;
+            if (sr->mod_prefix && sr->mod_prefix[0]) {
+                char mname[512];
+                snprintf(mname, sizeof(mname), "%s__%s__hash", sr->mod_prefix, sr->name);
+                hfn = LLVMGetNamedFunction(cg->module, mname);
+            }
+            if (!hfn) {
+                char mname[256];
+                snprintf(mname, sizeof(mname), "%s.hash", sr->name);
+                hfn = LLVMGetNamedFunction(cg->module, mname);
+            }
             if (hfn) {
                 LLVMValueRef tmp = alloc_in_entry(cg, ty, "hash_self");
                 LLVMBuildStore(cg->builder, val, tmp);
@@ -2020,12 +2085,90 @@ static LLVMValueRef gen_hash(cg_t *cg, node_t *node) {
                 LLVMValueRef r = LLVMBuildCall2(cg->builder, fty, hfn, ca, 1, "hash_r");
                 return coerce_int(cg, r, i64);
             }
-            struct_reg_t *sr = find_struct(cg, sname);
-            if (sr) return hash_struct_default(cg, val, sr);
+            return hash_struct_default(cg, val, sr);
         }
         return LLVMConstInt(i64, 0, 0);
     }
     return hash_primitive(cg, val, ty);
+}
+
+/* ── universal equality ── */
+
+/* Forward declarations for mutual recursion */
+static LLVMValueRef equ_value(cg_t *cg, LLVMValueRef lhs, LLVMValueRef rhs, LLVMTypeRef ty);
+static LLVMValueRef equ_struct_default(cg_t *cg, LLVMValueRef lhs, LLVMValueRef rhs, struct_reg_t *sr);
+
+/* Lookup the equ override function for a struct type (NULL if none defined). */
+static LLVMValueRef find_equ_fn(cg_t *cg, struct_reg_t *sr) {
+    if (sr->mod_prefix && sr->mod_prefix[0]) {
+        char mname[512];
+        snprintf(mname, sizeof(mname), "%s__%s__equ", sr->mod_prefix, sr->name);
+        LLVMValueRef fn = LLVMGetNamedFunction(cg->module, mname);
+        if (fn) return fn;
+    }
+    char mname[256];
+    snprintf(mname, sizeof(mname), "%s.equ", sr->name);
+    return LLVMGetNamedFunction(cg->module, mname);
+}
+
+static LLVMValueRef equ_value(cg_t *cg, LLVMValueRef lhs, LLVMValueRef rhs, LLVMTypeRef ty) {
+    LLVMTypeRef i1  = LLVMInt1TypeInContext(cg->ctx);
+
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        /* look up by LLVM type pointer — avoids LLVM-name vs registry-key mismatch */
+        struct_reg_t *sr = find_struct_by_llvm_type(cg, ty);
+        if (sr) {
+            LLVMValueRef efn = find_equ_fn(cg, sr);
+            if (efn) {
+                /* call override: equ(this_ptr, other_ptr) → bool */
+                LLVMValueRef a_tmp = alloc_in_entry(cg, ty, "eq_a");
+                LLVMValueRef b_tmp = alloc_in_entry(cg, ty, "eq_b");
+                LLVMBuildStore(cg->builder, lhs, a_tmp);
+                LLVMBuildStore(cg->builder, rhs, b_tmp);
+                LLVMTypeRef fty = LLVMGlobalGetValueType(efn);
+                LLVMValueRef ca[2] = { a_tmp, b_tmp };
+                LLVMValueRef r = LLVMBuildCall2(cg->builder, fty, efn, ca, 2, "eq_r");
+                return coerce_int(cg, r, i1);
+            }
+            return equ_struct_default(cg, lhs, rhs, sr);
+        }
+        return LLVMConstInt(i1, 0, 0); /* unknown struct: assume not equal (safe default) */
+    }
+
+    if (LLVMGetTypeKind(ty) == LLVMPointerTypeKind) {
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(cg->ctx);
+        LLVMValueRef li = LLVMBuildPtrToInt(cg->builder, lhs, i64, "lpi");
+        LLVMValueRef ri = LLVMBuildPtrToInt(cg->builder, rhs, i64, "rpi");
+        return LLVMBuildICmp(cg->builder, LLVMIntEQ, li, ri, "peq");
+    }
+
+    if (ty == LLVMFloatTypeInContext(cg->ctx) || ty == LLVMDoubleTypeInContext(cg->ctx)) {
+        return LLVMBuildFCmp(cg->builder, LLVMRealOEQ, lhs, rhs, "feq");
+    }
+
+    /* integer / bool: coerce rhs to lhs type then compare */
+    rhs = coerce_int(cg, rhs, ty);
+    return LLVMBuildICmp(cg->builder, LLVMIntEQ, lhs, rhs, "ieq");
+}
+
+static LLVMValueRef equ_struct_default(cg_t *cg, LLVMValueRef lhs, LLVMValueRef rhs,
+                                        struct_reg_t *sr) {
+    LLVMTypeRef i1     = LLVMInt1TypeInContext(cg->ctx);
+    LLVMValueRef result = LLVMConstInt(i1, 1, 0); /* start true */
+    for (usize_t i = 0; i < sr->field_count; i++) {
+        field_info_t *f  = &sr->fields[i];
+        LLVMValueRef lf  = LLVMBuildExtractValue(cg->builder, lhs, (unsigned)f->index, "efl");
+        LLVMValueRef rf  = LLVMBuildExtractValue(cg->builder, rhs, (unsigned)f->index, "efr");
+        LLVMValueRef feq = equ_value(cg, lf, rf, LLVMTypeOf(lf));
+        result = LLVMBuildAnd(cg->builder, result, feq, "eqand");
+    }
+    return result;
+}
+
+static LLVMValueRef gen_equ(cg_t *cg, node_t *node) {
+    LLVMValueRef lhs = gen_expr(cg, node->as.equ_expr.left);
+    LLVMValueRef rhs = gen_expr(cg, node->as.equ_expr.right);
+    return equ_value(cg, lhs, rhs, LLVMTypeOf(lhs));
 }
 
 static LLVMValueRef gen_sizeof(cg_t *cg, node_t *node) {
@@ -2096,6 +2239,36 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
                 LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
                 index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                 return LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidxptr");
+            }
+        }
+        /* &self.field[idx] — address of element in a self-member pointer field */
+        if (obj->kind == NodeSelfMemberExpr) {
+            symbol_t *this_sym = cg_lookup(cg, "this");
+            if (this_sym) {
+                char *type_name = obj->as.self_member.type_name;
+                if (!type_name) type_name = cg->current_struct_name;
+                if (type_name && cg->generic_tmpl_name && cg->generic_inst_name
+                        && strcmp(type_name, cg->generic_tmpl_name) == 0)
+                    type_name = cg->generic_inst_name;
+                struct_reg_t *sr = type_name ? find_struct(cg, type_name) : Null;
+                if (sr) {
+                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                    LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
+                    const char *fname = obj->as.self_member.field;
+                    for (usize_t fi = 0; fi < sr->field_count; fi++) {
+                        if (strcmp(sr->fields[fi].name, fname) != 0) continue;
+                        LLVMValueRef field_gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
+                            this_ptr, (unsigned)sr->fields[fi].index, fname);
+                        LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
+                        LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "smfptr");
+                        type_info_t elem_ti = sr->fields[fi].type;
+                        elem_ti.is_pointer = False;
+                        LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
+                        index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                        /* GEP only — no load, we want the address */
+                        return LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "smidxptr");
+                    }
+                }
             }
         }
     }
@@ -2289,6 +2462,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeNewExpr:          return gen_new(cg, node);
         case NodeSizeofExpr:       return gen_sizeof(cg, node);
         case NodeHashExpr:         return gen_hash(cg, node);
+        case NodeEquExpr:          return gen_equ(cg, node);
         case NodeNilExpr:          return gen_nil(cg);
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);

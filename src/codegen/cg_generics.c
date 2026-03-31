@@ -125,9 +125,22 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
         }
     }
 
-    /* return type — may reference T */
+    /* return type — may reference T; handle multi-return with aggregate struct */
+    usize_t ret_count = method_decl->as.fn_decl.return_count;
     type_info_t rti = resolve_alias(cg, method_decl->as.fn_decl.return_types[0]);
-    LLVMTypeRef ret_type = get_llvm_type(cg, rti);
+    LLVMTypeRef ret_type;
+    if (ret_count > 1) {
+        heap_t rt_heap = allocate(ret_count, sizeof(LLVMTypeRef));
+        LLVMTypeRef *rt_fields = rt_heap.pointer;
+        for (usize_t j = 0; j < ret_count; j++) {
+            type_info_t rtj = resolve_alias(cg, method_decl->as.fn_decl.return_types[j]);
+            rt_fields[j] = get_llvm_type(cg, rtj);
+        }
+        ret_type = LLVMStructTypeInContext(cg->ctx, rt_fields, (unsigned)ret_count, 0);
+        deallocate(rt_heap);
+    } else {
+        ret_type = get_llvm_type(cg, rti);
+    }
 
     LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes,
                                             (unsigned)total_params, 0);
@@ -148,6 +161,13 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
 
     /* generate body (skip if no body — extern / abstract) */
     if (!method_decl->as.fn_decl.body) return;
+
+    /* save and set module prefix so intra-module globals resolve correctly
+     * (e.g. MAP_EMPTY → map__MAP_EMPTY inside a map module method body) */
+    char saved_module_prefix[512];
+    memcpy(saved_module_prefix, cg->current_module_prefix, sizeof(saved_module_prefix));
+    mangle_module_prefix(module_name ? module_name : "", cg->current_module_prefix,
+                         sizeof(cg->current_module_prefix));
 
     cg->current_fn           = fn;
     cg->current_struct_name  = (char *)inst_struct_name;
@@ -189,14 +209,15 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
 
     LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg->builder);
     if (!LLVMGetBasicBlockTerminator(cur_bb)) {
-        if (rti.base == TypeVoid && !rti.is_pointer)
+        if (ret_count <= 1 && rti.base == TypeVoid && !rti.is_pointer)
             LLVMBuildRetVoid(cg->builder);
         else
-            LLVMBuildRet(cg->builder, LLVMConstNull(get_llvm_type(cg, rti)));
+            LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
     }
 
     cg->current_fn          = Null;
     cg->current_struct_name = Null;
+    memcpy(cg->current_module_prefix, saved_module_prefix, sizeof(cg->current_module_prefix));
 }
 
 /* Core generic instantiation.  Called lazily from get_llvm_base_type when an
@@ -269,6 +290,13 @@ static void try_instantiate_generic(cg_t *cg, const char *mangled_name) {
     register_struct(cg, inst_name_intern, stype, False);
     struct_reg_t *sr = find_struct(cg, inst_name_intern);
     if (!sr) goto restore;
+
+    /* set mod_prefix so gen_method_call can build the correct mangled name */
+    if (tmpl->module_name && tmpl->module_name[0]) {
+        char pfx[512];
+        mangle_module_prefix(tmpl->module_name, pfx, sizeof(pfx));
+        sr->mod_prefix = ast_strdup(pfx, strlen(pfx));
+    }
 
     /* ── copy @comptime: fields from template (values are constants) ── */
     {

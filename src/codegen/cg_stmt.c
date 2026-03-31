@@ -46,6 +46,24 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 
     type_info_t ti = resolve_alias(cg, node->as.var_decl.type);
 
+    /* Substitute generic type parameters (T → i32, K → u64, etc.) when
+     * declaring a local variable inside a generic method instantiation. */
+    if (ti.base == TypeUser && ti.user_name && cg->generic_n > 0) {
+        for (usize_t gi = 0; gi < cg->generic_n; gi++) {
+            if (strcmp(ti.user_name, cg->generic_params[gi]) == 0) {
+                type_info_t concrete = cg->generic_concs[gi];
+                concrete.is_pointer = ti.is_pointer;
+                concrete.ptr_perm   = ti.ptr_perm;
+                ti = concrete;
+                break;
+            }
+        }
+        if (ti.base == TypeUser && ti.user_name) {
+            const char *subst = cg_subst_name(cg, ti.user_name);
+            if (subst != ti.user_name) ti.user_name = (char *)subst;
+        }
+    }
+
     /* Catch unknown user-defined types before generating any code.
      * For generic instantiations (name contains _G_), trigger lazy instantiation first. */
     if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {

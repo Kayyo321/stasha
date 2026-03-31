@@ -150,6 +150,29 @@ stack:
     ext fn characters(void): heap i8 *r {
         return dstring_t.(chars);
     }
+
+    // Content-based hash: FNV-1a over each byte so two dstring_t values
+    // with identical text always produce the same hash.(key) result.
+    ext fn hash(void): u64 {
+        stack u64 h = 0xcbf29ce484222325;  // FNV-1a offset basis
+        final u64 prime = 0x100000001b3;   // FNV prime
+        for (i32 i = 0; i < dstring_t.(len); i++) {
+            h = h ^ (u64)(u8)dstring_t.(chars)[i];
+            h = h * prime;
+        }
+        ret h;
+    }
+
+    // Content-based equality: used by equ.(a, b) when K = dstring_t.
+    ext fn equ(stack dstring_t *r other): bool {
+        if (dstring_t.(len) != (i32)other.length()) { ret false; }
+        final i32 n = dstring_t.(len);
+        stack i8 *r oc = other.characters();
+        for (i32 i = 0; i < n; i++) {
+            if (dstring_t.(chars)[i] != oc[i]) { ret false; }
+        }
+        ret true;
+    }
 }
 
 ext fn dstring_t.new(void): dstring_t {

@@ -1,35 +1,31 @@
 mod buffer;
 
-// A growable raw-byte buffer for storing fixed-size items.
-// New items are appended with push(); elements accessed by index with at().
+// A growable typed buffer — generic via comptime type parameter T.
+// Items are appended with push() and accessed by index with at().
 
-ext type buffer_t: struct {
+ext type buffer_t: @comptime[T] struct {
 heap:
-    int u8 *rw bytes;
+    int T *rw buf;
 
 stack:
-    int u32 length, capacity, size_of_one_item;
+    int u32 length, capacity;
 
     // Return a read-only pointer to element at idx, or error if out of bounds.
-    ext fn at(stack u32 idx): [heap u8 *r, error] {
+    ext fn at(stack u32 idx): [T *r, error] {
         if (idx >= buffer_t.(length)) {
             ret nil, error.('index {} is out of bounds in buffer with length of: {}', idx, buffer_t.(length));
         }
-        ret buffer_t.(bytes) + (idx * buffer_t.(size_of_one_item)), nil;
+        ret &buffer_t.(buf)[idx], nil;
     }
 
-    // Copy size_of_one_item bytes from src into the buffer, growing if needed.
-    ext fn push(stack u8 *r src): void {
-        if (buffer_t.(length) >= buffer_t.(capacity) / buffer_t.(size_of_one_item)) {
-            final u32 new_cap = buffer_t.(capacity) * 2;
-            buffer_t.(bytes) = mov.(buffer_t.(bytes), new_cap);
+    // Append a value, growing the buffer if needed.
+    ext fn push(stack T val): void {
+        if (buffer_t.(length) >= buffer_t.(capacity)) {
+            final u32 new_cap = buffer_t.(capacity) == 0 ? 8 : buffer_t.(capacity) * 2;
+            buffer_t.(buf)      = mov.(buffer_t.(buf), new_cap * sizeof.(T));
             buffer_t.(capacity) = new_cap;
         }
-        final u32 offset = buffer_t.(length) * buffer_t.(size_of_one_item);
-        final u32 n = buffer_t.(size_of_one_item);
-        for (i32 i = 0; i < (i32)n; i++) {
-            buffer_t.(bytes)[offset + (u32)i] = src[i];
-        }
+        buffer_t.(buf)[buffer_t.(length)] = val;
         buffer_t.(length)++;
     }
 
@@ -58,90 +54,80 @@ stack:
     }
 }
 
-ext fn buffer_t.new(stack u32 size_of_one_item): buffer_t {
-    stack buffer_t b;
-    b.length = 0;
-    b.capacity = 2 * size_of_one_item;
-    b.size_of_one_item = size_of_one_item;
-    b.bytes = new.(b.capacity);
-    ret b;
+ext fn @comptime[T] buffer_t.new(void): buffer_t.[T] {
+    ret buffer_t.[T] {
+        .buf      = nil,
+        .length   = 0,
+        .capacity = 0,
+    };
 }
 
 ext fn buffer_t.rem(void): void {
-    if (buffer_t.(bytes) != nil) {
-        rem.(buffer_t.(bytes));
+    if (buffer_t.(buf) != nil) {
+        rem.(buffer_t.(buf));
     }
-    buffer_t.(length) = 0;
+    buffer_t.(buf)      = nil;
+    buffer_t.(length)   = 0;
     buffer_t.(capacity) = 0;
-    buffer_t.(size_of_one_item) = 0;
-    buffer_t.(bytes) = nil;
 }
 
 test 'buffer is_empty after new' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
     expect.(buf.is_empty());
     expect_eq.(buf.length(), 0);
 }
 
 test 'buffer push and length' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
-    stack i32 v1 = 10; stack i32 *rw p1 = &v1;
-    stack i32 v2 = 20; stack i32 *rw p2 = &v2;
-    buf.push((u8 *r)p1);
-    buf.push((u8 *r)p2);
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(10);
+    buf.push(20);
     expect_eq.(buf.length(), 2);
     expect.(!buf.is_empty());
 }
 
 test 'buffer at reads correct value' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
-    stack i32 v = 42; stack i32 *rw vp = &v;
-    buf.push((u8 *r)vp);
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(42);
     stack let [ptr, e] = buf.at(0);
     expect.(e == nil);
-    expect_eq.(((i32 *r)ptr)[0], 42);
+    expect_eq.(ptr[0], 42);
 }
 
 test 'buffer pop decrements length' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
-    stack i32 v = 7; stack i32 *rw vp = &v;
-    buf.push((u8 *r)vp);
-    buf.push((u8 *r)vp);
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(7);
+    buf.push(7);
     buf.pop();
     expect_eq.(buf.length(), 1);
 }
 
 test 'buffer clear resets length' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
-    stack i32 v = 1; stack i32 *rw vp = &v;
-    buf.push((u8 *r)vp);
-    buf.push((u8 *r)vp);
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(1);
+    buf.push(1);
     buf.clear();
     expect_eq.(buf.length(), 0);
     expect.(buf.is_empty());
 }
 
 test 'buffer at out of bounds returns error' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
     stack let [ptr, e] = buf.at(0);
     expect.(e != nil);
 }
 
 test 'buffer multiple values' {
-    heap buffer_t buf = buffer_t.new(sizeof.(i32));
-    stack i32 a = 11; stack i32 *rw ap = &a;
-    stack i32 b = 22; stack i32 *rw bp = &b;
-    stack i32 c = 33; stack i32 *rw cp = &c;
-    buf.push((u8 *r)ap);
-    buf.push((u8 *r)bp);
-    buf.push((u8 *r)cp);
+    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(11);
+    buf.push(22);
+    buf.push(33);
     stack let [p0, e0] = buf.at(0);
     stack let [p1, e1] = buf.at(1);
     stack let [p2, e2] = buf.at(2);
     expect.(e0 == nil);
     expect.(e1 == nil);
     expect.(e2 == nil);
-    expect_eq.(((i32 *r)p0)[0], 11);
-    expect_eq.(((i32 *r)p1)[0], 22);
-    expect_eq.(((i32 *r)p2)[0], 33);
+    expect_eq.(p0[0], 11);
+    expect_eq.(p1[0], 22);
+    expect_eq.(p2[0], 33);
 }

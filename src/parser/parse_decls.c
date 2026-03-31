@@ -173,11 +173,23 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
         /* inline method — not allowed in @comptime: section */
         if (check(p, TokFn)) {
             advance_parser(p);
-            token_t fn_name = consume(p, TokIdent, "method name");
+            /* accept ident or built-in keywords used as method names (hash, equ, new, rem, ...) */
+            token_t fn_name;
+            if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
+                    || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
+                fn_name = p->current; advance_parser(p);
+            } else {
+                fn_name = consume(p, TokIdent, "method name");
+            }
             /* allow "fn struct_name.method_name" — skip the struct_name. prefix */
             if (check(p, TokDot)) {
                 advance_parser(p); /* consume '.' */
-                fn_name = consume(p, TokIdent, "method name");
+                if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
+                        || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
+                    fn_name = p->current; advance_parser(p);
+                } else {
+                    fn_name = consume(p, TokIdent, "method name");
+                }
             }
             consume(p, TokLParen, "'('");
             node_list_t params;
@@ -656,6 +668,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             advance_parser(p);
         } else if (check(p, TokHash)) {
             name = ast_strdup("hash", 4);
+            advance_parser(p);
+        } else if (check(p, TokEqu)) {
+            name = ast_strdup("equ", 3);
             advance_parser(p);
         } else {
             diag_begin_error("expected a method name after '.'");

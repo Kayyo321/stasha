@@ -119,6 +119,22 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* equ.(a, b) — universal equality */
+    if (check(p, TokEqu)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *left = parse_expr(p);
+        consume(p, TokComma, "','");
+        node_t *right = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeEquExpr, line);
+        n->as.equ_expr.left  = left;
+        n->as.equ_expr.right = right;
+        return n;
+    }
+
     /* sizeof.(type) */
     if (check(p, TokSizeof)) {
         usize_t line = p->current.line;
@@ -423,13 +439,20 @@ static node_t *parse_primary(parser_t *p) {
         boolean_t saved_err = p->had_error;
         advance_parser(p); /* consume '(' */
 
-        if (is_builtin_type_token(p->current.kind)) {
+        if (is_builtin_type_token(p->current.kind) || check(p, TokIdent)) {
+            boolean_t was_ident = check(p, TokIdent);
             boolean_t err_before_type = p->had_error;
             type_info_t cast_type = parse_type(p);
-            if (check(p, TokRParen) && p->had_error == err_before_type) {
+            /* For user-defined types (ident), only accept as a cast when the
+             * parsed type is a pointer type (e.g. (K *r)p, (MyStruct *rw)q).
+             * Bare non-pointer ident casts like (Foo)x are too ambiguous with
+             * a grouped expression, so fall back to grouped-expression parsing.
+             * Builtin types (i32, u8, …) keep the existing any-type behaviour. */
+            if (check(p, TokRParen) && p->had_error == err_before_type
+                    && (!was_ident || cast_type.is_pointer)) {
                 usize_t line = p->previous.line;
                 advance_parser(p); /* consume ')' */
-                node_t *expr = parse_postfix(p); /* postfix (.field, [idx]) binds tighter than cast */
+                node_t *expr = parse_unary(p); /* unary so (type)&x works */
                 node_t *n = make_node(NodeCastExpr, line);
                 n->as.cast_expr.target = cast_type;
                 n->as.cast_expr.expr = expr;
