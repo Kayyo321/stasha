@@ -42,6 +42,21 @@ static void parse_type_params_into(parser_t *p,
         }
         token_t ptok = consume(p, TokIdent, "type parameter name");
         params_out[(*count_out)++] = copy_token_text(ptok);
+        /* consume optional .[constraint1, constraint2] syntax */
+        if (check(p, TokDot)) {
+            parser_state_t saved = save_state(p);
+            advance_parser(p); /* consume '.' */
+            if (match_tok(p, TokLBracket)) {
+                /* consume constraint list */
+                while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    advance_parser(p); /* skip constraint name */
+                    if (!match_tok(p, TokComma)) break;
+                }
+                consume(p, TokRBracket, "']'");
+            } else {
+                restore_state(p, saved);
+            }
+        }
         if (!match_tok(p, TokComma)) break;
     }
     consume(p, TokRBracket, "']'");
@@ -181,14 +196,27 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             } else {
                 fn_name = consume(p, TokIdent, "method name");
             }
-            /* allow "fn struct_name.method_name" — skip the struct_name. prefix */
+            /* allow "fn qualifier.method_name" — qualifier could be struct name or interface name */
+            char *iface_qual = Null;
             if (check(p, TokDot)) {
+                iface_qual = copy_token_text(fn_name); /* save qualifier */
                 advance_parser(p); /* consume '.' */
                 if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
                         || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
                     fn_name = p->current; advance_parser(p);
                 } else {
                     fn_name = consume(p, TokIdent, "method name");
+                }
+                /* handle double dot: fn StructName.iface_name.method_name — skip extra prefix */
+                if (check(p, TokDot)) {
+                    advance_parser(p); /* consume '.' */
+                    iface_qual = copy_token_text(fn_name); /* now iface_qual is the middle name */
+                    if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
+                            || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
+                        fn_name = p->current; advance_parser(p);
+                    } else {
+                        fn_name = consume(p, TokIdent, "method name");
+                    }
                 }
             }
             consume(p, TokLParen, "'('");
@@ -216,32 +244,53 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                 advance_parser(p);
             }
             consume(p, TokRParen, "')'");
-            consume(p, TokColon, "':'");
 
             usize_t ret_count = 0;
             type_info_t *ret_types = Null;
-            if (check(p, TokLBracket)) {
-                advance_parser(p);
-                node_list_t tmp;
-                node_list_init(&tmp);
-                do {
-                    type_info_t rt = parse_type(p);
-                    node_t *dummy = make_node(NodeVarDecl, p->previous.line);
-                    dummy->as.var_decl.type = rt;
-                    node_list_push(&tmp, dummy);
-                } while (match_tok(p, TokComma));
-                consume(p, TokRBracket, "']'");
-                ret_count = tmp.count;
-                ret_types = alloc_type_array(ret_count);
-                for (usize_t i = 0; i < ret_count; i++)
-                    ret_types[i] = tmp.items[i]->as.var_decl.type;
+            /* optional return type: ': type' or ': [types]' */
+            if (match_tok(p, TokColon)) {
+                if (check(p, TokLBracket)) {
+                    advance_parser(p);
+                    node_list_t tmp;
+                    node_list_init(&tmp);
+                    do {
+                        type_info_t rt = parse_type(p);
+                        node_t *dummy = make_node(NodeVarDecl, p->previous.line);
+                        dummy->as.var_decl.type = rt;
+                        node_list_push(&tmp, dummy);
+                    } while (match_tok(p, TokComma));
+                    consume(p, TokRBracket, "']'");
+                    ret_count = tmp.count;
+                    ret_types = alloc_type_array(ret_count);
+                    for (usize_t i = 0; i < ret_count; i++)
+                        ret_types[i] = tmp.items[i]->as.var_decl.type;
+                } else {
+                    ret_count = 1;
+                    ret_types = alloc_type_array(1);
+                    ret_types[0] = parse_type(p);
+                }
             } else {
+                /* no return type specified — default to void */
                 ret_count = 1;
                 ret_types = alloc_type_array(1);
-                ret_types[0] = parse_type(p);
+                ret_types[0] = NO_TYPE; /* void */
             }
 
-            node_t *body = parse_block(p);
+            /* expression body: => expr; */
+            node_t *body = Null;
+            if (match_tok(p, TokFatArrow)) {
+                usize_t body_line = p->current.line;
+                node_t *expr = parse_expr(p);
+                consume(p, TokSemicolon, "';'");
+                node_t *ret_node = make_node(NodeRetStmt, body_line);
+                node_list_init(&ret_node->as.ret_stmt.values);
+                node_list_push(&ret_node->as.ret_stmt.values, expr);
+                body = make_node(NodeBlock, body_line);
+                node_list_init(&body->as.block.stmts);
+                node_list_push(&body->as.block.stmts, ret_node);
+            } else {
+                body = parse_block(p);
+            }
             node_t *method = make_node(NodeFnDecl, fn_name.line);
             method->as.fn_decl.name = copy_token_text(fn_name);
             method->as.fn_decl.linkage = field_link;
@@ -251,6 +300,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             method->as.fn_decl.body = body;
             method->as.fn_decl.is_method = True;
             method->as.fn_decl.struct_name = decl->as.type_decl.name;
+            method->as.fn_decl.iface_qualifier = iface_qual;
             node_list_push(&decl->as.type_decl.methods, method);
             continue;
         }
@@ -326,8 +376,16 @@ static node_t *parse_match_stmt(parser_t *p) {
     n->as.match_stmt.expr = subject;
     node_list_init(&n->as.match_stmt.arms);
 
+    /* Detect whether this is an any-type match (subject is NodeAnyTypeExpr) */
+    boolean_t is_any_match = (subject->kind == NodeAnyTypeExpr);
+
     while (!check(p, TokRBrace) && !check(p, TokEof)) {
         node_t *arm = make_node(NodeMatchArm, p->current.line);
+        arm->is_any_arm = False;
+        arm->any_type_name = Null;
+        arm->any_bind_name = Null;
+        arm->any_bind_ti   = NO_TYPE;
+        arm->any_bind_storage = StorageDefault;
 
         /* wildcard arm: _ => { ... } */
         if (check(p, TokIdent) &&
@@ -337,6 +395,33 @@ static node_t *parse_match_stmt(parser_t *p) {
             arm->as.match_arm.enum_name    = Null;
             arm->as.match_arm.variant_name = Null;
             arm->as.match_arm.bind_name    = Null;
+        } else if (is_any_match && (is_builtin_type_token(p->current.kind) || check(p, TokIdent))) {
+            /* any-type arm: TypeName(storage TypeName binding) => { ... } */
+            arm->as.match_arm.is_wildcard = False;
+            arm->is_any_arm = True;
+            /* type name being matched */
+            if (is_builtin_type_token(p->current.kind)) {
+                arm->any_type_name = copy_token_text(p->current);
+                advance_parser(p);
+            } else {
+                token_t ttok = consume(p, TokIdent, "type name");
+                arm->any_type_name = copy_token_text(ttok);
+            }
+            arm->as.match_arm.variant_name = arm->any_type_name;
+            arm->as.match_arm.enum_name = Null;
+            arm->as.match_arm.bind_name = Null;
+            /* optional binding: (storage type name) */
+            if (match_tok(p, TokLParen)) {
+                storage_t ps = StorageDefault;
+                if (match_tok(p, TokStack))      ps = StorageStack;
+                else if (match_tok(p, TokHeap)) ps = StorageHeap;
+                arm->any_bind_storage = ps;
+                arm->any_bind_ti = parse_type(p);
+                token_t bname = consume(p, TokIdent, "binding name");
+                arm->any_bind_name = copy_token_text(bname);
+                arm->as.match_arm.bind_name = arm->any_bind_name;
+                consume(p, TokRParen, "')'");
+            }
         } else {
             /* pattern: EnumName.Variant  or  EnumName.Variant(bind) */
             arm->as.match_arm.is_wildcard = False;
@@ -388,6 +473,98 @@ static void parse_enum_body(parser_t *p, node_t *decl) {
 
         node_list_push(&decl->as.type_decl.variants, v);
         if (!match_tok(p, TokComma)) break;
+    }
+    consume(p, TokRBrace, "'}'");
+}
+
+/* ── interface body parsing ── */
+/* Parses: { method_name(params): ret_type; ... }
+   Methods have no body — they are signatures only. */
+static void parse_interface_body(parser_t *p, node_t *decl) {
+    consume(p, TokLBrace, "'{'");
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        usize_t line = p->current.line;
+        /* method name */
+        token_t mname;
+        if (check(p, TokIdent) || check(p, TokNew) || check(p, TokRem)) {
+            mname = p->current; advance_parser(p);
+        } else {
+            mname = consume(p, TokIdent, "method name");
+        }
+        consume(p, TokLParen, "'('");
+
+        node_list_t params;
+        node_list_init(&params);
+        if (!check(p, TokRParen) && !check(p, TokVoid)) {
+            type_info_t ptype = NO_TYPE;
+            storage_t last_ps = StorageDefault;
+            do {
+                storage_t ps = StorageDefault;
+                if (check(p, TokStack))      { ps = StorageStack; advance_parser(p); }
+                else if (check(p, TokHeap)) { ps = StorageHeap;  advance_parser(p); }
+                if (ps != StorageDefault) last_ps = ps;
+                else ps = last_ps;
+                if (can_start_param_type(p))
+                    ptype = parse_type(p);
+                /* optional param name */
+                if (check(p, TokIdent)) {
+                    token_t pname = p->current; advance_parser(p);
+                    /* handle grouped names: type a, b — if next token is comma+ident, it's grouped */
+                    node_t *param = make_node(NodeVarDecl, pname.line);
+                    param->as.var_decl.name = copy_token_text(pname);
+                    param->as.var_decl.type = ptype;
+                    param->as.var_decl.storage = ps;
+                    node_list_push(&params, param);
+                    /* check for grouped param names */
+                    while (check(p, TokComma)) {
+                        parser_state_t snap = save_state(p);
+                        advance_parser(p); /* consume comma */
+                        if (check(p, TokIdent) && !can_start_param_type(p)) {
+                            token_t gname = p->current; advance_parser(p);
+                            node_t *gparam = make_node(NodeVarDecl, gname.line);
+                            gparam->as.var_decl.name = copy_token_text(gname);
+                            gparam->as.var_decl.type = ptype;
+                            gparam->as.var_decl.storage = ps;
+                            node_list_push(&params, gparam);
+                        } else {
+                            restore_state(p, snap);
+                            break;
+                        }
+                    }
+                    continue; /* skip the outer do-while match_tok */
+                } else {
+                    /* no name, just type */
+                    node_t *param = make_node(NodeVarDecl, line);
+                    param->as.var_decl.name = ast_strdup("_", 1);
+                    param->as.var_decl.type = ptype;
+                    param->as.var_decl.storage = ps;
+                    node_list_push(&params, param);
+                }
+            } while (match_tok(p, TokComma));
+        } else if (check(p, TokVoid)) {
+            advance_parser(p);
+        }
+        consume(p, TokRParen, "')'");
+
+        /* optional return type: ': type' */
+        type_info_t ret_type = NO_TYPE;
+        if (match_tok(p, TokColon)) {
+            ret_type = parse_type(p);
+        }
+        consume(p, TokSemicolon, "';'");
+
+        node_t *fn = make_node(NodeFnDecl, line);
+        fn->as.fn_decl.name = copy_token_text(mname);
+        fn->as.fn_decl.linkage = LinkageExternal;
+        fn->as.fn_decl.is_method = False;
+        fn->as.fn_decl.struct_name = Null;
+        fn->as.fn_decl.body = Null;
+        fn->as.fn_decl.params = params;
+        fn->as.fn_decl.iface_qualifier = Null;
+        fn->as.fn_decl.return_types = alloc_type_array(1);
+        fn->as.fn_decl.return_types[0] = ret_type;
+        fn->as.fn_decl.return_count = 1;
+        node_list_push(&decl->as.type_decl.methods, fn);
     }
     consume(p, TokRBrace, "'}'");
 }
@@ -448,9 +625,50 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
         }
     }
 
-    if (check(p, TokStruct)) {
+    if (check(p, TokInterface)) {
+        advance_parser(p);
+        n->as.type_decl.decl_kind = TypeDeclInterface;
+        /* optional parent list: .[parent1, parent2] */
+        if (check(p, TokDot)) {
+            parser_state_t saved = save_state(p);
+            advance_parser(p); /* consume '.' */
+            if (match_tok(p, TokLBracket)) {
+                while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    if (n->as.type_decl.impl_iface_count < 8) {
+                        token_t pname = consume(p, TokIdent, "interface parent name");
+                        n->as.type_decl.impl_ifaces[n->as.type_decl.impl_iface_count++] =
+                            copy_token_text(pname);
+                    }
+                    if (!match_tok(p, TokComma)) break;
+                }
+                consume(p, TokRBracket, "']'");
+            } else {
+                restore_state(p, saved);
+            }
+        }
+        parse_interface_body(p, n);
+        match_tok(p, TokSemicolon);
+    } else if (check(p, TokStruct)) {
         advance_parser(p);
         n->as.type_decl.decl_kind = TypeDeclStruct;
+        /* optional interface implementation list: .[iface1, iface2] */
+        if (check(p, TokDot)) {
+            parser_state_t saved = save_state(p);
+            advance_parser(p); /* consume '.' */
+            if (match_tok(p, TokLBracket)) {
+                while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    if (n->as.type_decl.impl_iface_count < 8) {
+                        token_t iname = consume(p, TokIdent, "interface name");
+                        n->as.type_decl.impl_ifaces[n->as.type_decl.impl_iface_count++] =
+                            copy_token_text(iname);
+                    }
+                    if (!match_tok(p, TokComma)) break;
+                }
+                consume(p, TokRBracket, "']'");
+            } else {
+                restore_state(p, saved);
+            }
+        }
         parse_struct_body(p, n);
         match_tok(p, TokSemicolon); /* optional trailing ; */
     } else if (check(p, TokUnion)) {
@@ -746,7 +964,22 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         ret_types[0] = parse_type(p);
     }
 
-    node_t *body = parse_block(p);
+    /* expression-bodied function: fn name(...): T => expr; */
+    node_t *body = Null;
+    if (match_tok(p, TokFatArrow)) {
+        usize_t body_line = p->current.line;
+        node_t *expr = parse_expr(p);
+        consume(p, TokSemicolon, "';'");
+        /* synthesize: { ret expr; } */
+        node_t *ret_node = make_node(NodeRetStmt, body_line);
+        node_list_init(&ret_node->as.ret_stmt.values);
+        node_list_push(&ret_node->as.ret_stmt.values, expr);
+        body = make_node(NodeBlock, body_line);
+        node_list_init(&body->as.block.stmts);
+        node_list_push(&body->as.block.stmts, ret_node);
+    } else {
+        body = parse_block(p);
+    }
 
     node_t *n = make_node(NodeFnDecl, line);
     n->as.fn_decl.name = name;

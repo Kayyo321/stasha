@@ -68,7 +68,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
      * For generic instantiations (name contains _G_), trigger lazy instantiation first. */
     if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
         if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
-            if (strstr(ti.user_name, "_G_"))
+            if (strncmp(ti.user_name, "any_G_", 6) == 0)
+                try_instantiate_any(cg, ti.user_name);
+            else if (strstr(ti.user_name, "_G_"))
                 try_instantiate_generic(cg, ti.user_name);
             if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
                 diag_begin_error("unknown type '%s'", ti.user_name);
@@ -169,6 +171,36 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 LLVMGetInsertBlock(cg->builder));
         }
 
+        add_heap_var(cg, alloca_val);
+        return;
+    }
+
+    /* heap user-type (non-pointer struct/union): allocate via malloc */
+    if ((node->as.var_decl.storage == StorageHeap)
+        && ti.base == TypeUser && !ti.is_pointer
+        && !(node->as.var_decl.flags & VdeclArray)) {
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMValueRef alloca_val = alloc_in_entry(cg, ptr_ty, node->as.var_decl.name);
+        LLVMValueRef sz = LLVMSizeOf(type);
+        sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
+        LLVMValueRef malloc_args[1] = { sz };
+        LLVMValueRef heap_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
+                                                cg->malloc_fn, malloc_args, 1, "hmalloc");
+        LLVMBuildStore(cg->builder, heap_ptr, alloca_val);
+        if (node->as.var_decl.init) {
+            cg->hint_ret_type = type;
+            LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
+            cg->hint_ret_type = Null;
+            init = coerce_int(cg, init, type);
+            LLVMBuildStore(cg->builder, init, heap_ptr);
+        }
+        symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti,
+                   (node->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
+        symtab_set_last_storage(&cg->locals, StorageHeap, True);
+        symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
+                              node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
+                              cg->dtor_depth, -1);
+        symtab_set_last_line(&cg->locals, node->line);
         add_heap_var(cg, alloca_val);
         return;
     }
@@ -1018,21 +1050,72 @@ static void gen_match(cg_t *cg, node_t *node) {
     usize_t arm_count = node->as.match_stmt.arms.count;
     if (arm_count == 0) return;
 
+    /* Detect any-type match: subject is NodeAnyTypeExpr */
+    boolean_t is_any_match = (subject_node->kind == NodeAnyTypeExpr);
+
     /* find enum registry from the first non-wildcard arm */
     enum_reg_t *er = Null;
-    for (usize_t i = 0; i < arm_count; i++) {
-        node_t *arm = node->as.match_stmt.arms.items[i];
-        if (!arm->as.match_arm.is_wildcard && arm->as.match_arm.enum_name) {
-            er = find_enum(cg, arm->as.match_arm.enum_name);
-            break;
+    if (!is_any_match) {
+        for (usize_t i = 0; i < arm_count; i++) {
+            node_t *arm = node->as.match_stmt.arms.items[i];
+            if (!arm->as.match_arm.is_wildcard && arm->as.match_arm.enum_name) {
+                er = find_enum(cg, arm->as.match_arm.enum_name);
+                break;
+            }
         }
     }
 
-    /* get subject alloca pointer (for payload extraction in tagged enums) */
+    /* get subject alloca pointer (for payload extraction in tagged enums / any types) */
     LLVMValueRef subject_alloca = Null;
     LLVMValueRef discriminant;
 
-    if (er && er->is_tagged) {
+    if (is_any_match) {
+        /* subject is any.(val) — get the inner value (the any struct) */
+        node_t *inner = subject_node->as.any_type_expr.operand;
+        struct_reg_t *any_sr = Null;
+        /* Try to get the any struct type from the symbol */
+        if (inner->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
+            if (sym) {
+                subject_alloca = sym->value;
+                any_sr = find_struct_by_llvm_type(cg, sym->type);
+            }
+        }
+        if (!subject_alloca) {
+            LLVMValueRef val = gen_expr(cg, inner);
+            /* need an alloca to GEP into */
+            LLVMTypeRef vt = LLVMTypeOf(val);
+            subject_alloca = alloc_in_entry(cg, vt, "any_match_subj");
+            LLVMBuildStore(cg->builder, val, subject_alloca);
+            any_sr = find_struct_by_llvm_type(cg, vt);
+        }
+        (void)any_sr; /* used below per-arm */
+        /* discriminant = field 0 (tag i32) of the any struct */
+        /* We need the LLVM struct type — get from the symbol alloca's allocated type */
+        /* Use any_sr if found, otherwise read the tag directly */
+        if (subject_alloca) {
+            /* Determine the struct type from any_sr or by looking at what was stored */
+            /* Find any_sr by scanning struct registry for is_any_type */
+            struct_reg_t *found_any_sr = Null;
+            if (inner->kind == NodeIdentExpr) {
+                symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
+                if (sym) found_any_sr = find_struct_by_llvm_type(cg, sym->type);
+            }
+            if (found_any_sr && found_any_sr->is_any_type) {
+                LLVMValueRef tag_ptr = LLVMBuildStructGEP2(
+                    cg->builder, found_any_sr->llvm_type, subject_alloca, 0, "any_tag_ptr");
+                discriminant = LLVMBuildLoad2(
+                    cg->builder, LLVMInt32TypeInContext(cg->ctx), tag_ptr, "any_tag");
+            } else {
+                /* fallback: extract value 0 from a loaded struct */
+                LLVMValueRef val = gen_expr(cg, inner);
+                discriminant = LLVMBuildExtractValue(cg->builder, val, 0, "any_tag");
+            }
+        } else {
+            LLVMValueRef val = gen_expr(cg, inner);
+            discriminant = LLVMBuildExtractValue(cg->builder, val, 0, "any_tag");
+        }
+    } else if (er && er->is_tagged) {
         if (subject_node->kind == NodeIdentExpr) {
             symbol_t *sym = cg_lookup(cg, subject_node->as.ident.name);
             if (sym) subject_alloca = sym->value;
@@ -1080,8 +1163,77 @@ static void gen_match(cg_t *cg, node_t *node) {
         node_t *arm = node->as.match_stmt.arms.items[i];
         if (arm->as.match_arm.is_wildcard) continue;
 
-        /* find variant discriminant value */
         long disc_val = -1;
+
+        if (arm->is_any_arm) {
+            /* any-type arm: discriminant is the variant index inside the any struct */
+            /* Find which index this type name corresponds to in the any struct */
+            struct_reg_t *any_sr = Null;
+            node_t *inner = subject_node->as.any_type_expr.operand;
+            if (inner->kind == NodeIdentExpr) {
+                symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
+                if (sym) any_sr = find_struct_by_llvm_type(cg, sym->type);
+            }
+            if (any_sr && any_sr->is_any_type) {
+                for (usize_t vi = 0; vi < any_sr->any_variant_count; vi++) {
+                    type_info_t vt = any_sr->any_variants[vi];
+                    const char *vname = (vt.base == TypeUser && vt.user_name)
+                                        ? vt.user_name
+                                        : type_name_for_base(vt.base);
+                    if (vname && strcmp(vname, arm->any_type_name) == 0) {
+                        disc_val = (long)vi;
+                        break;
+                    }
+                }
+            }
+            if (disc_val < 0) {
+                diag_begin_error("unknown type '%s' in any-match arm", arm->any_type_name);
+                diag_span(DIAG_NODE(arm), True, "");
+                diag_finish();
+                continue;
+            }
+
+            LLVMBasicBlockRef arm_bb =
+                LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.any.arm");
+            LLVMAddCase(sw,
+                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+                             (unsigned long long)disc_val, 0),
+                arm_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
+
+            usize_t saved_locals = cg->locals.count;
+
+            /* bind the concrete typed value if requested */
+            if (arm->any_bind_name && any_sr && subject_alloca) {
+                LLVMTypeRef data_arr_ty = LLVMArrayType2(
+                    LLVMInt8TypeInContext(cg->ctx),
+                    LLVMStoreSizeOfType(LLVMGetModuleDataLayout(cg->module), any_sr->llvm_type) - 4);
+                (void)data_arr_ty;
+                /* GEP into field 1 (data) of the any struct */
+                LLVMValueRef data_ptr = LLVMBuildStructGEP2(
+                    cg->builder, any_sr->llvm_type, subject_alloca, 1, "any_data");
+                LLVMTypeRef bind_lltype = get_llvm_type(cg, arm->any_bind_ti);
+                LLVMValueRef bind_val = LLVMBuildLoad2(
+                    cg->builder, bind_lltype, data_ptr, arm->any_bind_name);
+                LLVMValueRef bind_alloca = alloc_in_entry(cg, bind_lltype, arm->any_bind_name);
+                LLVMBuildStore(cg->builder, bind_val, bind_alloca);
+                symtab_add(&cg->locals, arm->any_bind_name,
+                           bind_alloca, bind_lltype, arm->any_bind_ti, False);
+            }
+
+            push_dtor_scope(cg);
+            for (usize_t s = 0; s < arm->as.match_arm.body->as.block.stmts.count; s++)
+                gen_stmt(cg, arm->as.match_arm.body->as.block.stmts.items[s]);
+            pop_dtor_scope(cg);
+
+            cg->locals.count = saved_locals;
+
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+                LLVMBuildBr(cg->builder, end_bb);
+            continue;
+        }
+
+        /* find variant discriminant value */
         variant_info_t *vi = Null;
         enum_reg_t *arm_er = er ? er : find_enum(cg, arm->as.match_arm.enum_name);
         if (arm_er) {
@@ -1453,6 +1605,28 @@ static void gen_comptime_assert(cg_t *cg, node_t *node) {
     diag_finish();
 }
 
+static void gen_with_stmt(cg_t *cg, node_t *node) {
+    usize_t saved_locals = cg->locals.count;
+    push_dtor_scope(cg);
+    /* generate the binding declaration */
+    gen_stmt(cg, node->as.with_stmt.decl);
+    /* evaluate condition */
+    LLVMValueRef cond = gen_expr(cg, node->as.with_stmt.cond);
+    cond = llvm_to_bool(cg, cond);
+    LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+        cg->ctx, cg->current_fn, "with.body");
+    LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
+        cg->ctx, cg->current_fn, "with.end");
+    LLVMBuildCondBr(cg->builder, cond, body_bb, end_bb);
+    LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+    gen_block(cg, node->as.with_stmt.body);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+        LLVMBuildBr(cg->builder, end_bb);
+    LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+    pop_dtor_scope(cg);
+    cg->locals.count = saved_locals;
+}
+
 static void gen_stmt(cg_t *cg, node_t *node) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
@@ -1483,6 +1657,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeAsmStmt:      gen_asm_stmt(cg, node); break;
         case NodeComptimeIf:   gen_comptime_if(cg, node); break;
         case NodeComptimeAssert: gen_comptime_assert(cg, node); break;
+        case NodeWithStmt:     gen_with_stmt(cg, node); break;
         case NodeBreakStmt:
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);

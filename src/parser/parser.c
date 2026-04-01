@@ -79,7 +79,8 @@ static boolean_t is_builtin_type_token(token_kind_t k) {
     return k == TokI8  || k == TokI16 || k == TokI32 || k == TokI64
         || k == TokU8  || k == TokU16 || k == TokU32 || k == TokU64
         || k == TokF32 || k == TokF64
-        || k == TokBool || k == TokVoid || k == TokErrorType || k == TokFuture;
+        || k == TokBool || k == TokVoid || k == TokErrorType || k == TokFuture
+        || k == TokAny;
 }
 
 static type_kind_t token_to_type(token_kind_t k) {
@@ -190,6 +191,40 @@ static type_info_t parse_type(parser_t *p) {
         advance_parser(p);
     }
 
+    /* any.[T1, T2, ...] — inline tagged-union type */
+    if (check(p, TokAny)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'any' */
+        if (check(p, TokDot)) {
+            advance_parser(p); /* consume '.' */
+            if (check(p, TokLBracket)) {
+                advance_parser(p); /* consume '[' */
+                char mangled[512];
+                usize_t mlen = 3;
+                memcpy(mangled, "any", 3);
+                while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    type_info_t arg = parse_type(p);
+                    const char *aname = comptime_type_name(arg);
+                    usize_t alen = strlen(aname);
+                    if (mlen + 3 + alen < sizeof(mangled) - 1) {
+                        memcpy(mangled + mlen, "_G_", 3); mlen += 3;
+                        memcpy(mangled + mlen, aname, alen); mlen += alen;
+                    }
+                    if (!match_tok(p, TokComma)) break;
+                }
+                consume(p, TokRBracket, "']'");
+                mangled[mlen] = '\0';
+                info.base = TypeUser;
+                info.user_name = ast_strdup(mangled, mlen);
+                (void)line;
+                goto parse_type_ptr;
+            }
+        }
+        /* bare 'any' without type list — treat as i64 placeholder */
+        info.base = TypeI64;
+        goto parse_type_ptr;
+    }
+
     if (is_builtin_type_token(p->current.kind)) {
         info.base = token_to_type(p->current.kind);
         advance_parser(p);
@@ -236,6 +271,7 @@ static type_info_t parse_type(parser_t *p) {
         return info;
     }
 
+    parse_type_ptr:
     /* pointer: * or *r or *w or *rw, optionally followed by + for arith */
     if (check(p, TokStar)) {
         advance_parser(p);
@@ -286,7 +322,8 @@ static node_t *parse_comptime_assert(parser_t *p);
 static node_t *parse_at_comptime_assert(parser_t *p);
 
 static boolean_t can_start_type(parser_t *p) {
-    return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn);
+    return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn)
+        || check(p, TokAny);
 }
 
 /* In a parameter list, a bare identifier is only a type if followed by

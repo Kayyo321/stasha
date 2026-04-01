@@ -1,5 +1,8 @@
 /* ── LLVM type helpers ── */
 
+/* forward declaration — defined in cg_expr.c */
+static struct_reg_t *try_instantiate_any(cg_t *cg, const char *name);
+
 static boolean_t is_float_type(type_info_t ti) {
     return ti.base == TypeF32 || ti.base == TypeF64;
 }
@@ -126,6 +129,10 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
                 if (subst != uname) uname = subst;
             }
             struct_reg_t *sr = uname ? find_struct(cg, uname) : Null;
+            if (!sr && uname && strncmp(uname, "any_G_", 6) == 0) {
+                /* lazy any.[...] type instantiation */
+                sr = try_instantiate_any(cg, uname);
+            }
             if (!sr && uname && strstr(uname, "_G_")) {
                 /* lazy generic instantiation */
                 try_instantiate_generic(cg, uname);
@@ -271,6 +278,25 @@ static type_info_t llvm_type_to_ti(LLVMTypeRef ty) {
         default: break;
     }
     return ti;
+}
+
+/* ── type name string from base ── */
+
+static const char *type_name_for_base(type_kind_t base) {
+    switch (base) {
+        case TypeI8:   return "i8";
+        case TypeI16:  return "i16";
+        case TypeI32:  return "i32";
+        case TypeI64:  return "i64";
+        case TypeU8:   return "u8";
+        case TypeU16:  return "u16";
+        case TypeU32:  return "u32";
+        case TypeU64:  return "u64";
+        case TypeF32:  return "f32";
+        case TypeF64:  return "f64";
+        case TypeBool: return "bool";
+        default:       return Null;
+    }
 }
 
 /* ── alloca in entry block helper ── */

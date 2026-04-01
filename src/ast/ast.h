@@ -94,7 +94,7 @@ enum {
 
 /* ── type declaration flavours ── */
 
-enum { TypeDeclStruct = 0, TypeDeclEnum = 1, TypeDeclAlias = 2, TypeDeclUnion = 3 };
+enum { TypeDeclStruct = 0, TypeDeclEnum = 1, TypeDeclAlias = 2, TypeDeclUnion = 3, TypeDeclInterface = 4 };
 
 /* ── struct/union attribute flags ── */
 enum {
@@ -177,10 +177,14 @@ typedef enum {
     NodeSelfMethodCall, /* Type.(method)(args) — self method call inside struct body */
 
     /* added after initial release — keep at end to avoid shifting existing values */
-    NodeLibImp,     /* libimp "name" from "path"|std */
-    NodeHashExpr,   /* hash.(expr) — universal hash */
-    NodeEquExpr,    /* equ.(a, b) — universal equality */
-    NodeFutureOp,   /* future.wait/ready/get/drop(handle) */
+    NodeLibImp,          /* libimp "name" from "path"|std */
+    NodeHashExpr,        /* hash.(expr) — universal hash */
+    NodeEquExpr,         /* equ.(a, b) — universal equality */
+    NodeFutureOp,        /* future.wait/ready/get/drop(handle) */
+    NodeConstructorCall, /* type_name.(args) — alternate constructor syntax */
+    NodeWithStmt,        /* with decl; cond { body } — scoped binding */
+    NodeErrPropCall,     /* fn.?(args) — error propagation call */
+    NodeAnyTypeExpr,     /* any.(expr) — extract runtime type tag from any value */
 } node_kind_t;
 
 /* ── future operation kinds ── */
@@ -230,6 +234,7 @@ struct node {
             int attr_flags;             /* AttrWeak | AttrHidden */
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
+            char *iface_qualifier;      /* non-null for "fn flyable_i.move()" inside struct body */
         } fn_decl;
 
         struct {
@@ -248,7 +253,7 @@ struct node {
         struct {
             char *name;
             linkage_t linkage;
-            int decl_kind;              /* TypeDeclStruct / TypeDeclEnum / TypeDeclAlias / TypeDeclUnion */
+            int decl_kind;              /* TypeDeclStruct / TypeDeclEnum / TypeDeclAlias / TypeDeclUnion / TypeDeclInterface */
             node_list_t fields;         /* VarDecl nodes (struct/union fields) */
             node_list_t methods;        /* FnDecl nodes (inline methods) */
             node_list_t variants;       /* EnumVariant nodes */
@@ -257,6 +262,8 @@ struct node {
             unsigned align_value;       /* @align(N): 0 = default */
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
+            char *impl_ifaces[8];       /* interface parents (if interface) OR implemented interfaces (if struct) */
+            usize_t impl_iface_count;
         } type_decl;
 
         struct {
@@ -351,7 +358,26 @@ struct node {
         struct { char *type_name; char *method; node_list_t args; } self_method_call; /* Type.(method)(args) */
         struct { node_t *operand; } hash_expr;   /* hash.(expr) */
         struct { node_t *left; node_t *right; } equ_expr; /* equ.(a, b) */
+
+        /* NodeConstructorCall: type_name.(args) — sugar for type_name.new(args) */
+        struct { char *type_name; node_list_t args; } ctor_call;
+
+        /* NodeWithStmt: with decl; cond { body } */
+        struct { node_t *decl; node_t *cond; node_t *body; } with_stmt;
+
+        /* NodeErrPropCall: fn.?(args) — call fn, propagate error if non-nil */
+        struct { char *callee; node_list_t args; } err_prop_call;
+
+        /* NodeAnyTypeExpr: any.(expr) — extract runtime type discriminant */
+        struct { node_t *operand; } any_type_expr;
     } as;
+
+    /* Extra fields for any-variant match arms (used on NodeMatchArm) */
+    boolean_t is_any_arm;        /* True for any.[...] match arm patterns */
+    char     *any_type_name;     /* e.g. "i32" — the concrete type being matched */
+    char     *any_bind_name;     /* binding variable name */
+    type_info_t any_bind_ti;     /* type of the binding variable */
+    storage_t   any_bind_storage;
 };
 
 /* ── API ── */

@@ -174,6 +174,9 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("hash", TokHash);
     KW("equ", TokEqu);
     KW("this", TokThis);
+    KW("with", TokWith);
+    KW("any", TokAny);
+    KW("interface", TokInterface);
 
     KW("i8", TokI8);
     KW("i16", TokI16);

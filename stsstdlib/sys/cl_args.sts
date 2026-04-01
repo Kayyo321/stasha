@@ -1,0 +1,16 @@
+mod cl_args;
+
+type cl_args_t: struct {
+stack:
+    ext fn length(void): u32 {
+        //TODO
+    }
+
+    ext fn extract(stack u32 idx): [stack i8 *, error] {
+        if idx > args_len()-1 {
+            ret nil, error.('command-line arguments don\'t have index: {}\n', idx);
+        }
+
+        //TODO
+    }
+}

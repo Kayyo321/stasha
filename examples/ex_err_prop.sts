@@ -1,0 +1,15 @@
+mod ex_err_prop;
+
+ext fn might_fail(stack i32 x): error {
+    if (x < 0) { ret error.('negative'); }
+    ret nil;
+}
+
+ext fn caller(stack i32 x): error {
+    might_fail.?(x);
+    ret nil;
+}
+
+ext fn main(void): i32 {
+    ret 0;
+}

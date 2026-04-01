@@ -1,0 +1,15 @@
+mod ex_with;
+
+int fn divide(stack i32 a, stack i32 b): [i32, error] {
+    if (b == 0) {
+        ret 0, error.('division by zero');
+    }
+    ret a / b, nil;
+}
+
+ext fn main(void): i32 {
+    with stack let [result, err] = divide(10, 2); err == nil {
+        print.('{}\n', result);
+    }
+    ret 0;
+}

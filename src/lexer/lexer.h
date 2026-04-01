@@ -166,6 +166,9 @@ typedef enum {
     TokHash,        /* hash */
     TokEqu,         /* equ */
     TokThis,        /* this — self-reference inside method bodies */
+    TokWith,        /* with — scoped binding statement */
+    TokAny,         /* any — inline tagged-union type */
+    TokInterface,   /* interface — interface declaration */
 } token_kind_t;
 
 typedef struct {

@@ -37,7 +37,7 @@ stack:
         this.player_x += x;
         this.player_y += y;
 
-        print.('Player {} moved to ({},{})\n', this.id, this.x, this.y);
+        print.('Player {} moved to ({},{})\n', this.id(), this.player_x, this.player_y);
     }
 
     ext fn attack(stack entity_i target) {

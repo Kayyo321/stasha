@@ -22,6 +22,8 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
     sr->destructor = Null;
     sr->is_union = is_union;
     sr->ct_field_count = 0;
+    sr->is_any_type = False;
+    sr->any_variant_count = 0;
 }
 
 static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t type,

@@ -88,6 +88,13 @@ typedef struct {
     /* @comptime: fields — compile-time metadata, excluded from runtime layout */
     comptime_field_t ct_fields[16];
     usize_t ct_field_count;
+    /* any.[T1,T2,...] type metadata */
+    boolean_t   is_any_type;
+    type_info_t any_variants[16];
+    usize_t     any_variant_count;
+    /* interface support */
+    boolean_t   is_interface;   /* True if this is an interface (fat pointer type) */
+    LLVMTypeRef fat_ptr_type;   /* { ptr, ptr } fat pointer type (same as llvm_type for interfaces) */
 } struct_reg_t;
 
 /* ── enum registry ── */
@@ -248,6 +255,32 @@ typedef struct {
     /* root AST — used by cg_generics.c to scan top-level decls */
     node_t *root_ast;
 
+    /* ── interface registry ── */
+    /* flattened method list for one interface (own + inherited) */
+    struct {
+        char *name;
+        char *method_names[32];
+        type_info_t method_ret_types[32];
+        usize_t method_count;
+        char *parent_names[8];
+        usize_t parent_count;
+        LLVMTypeRef fat_ptr_type; /* { ptr, ptr } */
+    } *interfaces;
+    usize_t iface_count;
+    usize_t iface_cap;
+    heap_t ifaces_heap;
+
+    /* vtable for one (struct, interface) pair */
+    struct {
+        char *struct_name;
+        char *iface_name;
+        LLVMValueRef vtable_global;
+        LLVMTypeRef vtable_type;
+    } *vtables;
+    usize_t vtable_count;
+    usize_t vtable_cap;
+    heap_t vtables_heap;
+
     /* ── DWARF debug info (active only when debug_mode is True) ── */
     boolean_t debug_mode;
     const char *source_file;        /* absolute/relative path to the source file */
@@ -297,6 +330,7 @@ static void             di_set_location(cg_t *cg, usize_t line);
 #include "cg_dtors.c"
 #include "cg_types.c"
 #include "cg_registry.c"
+#include "cg_interfaces.c"
 #include "cg_expr.c"
 #include "cg_stmt.c"
 #include "cg_generics.c"
@@ -537,7 +571,31 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
 
         if (decl->kind == NodeTypeDecl) {
-            if (decl->as.type_decl.decl_kind == TypeDeclStruct
+            if (decl->as.type_decl.decl_kind == TypeDeclInterface) {
+                /* Register interface as a fat-pointer struct { ptr, ptr } */
+                char llvm_type_name[512];
+                mangle_type(decl->module_name, decl->as.type_decl.name,
+                            llvm_type_name, sizeof(llvm_type_name));
+                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg.ctx, 0);
+                LLVMTypeRef fat_fields[2] = { ptr_t, ptr_t };
+                /* Use a named struct so each interface has a distinct LLVMTypeRef —
+                   anonymous literal structs are deduplicated by LLVM across all interfaces */
+                LLVMTypeRef fat_type = LLVMStructCreateNamed(cg.ctx, llvm_type_name);
+                LLVMStructSetBody(fat_type, fat_fields, 2, 0);
+                register_struct(&cg, decl->as.type_decl.name, fat_type, False);
+                if (cg.struct_count > 0) {
+                    cg.structs[cg.struct_count - 1].is_interface = True;
+                    cg.structs[cg.struct_count - 1].fat_ptr_type = fat_type;
+                    if (decl->module_name) {
+                        char pfx[512];
+                        mangle_module_prefix(decl->module_name, pfx, sizeof(pfx));
+                        cg.structs[cg.struct_count - 1].mod_prefix =
+                            ast_strdup(pfx, strlen(pfx));
+                    }
+                }
+                /* Register in interface registry */
+                register_interface(&cg, decl);
+            } else if (decl->as.type_decl.decl_kind == TypeDeclStruct
                 || decl->as.type_decl.decl_kind == TypeDeclUnion) {
 
                 /* @comptime[T] generic template structs — register name but skip LLVM type */
@@ -942,8 +1000,28 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->from_lib && method->as.fn_decl.linkage == LinkageInternal)
                 continue;
             char fn_name[512];
-            mangle_method(decl->module_name, decl->as.type_decl.name,
-                          method->as.fn_decl.name, fn_name, sizeof(fn_name));
+            /* interface-qualified method: fn flyable_i.move() inside duck_t */
+            if (method->as.fn_decl.iface_qualifier &&
+                strcmp(method->as.fn_decl.iface_qualifier, decl->as.type_decl.name) != 0) {
+                /* mangle as "struct.iface.method" or "mod__struct__iface__method" */
+                const char *mod = decl->module_name;
+                if (mod && mod[0]) {
+                    char pfx[512];
+                    mangle_module_prefix(mod, pfx, sizeof(pfx));
+                    snprintf(fn_name, sizeof(fn_name), "%s__%s__%s__%s",
+                             pfx, decl->as.type_decl.name,
+                             method->as.fn_decl.iface_qualifier,
+                             method->as.fn_decl.name);
+                } else {
+                    snprintf(fn_name, sizeof(fn_name), "%s.%s.%s",
+                             decl->as.type_decl.name,
+                             method->as.fn_decl.iface_qualifier,
+                             method->as.fn_decl.name);
+                }
+            } else {
+                mangle_method(decl->module_name, decl->as.type_decl.name,
+                              method->as.fn_decl.name, fn_name, sizeof(fn_name));
+            }
 
             /* all inline methods are instance methods: get implicit this */
             usize_t pc = method->as.fn_decl.params.count;
@@ -987,6 +1065,20 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 struct_reg_t *sr = find_struct(&cg, decl->as.type_decl.name);
                 if (sr) sr->destructor = fn;
             }
+        }
+    }
+
+    /* pass 1b: generate vtable globals for structs implementing interfaces.
+       All functions are forward-declared in pass 1, so we can now create vtables. */
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind != NodeTypeDecl) continue;
+        if (decl->as.type_decl.decl_kind != TypeDeclStruct) continue;
+        if (decl->as.type_decl.impl_iface_count == 0) continue;
+        if (decl->as.type_decl.type_param_count > 0) continue; /* skip generic templates */
+        for (usize_t j = 0; j < decl->as.type_decl.impl_iface_count; j++) {
+            ensure_vtable(&cg, decl->as.type_decl.name,
+                          decl->as.type_decl.impl_ifaces[j]);
         }
     }
 
@@ -1177,8 +1269,27 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
             char fn_name[512];
-            mangle_method(decl->module_name, decl->as.type_decl.name,
-                          method->as.fn_decl.name, fn_name, sizeof(fn_name));
+            /* interface-qualified method: fn flyable_i.move() inside duck_t */
+            if (method->as.fn_decl.iface_qualifier &&
+                strcmp(method->as.fn_decl.iface_qualifier, decl->as.type_decl.name) != 0) {
+                const char *mod = decl->module_name;
+                if (mod && mod[0]) {
+                    char pfx[512];
+                    mangle_module_prefix(mod, pfx, sizeof(pfx));
+                    snprintf(fn_name, sizeof(fn_name), "%s__%s__%s__%s",
+                             pfx, decl->as.type_decl.name,
+                             method->as.fn_decl.iface_qualifier,
+                             method->as.fn_decl.name);
+                } else {
+                    snprintf(fn_name, sizeof(fn_name), "%s.%s.%s",
+                             decl->as.type_decl.name,
+                             method->as.fn_decl.iface_qualifier,
+                             method->as.fn_decl.name);
+                }
+            } else {
+                mangle_method(decl->module_name, decl->as.type_decl.name,
+                              method->as.fn_decl.name, fn_name, sizeof(fn_name));
+            }
 
             symbol_t *sym = cg_lookup(&cg, fn_name);
             if (!sym) continue;

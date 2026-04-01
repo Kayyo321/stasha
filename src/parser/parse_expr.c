@@ -371,6 +371,19 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* any.(expr) — extract runtime type tag from an any.[...] value */
+    if (check(p, TokAny)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'any' */
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        node_t *operand = parse_expr(p);
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeAnyTypeExpr, line);
+        n->as.any_type_expr.operand = operand;
+        return n;
+    }
+
     /* this — self-reference inside method bodies */
     if (check(p, TokThis)) {
         usize_t line = p->current.line;
@@ -628,17 +641,68 @@ static node_t *parse_postfix(parser_t *p) {
                 continue;
             }
 
-            /* self-member: Type.(field) */
-            if (check(p, TokLParen)) {
-                advance_parser(p);
-                token_t field = consume(p, TokIdent, "field name");
+            /* error propagation call: expr.?(args) */
+            if (check(p, TokQuestion)) {
+                advance_parser(p); /* consume '?' */
+                consume(p, TokLParen, "'('");
+                node_list_t args;
+                node_list_init(&args);
+                if (!check(p, TokRParen)) {
+                    do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+                }
                 consume(p, TokRParen, "')'");
-                node_t *n = make_node(NodeSelfMemberExpr, line);
+                node_t *n = make_node(NodeErrPropCall, line);
                 if (expr->kind == NodeIdentExpr)
-                    n->as.self_member.type_name = expr->as.ident.name;
+                    n->as.err_prop_call.callee = expr->as.ident.name;
                 else
-                    n->as.self_member.type_name = ast_strdup("?", 1);
-                n->as.self_member.field = copy_token_text(field);
+                    n->as.err_prop_call.callee = ast_strdup("?", 1);
+                n->as.err_prop_call.args = args;
+                expr = n;
+                continue;
+            }
+
+            /* self-member: Type.(field)  vs  constructor call: Type.(args) */
+            if (check(p, TokLParen)) {
+                /* Speculate: self-member if exactly one ident inside parens */
+                parser_state_t snap = save_state(p);
+                boolean_t saved_err = p->had_error;
+                advance_parser(p); /* consume '(' */
+                boolean_t is_self_member = False;
+                token_t field_tok = p->current;
+                if (check(p, TokIdent)) {
+                    advance_parser(p);
+                    if (check(p, TokRParen)) {
+                        /* Exactly (ident) — self member access */
+                        advance_parser(p); /* consume ')' */
+                        is_self_member = True;
+                    }
+                }
+                if (is_self_member) {
+                    node_t *n = make_node(NodeSelfMemberExpr, line);
+                    if (expr->kind == NodeIdentExpr)
+                        n->as.self_member.type_name = expr->as.ident.name;
+                    else
+                        n->as.self_member.type_name = ast_strdup("?", 1);
+                    n->as.self_member.field = copy_token_text(field_tok);
+                    expr = n;
+                    continue;
+                }
+                /* Not a self-member — constructor call: type_name.(args) */
+                restore_state(p, snap);
+                p->had_error = saved_err;
+                advance_parser(p); /* consume '(' */
+                char *type_name = Null;
+                if (expr->kind == NodeIdentExpr) type_name = expr->as.ident.name;
+                else type_name = ast_strdup("?", 1);
+                node_list_t args;
+                node_list_init(&args);
+                if (!check(p, TokRParen)) {
+                    do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+                }
+                consume(p, TokRParen, "')'");
+                node_t *n = make_node(NodeConstructorCall, line);
+                n->as.ctor_call.type_name = type_name;
+                n->as.ctor_call.args = args;
                 expr = n;
                 continue;
             }
