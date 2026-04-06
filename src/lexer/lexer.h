@@ -164,6 +164,7 @@ typedef enum {
 
     /* added after initial release — keep at end to avoid shifting existing values */
     TokLibImp,      /* libimp */
+    TokCHeader,     /* cheader */
     TokStd,         /* std (stdlib source specifier) */
     TokHash,        /* hash */
     TokEqu,         /* equ */

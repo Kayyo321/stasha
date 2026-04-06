@@ -130,12 +130,12 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     boolean_t is_let_binding = (node->as.var_decl.flags & VdeclLet) != 0
                              || ti.base == TypeVoid; /* multi-assign target: no type yet */
     if (!is_let_binding) {
-        if (node->as.var_decl.storage != StorageDefault && !ti.is_pointer && ti.base != TypeFnPtr) {
-            const char *qual = (node->as.var_decl.storage == StorageHeap) ? "heap" : "stack";
+        if (node->as.var_decl.storage == StorageHeap && !ti.is_pointer && ti.base != TypeFnPtr) {
+            const char *qual = "heap";
             diag_begin_error("'%s' qualifier is not allowed on non-pointer variable '%s'",
                              qual, node->as.var_decl.name ? node->as.var_decl.name : "?");
             diag_span(DIAG_NODE(node), True, "declared here");
-            diag_note("non-pointer variables are always stack-allocated — omit the qualifier");
+            diag_note("non-pointer variables may be declared without 'stack', but cannot use 'heap'");
             diag_help("remove '%s': write '%s %s;' instead",
                       qual,
                       node->as.var_decl.type.user_name ? node->as.var_decl.type.user_name : "T",
@@ -431,7 +431,13 @@ static void gen_ret(cg_t *cg, node_t *node) {
     emit_all_dtor_calls(cg);
 
     if (node->as.ret_stmt.values.count == 0) {
-        LLVMBuildRetVoid(cg->builder);
+        LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
+        if (cg->current_fn_is_entry_main)
+            LLVMBuildRet(cg->builder, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0));
+        else if (LLVMGetTypeKind(ret_type) == LLVMVoidTypeKind)
+            LLVMBuildRetVoid(cg->builder);
+        else
+            LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
     } else if (node->as.ret_stmt.values.count == 1) {
         LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
         LLVMValueRef val;

@@ -16,6 +16,8 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #include "codegen/codegen.h"
 #include "linker/linker.h"
 #include "tooling/editor.h"
+#include "cinterop/cheader.h"
+#include "cinterop/cheader.c"
 
 #define STASHA_VERSION "0.1.0"
 
@@ -457,6 +459,279 @@ static void resolve_imports(node_t *ast, const char *input_path) {
     }
 }
 
+static c_typedef_t *find_cheader_typedef(cheader_result_t *r, const char *name) {
+    for (usize_t i = 0; i < r->tdef_count; i++)
+        if (strcmp(r->tdefs[i].name, name) == 0) return &r->tdefs[i];
+    return Null;
+}
+
+static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
+                            const char *decl_name, c_type_t *ct,
+                            type_info_t *out, long *array_len_out) {
+    if (!ct || !out) return False;
+    *out = NO_TYPE;
+    if (array_len_out) *array_len_out = 0;
+
+    boolean_t quiet_skip = decl_name
+        && ((decl_name[0] == '_' && decl_name[1] == '_')
+            || strcmp(decl_name, "arg") == 0);
+
+    if (ct->kind == CTypeArray) {
+        if (array_len_out) *array_len_out = ct->array_len;
+        return map_c_type(src_node, r, decl_name, ct->elem, out, Null);
+    }
+
+    if (ct->kind == CTypePointer) {
+        type_info_t inner = NO_TYPE;
+        if (!ct->elem || !map_c_type(src_node, r, decl_name, ct->elem, &inner, Null))
+            return False;
+        if (inner.is_pointer || inner.base == TypeFnPtr) {
+            if (!quiet_skip) {
+                diag_begin_warning("skipping unsupported C declaration '%s'", decl_name ? decl_name : "?");
+                diag_span(DIAG_NODE(src_node), True,
+                          "nested pointers and function pointers are not supported here yet");
+                diag_finish();
+            }
+            return False;
+        }
+        *out = inner;
+        out->is_pointer = True;
+        out->ptr_perm = ct->is_const ? PtrRead : PtrReadWrite;
+        return True;
+    }
+
+    if (ct->kind == CTypeTypedefRef && ct->name) {
+        if (strcmp(ct->name, "size_t") == 0
+                || strcmp(ct->name, "uint64_t") == 0
+                || strcmp(ct->name, "uintptr_t") == 0) {
+            out->base = TypeU64; return True;
+        }
+        if (strcmp(ct->name, "ssize_t") == 0
+                || strcmp(ct->name, "ptrdiff_t") == 0
+                || strcmp(ct->name, "int64_t") == 0) {
+            out->base = TypeI64; return True;
+        }
+        if (strcmp(ct->name, "int32_t") == 0) { out->base = TypeI32; return True; }
+        if (strcmp(ct->name, "uint32_t") == 0) { out->base = TypeU32; return True; }
+        if (strcmp(ct->name, "int16_t") == 0) { out->base = TypeI16; return True; }
+        if (strcmp(ct->name, "uint16_t") == 0) { out->base = TypeU16; return True; }
+        if (strcmp(ct->name, "int8_t") == 0) { out->base = TypeI8; return True; }
+        if (strcmp(ct->name, "uint8_t") == 0) { out->base = TypeU8; return True; }
+        c_typedef_t *td = find_cheader_typedef(r, ct->name);
+        if (td) return map_c_type(src_node, r, decl_name, &td->actual, out, array_len_out);
+        out->base = TypeUser;
+        out->user_name = ast_strdup(ct->name, strlen(ct->name));
+        return True;
+    }
+
+    switch (ct->kind) {
+        case CTypeVoid:      out->base = TypeVoid; return True;
+        case CTypeChar:
+        case CTypeSChar:     out->base = TypeI8; return True;
+        case CTypeUChar:     out->base = TypeU8; return True;
+        case CTypeShort:     out->base = TypeI16; return True;
+        case CTypeUShort:    out->base = TypeU16; return True;
+        case CTypeInt:       out->base = TypeI32; return True;
+        case CTypeUInt:      out->base = TypeU32; return True;
+        case CTypeLong:
+        case CTypeLongLong:  out->base = TypeI64; return True;
+        case CTypeULong:
+        case CTypeULongLong: out->base = TypeU64; return True;
+        case CTypeFloat:     out->base = TypeF32; return True;
+        case CTypeDouble:    out->base = TypeF64; return True;
+        case CTypeStructRef:
+        case CTypeUnionRef:
+        case CTypeEnumRef:
+            if (!ct->name) break;
+            out->base = TypeUser;
+            out->user_name = ast_strdup(ct->name, strlen(ct->name));
+            return True;
+        default:
+            break;
+    }
+
+    if (!quiet_skip) {
+        diag_begin_warning("skipping unsupported C declaration '%s'", decl_name ? decl_name : "?");
+        diag_span(DIAG_NODE(src_node), True, "could not map this C type into Stasha");
+        diag_finish();
+    }
+    return False;
+}
+
+static node_t *make_cheader_int_lit(node_t *src_node, long value) {
+    node_t *n = make_node(NodeIntLitExpr, src_node->line);
+    n->col = src_node->col;
+    n->source_file = src_node->source_file;
+    n->as.int_lit.value = value;
+    return n;
+}
+
+static void process_cheader_decls(node_t *ast, const char *input_path) {
+    node_list_t generated;
+    node_list_init(&generated);
+
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind != NodeCHeader) continue;
+
+        cheader_result_t result;
+        char resolved[2048];
+        if (!parse_cheader_file(decl->as.cheader_decl.path,
+                                decl->as.cheader_decl.search_dirs,
+                                input_path, &result, resolved, sizeof(resolved))) {
+            diag_begin_error("cannot find C header '%s'", decl->as.cheader_decl.path);
+            diag_span(DIAG_NODE(decl), True, "header declared here");
+            diag_finish();
+            continue;
+        }
+
+        for (usize_t j = 0; j < result.struct_count; j++) {
+            c_struct_t *st = &result.structs[j];
+            if (!st->name || !st->name[0]) continue;
+            node_t *tn = make_node(NodeTypeDecl, decl->line);
+            tn->col = decl->col;
+            tn->source_file = decl->source_file;
+            tn->is_c_extern = True;
+            tn->as.type_decl.name = ast_strdup(st->name, strlen(st->name));
+            tn->as.type_decl.decl_kind = st->is_union ? TypeDeclUnion : TypeDeclStruct;
+            tn->as.type_decl.attr_flags |= AttrCLayout;
+            node_list_init(&tn->as.type_decl.fields);
+            node_list_init(&tn->as.type_decl.methods);
+            node_list_init(&tn->as.type_decl.variants);
+
+            for (usize_t k = 0; k < st->field_count; k++) {
+                c_field_t *f = &st->fields[k];
+                type_info_t ti;
+                long array_len = 0;
+                if (!map_c_type(decl, &result, f->name, &f->type, &ti, &array_len))
+                    continue;
+                node_t *field = make_node(NodeVarDecl, decl->line);
+                field->col = decl->col;
+                field->source_file = decl->source_file;
+                field->is_c_extern = True;
+                field->as.var_decl.name = ast_strdup(f->name, strlen(f->name));
+                field->as.var_decl.type = ti;
+                field->as.var_decl.storage = StorageStack;
+                if (array_len > 0) {
+                    field->as.var_decl.flags |= VdeclArray;
+                    field->as.var_decl.array_size = array_len;
+                }
+                node_list_push(&tn->as.type_decl.fields, field);
+            }
+            node_list_push(&generated, tn);
+        }
+
+        for (usize_t j = 0; j < result.enum_count; j++) {
+            c_enum_t *en = &result.enums[j];
+            if (!en->name || !en->name[0]) continue;
+            node_t *tn = make_node(NodeTypeDecl, decl->line);
+            tn->col = decl->col;
+            tn->source_file = decl->source_file;
+            tn->is_c_extern = True;
+            tn->as.type_decl.name = ast_strdup(en->name, strlen(en->name));
+            tn->as.type_decl.decl_kind = TypeDeclEnum;
+            node_list_init(&tn->as.type_decl.fields);
+            node_list_init(&tn->as.type_decl.methods);
+            node_list_init(&tn->as.type_decl.variants);
+            for (usize_t k = 0; k < en->variant_count; k++) {
+                node_t *var = make_node(NodeEnumVariant, decl->line);
+                var->col = decl->col;
+                var->source_file = decl->source_file;
+                var->is_c_extern = True;
+                var->as.enum_variant.name = ast_strdup(en->variants[k].name, strlen(en->variants[k].name));
+                node_list_push(&tn->as.type_decl.variants, var);
+                if (!ch_result_has_const(&result, en->variants[k].name)) {
+                    node_t *cn = make_node(NodeVarDecl, decl->line);
+                    cn->col = decl->col;
+                    cn->source_file = decl->source_file;
+                    cn->is_c_extern = True;
+                    cn->as.var_decl.name = ast_strdup(en->variants[k].name, strlen(en->variants[k].name));
+                    cn->as.var_decl.type.base = TypeI32;
+                    cn->as.var_decl.storage = StorageStack;
+                    cn->as.var_decl.flags |= VdeclConst;
+                    cn->as.var_decl.init = make_cheader_int_lit(decl, en->variants[k].value);
+                    node_list_push(&generated, cn);
+                }
+            }
+            node_list_push(&generated, tn);
+        }
+
+        for (usize_t j = 0; j < result.tdef_count; j++) {
+            c_typedef_t *td = &result.tdefs[j];
+            type_info_t ti;
+            if (!map_c_type(decl, &result, td->name, &td->actual, &ti, Null))
+                continue;
+            node_t *tn = make_node(NodeTypeDecl, decl->line);
+            tn->col = decl->col;
+            tn->source_file = decl->source_file;
+            tn->is_c_extern = True;
+            tn->as.type_decl.name = ast_strdup(td->name, strlen(td->name));
+            tn->as.type_decl.decl_kind = TypeDeclAlias;
+            tn->as.type_decl.alias_type = ti;
+            node_list_init(&tn->as.type_decl.fields);
+            node_list_init(&tn->as.type_decl.methods);
+            node_list_init(&tn->as.type_decl.variants);
+            node_list_push(&generated, tn);
+        }
+
+        for (usize_t j = 0; j < result.fn_count; j++) {
+            c_fn_t *fn = &result.fns[j];
+            type_info_t ret;
+            if (!map_c_type(decl, &result, fn->name, &fn->ret, &ret, Null))
+                continue;
+            node_t *fd = make_node(NodeFnDecl, decl->line);
+            fd->col = decl->col;
+            fd->source_file = decl->source_file;
+            fd->from_lib = True;
+            fd->is_c_extern = True;
+            fd->as.fn_decl.name = ast_strdup(fn->name, strlen(fn->name));
+            fd->as.fn_decl.linkage = LinkageExternal;
+            fd->as.fn_decl.return_types = alloc_type_array(1);
+            fd->as.fn_decl.return_types[0] = ret;
+            fd->as.fn_decl.return_count = 1;
+            fd->as.fn_decl.body = Null;
+            fd->as.fn_decl.is_variadic = fn->is_variadic;
+            node_list_init(&fd->as.fn_decl.params);
+            for (usize_t k = 0; k < fn->param_count; k++) {
+                type_info_t pti;
+                if (!map_c_type(decl, &result, fn->params[k].name, &fn->params[k].type, &pti, Null))
+                    goto skip_fn_decl;
+                node_t *param = make_node(NodeVarDecl, decl->line);
+                param->col = decl->col;
+                param->source_file = decl->source_file;
+                param->is_c_extern = True;
+                param->as.var_decl.name = ast_strdup(fn->params[k].name, strlen(fn->params[k].name));
+                param->as.var_decl.type = pti;
+                param->as.var_decl.storage = StorageStack;
+                node_list_push(&fd->as.fn_decl.params, param);
+            }
+            node_list_push(&generated, fd);
+            continue;
+skip_fn_decl:
+            ;
+        }
+
+        for (usize_t j = 0; j < result.const_count; j++) {
+            c_const_t *cn = &result.consts[j];
+            node_t *vd = make_node(NodeVarDecl, decl->line);
+            vd->col = decl->col;
+            vd->source_file = decl->source_file;
+            vd->is_c_extern = True;
+            vd->as.var_decl.name = ast_strdup(cn->name, strlen(cn->name));
+            vd->as.var_decl.type.base = TypeI64;
+            vd->as.var_decl.storage = StorageStack;
+            vd->as.var_decl.flags |= VdeclConst;
+            vd->as.var_decl.init = make_cheader_int_lit(decl, cn->value);
+            node_list_push(&generated, vd);
+        }
+
+        free_cheader_result(&result);
+    }
+
+    for (usize_t i = 0; i < generated.count; i++)
+        node_list_push(&ast->as.module.decls, generated.items[i]);
+}
+
 /* ── sts.sproj project file ── */
 
 #define SPROJ_MAX_LIBS    64
@@ -466,6 +741,10 @@ typedef struct {
     char arc_path[512]; /* path to .a archive */
     char sts_path[512]; /* path to .sts interface file (may be empty) */
 } sproj_lib_t;
+
+typedef struct {
+    char name[64];
+} sproj_system_lib_t;
 
 /* Type of artifact a [module] section produces. */
 typedef enum {
@@ -505,6 +784,8 @@ typedef struct {
     boolean_t         has_optimize;
     sproj_lib_t       ext_libs[SPROJ_MAX_LIBS];
     usize_t           ext_lib_count;
+    sproj_system_lib_t system_libs[SPROJ_MAX_LIBS];
+    usize_t            system_lib_count;
 } sproj_module_t;
 
 typedef struct {
@@ -514,6 +795,8 @@ typedef struct {
     boolean_t        has_output;
     sproj_lib_t      ext_libs[SPROJ_MAX_LIBS];
     usize_t          ext_lib_count;
+    sproj_system_lib_t system_libs[SPROJ_MAX_LIBS];
+    usize_t            system_lib_count;
     /* Named build modules defined via [name] section headers. */
     sproj_module_t   modules[SPROJ_MAX_MODULES];
     usize_t          module_count;
@@ -569,6 +852,28 @@ static void parse_sproj_ext_libs(char **vp, sproj_lib_t *libs, usize_t *lib_cnt)
         if (*v == ')') v++;
         (*lib_cnt)++;
 
+        while (*v == ' ' || *v == '\t') v++;
+        if (*v == ',') v++;
+    }
+    *vp = v;
+}
+
+static void parse_sproj_system_libs(char **vp, sproj_system_lib_t *libs, usize_t *lib_cnt) {
+    char *v = *vp;
+    v++;
+    while (*lib_cnt < SPROJ_MAX_LIBS) {
+        while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+        if (*v == ']' || *v == '\0') break;
+        if (*v != '"' && *v != '\'') { v++; continue; }
+        char q = *v++;
+        char *end = strchr(v, q);
+        if (!end) break;
+        usize_t len = (usize_t)(end - v);
+        if (len >= sizeof(libs[*lib_cnt].name)) len = sizeof(libs[*lib_cnt].name) - 1;
+        memcpy(libs[*lib_cnt].name, v, len);
+        libs[*lib_cnt].name[len] = '\0';
+        (*lib_cnt)++;
+        v = end + 1;
         while (*v == ' ' || *v == '\t') v++;
         if (*v == ',') v++;
     }
@@ -724,14 +1029,22 @@ static boolean_t parse_sproj(const char *path, sproj_t *out) {
             }
         }
 
-        /* ── ext_libs array: [ ("arc.a" : "iface.sts"), ... ] ── */
-        if (*v != '[' || strcmp(key, "ext_libs") != 0) continue;
+        if (*v != '[') continue;
 
-        if (cur_mod < 0) {
-            parse_sproj_ext_libs(&v, out->ext_libs, &out->ext_lib_count);
-        } else {
-            sproj_module_t *m = &out->modules[cur_mod];
-            parse_sproj_ext_libs(&v, m->ext_libs, &m->ext_lib_count);
+        if (strcmp(key, "ext_libs") == 0) {
+            if (cur_mod < 0) parse_sproj_ext_libs(&v, out->ext_libs, &out->ext_lib_count);
+            else {
+                sproj_module_t *m = &out->modules[cur_mod];
+                parse_sproj_ext_libs(&v, m->ext_libs, &m->ext_lib_count);
+            }
+            continue;
+        }
+        if (strcmp(key, "system_libs") == 0) {
+            if (cur_mod < 0) parse_sproj_system_libs(&v, out->system_libs, &out->system_lib_count);
+            else {
+                sproj_module_t *m = &out->modules[cur_mod];
+                parse_sproj_system_libs(&v, m->system_libs, &m->system_lib_count);
+            }
         }
     }
 
@@ -881,6 +1194,10 @@ static result_t run_editor_symbols(const char *source, const char *input_path) {
     node_t *ast = pp ? parse_from_stream(pp) : Null;
     pp_stream_free(pp);
     free_pp_imp_streams();
+    if (ast) {
+        resolve_imports(ast, input_path);
+        process_cheader_decls(ast, input_path);
+    }
     free_imp_sources();
 
     if (ast)
@@ -910,6 +1227,7 @@ static result_t run_editor_check(const char *source, const char *input_path) {
     }
 
     resolve_imports(ast, input_path);
+    process_cheader_decls(ast, input_path);
     free_imp_sources();
 
     char obj_path[512];
@@ -941,6 +1259,7 @@ static result_t run_editor_definition(const char *source, const char *input_path
     }
 
     resolve_imports(ast, input_path);
+    process_cheader_decls(ast, input_path);
     free_imp_sources();
     editor_print_definition_json(ast, input_path, line, col);
     return Ok;
@@ -1024,6 +1343,7 @@ static result_t compile_file(const cfile_params_t *p) {
     }
 
     resolve_imports(ast, p->input_path);
+    process_cheader_decls(ast, p->input_path);
     free_imp_sources();
 
     /* ── codegen ── */
@@ -1204,6 +1524,7 @@ static int run_project_tests(sproj_t *proj, const char *proj_dir) {
 
         /* ── collect extra lib paths: root ext_libs then module ext_libs ── */
         const char *lib_ptrs[SPROJ_MAX_LIBS * 2 + 1];
+        char        sys_lib_buf[SPROJ_MAX_LIBS * 2][128];
         usize_t     lib_count = 0;
         for (usize_t j = 0; j < proj->ext_lib_count && lib_count < SPROJ_MAX_LIBS; j++)
             if (proj->ext_libs[j].arc_path[0])
@@ -1211,6 +1532,18 @@ static int run_project_tests(sproj_t *proj, const char *proj_dir) {
         for (usize_t j = 0; j < m->ext_lib_count && lib_count < SPROJ_MAX_LIBS; j++)
             if (m->ext_libs[j].arc_path[0])
                 lib_ptrs[lib_count++] = m->ext_libs[j].arc_path;
+        for (usize_t j = 0; j < proj->system_lib_count && lib_count < SPROJ_MAX_LIBS * 2; j++) {
+            snprintf(sys_lib_buf[lib_count], sizeof(sys_lib_buf[lib_count]),
+                     "-l%s", proj->system_libs[j].name);
+            lib_ptrs[lib_count] = sys_lib_buf[lib_count];
+            lib_count++;
+        }
+        for (usize_t j = 0; j < m->system_lib_count && lib_count < SPROJ_MAX_LIBS * 2; j++) {
+            snprintf(sys_lib_buf[lib_count], sizeof(sys_lib_buf[lib_count]),
+                     "-l%s", m->system_libs[j].name);
+            lib_ptrs[lib_count] = sys_lib_buf[lib_count];
+            lib_count++;
+        }
         lib_ptrs[lib_count] = NULL;
 
         boolean_t dbg = m->has_debug    ? m->debug    : False;
@@ -1405,6 +1738,7 @@ int main(int argc, char **argv) {
 
     /* Holds extra lib paths built from sproj ext_libs + -l flags (project mode). */
     static char proj_lib_paths_buf[128][1024];
+    static char proj_sys_lib_buf[128][128];
     const char *proj_lib_ptrs[129];
     usize_t     proj_lib_count = 0;
 
@@ -1480,6 +1814,12 @@ int main(int argc, char **argv) {
                     proj_lib_count++;
                 }
             }
+            for (usize_t i = 0; i < sproj_cfg.system_lib_count && proj_lib_count < 128; i++) {
+                snprintf(proj_sys_lib_buf[proj_lib_count], sizeof(proj_sys_lib_buf[proj_lib_count]),
+                         "-l%s", sproj_cfg.system_libs[i].name);
+                proj_lib_ptrs[proj_lib_count] = proj_sys_lib_buf[proj_lib_count];
+                proj_lib_count++;
+            }
             for (usize_t i = 0; i < sel_mod->ext_lib_count && proj_lib_count < 128; i++) {
                 if (sel_mod->ext_libs[i].arc_path[0]) {
                     strncpy(proj_lib_paths_buf[proj_lib_count],
@@ -1488,6 +1828,12 @@ int main(int argc, char **argv) {
                     proj_lib_ptrs[proj_lib_count] = proj_lib_paths_buf[proj_lib_count];
                     proj_lib_count++;
                 }
+            }
+            for (usize_t i = 0; i < sel_mod->system_lib_count && proj_lib_count < 128; i++) {
+                snprintf(proj_sys_lib_buf[proj_lib_count], sizeof(proj_sys_lib_buf[proj_lib_count]),
+                         "-l%s", sel_mod->system_libs[i].name);
+                proj_lib_ptrs[proj_lib_count] = proj_sys_lib_buf[proj_lib_count];
+                proj_lib_count++;
             }
         } else {
             /* Root-level settings only */
@@ -1504,6 +1850,12 @@ int main(int argc, char **argv) {
                     proj_lib_ptrs[proj_lib_count] = proj_lib_paths_buf[proj_lib_count];
                     proj_lib_count++;
                 }
+            }
+            for (usize_t i = 0; i < sproj_cfg.system_lib_count && proj_lib_count < 128; i++) {
+                snprintf(proj_sys_lib_buf[proj_lib_count], sizeof(proj_sys_lib_buf[proj_lib_count]),
+                         "-l%s", sproj_cfg.system_libs[i].name);
+                proj_lib_ptrs[proj_lib_count] = proj_sys_lib_buf[proj_lib_count];
+                proj_lib_count++;
             }
         }
 

@@ -118,6 +118,7 @@ typedef enum {
     NodeEnumVariant,
     NodeLib,
     NodeImpDecl,
+    NodeCHeader,
 
     /* statements */
     NodeBlock,
@@ -282,6 +283,7 @@ struct node {
         /* lib "name" [from "path"] [= alias] */
         struct { char *name; char *alias; char *path; } lib_decl;
         struct { char *module_name; } imp_decl;
+        struct { char *path; char *search_dirs; } cheader_decl;
         /* libimp "name" from "path"|std — lib + imp in one */
         struct { char *name; char *path; boolean_t from_std; } libimp_decl;
 

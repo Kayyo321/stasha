@@ -1,0 +1,7 @@
+mod cheader_stdio;
+
+cheader "stdio.h";
+
+ext fn main(void): void {
+    printf("hello from cheader stdio\n");
+}

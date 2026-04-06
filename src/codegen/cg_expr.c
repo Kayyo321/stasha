@@ -334,6 +334,7 @@ static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node) {
         LLVMValueRef tmp = alloc_in_entry(cg, target_ty, "compound_struct");
         LLVMBuildStore(cg->builder, LLVMConstNull(target_ty), tmp);
 
+        usize_t cursor = 0;
         for (usize_t i = 0; i < node->as.compound_init.items.count; i++) {
             node_t *item = node->as.compound_init.items.items[i];
             if (item->kind == NodeSpreadExpr) {
@@ -342,15 +343,21 @@ static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node) {
                 LLVMValueRef val = gen_expr(cg, item->as.spread_expr.expr);
                 cg->hint_ret_type = saved_hint;
                 LLVMBuildStore(cg->builder, val, tmp);
+                cursor = sr->field_count;
                 continue;
             }
             if (item->kind == NodeInitField) {
                 store_struct_field(cg, tmp, sr, item->as.init_field.name, item->as.init_field.value);
                 continue;
             }
-
-            diag_begin_error("unsupported item in struct compound initializer");
-            diag_span(DIAG_NODE(item), True, "used here");
+            /* positional: assign to field at current cursor position */
+            if (cursor < sr->field_count) {
+                store_struct_field(cg, tmp, sr, sr->fields[cursor].name, item);
+                cursor++;
+                continue;
+            }
+            diag_begin_error("too many values in struct compound initializer '%s'", sr->name);
+            diag_span(DIAG_NODE(item), True, "extra value here");
             diag_finish();
         }
 

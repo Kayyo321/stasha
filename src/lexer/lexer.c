@@ -172,6 +172,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("let", TokLet);
     KW("return", TokRet);  /* alias for ret */
     KW("libimp", TokLibImp);
+    KW("cheader", TokCHeader);
     KW("std", TokStd);
     KW("hash", TokHash);
     KW("equ", TokEqu);

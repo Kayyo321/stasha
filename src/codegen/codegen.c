@@ -225,6 +225,7 @@ typedef struct {
     LLVMBasicBlockRef continue_target;
 
     linkage_t current_fn_linkage;   /* linkage of the function being compiled */
+    boolean_t current_fn_is_entry_main; /* root main lowered to C entry point */
     char *current_struct_name;      /* non-null when inside a struct method body */
     char current_module_prefix[512]; /* mangled prefix of module being compiled, e.g. "net__socket";
                                         empty string for root module — used by gen_call for
@@ -1133,6 +1134,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         symbol_t *sym = cg_lookup(&cg, fn_name);
         cg.current_fn = sym->value;
         cg.current_fn_linkage = decl->as.fn_decl.linkage;
+        cg.current_fn_is_entry_main = (decl->module_name == Null)
+                                   && strcmp(decl->as.fn_decl.name, "main") == 0;
         cg.current_struct_name = decl->as.fn_decl.is_method ? decl->as.fn_decl.struct_name : Null;
         cg.locals.count = 0;
         cg.dtor_depth = 0;
@@ -1248,7 +1251,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
         if (!LLVMGetBasicBlockTerminator(cur_bb)) {
             type_info_t rti = decl->as.fn_decl.return_types[0];
-            if (rti.base == TypeVoid && !rti.is_pointer)
+            if (cg.current_fn_is_entry_main)
+                LLVMBuildRet(cg.builder, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
+            else if (rti.base == TypeVoid && !rti.is_pointer)
                 LLVMBuildRetVoid(cg.builder);
             else
                 LLVMBuildRet(cg.builder,

@@ -849,6 +849,51 @@ static node_t *parse_libimp(parser_t *p) {
     return n;
 }
 
+/* ── cheader ── */
+static node_t *parse_cheader(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'cheader' */
+
+    if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+        diag_begin_error("expected a header path string after 'cheader'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a string literal");
+        diag_help("example: cheader \"stdio.h\"; or cheader \"curl/curl.h\" search \"/usr/include:/opt/homebrew/include\";");
+        diag_finish();
+        p->had_error = True;
+        return make_node(NodeCHeader, line);
+    }
+
+    advance_parser(p);
+    token_t path_tok = p->previous;
+    char *path = ast_strdup(path_tok.start + 1, path_tok.length - 2);
+    char *search_dirs = Null;
+
+    if (check(p, TokIdent) && p->current.length == 6
+            && memcmp(p->current.start, "search", 6) == 0) {
+        advance_parser(p); /* consume 'search' */
+        if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
+            diag_begin_error("expected a search path string after 'search'");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a colon-separated string");
+            diag_finish();
+            p->had_error = True;
+            return make_node(NodeCHeader, line);
+        }
+        advance_parser(p);
+        token_t search_tok = p->previous;
+        search_dirs = ast_strdup(search_tok.start + 1, search_tok.length - 2);
+    }
+
+    consume(p, TokSemicolon, "';'");
+
+    node_t *n = make_node(NodeCHeader, line);
+    ast_set_loc(n, path_tok);
+    n->as.cheader_decl.path = path;
+    n->as.cheader_decl.search_dirs = search_dirs;
+    return n;
+}
+
 /* ── imp ── */
 
 static node_t *parse_imp(parser_t *p) {
@@ -1278,6 +1323,9 @@ static node_t *parse_test_block(parser_t *p) {
 static node_t *parse_top_decl(parser_t *p) {
     /* lib */
     if (check(p, TokLib)) return parse_lib(p);
+
+    /* cheader */
+    if (check(p, TokCHeader)) return parse_cheader(p);
 
     /* imp */
     if (check(p, TokImp)) return parse_imp(p);

@@ -15,8 +15,15 @@ static enum_reg_t *find_enum(cg_t *cg, const char *name) {
 static type_info_t resolve_alias(cg_t *cg, type_info_t ti) {
     if (ti.base == TypeUser && ti.user_name) {
         for (usize_t i = 0; i < cg->alias_count; i++) {
-            if (strcmp(cg->aliases[i].name, ti.user_name) == 0)
-                return cg->aliases[i].actual;
+            if (strcmp(cg->aliases[i].name, ti.user_name) == 0) {
+                type_info_t actual = cg->aliases[i].actual;
+                /* preserve pointer qualification from the original type */
+                if (ti.is_pointer && !actual.is_pointer) {
+                    actual.is_pointer = True;
+                    actual.ptr_perm   = ti.ptr_perm;
+                }
+                return actual;
+            }
         }
     }
     return ti;
