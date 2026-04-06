@@ -45,7 +45,56 @@ static char parse_char_value(token_t t) {
     return s[0];
 }
 
+static node_t *parse_compound_init(parser_t *p, usize_t line) {
+    node_t *n = make_node(NodeCompoundInit, line);
+    node_list_init(&n->as.compound_init.items);
+
+    consume(p, TokLBrace, "'{'");
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        node_t *item = Null;
+
+        if (match_tok(p, TokDotDot)) {
+            item = make_node(NodeSpreadExpr, p->previous.line);
+            item->as.spread_expr.expr = parse_expr(p);
+        } else if (match_tok(p, TokDot)) {
+            token_t name_tok = consume(p, TokIdent, "field name");
+            consume(p, TokEq, "'='");
+            item = make_node(NodeInitField, name_tok.line);
+            item->as.init_field.name = copy_token_text(name_tok);
+            item->as.init_field.value = parse_expr(p);
+        } else if (match_tok(p, TokLBracket)) {
+            item = make_node(NodeInitIndex, p->previous.line);
+            item->as.init_index.index = parse_expr(p);
+            consume(p, TokRBracket, "']'");
+            consume(p, TokEq, "'='");
+            item->as.init_index.value = parse_expr(p);
+        } else {
+            item = parse_expr(p);
+        }
+
+        node_list_push(&n->as.compound_init.items, item);
+        if (!match_tok(p, TokComma)) break;
+    }
+
+    consume(p, TokRBrace, "'}'");
+    return n;
+}
+
 static node_t *parse_primary(parser_t *p) {
+    if (check(p, TokDot)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokLBrace))
+            return parse_compound_init(p, line);
+
+        diag_begin_error("expected '{' after '.'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "compound initializers start with '.{'");
+        diag_finish();
+        p->had_error = True;
+        return make_node(NodeIntLitExpr, line);
+    }
+
     /* integer literal */
     if (check(p, TokIntLit)) {
         advance_parser(p);
@@ -850,6 +899,23 @@ static node_t *parse_addition(parser_t *p) {
 
 static node_t *parse_shift(parser_t *p) {
     node_t *left = parse_addition(p);
+
+    if (check(p, TokDotDot) || check(p, TokDotDotEq)) {
+        boolean_t inclusive = check(p, TokDotDotEq);
+        usize_t line = p->current.line;
+        advance_parser(p);
+        node_t *right = parse_addition(p);
+        node_t *step = Null;
+        if (match_tok(p, TokColon))
+            step = parse_addition(p);
+        node_t *n = make_node(NodeRangeExpr, line);
+        n->as.range_expr.start = left;
+        n->as.range_expr.end = right;
+        n->as.range_expr.step = step;
+        n->as.range_expr.inclusive = inclusive;
+        left = n;
+    }
+
     while (check(p, TokLtLt) || check(p, TokGtGt)) {
         token_kind_t op = p->current.kind;
         usize_t line = p->current.line;

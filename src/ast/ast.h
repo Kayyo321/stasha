@@ -141,6 +141,9 @@ typedef enum {
     NodeComptimeIf,
     NodeComptimeAssert,
     NodeDesigInit,
+    NodeCompoundInit,
+    NodeInitField,
+    NodeInitIndex,
 
     /* expressions */
     NodeBinaryExpr,
@@ -185,6 +188,8 @@ typedef enum {
     NodeWithStmt,        /* with decl; cond { body } — scoped binding */
     NodeErrPropCall,     /* fn.?(args) — error propagation call */
     NodeAnyTypeExpr,     /* any.(expr) — extract runtime type tag from any value */
+    NodeSpreadExpr,      /* ..expr inside compound initializers */
+    NodeRangeExpr,       /* start..end / start..=end / start..end:step */
 } node_kind_t;
 
 /* ── future operation kinds ── */
@@ -319,6 +324,9 @@ struct node {
 
         /* designated init: Type { .x = 1, .y = 2 } */
         struct { char *type_name; node_list_t fields; node_list_t values; } desig_init;
+        struct { node_list_t items; } compound_init;
+        struct { char *name; node_t *value; } init_field;
+        struct { node_t *index; node_t *value; } init_index;
 
         /* ── expressions ── */
         struct { token_kind_t op; node_t *left; node_t *right; } binary;
@@ -370,6 +378,8 @@ struct node {
 
         /* NodeAnyTypeExpr: any.(expr) — extract runtime type discriminant */
         struct { node_t *operand; } any_type_expr;
+        struct { node_t *expr; } spread_expr;
+        struct { node_t *start; node_t *end; node_t *step; boolean_t inclusive; } range_expr;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

@@ -141,6 +141,8 @@ typedef enum {
     TokColon,
     TokComma,
     TokDot,
+    TokDotDot,
+    TokDotDotEq,
     TokQuestion,
 
     TokFatArrow,    /* => */

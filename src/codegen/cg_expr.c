@@ -29,6 +29,340 @@ static LLVMValueRef llvm_to_bool(cg_t *cg, LLVMValueRef val) {
     return LLVMBuildICmp(cg->builder, LLVMIntNE, val, LLVMConstInt(t, 0, 0), "tobool");
 }
 
+static boolean_t const_int_value(node_t *node, long *out) {
+    if (!node) return False;
+    if (node->kind == NodeIntLitExpr) {
+        if (out) *out = node->as.int_lit.value;
+        return True;
+    }
+    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokMinus
+            && node->as.unary.operand
+            && node->as.unary.operand->kind == NodeIntLitExpr) {
+        if (out) *out = -node->as.unary.operand->as.int_lit.value;
+        return True;
+    }
+    return False;
+}
+
+static long count_range_values(node_t *node, boolean_t *ok) {
+    long start = 0, end = 0, step = 1;
+    if (!node || node->kind != NodeRangeExpr
+            || !const_int_value(node->as.range_expr.start, &start)
+            || !const_int_value(node->as.range_expr.end, &end)) {
+        if (ok) *ok = False;
+        return 0;
+    }
+    if (node->as.range_expr.step && !const_int_value(node->as.range_expr.step, &step)) {
+        if (ok) *ok = False;
+        return 0;
+    }
+    if (step == 0) {
+        if (ok) *ok = False;
+        return 0;
+    }
+
+    long count = 0;
+    if (step > 0) {
+        long limit = node->as.range_expr.inclusive ? end + 1 : end;
+        for (long v = start; v < limit; v += step) count++;
+    } else {
+        long limit = node->as.range_expr.inclusive ? end - 1 : end;
+        for (long v = start; v > limit; v += step) count++;
+    }
+    if (ok) *ok = True;
+    return count;
+}
+
+static long count_spread_values(cg_t *cg, node_t *node, boolean_t *ok);
+
+static long count_compound_init_values(cg_t *cg, node_t *node, boolean_t *needs_trailing_nul, boolean_t *ok) {
+    if (!node || node->kind != NodeCompoundInit) {
+        if (ok) *ok = False;
+        return 0;
+    }
+
+    long cursor = 0;
+    long max_index = 0;
+    boolean_t local_ok = True;
+    boolean_t saw_string_spread = False;
+
+    for (usize_t i = 0; i < node->as.compound_init.items.count; i++) {
+        node_t *item = node->as.compound_init.items.items[i];
+        if (item->kind == NodeInitIndex) {
+            long idx = 0;
+            if (!const_int_value(item->as.init_index.index, &idx) || idx < 0) {
+                local_ok = False;
+                break;
+            }
+            cursor = idx;
+            if (cursor + 1 > max_index) max_index = cursor + 1;
+            cursor += 1;
+            continue;
+        }
+        if (item->kind == NodeSpreadExpr) {
+            if (item->as.spread_expr.expr && item->as.spread_expr.expr->kind == NodeStrLitExpr)
+                saw_string_spread = True;
+            long n = count_spread_values(cg, item->as.spread_expr.expr, &local_ok);
+            if (!local_ok) break;
+            cursor += n;
+            if (cursor > max_index) max_index = cursor;
+            continue;
+        }
+        if (item->kind == NodeRangeExpr) {
+            long n = count_range_values(item, &local_ok);
+            if (!local_ok) break;
+            cursor += n;
+            if (cursor > max_index) max_index = cursor;
+            continue;
+        }
+        cursor += 1;
+        if (cursor > max_index) max_index = cursor;
+    }
+
+    if (needs_trailing_nul) *needs_trailing_nul = saw_string_spread;
+    if (ok) *ok = local_ok;
+    return max_index;
+}
+
+static long count_spread_values(cg_t *cg, node_t *node, boolean_t *ok) {
+    if (!node) {
+        if (ok) *ok = False;
+        return 0;
+    }
+    if (node->kind == NodeStrLitExpr) {
+        if (ok) *ok = True;
+        return (long)node->as.str_lit.len;
+    }
+    if (node->kind == NodeRangeExpr)
+        return count_range_values(node, ok);
+    if (node->kind == NodeCompoundInit)
+        return count_compound_init_values(cg, node, Null, ok);
+    if (node->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, node->as.ident.name);
+        if (sym && sym->array_size >= 0) {
+            if (ok) *ok = True;
+            return sym->array_size;
+        }
+    }
+    if (ok) *ok = False;
+    return 0;
+}
+
+static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node);
+
+static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                              LLVMTypeRef elem_ty, long idx, node_t *value_node) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef idx_val = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)idx, 0);
+    LLVMValueRef indices[2] = { zero, idx_val };
+    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.idx");
+    LLVMTypeRef saved_hint = cg->hint_ret_type;
+    cg->hint_ret_type = elem_ty;
+    LLVMValueRef val = gen_expr(cg, value_node);
+    cg->hint_ret_type = saved_hint;
+    if (LLVMTypeOf(val) != elem_ty)
+        val = coerce_int(cg, val, elem_ty);
+    LLVMBuildStore(cg->builder, val, gep);
+}
+
+static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                                   LLVMTypeRef elem_ty, long *cursor, node_t *node) {
+    long start = 0, end = 0, step = 1;
+    if (!const_int_value(node->as.range_expr.start, &start)
+            || !const_int_value(node->as.range_expr.end, &end)
+            || (node->as.range_expr.step && !const_int_value(node->as.range_expr.step, &step))
+            || step == 0) {
+        diag_begin_error("range bounds and step must be compile-time integer literals");
+        diag_span(DIAG_NODE(node), True, "range used here");
+        diag_finish();
+        return False;
+    }
+
+    if (step > 0) {
+        long limit = node->as.range_expr.inclusive ? end + 1 : end;
+        for (long v = start; v < limit; v += step) {
+            node_t fake = {0};
+            fake.kind = NodeIntLitExpr;
+            fake.as.int_lit.value = v;
+            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            (*cursor)++;
+        }
+    } else {
+        long limit = node->as.range_expr.inclusive ? end - 1 : end;
+        for (long v = start; v > limit; v += step) {
+            node_t fake = {0};
+            fake.kind = NodeIntLitExpr;
+            fake.as.int_lit.value = v;
+            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            (*cursor)++;
+        }
+    }
+    return True;
+}
+
+static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                                    LLVMTypeRef elem_ty, long *cursor, node_t *expr) {
+    if (!expr) return False;
+
+    if (expr->kind == NodeStrLitExpr) {
+        for (usize_t i = 0; i < expr->as.str_lit.len; i++) {
+            node_t fake = {0};
+            fake.kind = NodeCharLitExpr;
+            fake.as.char_lit.value = expr->as.str_lit.value[i];
+            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            (*cursor)++;
+        }
+        return True;
+    }
+
+    if (expr->kind == NodeRangeExpr)
+        return emit_range_values(cg, tmp, arr_ty, elem_ty, cursor, expr);
+
+    if (expr->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, expr->as.ident.name);
+        if (sym && LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind && sym->array_size >= 0) {
+            LLVMTypeRef src_elem_ty = LLVMGetElementType(sym->type);
+            for (long i = 0; i < sym->array_size; i++) {
+                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                LLVMValueRef src_idx = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)i, 0);
+                LLVMValueRef src_indices[2] = { zero, src_idx };
+                LLVMValueRef src_gep = LLVMBuildGEP2(cg->builder, sym->type, sym->value, src_indices, 2, "spread.src");
+                LLVMValueRef val = LLVMBuildLoad2(cg->builder, src_elem_ty, src_gep, "spread.val");
+
+                LLVMValueRef dst_idx = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)(*cursor), 0);
+                LLVMValueRef dst_indices[2] = { zero, dst_idx };
+                LLVMValueRef dst_gep = LLVMBuildGEP2(cg->builder, arr_ty, tmp, dst_indices, 2, "spread.dst");
+                if (src_elem_ty != elem_ty)
+                    val = coerce_int(cg, val, elem_ty);
+                LLVMBuildStore(cg->builder, val, dst_gep);
+                (*cursor)++;
+            }
+            return True;
+        }
+    }
+
+    diag_begin_error("unsupported spread expression in compound initializer");
+    diag_span(DIAG_NODE(expr), True, "cannot spread this value");
+    diag_finish();
+    return False;
+}
+
+static boolean_t store_struct_field(cg_t *cg, LLVMValueRef tmp, struct_reg_t *sr,
+                                    const char *field_name, node_t *value_node) {
+    for (usize_t i = 0; i < sr->field_count; i++) {
+        if (strcmp(sr->fields[i].name, field_name) != 0) continue;
+        LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type, tmp,
+                                               (unsigned)sr->fields[i].index, field_name);
+        LLVMTypeRef field_ty = get_llvm_type(cg, sr->fields[i].type);
+        if (sr->fields[i].array_size > 0)
+            field_ty = LLVMArrayType2(field_ty, (unsigned long long)sr->fields[i].array_size);
+        LLVMTypeRef saved_hint = cg->hint_ret_type;
+        cg->hint_ret_type = field_ty;
+        LLVMValueRef val = gen_expr(cg, value_node);
+        cg->hint_ret_type = saved_hint;
+        if (LLVMTypeOf(val) != field_ty)
+            val = coerce_int(cg, val, field_ty);
+        LLVMBuildStore(cg->builder, val, gep);
+        return True;
+    }
+
+    diag_begin_error("unknown field '%s' in struct '%s'", field_name, sr->name);
+    diag_finish();
+    return False;
+}
+
+static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node) {
+    LLVMTypeRef target_ty = cg->hint_ret_type;
+    if (!target_ty) {
+        diag_begin_error("compound initializer requires a known target type");
+        diag_span(DIAG_NODE(node), True, "target type is not known here");
+        diag_finish();
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    if (LLVMGetTypeKind(target_ty) == LLVMArrayTypeKind) {
+        LLVMTypeRef elem_ty = LLVMGetElementType(target_ty);
+        LLVMValueRef tmp = alloc_in_entry(cg, target_ty, "compound_arr");
+        LLVMBuildStore(cg->builder, LLVMConstNull(target_ty), tmp);
+        long cursor = 0;
+
+        for (usize_t i = 0; i < node->as.compound_init.items.count; i++) {
+            node_t *item = node->as.compound_init.items.items[i];
+            if (item->kind == NodeInitField) {
+                diag_begin_error("field designators are not valid in array initializers");
+                diag_span(DIAG_NODE(item), True, "used here");
+                diag_finish();
+                continue;
+            }
+            if (item->kind == NodeInitIndex) {
+                long idx = 0;
+                if (!const_int_value(item->as.init_index.index, &idx) || idx < 0) {
+                    diag_begin_error("array designator index must be a non-negative integer literal");
+                    diag_span(DIAG_NODE(item), True, "used here");
+                    diag_finish();
+                    continue;
+                }
+                cursor = idx;
+                store_array_value(cg, tmp, target_ty, elem_ty, cursor, item->as.init_index.value);
+                cursor += 1;
+                continue;
+            }
+            if (item->kind == NodeSpreadExpr) {
+                emit_spread_values(cg, tmp, target_ty, elem_ty, &cursor, item->as.spread_expr.expr);
+                continue;
+            }
+            if (item->kind == NodeRangeExpr) {
+                emit_range_values(cg, tmp, target_ty, elem_ty, &cursor, item);
+                continue;
+            }
+            store_array_value(cg, tmp, target_ty, elem_ty, cursor, item);
+            cursor += 1;
+        }
+
+        return LLVMBuildLoad2(cg->builder, target_ty, tmp, "compound_arr_val");
+    }
+
+    if (LLVMGetTypeKind(target_ty) == LLVMStructTypeKind) {
+        struct_reg_t *sr = find_struct_by_llvm_type(cg, target_ty);
+        if (!sr) {
+            diag_begin_error("compound initializer target is not a known struct type");
+            diag_span(DIAG_NODE(node), True, "used here");
+            diag_finish();
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+
+        LLVMValueRef tmp = alloc_in_entry(cg, target_ty, "compound_struct");
+        LLVMBuildStore(cg->builder, LLVMConstNull(target_ty), tmp);
+
+        for (usize_t i = 0; i < node->as.compound_init.items.count; i++) {
+            node_t *item = node->as.compound_init.items.items[i];
+            if (item->kind == NodeSpreadExpr) {
+                LLVMTypeRef saved_hint = cg->hint_ret_type;
+                cg->hint_ret_type = target_ty;
+                LLVMValueRef val = gen_expr(cg, item->as.spread_expr.expr);
+                cg->hint_ret_type = saved_hint;
+                LLVMBuildStore(cg->builder, val, tmp);
+                continue;
+            }
+            if (item->kind == NodeInitField) {
+                store_struct_field(cg, tmp, sr, item->as.init_field.name, item->as.init_field.value);
+                continue;
+            }
+
+            diag_begin_error("unsupported item in struct compound initializer");
+            diag_span(DIAG_NODE(item), True, "used here");
+            diag_finish();
+        }
+
+        return LLVMBuildLoad2(cg->builder, target_ty, tmp, "compound_struct_val");
+    }
+
+    diag_begin_error("compound initializer target must be an array or struct");
+    diag_span(DIAG_NODE(node), True, "used here");
+    diag_finish();
+    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+}
+
 static LLVMValueRef gen_int_lit(cg_t *cg, node_t *node) {
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
                         (unsigned long long)node->as.int_lit.value, 1);
@@ -1949,6 +2283,10 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
 
     if (obj->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+        if (sym && strcmp(field, "len") == 0 && sym->array_size >= 0) {
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+                                (unsigned long long)sym->array_size, 0);
+        }
         if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
             struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
             if (sr) {
@@ -3136,10 +3474,10 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             }
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
+        case NodeCompoundInit:
+            return gen_compound_init(cg, node);
         case NodeDesigInit: {
-            /* Type { .x = 1, .y = 2 } — designated initializer */
             const char *di_name = node->as.desig_init.type_name;
-            /* apply generic substitution if active */
             if (di_name && cg->generic_n > 0) {
                 const char *sub = cg_subst_name(cg, di_name);
                 if (sub != di_name) di_name = sub;
@@ -3156,30 +3494,35 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
                 diag_finish();
                 return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
             }
-            LLVMValueRef tmp = alloc_in_entry(cg, sr->llvm_type, "desig_tmp");
-            /* zero-initialize first */
-            LLVMValueRef zero = LLVMConstNull(sr->llvm_type);
-            LLVMBuildStore(cg->builder, zero, tmp);
-            /* set each named field */
+            LLVMTypeRef saved_hint = cg->hint_ret_type;
+            cg->hint_ret_type = sr->llvm_type;
+            node_t lowered = {0};
+            lowered.kind = NodeCompoundInit;
+            node_list_init(&lowered.as.compound_init.items);
             for (usize_t di = 0; di < node->as.desig_init.fields.count; di++) {
                 node_t *fname_node = node->as.desig_init.fields.items[di];
                 node_t *fval_node  = node->as.desig_init.values.items[di];
-                char *fname = fname_node->as.ident.name;
-                for (usize_t fi = 0; fi < sr->field_count; fi++) {
-                    if (strcmp(sr->fields[fi].name, fname) == 0) {
-                        LLVMValueRef gep = LLVMBuildStructGEP2(
-                            cg->builder, sr->llvm_type, tmp,
-                            (unsigned)sr->fields[fi].index, fname);
-                        LLVMTypeRef ft = get_llvm_type(cg, sr->fields[fi].type);
-                        LLVMValueRef val = gen_expr(cg, fval_node);
-                        val = coerce_int(cg, val, ft);
-                        LLVMBuildStore(cg->builder, val, gep);
-                        break;
-                    }
-                }
+                node_t *item = make_node(NodeInitField, fname_node->line);
+                item->as.init_field.name = fname_node->as.ident.name;
+                item->as.init_field.value = fval_node;
+                node_list_push(&lowered.as.compound_init.items, item);
             }
-            return LLVMBuildLoad2(cg->builder, sr->llvm_type, tmp, "desig_val");
+            LLVMValueRef val = gen_compound_init(cg, &lowered);
+            cg->hint_ret_type = saved_hint;
+            return val;
         }
+        case NodeRangeExpr:
+            diag_begin_error("range expressions can only appear in compound initializers");
+            diag_span(DIAG_NODE(node), True, "used here");
+            diag_finish();
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        case NodeSpreadExpr:
+        case NodeInitField:
+        case NodeInitIndex:
+            diag_begin_error("initializer-only syntax used outside a compound initializer");
+            diag_span(DIAG_NODE(node), True, "used here");
+            diag_finish();
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         case NodeRemStmt: {
             node_t *ptr_node = node->as.rem_stmt.ptr;
             /* for heap primitive vars: free the heap ptr and null the alloca */

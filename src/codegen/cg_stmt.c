@@ -86,6 +86,21 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     if (node->as.var_decl.flags & VdeclArray) {
         LLVMTypeRef elem = get_llvm_type(cg, ti);
         unsigned long long array_len = (unsigned long long)node->as.var_decl.array_size;
+        if (array_len == 0 && node->as.var_decl.init
+                && node->as.var_decl.init->kind == NodeCompoundInit) {
+            boolean_t needs_trailing_nul = False;
+            boolean_t inferred_ok = True;
+            long inferred_len = count_compound_init_values(cg, node->as.var_decl.init,
+                                                           &needs_trailing_nul, &inferred_ok);
+            if (inferred_ok) {
+                if (elem == LLVMInt8TypeInContext(cg->ctx) && needs_trailing_nul)
+                    inferred_len += 1;
+                if (inferred_len > 0) {
+                    array_len = (unsigned long long)inferred_len;
+                    node->as.var_decl.array_size = inferred_len;
+                }
+            }
+        }
         if (node->as.var_decl.array_size_name) {
             symbol_t *sym = cg_lookup(cg, node->as.var_decl.array_size_name);
             if (sym) {
