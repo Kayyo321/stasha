@@ -47,11 +47,12 @@ HTTP_WRAP_OBJ = build/obj/std/http/http_wrapper.o
 CLARGS_RT_SRC = std/cl_args/cl_args_rt.c
 CLARGS_RT_OBJ = build/obj/std/cl_args/cl_args_rt.o
 
-SRCS = src/main.c         \
-       src/common/common.c \
-       src/lexer/lexer.c   \
-       src/ast/ast.c       \
-       src/parser/parser.c \
+SRCS = src/main.c                       \
+       src/common/common.c               \
+       src/lexer/lexer.c                 \
+       src/ast/ast.c                     \
+       src/parser/parser.c               \
+       src/preprocessor/preprocessor.c  \
        src/codegen/codegen.c
 
 OBJS = $(patsubst src/%.c,build/obj/%.o,$(SRCS))

@@ -12,6 +12,7 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 
 #include "common/common.h"
 #include "parser/parser.h"
+#include "preprocessor/preprocessor.h"
 #include "codegen/codegen.h"
 #include "linker/linker.h"
 
@@ -282,7 +283,9 @@ static void resolve_imports(node_t *ast, const char *input_path) {
 
         /* Point diagnostics at the imported file while parsing it. */
         diag_set_file(mod_path);
-        node_t *mod_ast = parse(src);
+        char *pp_src = preprocess(src);
+        node_t *mod_ast = parse(pp_src ? pp_src : src);
+        /* pp_src is a plain malloc allocation; freed on process exit */
         /* Restore primary file context. */
         diag_set_file(input_path);
         if (!mod_ast) {
@@ -664,7 +667,9 @@ int main(int argc, char **argv) {
     diag_set_file(input_path);
 
     log_msg("parsing '%s'", input_path);
-    node_t *ast = parse(source);
+    char *pp_source = preprocess(source);
+    node_t *ast = parse(pp_source ? pp_source : source);
+    /* pp_source is a plain malloc allocation; freed on process exit */
     if (!ast) {
         log_err("parsing failed");
         compile_cleanup();
