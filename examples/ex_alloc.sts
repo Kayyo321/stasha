@@ -1,773 +1,87 @@
 mod ex_alloc;
 
-// ============================================================================
-// Future Feature Draft: Built-In Allocators
-// ============================================================================
-//
-// This file is a language-design example only.
-// It is intentionally describing a feature that does not exist yet.
-//
-// Goal:
-// allocators should be a built-in language feature, like interfaces,
-// not "just a library pattern".
-//
-// The system should make it easy to:
-// - define your own allocator in pure Stasha
-// - inject allocators into types and scopes
-// - build custom arenas, pools, slab allocators, regions, and wrappers
-// - write moving allocators
-// - write tracing / compacting garbage collectors
-// - let containers and libraries adapt to allocator capabilities
-//
-// The key idea:
-// `allocator` is a first-class kind in the type system.
-//
-// It should feel like `struct`, `enum`, and `interface` do today:
-//
-//   type libc_a: allocator { ... }
-//   type arena_a: allocator { ... }
-//   type gc_a: allocator { ... }
-//
-// And usage should be language-native:
-//
-//   let [ptr, err] = new.[my_alloc].(layout);
-//   let [ptr, moved, err] = mov.[my_alloc].(old, old_layout, new_layout);
-//   let err = rem.[my_alloc].(ptr, old_layout);
-//
-//   @inject_alloc
-//   type vec_t: struct { allocator alloc; ... }
-//
-// ============================================================================
-// 1. Built-In Authoring Process
-// ============================================================================
-//
-// Creating a custom allocator should have a clear, simple process.
-//
-// Step 1:
-// define allocator state as normal fields.
-//
-// Step 2:
-// implement required built-in allocator hooks:
-// - .new
-// - .mov
-// - .rem
-// - .caps
-// - .owns
-//
-// Step 3:
-// optionally implement advanced hooks:
-// - .inspect
-// - .reset
-// - .seal / .unseal
-// - .pin / .unpin
-// - .trace
-// - .collect
-// - .sweep
-// - .compact
-//
-// Step 4:
-// use allocator injection in types, functions, scopes, and generic containers.
-//
-// The language should verify the required hook set the same way it verifies
-// an interface implementation.
-
-// ============================================================================
-// 2. Built-In Runtime Shapes
-// ============================================================================
-
-type alloc_error_t: enum {
-    OutOfMemory,
-    InvalidPointer,
-    InvalidLayout,
-    InvalidResize,
-    UnsupportedOperation,
-    ForeignAllocator,
-    SealedAllocator,
-    WouldMovePinned,
-    GcPhaseViolation,
-    CorruptBlock
-}
-
-type alloc_caps_t: struct {
-    bool can_free;
-    bool can_resize;
-    bool can_move;
-    bool can_reset;
-    bool can_trace;
-    bool can_pin;
-    bool can_compact;
-    bool stable_addresses;
-    bool thread_safe;
-}
-
-type alloc_layout_t: struct {
-    u64 size;
-    u32 align;
-    bool zeroed;
-    bool contains_refs;
-    bool long_lived;
-    bool pinned;
-}
-
-type alloc_result_t: struct {
-    heap i8 *rw+ ptr;
-    error err;
-}
-
-type resize_result_t: struct {
-    heap i8 *rw+ ptr;
-    bool moved;
-    error err;
-}
-
-type alloc_block_t: struct {
-    heap i8 *rw+ ptr;
-    u64 size;
-    u32 align;
-    bool pinned;
-    bool contains_refs;
-    bool managed_by_gc;
-}
-
-type gc_trace_ctx_t: struct {
-    u64 marked_edges;
-}
-
-ext fn gc_trace_ctx_t.mark(heap i8 *rw+ ptr): void {
-    if ptr != nil {
-        this.marked_edges += 1;
-    }
-}
-
-// ============================================================================
-// 3. The Built-In `allocator` Kind
-// ============================================================================
-//
-// This is the proposed language feature.
-//
-// Like `interface`, this is a built-in contract kind.
-// Unlike a normal interface, the compiler understands its role specially:
-//
-// - `new.[alloc].(...)` dispatches to `.new`
-// - `mov.[alloc].(...)` dispatches to `.mov`
-// - `rem.[alloc].(...)` dispatches to `.rem`
-// - `@inject_alloc` uses allocator-typed fields
-// - containers can constrain generic params to `allocator`
-// - the compiler may forbid raw `new./mov./rem.` in allocator-injected regions
-//
-// Required hooks:
-//   .caps
-//   .new
-//   .mov
-//   .rem
-//   .owns
-//
-// Optional hooks:
-//   .inspect
-//   .reset
-//   .seal
-//   .unseal
-//   .pin
-//   .unpin
-//   .trace
-//   .collect
-//   .sweep
-//   .compact
-//
-// Proposed syntax:
-//
-//   type my_alloc_t: allocator {
-//       ...
-//   }
-
-// ============================================================================
-// 4. The Simplest Allocator: libc_a
-// ============================================================================
-//
-// This is the easy entry point.
-// A user can write a valid allocator with only the required hooks.
-
-type libc_a: allocator {
-    u64 live_bytes;
-
-    .caps(void): alloc_caps_t {
-        ret .{
-            .can_free = true,
-            .can_resize = true,
-            .can_move = true,
-            .can_reset = false,
-            .can_trace = false,
-            .can_pin = false,
-            .can_compact = false,
-            .stable_addresses = false,
-            .thread_safe = true
-        };
-    }
-
-    .new(alloc_layout_t layout): alloc_result_t {
-        heap i8 *rw+ ptr = new.(layout.size);
-        if ptr == nil {
-            ret .{ .ptr = nil, .err = error.("libc_a: out of memory for {}", layout.size) };
-        }
-
-        this.live_bytes += layout.size;
-        ret .{ .ptr = ptr, .err = nil };
-    }
-
-    .mov(heap i8 *rw+ ptr, alloc_layout_t old_layout, alloc_layout_t new_layout): resize_result_t {
-        heap i8 *rw+ moved = mov.(ptr, new_layout.size);
-        if moved == nil {
-            ret .{
-                .ptr = nil,
-                .moved = false,
-                .err = error.(
-                    "libc_a: resize failed {} -> {}",
-                    old_layout.size,
-                    new_layout.size
-                )
-            };
-        }
-
-        if new_layout.size >= old_layout.size {
-            this.live_bytes += (new_layout.size - old_layout.size);
-        } else {
-            this.live_bytes -= (old_layout.size - new_layout.size);
-        }
-
-        ret .{ .ptr = moved, .moved = true, .err = nil };
-    }
-
-    .rem(heap i8 *rw+ ptr, alloc_layout_t old_layout): error {
-        if ptr == nil {
-            ret error.("libc_a: cannot free nil");
-        }
-
-        rem.(ptr);
-        this.live_bytes -= old_layout.size;
-        ret nil;
-    }
-
-    .owns(heap i8 *rw+ ptr): bool {
-        ret ptr != nil;
-    }
-}
-
-fn libc_a.rem(void): void {
-    if this.live_bytes != 0 {
-        print.("[libc_a] leak: {} bytes still live\n", this.live_bytes);
-    }
-}
-
-// ============================================================================
-// 5. A Stronger Allocator: arena_a
-// ============================================================================
-//
-// This shows how easy creating your own allocator should be.
-// The language should not force malloc semantics.
-//
-// An arena allocator can honestly say:
-// - I allocate
-// - I do not individually free
-// - I do not resize
-// - I support reset
-//
-// Containers and libraries can branch on `.caps()` instead of assuming.
-
-type arena_a: allocator {
-    allocator backing;
-    heap i8 *rw+ base;
-    u64 capacity;
-    u64 offset;
-    bool sealed;
-
-    .caps(void): alloc_caps_t {
-        ret .{
-            .can_free = false,
-            .can_resize = false,
-            .can_move = false,
-            .can_reset = true,
-            .can_trace = false,
-            .can_pin = true,
-            .can_compact = false,
-            .stable_addresses = true,
-            .thread_safe = false
-        };
-    }
-
-    .new(alloc_layout_t layout): alloc_result_t {
-        if this.sealed {
-            ret .{ .ptr = nil, .err = error.("arena_a: allocator is sealed") };
-        }
-
-        // Real implementation would align `offset` to `layout.align`.
-        if this.offset + layout.size > this.capacity {
-            ret .{ .ptr = nil, .err = error.("arena_a: out of memory") };
-        }
-
-        heap i8 *rw+ ptr = this.base + this.offset;
-        this.offset += layout.size;
-
-        ret .{ .ptr = ptr, .err = nil };
-    }
-
-    .mov(heap i8 *rw+ ptr, alloc_layout_t old_layout, alloc_layout_t new_layout): resize_result_t {
-        ret .{
-            .ptr = nil,
-            .moved = false,
-            .err = error.("arena_a: resize unsupported")
-        };
-    }
-
-    .rem(heap i8 *rw+ ptr, alloc_layout_t old_layout): error {
-        ret error.("arena_a: individual free unsupported");
-    }
-
-    .owns(heap i8 *rw+ ptr): bool {
-        if this.base == nil || ptr == nil {
-            ret false;
-        }
-        ret ptr >= this.base && ptr < (this.base + this.capacity);
-    }
-
-    .reset(void): error {
-        this.offset = 0;
-        ret nil;
-    }
-
-    .seal(void): error {
-        this.sealed = true;
-        ret nil;
-    }
-
-    .unseal(void): error {
-        this.sealed = false;
-        ret nil;
-    }
-}
-
-fn arena_a.new(allocator backing, u64 capacity): [arena_a, error] {
-    let [buf, err] = new.[backing].(.{
-        .size = capacity,
-        .align = sizeof.(u64),
-        .zeroed = false,
-        .contains_refs = false,
-        .long_lived = true,
-        .pinned = true
-    });
-
-    if err != nil {
-        ret arena_a{}, err;
-    }
-
-    ret .{
-        .backing = backing,
-        .base = buf,
-        .capacity = capacity,
-        .offset = 0,
-        .sealed = false
-    }, nil;
-}
-
-fn arena_a.rem(void): void {
-    if this.base != nil {
-        let _ = rem.[this.backing].(
-            this.base,
-            .{
-                .size = this.capacity,
-                .align = sizeof.(u64),
-                .zeroed = false,
-                .contains_refs = false,
-                .long_lived = true,
-                .pinned = true
-            }
-        );
-    }
-}
-
-// ============================================================================
-// 6. Allocator Middleware: tracked_a
-// ============================================================================
-//
-// Because allocator is built-in, wrapper allocators become easy too.
-// This is how users could write:
-// - profilers
-// - leak detectors
-// - safety wrappers
-// - quotas
-// - logging allocators
-// - thread-safe wrappers
-
-type tracked_a: allocator {
-    allocator backing;
-    u64 live_bytes;
-    u64 peak_bytes;
-    u64 allocs;
-    u64 frees;
-    u64 resizes;
-
-    .caps(void): alloc_caps_t { ret this.backing.caps(); }
-
-    .new(alloc_layout_t layout): alloc_result_t {
-        let res = this.backing.new(layout);
-        if res.err != nil { ret res; }
-
-        this.allocs += 1;
-        this.live_bytes += layout.size;
-        if this.live_bytes > this.peak_bytes {
-            this.peak_bytes = this.live_bytes;
-        }
-
-        ret res;
-    }
-
-    .mov(heap i8 *rw+ ptr, alloc_layout_t old_layout, alloc_layout_t new_layout): resize_result_t {
-        let res = this.backing.mov(ptr, old_layout, new_layout);
-        if res.err != nil { ret res; }
-
-        this.resizes += 1;
-        if new_layout.size >= old_layout.size {
-            this.live_bytes += (new_layout.size - old_layout.size);
-        } else {
-            this.live_bytes -= (old_layout.size - new_layout.size);
-        }
-        if this.live_bytes > this.peak_bytes {
-            this.peak_bytes = this.live_bytes;
-        }
-
-        ret res;
-    }
-
-    .rem(heap i8 *rw+ ptr, alloc_layout_t old_layout): error {
-        let err = this.backing.rem(ptr, old_layout);
-        if err != nil { ret err; }
-
-        this.frees += 1;
-        this.live_bytes -= old_layout.size;
-        ret nil;
-    }
-
-    .owns(heap i8 *rw+ ptr): bool {
-        ret this.backing.owns(ptr);
-    }
-}
-
-fn tracked_a.rem(void): void {
-    print.(
-        "[tracked_a] allocs={} frees={} resizes={} live={} peak={}\n",
-        this.allocs,
-        this.frees,
-        this.resizes,
-        this.live_bytes,
-        this.peak_bytes
-    );
-}
-
-// ============================================================================
-// 7. The Big One: gc_a
-// ============================================================================
-//
-// This is the important design target.
-//
-// A user should be able to build a garbage collector in the language by
-// implementing a built-in allocator, not by waiting for compiler magic.
-//
-// The language support needed is:
-// - allocator hooks are built-in
-// - alloc layouts can say "contains_refs"
-// - optional tracing hooks exist
-// - blocks can be pinned
-// - collection phases can be expressed as allocator hooks
-// - user code can opt types into trace metadata
-//
-// This file models the allocator half of that story.
-
-type gc_header_t: struct {
-    bool marked;
-    bool pinned;
-    bool contains_refs;
-    u32 generation;
-    u64 payload_size;
-}
-
-type gc_a: allocator {
-    allocator nursery;
-    allocator old_space;
-    allocator los;
-    u64 bytes_since_collect;
-    u64 collections;
-    bool collection_locked;
-
-    .caps(void): alloc_caps_t {
-        ret .{
-            .can_free = false,
-            .can_resize = false,
-            .can_move = true,
-            .can_reset = false,
-            .can_trace = true,
-            .can_pin = true,
-            .can_compact = true,
-            .stable_addresses = false,
-            .thread_safe = false
-        };
-    }
-
-    .new(alloc_layout_t layout): alloc_result_t {
-        this.bytes_since_collect += layout.size;
-
-        // Real policy:
-        // - small short-lived objects -> nursery
-        // - long-lived -> old_space
-        // - large objects -> los
-        if layout.long_lived {
-            ret this.old_space.new(layout);
-        }
-
-        if layout.size > 8192 {
-            ret this.los.new(layout);
-        }
-
-        ret this.nursery.new(layout);
-    }
-
-    .mov(heap i8 *rw+ ptr, alloc_layout_t old_layout, alloc_layout_t new_layout): resize_result_t {
-        // A compacting GC could support this for unpinned objects.
-        ret .{
-            .ptr = nil,
-            .moved = false,
-            .err = error.("gc_a: resize requires forwarding support")
-        };
-    }
-
-    .rem(heap i8 *rw+ ptr, alloc_layout_t old_layout): error {
-        // Manual free is usually a policy violation for GC-managed memory.
-        ret error.("gc_a: manual free disabled");
-    }
-
-    .owns(heap i8 *rw+ ptr): bool {
-        ret this.nursery.owns(ptr) || this.old_space.owns(ptr) || this.los.owns(ptr);
-    }
-
-    .inspect(heap i8 *rw+ ptr): [alloc_block_t, error] {
-        ret .{
-            .ptr = ptr,
-            .size = 0,
-            .align = sizeof.(u64),
-            .pinned = false,
-            .contains_refs = true,
-            .managed_by_gc = true
-        }, nil;
-    }
-
-    .pin(heap i8 *rw+ ptr): error {
-        // Real implementation would set header.pinned = true.
-        ret nil;
-    }
-
-    .unpin(heap i8 *rw+ ptr): error {
-        ret nil;
-    }
-
-    .trace(heap i8 *rw+ ptr, gc_trace_ctx_t *rw ctx): error {
-        // Real implementation:
-        // - find header / descriptor
-        // - walk pointer fields
-        // - ctx.mark(child) for each reference
-        ctx.mark(ptr);
-        ret nil;
-    }
-
-    .collect(void): error {
-        if this.collection_locked {
-            ret error.("gc_a: collection locked");
-        }
-
-        // Real implementation phases:
-        // 1. root discovery
-        // 2. nursery mark
-        // 3. old-space mark
-        // 4. sweep or evacuate
-        // 5. compact movable pages
-        // 6. update forwarding references
-        this.collections += 1;
-        this.bytes_since_collect = 0;
-        ret nil;
-    }
-
-    .compact(void): error {
-        if this.collection_locked {
-            ret error.("gc_a: compact locked");
-        }
-
-        // Real implementation would move unpinned objects and patch refs.
-        ret nil;
-    }
-
-    .seal(void): error {
-        this.collection_locked = true;
-        ret nil;
-    }
-
-    .unseal(void): error {
-        this.collection_locked = false;
-        ret nil;
-    }
-}
-
-// ============================================================================
-// 8. Typed Helpers the Language Should Probably Ship
-// ============================================================================
-//
-// Because allocator is built-in, the standard library could provide these
-// universally and make allocator-aware code easy to write.
-
-fn @comptime[T] alloc_one(allocator a): [heap T *rw, error] {
-    let [raw, err] = new.[a].(.{
-        .size = sizeof.(T),
-        .align = sizeof.(u64),
-        .zeroed = true,
-        .contains_refs = false,
-        .long_lived = false,
-        .pinned = false
-    });
-
-    if err != nil {
-        ret nil, err;
-    }
-
-    ret (T *rw)raw, nil;
-}
-
-fn @comptime[T] alloc_many(allocator a, u64 count, bool zeroed): [heap T *rw, error] {
-    let [raw, err] = new.[a].(.{
-        .size = sizeof.(T) * count,
-        .align = sizeof.(u64),
-        .zeroed = zeroed,
-        .contains_refs = false,
-        .long_lived = false,
-        .pinned = false
-    });
-
-    if err != nil {
-        ret nil, err;
-    }
-
-    ret (T *rw)raw, nil;
-}
-
-// ============================================================================
-// 9. Allocator Injection
-// ============================================================================
-//
-// `@inject_alloc` should become the ergonomic bridge between the built-in
-// allocator feature and ordinary user types.
-//
-// Meaning:
-// - this type must carry an allocator
-// - methods on this type must use that allocator for all hidden allocations
-// - raw `new./mov./rem.` becomes a compile error unless explicitly escaped
-// - generic containers can be allocator-aware by construction
-
-type vec_i32_t: @inject_alloc struct {
-    allocator alloc;
-    heap i32 *rw data;
-    u64 len;
-    u64 cap;
-
-    ext fn push(i32 value): error {
-        if this.len == this.cap {
-            u64 next = this.cap == 0 ? 8 : this.cap * 2;
-
-            if this.cap == 0 {
-                let [buf, err] = alloc_many.[i32](this.alloc, next, true);
-                if err != nil { ret err; }
-                this.data = buf;
-            } else {
-                let [buf, moved, err] = mov.[this.alloc].(
-                    (i8 *rw+)this.data,
-                    .{
-                        .size = sizeof.(i32) * this.cap,
-                        .align = sizeof.(u64),
-                        .zeroed = false,
-                        .contains_refs = false,
-                        .long_lived = false,
-                        .pinned = false
-                    },
-                    .{
-                        .size = sizeof.(i32) * next,
-                        .align = sizeof.(u64),
-                        .zeroed = false,
-                        .contains_refs = false,
-                        .long_lived = false,
-                        .pinned = false
-                    }
-                );
-
-                if err != nil { ret err; }
-                this.data = (i32 *rw)buf;
-            }
-
-            this.cap = next;
-        }
-
-        this.data[this.len] = value;
-        this.len += 1;
-        ret nil;
-    }
-}
-
-fn vec_i32_t.new(allocator a): vec_i32_t {
-    ret .{
-        .alloc = a,
-        .data = nil,
-        .len = 0,
-        .cap = 0
-    };
-}
-
-// ============================================================================
-// 10. Future GC-Friendly Type Features
-// ============================================================================
-//
-// To really make user-space GC possible, allocator support is only half the
-// story. The language should eventually expose type-level tracing metadata.
-//
-// Example future direction:
-//
-//   @gc_trace
-//   type node_t: struct {
-//       heap node_t *rw left, right;
-//       heap i8 *rw label;
-//   }
-//
-// Then the compiler could synthesize a trace descriptor that `gc_a.trace`
-// can consult at runtime.
-//
-// That still keeps GC in user space:
-// the compiler only provides metadata, not a built-in collector.
-
-// ============================================================================
-// 11. End-State Vision
-// ============================================================================
-//
-// The ideal feature set would let a Stasha programmer do all of these:
-//
-// - write a libc-compatible allocator in 20 lines
-// - write an arena allocator in 50 lines
-// - write a slab allocator in 100 lines
-// - wrap allocators with profilers / quotas / diagnostics
-// - pass allocators into containers and APIs naturally
-// - forbid accidental global allocator use inside allocator-injected code
-// - write a tracing collector with pinning, tracing, and compaction hooks
-// - choose allocator policy per subsystem:
-//   parser -> arena
-//   cache -> slab
-//   app heap -> tracked libc
-//   object graph -> gc allocator
-//
-// That is what would make the built-in allocator feature feel complete.
+lib "stdio" = io;
+lib "allocator" from "liballocator.a";
+imp allocator;
 
 fn main(void): i32 {
-    print.("future feature draft: built-in allocator kind, injection, and GC-ready hooks\n");
-    print.("see ex_alloc.sts for the proposed language design\n");
+    tracked_allocator_t tracked = tracked_allocator_t.new();
+
+    let [tracked_buf0, tracked_err0] = tracked.alloc_bytes(6);
+    if tracked_err0 != nil {
+        print.("error: {}\n", tracked_err0);
+        ret 1;
+    }
+
+    let [tracked_buf1, tracked_err1] = tracked.resize_bytes(tracked_buf0, 6, 17);
+    if tracked_err1 != nil {
+        print.("error: {}\n", tracked_err1);
+        tracked.free_bytes(tracked_buf0, 6);
+        ret 1;
+    }
+
+    tracked_buf1[0] = 115; tracked_buf1[1] = 116; tracked_buf1[2] = 97;
+    tracked_buf1[3] = 115; tracked_buf1[4] = 104; tracked_buf1[5] = 97;
+    tracked_buf1[6] = 32;  tracked_buf1[7] = 97;  tracked_buf1[8] = 108;
+    tracked_buf1[9] = 108; tracked_buf1[10] = 111; tracked_buf1[11] = 99;
+    tracked_buf1[12] = 32; tracked_buf1[13] = 100; tracked_buf1[14] = 101;
+    tracked_buf1[15] = 109; tracked_buf1[16] = 111;
+
+    io.printf(
+        "tracked text: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",
+        tracked_buf1[0], tracked_buf1[1], tracked_buf1[2], tracked_buf1[3],
+        tracked_buf1[4], tracked_buf1[5], tracked_buf1[6], tracked_buf1[7],
+        tracked_buf1[8], tracked_buf1[9], tracked_buf1[10], tracked_buf1[11],
+        tracked_buf1[12], tracked_buf1[13], tracked_buf1[14], tracked_buf1[15],
+        tracked_buf1[16]
+    );
+
+    tracked.free_bytes(tracked_buf1, 17);
+
+    alloc_stats_t tracked_stats = tracked.stats();
+    io.printf(
+        "tracked stats: allocs=%llu frees=%llu resizes=%llu live=%llu peak=%llu\n",
+        tracked_stats.allocations,
+        tracked_stats.frees,
+        tracked_stats.resizes,
+        tracked_stats.live_bytes,
+        tracked_stats.peak_bytes
+    );
+
+    quota_allocator_t quota = quota_allocator_t.new(12);
+
+    let [quota_buf0, quota_err0] = quota.alloc_bytes(8);
+    if quota_err0 != nil {
+        print.("error: {}\n", quota_err0);
+        ret 1;
+    }
+    quota_buf0[0] = 113; quota_buf0[1] = 117; quota_buf0[2] = 111; quota_buf0[3] = 116;
+    quota_buf0[4] = 97;  quota_buf0[5] = 32;  quota_buf0[6] = 111; quota_buf0[7] = 107;
+
+    io.printf(
+        "quota text: %c%c%c%c%c%c%c%c\n",
+        quota_buf0[0], quota_buf0[1], quota_buf0[2], quota_buf0[3],
+        quota_buf0[4], quota_buf0[5], quota_buf0[6], quota_buf0[7]
+    );
+
+    let [quota_buf1, quota_err1] = quota.alloc_bytes(8);
+    if quota_err1 != nil {
+        print.("quota denied: {}\n", quota_err1);
+    } else {
+        quota.free_bytes(quota_buf1, 8);
+    }
+
+    quota.free_bytes(quota_buf0, 8);
+
+    alloc_stats_t quota_stats = quota.stats();
+    io.printf(
+        "quota stats: allocs=%llu frees=%llu resizes=%llu live=%llu peak=%llu\n",
+        quota_stats.allocations,
+        quota_stats.frees,
+        quota_stats.resizes,
+        quota_stats.live_bytes,
+        quota_stats.peak_bytes
+    );
+
     ret 0;
 }
