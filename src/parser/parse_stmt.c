@@ -193,6 +193,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
             node_t *init = parse_expr(p);
             consume(p, TokSemicolon, "';'");
             node_t *n = make_node(NodeVarDecl, line);
+            ast_set_loc(n, name_tok);
             n->as.var_decl.name    = copy_token_text(name_tok);
             n->as.var_decl.type    = NO_TYPE; /* filled in by codegen */
             n->as.var_decl.storage = storage;
@@ -211,6 +212,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         do {
             token_t name_tok = consume(p, TokIdent, "variable name");
             node_t *var = make_node(NodeVarDecl, name_tok.line);
+            ast_set_loc(var, name_tok);
             var->as.var_decl.name    = copy_token_text(name_tok);
             var->as.var_decl.type    = NO_TYPE; /* filled in by codegen */
             var->as.var_decl.storage = storage;
@@ -250,6 +252,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         do {
             token_t name_tok = consume(p, TokIdent, "variable name");
             node_t *var = make_node(NodeVarDecl, name_tok.line);
+            ast_set_loc(var, name_tok);
             var->as.var_decl.name = copy_token_text(name_tok);
             var->as.var_decl.type = type;
             var->as.var_decl.storage = storage;
@@ -295,6 +298,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     consume(p, TokSemicolon, "';'");
 
     node_t *n = make_node(NodeVarDecl, line);
+    ast_set_loc(n, name_tok);
     n->as.var_decl.name = name;
     n->as.var_decl.type = type;
     n->as.var_decl.storage = storage;
@@ -323,6 +327,7 @@ static node_t *parse_with_stmt(parser_t *p) {
         do {
             token_t name_tok = consume(p, TokIdent, "variable name");
             node_t *var = make_node(NodeVarDecl, name_tok.line);
+            ast_set_loc(var, name_tok);
             var->as.var_decl.name    = copy_token_text(name_tok);
             var->as.var_decl.type    = NO_TYPE;
             var->as.var_decl.storage = StorageDefault;
@@ -346,6 +351,7 @@ static node_t *parse_with_stmt(parser_t *p) {
             advance_parser(p); /* consume '=' */
             node_t *init = parse_expr(p);
             node_t *var = make_node(NodeVarDecl, name_tok.line);
+            ast_set_loc(var, name_tok);
             var->as.var_decl.name    = copy_token_text(name_tok);
             var->as.var_decl.type    = NO_TYPE;
             var->as.var_decl.storage = StorageDefault;
@@ -376,6 +382,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                 do {
                     token_t name_tok = consume(p, TokIdent, "variable name");
                     node_t *var = make_node(NodeVarDecl, name_tok.line);
+                    ast_set_loc(var, name_tok);
                     var->as.var_decl.name    = copy_token_text(name_tok);
                     var->as.var_decl.type    = NO_TYPE;
                     var->as.var_decl.storage = storage;
@@ -395,6 +402,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                 consume(p, TokEq, "'='");
                 node_t *init = parse_expr(p);
                 node_t *var = make_node(NodeVarDecl, name_tok.line);
+                ast_set_loc(var, name_tok);
                 var->as.var_decl.name    = copy_token_text(name_tok);
                 var->as.var_decl.type    = NO_TYPE;
                 var->as.var_decl.storage = storage;
@@ -417,6 +425,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                 do {
                     token_t name_tok = consume(p, TokIdent, "variable name");
                     node_t *var = make_node(NodeVarDecl, name_tok.line);
+                    ast_set_loc(var, name_tok);
                     var->as.var_decl.name    = copy_token_text(name_tok);
                     var->as.var_decl.type    = NO_TYPE;
                     var->as.var_decl.storage = storage;
@@ -442,6 +451,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                         advance_parser(p); /* consume '=' */
                         node_t *init = parse_expr(p);
                         node_t *var = make_node(NodeVarDecl, name_tok.line);
+                        ast_set_loc(var, name_tok);
                         var->as.var_decl.name    = copy_token_text(name_tok);
                         var->as.var_decl.type    = NO_TYPE;
                         var->as.var_decl.storage = storage;
@@ -465,6 +475,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                         do {
                             token_t name_tok = consume(p, TokIdent, "variable name");
                             node_t *var = make_node(NodeVarDecl, name_tok.line);
+                            ast_set_loc(var, name_tok);
                             var->as.var_decl.name    = copy_token_text(name_tok);
                             var->as.var_decl.type    = type;
                             var->as.var_decl.storage = storage;
@@ -483,6 +494,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                         consume(p, TokEq, "'='");
                         node_t *init = parse_expr(p);
                         node_t *var = make_node(NodeVarDecl, name_tok.line);
+                        ast_set_loc(var, name_tok);
                         var->as.var_decl.name    = copy_token_text(name_tok);
                         var->as.var_decl.type    = type;
                         var->as.var_decl.storage = storage;

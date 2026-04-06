@@ -26,6 +26,7 @@
 
 static const char *g_filename = "<unknown>";
 static const char *g_source   = Null;
+static boolean_t   g_render_enabled = True;
 
 /* In-progress diagnostic being built with diag_begin_* / diag_span / ... */
 static diagnostic_t g_pending;
@@ -42,6 +43,8 @@ typedef struct {
 
 static diag_source_entry_t g_source_registry[DIAG_MAX_REGISTERED_SOURCES];
 static int                 g_source_registry_count = 0;
+static captured_diag_t     g_captured_diags[DIAG_MAX_CAPTURED];
+static usize_t             g_captured_diag_count = 0;
 
 void diag_register_source(const char *filename, const char *source) {
     if (!filename || !source) return;
@@ -57,6 +60,23 @@ void diag_register_source(const char *filename, const char *source) {
         g_source_registry[g_source_registry_count].source   = source;
         g_source_registry_count++;
     }
+}
+
+void diag_set_render_enabled(boolean_t enabled) {
+    g_render_enabled = enabled;
+}
+
+void diag_clear_captured(void) {
+    g_captured_diag_count = 0;
+}
+
+usize_t diag_get_captured_count(void) {
+    return g_captured_diag_count;
+}
+
+const captured_diag_t *diag_get_captured(usize_t index) {
+    if (index >= g_captured_diag_count) return Null;
+    return &g_captured_diags[index];
 }
 
 static const char *lookup_registered_source(const char *filename) {
@@ -422,7 +442,15 @@ void diag_help(const char *fmt, ...) {
 
 void diag_finish(void) {
     if (!g_has_pending) return;
-    render_diagnostic(&g_pending);
+    if (g_captured_diag_count < DIAG_MAX_CAPTURED) {
+        captured_diag_t *slot = &g_captured_diags[g_captured_diag_count++];
+        memset(slot, 0, sizeof(*slot));
+        slot->diag = g_pending;
+        snprintf(slot->filename, sizeof(slot->filename), "%s", g_filename ? g_filename : "<unknown>");
+    }
+
+    if (g_render_enabled)
+        render_diagnostic(&g_pending);
 
     /* Update global counters used by the rest of the compiler. */
     if (g_pending.level == DiagError)   error_cnt++;

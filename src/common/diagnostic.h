@@ -46,6 +46,8 @@ typedef struct {
 #define DIAG_MSG_SIZE    512
 #define DIAG_LABEL_SIZE  256
 #define DIAG_NOTE_SIZE   256
+#define DIAG_PATH_SIZE   512
+#define DIAG_MAX_CAPTURED 256
 
 /* ── A label pointing at a source span ── */
 
@@ -67,6 +69,11 @@ typedef struct {
     usize_t         note_count;
 } diagnostic_t;
 
+typedef struct {
+    diagnostic_t diag;
+    char         filename[DIAG_PATH_SIZE];
+} captured_diag_t;
+
 /* ── Global context (set before each parse/codegen pass) ── */
 
 void diag_set_file(const char *filename);
@@ -80,6 +87,10 @@ const char *diag_get_file(void);
  * The `source` pointer must outlive all diagnostics for that file.
  */
 void diag_register_source(const char *filename, const char *source);
+void diag_set_render_enabled(boolean_t enabled);
+void diag_clear_captured(void);
+usize_t diag_get_captured_count(void);
+const captured_diag_t *diag_get_captured(usize_t index);
 
 /* ── Builder API ── */
 

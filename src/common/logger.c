@@ -239,14 +239,18 @@ static void timestamp(char *buffer, size_t buf_size) {
     strftime(buffer, buf_size, "%Y-%m-%d %H:%M:%S", tm_info);
 }
 
+static boolean_t log_stderr_enabled = True;
+
 void quit(result_t res) {
     res = scan_and_deallocate() == Ok ? res : Err;
 
     if (log_file)
         close_logger();
 
-    fprintf(stderr, "warn count: %lu, error count: %lu\n", warn_cnt, error_cnt);
-    fprintf(stderr, "exited with code %d\n", res);
+    if (log_stderr_enabled) {
+        fprintf(stderr, "warn count: %lu, error count: %lu\n", warn_cnt, error_cnt);
+        fprintf(stderr, "exited with code %d\n", res);
+    }
     exit(res);
 }
 
@@ -317,10 +321,13 @@ static result_t log_message(const char *fmt, va_list args, int log_flags) {
     }
 
     fputs(msg_buffer, log_file); fputc('\n', log_file);
-    fputs(msg_buffer, stderr); fputc('\n', stderr);
+    if (log_stderr_enabled) {
+        fputs(msg_buffer, stderr); fputc('\n', stderr);
+    }
 
     fflush(log_file);
-    fflush(stderr);
+    if (log_stderr_enabled)
+        fflush(stderr);
 
     error_cnt += (log_flags & LogFlagError);
     warn_cnt += (log_flags & LogFlagWarn);
@@ -353,6 +360,14 @@ void log_err(const char *fmt, ...) {
     log_message(fmt, args, LogFlagError);
     
     va_end(args);
+}
+
+void log_set_stderr_enabled(boolean_t enabled) {
+    log_stderr_enabled = enabled;
+}
+
+boolean_t log_get_stderr_enabled(void) {
+    return log_stderr_enabled;
 }
 
 usize_t get_error_count(void){

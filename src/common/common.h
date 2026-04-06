@@ -33,6 +33,8 @@ result_t close_logger(void);
 void log_msg(const char *fmt, ...);
 void log_warn(const char *fmt, ...);
 void log_err(const char *fmt, ...);
+void log_set_stderr_enabled(boolean_t enabled);
+boolean_t log_get_stderr_enabled(void);
 
 usize_t get_error_count(void);
 usize_t get_warn_count(void);

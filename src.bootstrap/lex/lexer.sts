@@ -1,0 +1,128 @@
+mod lex.lexer;
+
+imp lex.token;
+
+ext type lexer_t: struct {
+    int heap i8 *start;
+    int heap i8 *current;
+    int heap i8 *start_of_ln;
+    int u32 cur_ln;
+    int map_t.[dstring_t, token_type_t] keywords;
+
+    // member helpers
+
+    int fn is_at_end(void): bool => *this.current == `\0`;
+    int fn advance(void): i8 => *this.current++;
+    int fn peek(void): i8 => *this.current;
+    int fn peek_next(void): i8 => (this.is_at_end()) ? `\0` : this.current[1];
+
+    int fn match_ch(i8 expected): bool {
+        if this.is_at_end() || this.peek() != expected {
+            ret false;
+        }
+
+        this.advance();
+        ret true;
+    }
+
+    int fn extract_tok(token_type_t kind): token_t {
+        ret token_t.(
+            this.cur_ln,
+            (u32)(this.start - this.start_of_ln) + 1,
+            kind
+        );
+    }
+}
+
+ext lexer_t.new(heap i8 *rw+ source): lexer_t { // TODO: what permissions do we not need
+    lexer_t l = .{
+        .start = source, 
+        .current = source, 
+        .start_of_ln = source, 
+        .cur_ln = 1, 
+        .keywords = map_t.[dstring_t, token_type_t].()
+    };
+
+    l.keywords.insert(dstring_t.from_str("mod"), TokMod);
+    l.keywords.insert(dstring_t.from_str("imp"), TokImp);
+    l.keywords.insert(dstring_t.from_str("int"), TokInt);
+    l.keywords.insert(dstring_t.from_str("ext"), TokExt);
+    l.keywords.insert(dstring_t.from_str("fn"), TokFn);
+    l.keywords.insert(dstring_t.from_str("for"), TokFor);
+    l.keywords.insert(dstring_t.from_str("if"), TokIf);
+    l.keywords.insert(dstring_t.from_str("else"), TokElse);
+    l.keywords.insert(dstring_t.from_str("while"), TokWhile);
+    l.keywords.insert(dstring_t.from_str("do"), TokDo);
+    l.keywords.insert(dstring_t.from_str("inf"), TokInf);
+    l.keywords.insert(dstring_t.from_str("ret"), TokRet);
+    l.keywords.insert(dstring_t.from_str("break"), TokBreak);
+    l.keywords.insert(dstring_t.from_str("continue"), TokContinue);
+    l.keywords.insert(dstring_t.from_str("stack"), TokStack);
+    l.keywords.insert(dstring_t.from_str("heap"), TokHeap);
+    l.keywords.insert(dstring_t.from_str("atomic"), TokAtomic);
+    l.keywords.insert(dstring_t.from_str("const"), TokConst);
+    l.keywords.insert(dstring_t.from_str("final"), TokFinal);
+    l.keywords.insert(dstring_t.from_str("thread"), TokThread);
+    l.keywords.insert(dstring_t.from_str("future"), TokFuture);
+    l.keywords.insert(dstring_t.from_str("print"), TokPrint);
+    l.keywords.insert(dstring_t.from_str("void"), TokVoid);
+    l.keywords.insert(dstring_t.from_str("true"), TokTrue);
+    l.keywords.insert(dstring_t.from_str("false"), TokFalse);
+    l.keywords.insert(dstring_t.from_str("type"), TokType);
+    l.keywords.insert(dstring_t.from_str("struct"), TokStruct);
+    l.keywords.insert(dstring_t.from_str("enum"), TokEnum);
+    l.keywords.insert(dstring_t.from_str("lib"), TokLib);
+    l.keywords.insert(dstring_t.from_str("from"), TokFrom);
+    l.keywords.insert(dstring_t.from_str("new"), TokNew);
+    l.keywords.insert(dstring_t.from_str("sizeof"), TokSizeof);
+    l.keywords.insert(dstring_t.from_str("rem"), TokRem);
+    l.keywords.insert(dstring_t.from_str("match"), TokMatch);
+    l.keywords.insert(dstring_t.from_str("defer"), TokDefer);
+    l.keywords.insert(dstring_t.from_str("nil"), TokNil);
+    l.keywords.insert(dstring_t.from_str("mov"), TokMov);
+    l.keywords.insert(dstring_t.from_str("error"), TokErrorType);
+    l.keywords.insert(dstring_t.from_str("test"), TokTest);
+    l.keywords.insert(dstring_t.from_str("expect"), TokExpect);
+    l.keywords.insert(dstring_t.from_str("expect_eq"), TokExpectEq);
+    l.keywords.insert(dstring_t.from_str("expect_neq"), TokExpectNeq);
+    l.keywords.insert(dstring_t.from_str("test_fail"), TokTestFail);
+    l.keywords.insert(dstring_t.from_str("switch"), TokSwitch);
+    l.keywords.insert(dstring_t.from_str("case"), TokCase);
+    l.keywords.insert(dstring_t.from_str("default"), TokDefault);
+    l.keywords.insert(dstring_t.from_str("union"), TokUnion);
+    l.keywords.insert(dstring_t.from_str("volatile"), TokVolatile);
+    l.keywords.insert(dstring_t.from_str("asm"), TokAsm);
+    l.keywords.insert(dstring_t.from_str("tls"), TokTls);
+    l.keywords.insert(dstring_t.from_str("restrict"), TokRestrict);
+    l.keywords.insert(dstring_t.from_str("comptime_assert"), TokComptimeAssert);
+    l.keywords.insert(dstring_t.from_str("comptime_if"), TokComptimeIf);
+    l.keywords.insert(dstring_t.from_str("let"), TokLet);
+    l.keywords.insert(dstring_t.from_str("libimp"), TokLibImp);
+    l.keywords.insert(dstring_t.from_str("std"), TokStd);
+    l.keywords.insert(dstring_t.from_str("hash"), TokHash);
+    l.keywords.insert(dstring_t.from_str("equ"), TokEqu);
+    l.keywords.insert(dstring_t.from_str("this"), TokThis);
+    l.keywords.insert(dstring_t.from_str("with"), TokWith);
+    l.keywords.insert(dstring_t.from_str("any"), TokAny);
+    l.keywords.insert(dstring_t.from_str("interface"), TokInterface);
+    l.keywords.insert(dstring_t.from_str("i8"), TokI8);
+    l.keywords.insert(dstring_t.from_str("i16"), TokI16);
+    l.keywords.insert(dstring_t.from_str("i32"), TokI32);
+    l.keywords.insert(dstring_t.from_str("i64"), TokI64);
+    l.keywords.insert(dstring_t.from_str("u8"), TokU8);
+    l.keywords.insert(dstring_t.from_str("u16"), TokU16);
+    l.keywords.insert(dstring_t.from_str("u32"), TokU32);
+    l.keywords.insert(dstring_t.from_str("u64"), TokU64);
+    l.keywords.insert(dstring_t.from_str("f32"), TokF32);
+    l.keywords.insert(dstring_t.from_str("f64"), TokF64);
+    l.keywords.insert(dstring_t.from_str("bool"), TokBool);
+
+    ret l;
+}
+
+// some helpers
+
+int fn is_alpha(i8 c): bool => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+int fn is_digit(i8 c): bool => c >= '0' && c <= '9';
+int fn is_alnum(i8 c): bool => is_alpha(c) || is_digit(c);
+int fn is_hex_digit(i8 c): bool => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');

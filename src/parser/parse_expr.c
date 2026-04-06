@@ -435,9 +435,11 @@ static node_t *parse_primary(parser_t *p) {
 
     /* this — self-reference inside method bodies */
     if (check(p, TokThis)) {
+        token_t this_tok = p->current;
         usize_t line = p->current.line;
         advance_parser(p);
         node_t *n = make_node(NodeIdentExpr, line);
+        ast_set_loc(n, this_tok);
         n->as.ident.name = ast_strdup("this", 4);
         return n;
     }
@@ -445,15 +447,18 @@ static node_t *parse_primary(parser_t *p) {
     /* identifier — may be designated initializer: Type { .x = 1, .y = 2 } */
     /* soft keywords used as variable names: from, new, rem */
     if (check(p, TokFrom) || check(p, TokNew) || check(p, TokRem)) {
+        token_t ident_tok = p->current;
         usize_t line = p->current.line;
         char *name = copy_token_text(p->current);
         advance_parser(p);
         node_t *n = make_node(NodeIdentExpr, line);
+        ast_set_loc(n, ident_tok);
         n->as.ident.name = name;
         return n;
     }
 
     if (check(p, TokIdent)) {
+        token_t ident_tok = p->current;
         advance_parser(p);
         char *name = copy_token_text(p->previous);
         usize_t line = p->previous.line;
@@ -472,6 +477,7 @@ static node_t *parse_primary(parser_t *p) {
                     consume(p, TokDot, "'.'");
                     token_t fname = consume(p, TokIdent, "field name");
                     node_t *fn_node = make_node(NodeIdentExpr, fname.line);
+                    ast_set_loc(fn_node, fname);
                     fn_node->as.ident.name = copy_token_text(fname);
                     node_list_push(&n->as.desig_init.fields, fn_node);
                     consume(p, TokEq, "'='");
@@ -485,6 +491,7 @@ static node_t *parse_primary(parser_t *p) {
         }
 
         node_t *n = make_node(NodeIdentExpr, line);
+        ast_set_loc(n, ident_tok);
         n->as.ident.name = name;
         return n;
     }
@@ -578,6 +585,8 @@ static node_t *parse_postfix(parser_t *p) {
             }
             consume(p, TokRParen, "')'");
             node_t *n = make_node(NodeCallExpr, line);
+            n->col = expr->col;
+            n->source_file = expr->source_file;
             n->as.call.callee = name;
             n->as.call.args = args;
             expr = n;
@@ -635,6 +644,7 @@ static node_t *parse_postfix(parser_t *p) {
                             consume(p, TokDot, "'.'");
                             token_t fname = consume(p, TokIdent, "field name");
                             node_t *fn_node = make_node(NodeIdentExpr, fname.line);
+                            ast_set_loc(fn_node, fname);
                             fn_node->as.ident.name = copy_token_text(fname);
                             node_list_push(&di->as.desig_init.fields, fn_node);
                             consume(p, TokEq, "'='");
@@ -655,10 +665,13 @@ static node_t *parse_postfix(parser_t *p) {
                     && !check(p, TokLParen)) {
                 /* consume method/field name */
                 char *field_name;
+                token_t field_tok;
                 if (check(p, TokIdent)) {
+                    field_tok = p->current;
                     field_name = copy_token_text(p->current);
                     advance_parser(p);
                 } else {
+                    field_tok = p->current;
                     field_name = ast_strdup("?", 1);
                     diag_begin_error("expected field or method name after 'this.'");
                     diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
@@ -676,6 +689,8 @@ static node_t *parse_postfix(parser_t *p) {
                     }
                     consume(p, TokRParen, "')'");
                     node_t *n = make_node(NodeSelfMethodCall, line);
+                    n->col = field_tok.col;
+                    n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
                     n->as.self_method_call.type_name = Null;
                     n->as.self_method_call.method = field_name;
                     n->as.self_method_call.args = args;
@@ -684,6 +699,8 @@ static node_t *parse_postfix(parser_t *p) {
                 }
                 /* this.field → NodeSelfMemberExpr with type_name = NULL */
                 node_t *n = make_node(NodeSelfMemberExpr, line);
+                n->col = field_tok.col;
+                n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
                 n->as.self_member.type_name = Null;
                 n->as.self_member.field = field_name;
                 expr = n;
@@ -728,6 +745,8 @@ static node_t *parse_postfix(parser_t *p) {
                 }
                 if (is_self_member) {
                     node_t *n = make_node(NodeSelfMemberExpr, line);
+                    n->col = field_tok.col;
+                    n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
                     if (expr->kind == NodeIdentExpr)
                         n->as.self_member.type_name = expr->as.ident.name;
                     else
@@ -758,19 +777,25 @@ static node_t *parse_postfix(parser_t *p) {
 
             /* consume method/field name — accept keywords new/rem/print as method names */
             char *field_name;
+            token_t field_tok;
             if (check(p, TokIdent)) {
+                field_tok = p->current;
                 field_name = copy_token_text(p->current);
                 advance_parser(p);
             } else if (check(p, TokNew)) {
+                field_tok = p->current;
                 field_name = ast_strdup("new", 3);
                 advance_parser(p);
             } else if (check(p, TokRem)) {
+                field_tok = p->current;
                 field_name = ast_strdup("rem", 3);
                 advance_parser(p);
             } else if (check(p, TokPrint)) {
+                field_tok = p->current;
                 field_name = ast_strdup("print", 5);
                 advance_parser(p);
             } else {
+                field_tok = p->current;
                 field_name = ast_strdup("?", 1);
                 diag_begin_error("expected field or method name after '.'");
                 diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
@@ -789,6 +814,8 @@ static node_t *parse_postfix(parser_t *p) {
                 }
                 consume(p, TokRParen, "')'");
                 node_t *n = make_node(NodeMethodCall, line);
+                n->col = field_tok.col;
+                n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
                 n->as.method_call.object = expr;
                 n->as.method_call.method = field_name;
                 n->as.method_call.args = args;
@@ -798,6 +825,8 @@ static node_t *parse_postfix(parser_t *p) {
 
             /* member access: expr.field */
             node_t *n = make_node(NodeMemberExpr, line);
+            n->col = field_tok.col;
+            n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
             n->as.member_expr.object = expr;
             n->as.member_expr.field = field_name;
             expr = n;

@@ -218,6 +218,7 @@ struct node {
     node_kind_t kind;
     usize_t line;        /* 1-based source line (0 = unknown)   */
     usize_t col;         /* 1-based source column (0 = unknown) */
+    char *source_file;   /* source file that produced this node */
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */
     boolean_t is_c_extern; /* True if symbol must not be mangled (C library symbol) */
@@ -393,6 +394,7 @@ struct node {
 /* ── API ── */
 
 node_t *make_node(node_kind_t kind, usize_t line);
+void ast_set_loc(node_t *node, token_t tok);
 char *copy_token_text(token_t tok);
 char *ast_strdup(const char *src, usize_t len);
 char *ast_strdup_escape(const char *src, usize_t len, usize_t *out_len);

@@ -53,6 +53,7 @@ SRCS = src/main.c                       \
        src/ast/ast.c                     \
        src/parser/parser.c               \
        src/preprocessor/preprocessor.c  \
+       src/tooling/editor.c             \
        src/codegen/codegen.c
 
 OBJS = $(patsubst src/%.c,build/obj/%.o,$(SRCS))
