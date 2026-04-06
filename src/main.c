@@ -622,6 +622,8 @@ static void print_help(void) {
         "                       lib   default: lib<name>.a  (derived from filename)\n"
         "                       dylib default: lib<name>.dylib / .so\n"
         "                       test  default: a.test\n"
+        "  -o=<level>         Set LLVM optimization level (0=none, 1=less, 2=default, 3=aggressive)\n"
+        "                       Default: 2 (LLVM default)\n"
         "  -g                 Emit DWARF debug info (enables source-level debugging)\n"
         "  --target <triple>  Cross-compile for the given target triple\n"
         "  --version          Print version and exit\n"
@@ -772,19 +774,34 @@ int main(int argc, char **argv) {
     /* ── parse remaining options ── */
     const char *target_triple = Null;
     boolean_t debug_mode = False;
+    int optimization_level = 2; /* LLVM default opt level */
     /* Extra archives supplied with -l path on the command line. */
     const char *cli_extra_libs[32];
     usize_t cli_extra_lib_count = 0;
     int opts_start = (file_arg == -1) ? (int)argc : file_arg + 1;
     for (int i = opts_start; i < argc; i++) {
-        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
+        if (strncmp(argv[i], "-o=", 3) == 0) {
+            const char *level = argv[i] + 3;
+            if (level[0] >= '0' && level[0] <= '3' && level[1] == '\0') {
+                optimization_level = (int)(level[0] - '0');
+            } else {
+                log_err("invalid optimization level '%s' (expected -o=0..3)", level);
+                quit(Err);
+            }
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_path = argv[++i];
-        else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
+        } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
             target_triple = argv[++i];
-        else if (strcmp(argv[i], "-g") == 0)
+        } else if (strcmp(argv[i], "-g") == 0) {
             debug_mode = True;
-        else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 32)
+        } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 32) {
             cli_extra_libs[cli_extra_lib_count++] = argv[++i];
+        }
+    }
+
+    if (debug_mode && optimization_level != 0) {
+        log_msg("optimization is automatically set to 0 when emitting debug symbols with '-g'.");
+        optimization_level = 0;
     }
 
     /* ── compile ── */
@@ -840,7 +857,8 @@ int main(int argc, char **argv) {
     boolean_t test_mode = (mode == EmitTest) ? True : False;
     log_msg("generating code%s%s", test_mode ? " (test mode)" : "",
             debug_mode ? " (debug)" : "");
-    if (codegen(ast, obj_path, test_mode, target_triple, input_path, debug_mode) != Ok) {
+    if (codegen(ast, obj_path, test_mode, target_triple, input_path,
+                debug_mode, optimization_level) != Ok) {
         log_err("code generation failed");
         compile_cleanup();
         quit(Err);

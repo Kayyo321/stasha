@@ -11,6 +11,19 @@
 
 /* ── DI type cache ── */
 
+static LLVMCodeGenOptLevel map_opt_level(int level) {
+    switch (level) {
+    case 0:
+        return LLVMCodeGenLevelNone;
+    case 1:
+        return LLVMCodeGenLevelLess;
+    case 3:
+        return LLVMCodeGenLevelAggressive;
+    default:
+        return LLVMCodeGenLevelDefault;
+    }
+}
+
 typedef struct {
     char *name;
     LLVMMetadataRef di_type;
@@ -341,7 +354,7 @@ static void             di_set_location(cg_t *cg, usize_t line);
 
 result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                  const char *target_triple, const char *source_file,
-                 boolean_t debug_mode) {
+                 boolean_t debug_mode, int optimization_level) {
     usize_t errors_before = get_error_count();
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
@@ -384,9 +397,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMContextDispose(cg.ctx);
         return Err;
     }
+    LLVMCodeGenOptLevel opt_level = map_opt_level(optimization_level);
     LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
         early_target, triple, "generic", "",
-        LLVMCodeGenLevelDefault, LLVMRelocPIC, LLVMCodeModelDefault);
+        opt_level, LLVMRelocPIC, LLVMCodeModelDefault);
 
     cg.di_data_layout = LLVMCreateTargetDataLayout(machine);
     LLVMSetModuleDataLayout(cg.module, cg.di_data_layout);
@@ -419,7 +433,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             LLVMDWARFSourceLanguageC,  /* closest standard language */
             cg.di_file,
             "Stasha 0.1.0", 12,
-            /* isOptimized= */ 0,
+            /* isOptimized= */ optimization_level != 0,
             /* Flags= */       "", 0,
             /* RuntimeVer= */  0,
             /* SplitName= */   "", 0,
