@@ -15,35 +15,35 @@ ext fn writeln(stack i8 *r msg): void {
     cio.puts(msg);
 }
 
-ext fn write_i32(stack i32 v): void {
+ext fn write_i32(i32 v): void {
     cio.printf("%d", v);
 }
 
-ext fn write_i64(stack i64 v): void {
+ext fn write_i64(i64 v): void {
     cio.printf("%lld", v);
 }
 
-ext fn write_u32(stack u32 v): void {
+ext fn write_u32(u32 v): void {
     cio.printf("%u", v);
 }
 
-ext fn write_u64(stack u64 v): void {
+ext fn write_u64(u64 v): void {
     cio.printf("%llu", v);
 }
 
-ext fn write_f32(stack f32 v): void {
+ext fn write_f32(f32 v): void {
     cio.printf("%g", v);
 }
 
-ext fn write_f64(stack f64 v): void {
+ext fn write_f64(f64 v): void {
     cio.printf("%g", v);
 }
 
-ext fn write_bool(stack bool v): void {
+ext fn write_bool(bool v): void {
     cio.printf("%s", v ? "true" : "false");
 }
 
-ext fn write_char(stack i8 c): void {
+ext fn write_char(i8 c): void {
     cio.printf("%c", c);
 }
 
@@ -51,9 +51,9 @@ ext fn write_char(stack i8 c): void {
 
 // Read up to `max - 1` characters from stdin into `buf`, stopping at newline
 // or EOF. Null-terminates `buf`. Returns the number of characters read.
-ext fn read_line(stack i8 *w buf, stack u32 max): u32 {
-    stack u32 i = 0;
-    stack i8  ch;
+ext fn read_line(stack i8 *w buf, u32 max): u32 {
+    u32 i = 0;
+    i8  ch;
 
     while (i < max - 1) {
         if (cunistd.read(0, &ch, 1) <= 0) { break; }
@@ -68,7 +68,7 @@ ext fn read_line(stack i8 *w buf, stack u32 max): u32 {
 // ── helpers ───────────────────────────────────────────────────────────────
 
 int fn con_str_len(stack i8 *r s): u32 {
-    stack u32 n = 0;
+    u32 n = 0;
     while (s != nil && s[n] != 0) { ++n; }
     ret n;
 }

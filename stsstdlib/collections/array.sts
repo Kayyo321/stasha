@@ -4,10 +4,7 @@ mod array;
 // Supports push/pop/insert/remove/swap/reverse/set/at/ensure_capacity.
 
 ext type array_t: @comptime[T] struct {
-heap:
-    int T *rw buf;
-
-stack:
+    int heap T *rw buf;
     int u32 length, capacity;
 
     // Internal: grow if needed so that length < capacity.
@@ -19,16 +16,16 @@ stack:
     }
 
     // Pre-allocate so that capacity >= min_cap.
-    ext fn ensure_capacity(stack u32 min_cap): void {
+    ext fn ensure_capacity(u32 min_cap): void {
         if (array_t.(capacity) >= min_cap) { ret; }
-        stack u32 new_cap = array_t.(capacity) == 0 ? 8 : array_t.(capacity);
+        u32 new_cap = array_t.(capacity) == 0 ? 8 : array_t.(capacity);
         while (new_cap < min_cap) { new_cap = new_cap * 2; }
         array_t.(buf)      = mov.(array_t.(buf), new_cap * sizeof.(T));
         array_t.(capacity) = new_cap;
     }
 
     // Append a value.
-    ext fn push(stack T val): void {
+    ext fn push(T val): void {
         array_t.(maybe_grow)();
         array_t.(buf)[array_t.(length)] = val;
         array_t.(length)++;
@@ -40,7 +37,7 @@ stack:
     }
 
     // Get read-only pointer to element at idx, or error if out of bounds.
-    ext fn at(stack u32 idx): [T *r, error] {
+    ext fn at(u32 idx): [T *r, error] {
         if (idx >= array_t.(length)) {
             ret nil, error.('index out of bounds');
         }
@@ -48,7 +45,7 @@ stack:
     }
 
     // Overwrite element at idx. Returns error if out of bounds.
-    ext fn set(stack u32 idx, stack T val): error {
+    ext fn set(u32 idx, T val): error {
         if (idx >= array_t.(length)) {
             ret error.('index out of bounds');
         }
@@ -57,10 +54,10 @@ stack:
     }
 
     // Insert val at idx, shifting elements right.
-    ext fn insert(stack u32 idx, stack T val): void {
+    ext fn insert(u32 idx, T val): void {
         if (idx > array_t.(length)) { idx = array_t.(length); }
         array_t.(maybe_grow)();
-        stack u32 i = array_t.(length);
+        u32 i = array_t.(length);
         while (i > idx) {
             array_t.(buf)[i] = array_t.(buf)[i - 1];
             i--;
@@ -70,9 +67,9 @@ stack:
     }
 
     // Remove element at idx, shifting elements left. No-op if out of bounds.
-    ext fn remove(stack u32 idx): void {
+    ext fn remove(u32 idx): void {
         if (idx >= array_t.(length)) { ret; }
-        stack u32 i = idx;
+        u32 i = idx;
         while (i + 1 < array_t.(length)) {
             array_t.(buf)[i] = array_t.(buf)[i + 1];
             i++;
@@ -81,12 +78,12 @@ stack:
     }
 
     // Swap elements at indices i and j. Returns error if either is out of bounds.
-    ext fn swap(stack u32 i, stack u32 j): error {
+    ext fn swap(u32 i, u32 j): error {
         if (i >= array_t.(length) || j >= array_t.(length)) {
             ret error.('index out of bounds');
         }
         if (i == j) { ret nil; }
-        stack T tmp = array_t.(buf)[i];
+        T tmp = array_t.(buf)[i];
         array_t.(buf)[i] = array_t.(buf)[j];
         array_t.(buf)[j] = tmp;
         ret nil;
@@ -95,10 +92,10 @@ stack:
     // Reverse the array in place.
     ext fn reverse(void): void {
         if (array_t.(length) <= 1) { ret; }
-        stack u32 lo = 0;
-        stack u32 hi = array_t.(length) - 1;
+        u32 lo = 0;
+        u32 hi = array_t.(length) - 1;
         while (lo < hi) {
-            stack T tmp = array_t.(buf)[lo];
+            T tmp = array_t.(buf)[lo];
             array_t.(buf)[lo] = array_t.(buf)[hi];
             array_t.(buf)[hi] = tmp;
             lo++;
@@ -142,7 +139,7 @@ ext fn array_t.rem(void): void {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test 'push and length' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(10);
     a.push(20);
     a.push(30);
@@ -151,45 +148,45 @@ test 'push and length' {
 }
 
 test 'at and set' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(42);
-    stack let [ptr, e] = a.at(0);
+    let [ptr, e] = a.at(0);
     expect.(e == nil);
     expect_eq.(ptr[0], 42);
 
-    stack error se = a.set(0, 99);
+    error se = a.set(0, 99);
     expect.(se == nil);
-    stack let [ptr2, e2] = a.at(0);
+    let [ptr2, e2] = a.at(0);
     expect.(e2 == nil);
     expect_eq.(ptr2[0], 99);
 }
 
 test 'at out of bounds' {
-    stack array_t.[i32] a = array_t.[i32].new();
-    stack let [ptr, e] = a.at(0);
+    array_t.[i32] a = array_t.[i32].new();
+    let [ptr, e] = a.at(0);
     expect.(e != nil);
 }
 
 test 'pop' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(1);
     a.push(2);
     a.pop();
     expect_eq.(a.length(), 1);
-    stack let [ptr, e] = a.at(0);
+    let [ptr, e] = a.at(0);
     expect.(e == nil);
     expect_eq.(ptr[0], 1);
 }
 
 test 'insert' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(1);
     a.push(3);
     a.insert(1, 2);
     expect_eq.(a.length(), 3);
-    stack let [r0, e0] = a.at(0);
-    stack let [r1, e1] = a.at(1);
-    stack let [r2, e2] = a.at(2);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
+    let [r2, e2] = a.at(2);
     expect.(e0 == nil); expect.(e1 == nil); expect.(e2 == nil);
     expect_eq.(r0[0], 1);
     expect_eq.(r1[0], 2);
@@ -197,41 +194,41 @@ test 'insert' {
 }
 
 test 'remove' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(10);
     a.push(20);
     a.push(30);
     a.remove(1);
     expect_eq.(a.length(), 2);
-    stack let [r0, e0] = a.at(0);
-    stack let [r1, e1] = a.at(1);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
     expect.(e0 == nil); expect.(e1 == nil);
     expect_eq.(r0[0], 10);
     expect_eq.(r1[0], 30);
 }
 
 test 'swap' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(1);
     a.push(2);
-    stack error se = a.swap(0, 1);
+    error se = a.swap(0, 1);
     expect.(se == nil);
-    stack let [r0, e0] = a.at(0);
-    stack let [r1, e1] = a.at(1);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
     expect.(e0 == nil); expect.(e1 == nil);
     expect_eq.(r0[0], 2);
     expect_eq.(r1[0], 1);
 }
 
 test 'reverse' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(1);
     a.push(2);
     a.push(3);
     a.reverse();
-    stack let [r0, e0] = a.at(0);
-    stack let [r1, e1] = a.at(1);
-    stack let [r2, e2] = a.at(2);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
+    let [r2, e2] = a.at(2);
     expect.(e0 == nil); expect.(e1 == nil); expect.(e2 == nil);
     expect_eq.(r0[0], 3);
     expect_eq.(r1[0], 2);
@@ -239,14 +236,14 @@ test 'reverse' {
 }
 
 test 'ensure_capacity' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.ensure_capacity(100);
     expect.(a.capacity() >= 100);
     expect_eq.(a.length(), 0);
 }
 
 test 'clear' {
-    stack array_t.[i32] a = array_t.[i32].new();
+    array_t.[i32] a = array_t.[i32].new();
     a.push(5);
     a.push(5);
     a.clear();

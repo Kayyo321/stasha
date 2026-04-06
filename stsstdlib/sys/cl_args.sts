@@ -1,16 +1,63 @@
 mod cl_args;
 
-type cl_args_t: struct {
-stack:
+// Command-line argument accessor.
+//
+// Uses a tiny C runtime shim (cl_args_rt.c) that captures the real
+// argc/argv before main() runs via a platform constructor.
+//
+// Usage:
+//   cl_args_t args = cl_args_t.new();
+//   print.('arg count: {}\n', args.length());
+//   with [a, e] = args.get(1); e == nil {
+//       print.('first arg: {}\n', a);
+//   }
+
+lib "cl_args_rt" = rt;  // thin C runtime, bundled into libcl_args.a
+
+ext type cl_args_t: struct {
+    int i32 _pad;   // zero — all data comes from the C runtime capture
+
+    // Number of arguments (including the program name at index 0).
     ext fn length(void): u32 {
-        //TODO
+        ret (u32)rt.stsha_argc();
     }
 
-    ext fn extract(stack u32 idx): [stack i8 *, error] {
-        if idx > args_len()-1 {
-            ret nil, error.('command-line arguments don\'t have index: {}\n', idx);
+    // Return the argument at `idx` as a read-only C string pointer.
+    // Returns [ptr, nil] on success, [nil, error] if idx is out of range.
+    ext fn get(u32 idx): [stack i8 *r, error] {
+        if (idx >= (u32)rt.stsha_argc()) {
+            ret nil, error.('cl_args: index {} out of range (argc={})', idx, rt.stsha_argc());
         }
+        stack i8 *r s = (i8 *r)rt.stsha_argv_get(idx);
+        ret s, nil;
+    }
 
-        //TODO
+    // True if at least one argument (beyond the program name) was passed.
+    ext fn has_args(void): bool {
+        ret rt.stsha_argc() > 1;
+    }
+}
+
+// Construct a cl_args_t (no parameters — reads from the runtime capture).
+ext fn cl_args_t.new(void): cl_args_t {
+    ret cl_args_t{ ._pad = 0 };
+}
+
+test 'cl_args: length is at least 1' {
+    cl_args_t args = cl_args_t.new();
+    expect.(args.length() >= 1);
+}
+
+test 'cl_args: argv[0] is not nil' {
+    cl_args_t args = cl_args_t.new();
+    with [a, e] = args.get(0); e == nil {
+        expect.(a != nil);
+    }
+}
+
+test 'cl_args: out of range returns error' {
+    cl_args_t args = cl_args_t.new();
+    with [_, e] = args.get(9999); e != nil {
+        expect.(true);
     }
 }

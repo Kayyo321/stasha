@@ -1,0 +1,29 @@
+mod ex_preproc;
+
+// THIS FEATURE HASN'T BEEN MADE YET!
+// THIS WILL FAIL COMPILATION
+
+@comptime fn say_hello! {
+    () => {
+        print.('hello\n');
+    };
+}
+
+@comptime fn repeat! {
+    (@msg, @count) => {
+        for (i32 i = 0; i < @count; ++i) {
+            print.(@msg);
+        }
+    };
+}
+
+@comptime let integer! = i32;
+
+fn main(void): i32 {
+    say_hello.!();
+
+    const integer.! i = 10;
+    // same as const i32 i = 10;
+
+    ret 0;
+}

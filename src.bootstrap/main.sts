@@ -1,0 +1,5 @@
+mod main;
+
+fn main(void): i32 {
+    ret 0;
+}

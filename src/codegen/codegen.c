@@ -6,6 +6,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "codegen.h"
 
 /* ── DI type cache ── */
@@ -1534,6 +1535,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMDisposeMessage(error);
     } else {
         if (error) LLVMDisposeMessage(error);
+    }
+
+    /* debug: dump IR if STS_DUMP_IR env var is set */
+    if (getenv("STS_DUMP_IR")) {
+        char *ir_str = LLVMPrintModuleToString(cg.module);
+        FILE *f = fopen(getenv("STS_DUMP_IR"), "w");
+        if (f) { fputs(ir_str, f); fclose(f); }
+        LLVMDisposeMessage(ir_str);
     }
 
     /* emit object file — reuse the machine created during early target init */

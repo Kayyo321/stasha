@@ -6,7 +6,7 @@ lib "unistd" = cunistd;
 // ── Process control ───────────────────────────────────────────────────────
 
 // Terminate the process with the given exit code.
-ext fn sys_exit(stack i32 code): void {
+ext fn sys_exit(i32 code): void {
     cstd.exit(code);
 }
 
@@ -43,17 +43,17 @@ ext fn sys_getppid(void): i32 {
 // ── Sleep ─────────────────────────────────────────────────────────────────
 
 // Sleep for `secs` whole seconds.
-ext fn sys_sleep_s(stack u32 secs): void {
+ext fn sys_sleep_s(u32 secs): void {
     cunistd.sleep(secs);
 }
 
 // Sleep for `usecs` microseconds.
-ext fn sys_sleep_us(stack u32 usecs): void {
+ext fn sys_sleep_us(u32 usecs): void {
     cunistd.usleep(usecs);
 }
 
 test 'sys_getpid positive' {
-    stack i32 pid = sys_getpid();
+    i32 pid = sys_getpid();
     expect.(pid > 0);
 }
 
@@ -63,11 +63,11 @@ test 'sys_getenv PATH not nil' {
 }
 
 test 'sys_getuid non-negative' {
-    stack u32 uid = sys_getuid();
+    u32 uid = sys_getuid();
     expect.(uid >= 0);
 }
 
 test 'sys_getppid positive' {
-    stack i32 ppid = sys_getppid();
+    i32 ppid = sys_getppid();
     expect.(ppid > 0);
 }

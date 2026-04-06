@@ -4,32 +4,32 @@ lib "string" = cstring;
 lib "stdlib" = cstdlib;
 
 // Copy n bytes from src to dst. Regions must not overlap.
-ext fn mem_copy(stack u8 *w+ dst, stack u8 *r+ src, stack u64 n): void {
+ext fn mem_copy(stack u8 *w+ dst, stack u8 *r+ src, u64 n): void {
     cstring.memcpy(dst, src, n);
 }
 
 // Copy n bytes from src to dst. Handles overlapping regions.
-ext fn mem_move(stack u8 *w+ dst, stack u8 *r+ src, stack u64 n): void {
+ext fn mem_move(stack u8 *w+ dst, stack u8 *r+ src, u64 n): void {
     cstring.memmove(dst, src, n);
 }
 
 // Fill n bytes at dst with the value val.
-ext fn mem_set(stack u8 *w+ dst, stack i32 val, stack u64 n): void {
+ext fn mem_set(stack u8 *w+ dst, i32 val, u64 n): void {
     cstring.memset(dst, val, n);
 }
 
 // Compare n bytes at a and b. Returns 0 if equal, <0 or >0 otherwise.
-ext fn mem_compare(stack u8 *r+ a, stack u8 *r+ b, stack u64 n): i32 {
+ext fn mem_compare(stack u8 *r+ a, stack u8 *r+ b, u64 n): i32 {
     ret cstring.memcmp(a, b, n);
 }
 
 // Zero n bytes at dst.
-ext fn mem_zero(stack u8 *w+ dst, stack u64 n): void {
+ext fn mem_zero(stack u8 *w+ dst, u64 n): void {
     cstring.memset(dst, 0, n);
 }
 
 // Allocate n bytes. Returns a heap pointer.
-ext fn mem_alloc(stack u64 n): u8 *rw {
+ext fn mem_alloc(u64 n): u8 *rw {
     ret new.(n);
 }
 
@@ -39,13 +39,13 @@ ext fn mem_free(heap u8 *rw ptr): void {
 }
 
 // Reallocate ptr to n bytes.
-ext fn mem_realloc(heap u8 *rw ptr, stack u64 n): u8 *rw {
+ext fn mem_realloc(heap u8 *rw ptr, u64 n): u8 *rw {
     ret mov.(ptr, n);
 }
 
 // Allocate count*size zeroed bytes.
-ext fn mem_calloc(stack u64 count, stack u64 size): u8 *rw {
-    stack u64 total = count * size;
+ext fn mem_calloc(u64 count, u64 size): u8 *rw {
+    u64 total = count * size;
     heap u8 *rw ptr = new.(total);
     cstring.memset(ptr, 0, total);
     ret ptr;
@@ -91,7 +91,7 @@ test 'mem_compare compares bytes' {
     b[0] = 1; b[1] = 2; b[2] = 3;
     expect_eq.(mem_compare(a, b, 3), 0);
     b[2] = 99;
-    stack bool different = mem_compare(a, b, 3) != 0;
+    bool different = mem_compare(a, b, 3) != 0;
     expect.(different);
     rem.(a);
     rem.(b);

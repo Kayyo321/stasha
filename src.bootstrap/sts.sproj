@@ -1,0 +1,9 @@
+main = "src/main.sts"
+
+binary = "../bin/stasha"
+# this could also be:
+# library = "bin/lib.a"
+
+ext_libs = []
+# for example:
+# ext_libs = [ ("libs/xyz.a" : "libs/xyz.sts"), ... ]

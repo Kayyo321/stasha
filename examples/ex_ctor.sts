@@ -5,14 +5,14 @@ type Point: struct {
     ext i32 y;
 };
 
-fn Point.new(stack i32 x, stack i32 y): Point {
-    stack Point p;
+fn Point.new(i32 x, i32 y): Point {
+    Point p;
     p.x = x;
     p.y = y;
     ret p;
 }
 
 ext fn main(void): i32 {
-    stack Point p = Point.(3, 4);
+    Point p = Point.(3, 4);
     ret 0;
 }

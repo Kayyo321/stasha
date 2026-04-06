@@ -1,11 +1,10 @@
 mod variadic;
 
 type variadic_t: struct {
-stack:
-    int i8 *last_seen_arg;
+    int stack i8 *last_seen_arg;
 
     /// Returns a pointer to the next argument of the given size, or error if out of bounds.
-    ext fn next(stack u32 bytes): [stack i8 *r, error] {
+    ext fn next(u32 bytes): [stack i8 *r, error] {
         // Implementation is platform-specific; placeholder logic
         if (variadic_t.(last_seen_arg) == nil) {
             ret nil, error.('No more arguments');
@@ -28,7 +27,7 @@ stack:
 
 /// Creates a new variadic_t starting at the given argument pointer
 ext fn variadic_t.new(stack i8 *last_seen_arg): variadic_t {
-    stack variadic_t v;
+    variadic_t v;
     v.last_seen_arg = last_seen_arg;
     ret v;
 }

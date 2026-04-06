@@ -18,13 +18,11 @@ lib "string"  = cstring;
 //
 // A thin wrapper around the opaque request context pointer.
 // Construct from the raw pointer passed to your handler:
-//   stack http_req_t req = http_req_t.from(raw_req);
+//   http_req_t req = http_req_t.new(raw_req);
 
 ext type http_req_t: struct {
-stack:
-    int i8 *rw ctx;   // stdhttp_request_t*
+    int stack i8 *rw ctx;   // stdhttp_request_t*
 
-stack:
     // HTTP method string: "GET", "POST", "PUT", "DELETE", etc.
     ext fn method(void): i8 *r {
         ret ch.stdhttp_req_method(http_req_t.(ctx));
@@ -83,19 +81,17 @@ stack:
     }
 }
 
-ext fn http_req_t.from(stack i8 *rw ctx): http_req_t {
+ext fn http_req_t.new(stack i8 *rw ctx): http_req_t {
     ret http_req_t{ .ctx = ctx };
 }
 
 // ── http_res_t ────────────────────────────────────────────────────────────────
 
 ext type http_res_t: struct {
-stack:
-    int i8 *rw ctx;   // stdhttp_response_t*
+    int stack i8 *rw ctx;   // stdhttp_response_t*
 
-stack:
     // Set HTTP status code (default 200 if not called before send).
-    ext fn status(stack i32 code): void {
+    ext fn status(i32 code): void {
         ch.stdhttp_res_status(http_res_t.(ctx), code);
     }
 
@@ -110,7 +106,7 @@ stack:
     }
 
     // Send with explicit length (for binary data or embedded NULs).
-    ext fn send_bytes(stack i8 *r body, stack i32 len): void {
+    ext fn send_bytes(stack i8 *r body, i32 len): void {
         ch.stdhttp_res_send(http_res_t.(ctx), body, len);
     }
 
@@ -130,7 +126,7 @@ stack:
     }
 
     // Send an HTTP redirect (301 or 302).
-    ext fn redirect(stack i8 *r+ url, stack i32 code): void {
+    ext fn redirect(stack i8 *r+ url, i32 code): void {
         ch.stdhttp_res_redirect(http_res_t.(ctx), url, code);
     }
 
@@ -152,17 +148,14 @@ stack:
     }
 }
 
-ext fn http_res_t.from(stack i8 *rw ctx): http_res_t {
+ext fn http_res_t.new(stack i8 *rw ctx): http_res_t {
     ret http_res_t{ .ctx = ctx };
 }
 
 // ── http_server_t ─────────────────────────────────────────────────────────────
 
 ext type http_server_t: struct {
-stack:
-    int i8 *rw handle;   // stdhttp_server_t*
-
-stack:
+    int stack i8 *rw handle;   // stdhttp_server_t*
     ext i32 port;
 
     // Register a GET route handler.
@@ -189,7 +182,7 @@ stack:
     }
 
     // Register a handler for ALL methods on this pattern.
-    ext fn any(stack i8 *r+ pattern, stack i8 *rw handler): void {
+    ext fn route_any(stack i8 *r+ pattern, stack i8 *rw handler): void {
         ch.stdhttp_route(http_server_t.(handle), "ANY", pattern, handler);
     }
 
@@ -221,7 +214,7 @@ ext fn http_server_t.rem(void): void {
 }
 
 // Create an HTTP server on the given port (does not start listening).
-ext fn http_server_t.new(stack i32 port): http_server_t {
+ext fn http_server_t.new(i32 port): http_server_t {
     ret http_server_t{
         .handle = ch.stdhttp_create(port),
         .port   = port
@@ -256,7 +249,7 @@ ext fn req_param(stack i8 *rw req_ctx, stack i8 *r+ name): i8 *r {
     ret ch.stdhttp_req_param(req_ctx, name);
 }
 
-ext fn res_status(stack i8 *rw res_ctx, stack i32 code): void {
+ext fn res_status(stack i8 *rw res_ctx, i32 code): void {
     ch.stdhttp_res_status(res_ctx, code);
 }
 

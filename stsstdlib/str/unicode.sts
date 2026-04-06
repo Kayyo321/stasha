@@ -11,7 +11,7 @@ mod unicode;
 
 // Return the number of bytes in the UTF-8 sequence starting with `byte`.
 // Returns 1–4 for valid leading bytes, 0 for invalid/continuation bytes.
-ext fn utf8_codepoint_len(stack u8 byte): u32 {
+ext fn utf8_codepoint_len(u8 byte): u32 {
     if (byte < 128) { ret 1; }                   // 0x00–0x7F
     if (byte < 192) { ret 0; }                   // 0x80–0xBF: continuation
     if (byte < 224) { ret 2; }                   // 0xC0–0xDF
@@ -21,12 +21,12 @@ ext fn utf8_codepoint_len(stack u8 byte): u32 {
 }
 
 // Count the number of Unicode code points in `s` (first `byte_len` bytes).
-ext fn utf8_char_count(stack i8 *r+ s, stack u32 byte_len): u32 {
-    stack u32 count = 0;
-    stack u32 i = 0;
+ext fn utf8_char_count(stack i8 *r+ s, u32 byte_len): u32 {
+    u32 count = 0;
+    u32 i = 0;
     while (i < byte_len) {
-        stack u8 b = (u8)s[i];
-        stack u32 seqlen = utf8_codepoint_len(b);
+        u8 b = (u8)s[i];
+        u32 seqlen = utf8_codepoint_len(b);
         if (seqlen == 0) { seqlen = 1; } // skip invalid byte
         i += seqlen;
         count++;
@@ -36,13 +36,13 @@ ext fn utf8_char_count(stack i8 *r+ s, stack u32 byte_len): u32 {
 
 // Return the byte offset of the `char_idx`-th code point in `s`.
 // Returns [offset, nil] on success, [0, error] if char_idx is out of range.
-ext fn utf8_byte_offset(stack i8 *r+ s, stack u32 char_idx): [u32, error] {
-    stack u32 i = 0;
-    stack u32 ch = 0;
+ext fn utf8_byte_offset(stack i8 *r+ s, u32 char_idx): [u32, error] {
+    u32 i = 0;
+    u32 ch = 0;
     while (s[i] != 0) {
         if (ch == char_idx) { ret i, nil; }
-        stack u8 b = (u8)s[i];
-        stack u32 seqlen = utf8_codepoint_len(b);
+        u8 b = (u8)s[i];
+        u32 seqlen = utf8_codepoint_len(b);
         if (seqlen == 0) { seqlen = 1; }
         i += seqlen;
         ch++;
@@ -53,8 +53,8 @@ ext fn utf8_byte_offset(stack i8 *r+ s, stack u32 char_idx): [u32, error] {
 
 // Decode the UTF-8 code point at byte position `byte_pos` in `s`.
 // Returns [codepoint, nil] on success, [0, error] on invalid sequence.
-ext fn utf8_decode(stack i8 *r+ s, stack u32 byte_pos): [u32, error] {
-    stack u8 b0 = (u8)s[byte_pos];
+ext fn utf8_decode(stack i8 *r+ s, u32 byte_pos): [u32, error] {
+    u8 b0 = (u8)s[byte_pos];
     if (b0 < 128) {
         ret (u32)b0, nil;
     }
@@ -63,37 +63,37 @@ ext fn utf8_decode(stack i8 *r+ s, stack u32 byte_pos): [u32, error] {
     }
     if (b0 < 224) {
         // 2-byte sequence
-        stack u8 b1 = (u8)s[byte_pos + 1];
+        u8 b1 = (u8)s[byte_pos + 1];
         if ((b1 & 192) != 128) { ret 0, error.('invalid utf8 sequence'); }
-        stack u32 cp = (((u32)b0 & 31) << 6) | ((u32)b1 & 63);
+        u32 cp = (((u32)b0 & 31) << 6) | ((u32)b1 & 63);
         ret cp, nil;
     }
     if (b0 < 240) {
         // 3-byte sequence
-        stack u8 b1 = (u8)s[byte_pos + 1];
-        stack u8 b2 = (u8)s[byte_pos + 2];
+        u8 b1 = (u8)s[byte_pos + 1];
+        u8 b2 = (u8)s[byte_pos + 2];
         if ((b1 & 192) != 128 || (b2 & 192) != 128) {
             ret 0, error.('invalid utf8 sequence');
         }
-        stack u32 cp = (((u32)b0 & 15) << 12) | (((u32)b1 & 63) << 6) | ((u32)b2 & 63);
+        u32 cp = (((u32)b0 & 15) << 12) | (((u32)b1 & 63) << 6) | ((u32)b2 & 63);
         ret cp, nil;
     }
     if (b0 < 248) {
         // 4-byte sequence
-        stack u8 b1 = (u8)s[byte_pos + 1];
-        stack u8 b2 = (u8)s[byte_pos + 2];
-        stack u8 b3 = (u8)s[byte_pos + 3];
+        u8 b1 = (u8)s[byte_pos + 1];
+        u8 b2 = (u8)s[byte_pos + 2];
+        u8 b3 = (u8)s[byte_pos + 3];
         if ((b1 & 192) != 128 || (b2 & 192) != 128 || (b3 & 192) != 128) {
             ret 0, error.('invalid utf8 sequence');
         }
-        stack u32 cp = (((u32)b0 & 7) << 18) | (((u32)b1 & 63) << 12) | (((u32)b2 & 63) << 6) | ((u32)b3 & 63);
+        u32 cp = (((u32)b0 & 7) << 18) | (((u32)b1 & 63) << 12) | (((u32)b2 & 63) << 6) | ((u32)b3 & 63);
         ret cp, nil;
     }
     ret 0, error.('invalid utf8 leading byte');
 }
 
 // Encode `codepoint` as UTF-8 into `dst`. Returns [bytes_written, nil] or [0, error].
-ext fn utf8_encode(stack u32 codepoint, stack u8 *w+ dst): [u32, error] {
+ext fn utf8_encode(u32 codepoint, stack u8 *w+ dst): [u32, error] {
     if (codepoint < 128) {
         dst[0] = (u8)codepoint;
         ret 1, nil;
@@ -120,11 +120,11 @@ ext fn utf8_encode(stack u32 codepoint, stack u8 *w+ dst): [u32, error] {
 }
 
 // Return true if `s` (first `byte_len` bytes) is a valid UTF-8 sequence.
-ext fn utf8_is_valid(stack i8 *r+ s, stack u32 byte_len): bool {
-    stack u32 i = 0;
+ext fn utf8_is_valid(stack i8 *r+ s, u32 byte_len): bool {
+    u32 i = 0;
     while (i < byte_len) {
-        stack u8 b0 = (u8)s[i];
-        stack u32 seqlen = utf8_codepoint_len(b0);
+        u8 b0 = (u8)s[i];
+        u32 seqlen = utf8_codepoint_len(b0);
         if (seqlen == 0) { ret false; }
         // verify continuation bytes
         for (u32 j = 1; j < seqlen; j++) {
@@ -137,19 +137,19 @@ ext fn utf8_is_valid(stack i8 *r+ s, stack u32 byte_len): bool {
 }
 
 // ASCII-only uppercase: a–z → A–Z; others unchanged.
-ext fn utf8_to_upper_ascii(stack u8 c): u8 {
+ext fn utf8_to_upper_ascii(u8 c): u8 {
     if (c >= 97 && c <= 122) { ret c - 32; }
     ret c;
 }
 
 // ASCII-only lowercase: A–Z → a–z; others unchanged.
-ext fn utf8_to_lower_ascii(stack u8 c): u8 {
+ext fn utf8_to_lower_ascii(u8 c): u8 {
     if (c >= 65 && c <= 90) { ret c + 32; }
     ret c;
 }
 
 // True if `c` is a pure ASCII byte (< 0x80).
-ext fn utf8_is_ascii(stack u8 c): bool {
+ext fn utf8_is_ascii(u8 c): bool {
     ret c < 128;
 }
 
@@ -174,23 +174,23 @@ test 'char_count ascii' {
 }
 
 test 'decode ascii codepoint' {
-    stack let [cp, e] = utf8_decode("A", 0);
+    let [cp, e] = utf8_decode("A", 0);
     expect.(e == nil);
     expect_eq.(cp, 65);
 }
 
 test 'decode 2-byte sequence' {
     // U+00A9 COPYRIGHT SIGN: 0xC2 0xA9
-    stack i8 buf[3];
+    i8 buf[3];
     buf[0] = (i8)0xC2; buf[1] = (i8)0xA9; buf[2] = 0;
-    stack let [cp, e] = utf8_decode(buf, 0);
+    let [cp, e] = utf8_decode(buf, 0);
     expect.(e == nil);
     expect_eq.(cp, 169);
 }
 
 test 'encode ascii' {
-    stack u8 dst[4];
-    stack let [n, e] = utf8_encode(65, dst);
+    u8 dst[4];
+    let [n, e] = utf8_encode(65, dst);
     expect.(e == nil);
     expect_eq.(n, 1);
     expect_eq.(dst[0], 65);
@@ -198,8 +198,8 @@ test 'encode ascii' {
 
 test 'encode 2-byte' {
     // U+00A9 → 0xC2 0xA9
-    stack u8 dst[4];
-    stack let [n, e] = utf8_encode(169, dst);
+    u8 dst[4];
+    let [n, e] = utf8_encode(169, dst);
     expect.(e == nil);
     expect_eq.(n, 2);
     expect_eq.(dst[0], 194);
@@ -233,15 +233,15 @@ test 'to_lower_ascii' {
 }
 
 test 'byte_offset' {
-    stack let [off, e] = utf8_byte_offset("hello", 0);
+    let [off, e] = utf8_byte_offset("hello", 0);
     expect.(e == nil);
     expect_eq.(off, 0);
-    stack let [off2, e2] = utf8_byte_offset("hello", 4);
+    let [off2, e2] = utf8_byte_offset("hello", 4);
     expect.(e2 == nil);
     expect_eq.(off2, 4);
 }
 
 test 'byte_offset out of range' {
-    stack let [off, e] = utf8_byte_offset("hi", 5);
+    let [off, e] = utf8_byte_offset("hi", 5);
     expect.(e != nil);
 }

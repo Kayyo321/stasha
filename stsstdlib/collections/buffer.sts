@@ -4,14 +4,11 @@ mod buffer;
 // Items are appended with push() and accessed by index with at().
 
 ext type buffer_t: @comptime[T] struct {
-heap:
-    int T *rw buf;
-
-stack:
+    int heap T *rw buf;
     int u32 length, capacity;
 
     // Return a read-only pointer to element at idx, or error if out of bounds.
-    ext fn at(stack u32 idx): [T *r, error] {
+    ext fn at(u32 idx): [T *r, error] {
         if (idx >= buffer_t.(length)) {
             ret nil, error.('index {} is out of bounds in buffer with length of: {}', idx, buffer_t.(length));
         }
@@ -19,7 +16,7 @@ stack:
     }
 
     // Append a value, growing the buffer if needed.
-    ext fn push(stack T val): void {
+    ext fn push(T val): void {
         if (buffer_t.(length) >= buffer_t.(capacity)) {
             final u32 new_cap = buffer_t.(capacity) == 0 ? 8 : buffer_t.(capacity) * 2;
             buffer_t.(buf)      = mov.(buffer_t.(buf), new_cap * sizeof.(T));
@@ -72,13 +69,13 @@ ext fn buffer_t.rem(void): void {
 }
 
 test 'buffer is_empty after new' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buffer_t.[i32] buf = buffer_t.[i32].new();
     expect.(buf.is_empty());
     expect_eq.(buf.length(), 0);
 }
 
 test 'buffer push and length' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buffer_t.[i32] buf = buffer_t.[i32].new();
     buf.push(10);
     buf.push(20);
     expect_eq.(buf.length(), 2);
@@ -86,15 +83,15 @@ test 'buffer push and length' {
 }
 
 test 'buffer at reads correct value' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buffer_t.[i32] buf = buffer_t.[i32].new();
     buf.push(42);
-    stack let [ptr, e] = buf.at(0);
+    let [ptr, e] = buf.at(0);
     expect.(e == nil);
     expect_eq.(ptr[0], 42);
 }
 
 test 'buffer pop decrements length' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buffer_t.[i32] buf = buffer_t.[i32].new();
     buf.push(7);
     buf.push(7);
     buf.pop();
@@ -102,7 +99,7 @@ test 'buffer pop decrements length' {
 }
 
 test 'buffer clear resets length' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buffer_t.[i32] buf = buffer_t.[i32].new();
     buf.push(1);
     buf.push(1);
     buf.clear();
@@ -111,19 +108,19 @@ test 'buffer clear resets length' {
 }
 
 test 'buffer at out of bounds returns error' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
-    stack let [ptr, e] = buf.at(0);
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    let [ptr, e] = buf.at(0);
     expect.(e != nil);
 }
 
 test 'buffer multiple values' {
-    stack buffer_t.[i32] buf = buffer_t.[i32].new();
+    buffer_t.[i32] buf = buffer_t.[i32].new();
     buf.push(11);
     buf.push(22);
     buf.push(33);
-    stack let [p0, e0] = buf.at(0);
-    stack let [p1, e1] = buf.at(1);
-    stack let [p2, e2] = buf.at(2);
+    let [p0, e0] = buf.at(0);
+    let [p1, e1] = buf.at(1);
+    let [p2, e2] = buf.at(2);
     expect.(e0 == nil);
     expect.(e1 == nil);
     expect.(e2 == nil);

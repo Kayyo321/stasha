@@ -14,28 +14,27 @@ ext const i32 LogOff   = 4;
 // ── logger_t ──────────────────────────────────────────────────────────────
 
 ext type logger_t: struct {
-stack:
     int i32  level;
     int bool use_timestamps;
 
-    ext fn set_level(stack i32 lvl): void {
+    ext fn set_level(i32 lvl): void {
         logger_t.(level) = lvl;
     }
 
-    int fn log_if(stack i32 lvl, stack i8 *r prefix, stack i8 *r msg): void {
+    int fn log_if(i32 lvl, stack i8 *r prefix, stack i8 *r msg): void {
         if (logger_t.(level) > lvl) { ret; }
         if (logger_t.(use_timestamps)) {
-            stack i64 ts = ctime.time(0);
+            i64 ts = ctime.time(0);
             cio.printf("[%lld] %s %s\n", ts, prefix, msg);
         } else {
             cio.printf("%s %s\n", prefix, msg);
         }
     }
 
-    int fn log_if_fmt(stack i32 lvl, stack i8 *r prefix, stack i8 *r fmt, stack i64 val): void {
+    int fn log_if_fmt(i32 lvl, stack i8 *r prefix, stack i8 *r fmt, i64 val): void {
         if (logger_t.(level) > lvl) { ret; }
         if (logger_t.(use_timestamps)) {
-            stack i64 ts = ctime.time(0);
+            i64 ts = ctime.time(0);
             cio.printf("[%lld] %s ", ts, prefix);
             cio.printf(fmt, val);
             cio.printf("\n");
@@ -62,16 +61,16 @@ stack:
         logger_t.(log_if)(LogError, "[ERROR]", msg);
     }
 
-    ext fn log_debug_fmt(stack i8 *r fmt, stack i64 val): void {
+    ext fn log_debug_fmt(stack i8 *r fmt, i64 val): void {
         logger_t.(log_if_fmt)(LogDebug, "[DEBUG]", fmt, val);
     }
 
-    ext fn log_info_fmt(stack i8 *r fmt, stack i64 val): void {
+    ext fn log_info_fmt(stack i8 *r fmt, i64 val): void {
         logger_t.(log_if_fmt)(LogInfo, "[INFO]", fmt, val);
     }
 }
 
-ext fn logger_t.new(stack i32 level, stack bool use_timestamps): logger_t {
+ext fn logger_t.new(i32 level, bool use_timestamps): logger_t {
     ret logger_t{
         .level          = level,
         .use_timestamps = use_timestamps
@@ -103,7 +102,7 @@ ext fn log_error(stack i8 *r msg): void {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test 'logger level filtering' {
-    heap logger_t l = logger_t.new(LogInfo, false);
+    logger_t l = logger_t.new(LogInfo, false);
     // LogInfo level: debug messages should be suppressed (no crash = pass)
     l.log_debug("this should not print");
     l.log_info("info message");
@@ -113,20 +112,20 @@ test 'logger level filtering' {
 }
 
 test 'logger set_level' {
-    heap logger_t l = logger_t.new(LogWarn, false);
+    logger_t l = logger_t.new(LogWarn, false);
     l.set_level(LogDebug);
     l.log_debug("now visible");
     expect.(true);
 }
 
 test 'logger with timestamps' {
-    heap logger_t l = logger_t.new(LogInfo, true);
+    logger_t l = logger_t.new(LogInfo, true);
     l.log_info("timestamped message");
     expect.(true);
 }
 
 test 'logger fmt' {
-    heap logger_t l = logger_t.new(LogDebug, false);
+    logger_t l = logger_t.new(LogDebug, false);
     l.log_debug_fmt("value = %lld", (i64)42);
     l.log_info_fmt("count = %lld", (i64)100);
     expect.(true);

@@ -4,46 +4,46 @@ lib "math" = cmath;
 
 // ── Statistics ────────────────────────────────────────────────────────────
 
-ext fn stats_sum(stack f64 *r+ data, stack u32 n): f64 {
-    stack f64 s = 0.0;
+ext fn stats_sum(stack f64 *r+ data, u32 n): f64 {
+    f64 s = 0.0;
     for (u32 i = 0; i < n; i++) {
         s = s + data[i];
     }
     ret s;
 }
 
-ext fn stats_mean(stack f64 *r+ data, stack u32 n): f64 {
+ext fn stats_mean(stack f64 *r+ data, u32 n): f64 {
     if (n == 0) { ret 0.0; }
     ret stats_sum(data, n) / (f64)n;
 }
 
-ext fn stats_variance(stack f64 *r+ data, stack u32 n): f64 {
+ext fn stats_variance(stack f64 *r+ data, u32 n): f64 {
     if (n == 0) { ret 0.0; }
-    stack f64 m = stats_mean(data, n);
-    stack f64 s = 0.0;
+    f64 m = stats_mean(data, n);
+    f64 s = 0.0;
     for (u32 i = 0; i < n; i++) {
-        stack f64 d = data[i] - m;
+        f64 d = data[i] - m;
         s = s + d * d;
     }
     ret s / (f64)n;
 }
 
-ext fn stats_stddev(stack f64 *r+ data, stack u32 n): f64 {
+ext fn stats_stddev(stack f64 *r+ data, u32 n): f64 {
     ret cmath.sqrt(stats_variance(data, n));
 }
 
-ext fn stats_min(stack f64 *r+ data, stack u32 n): f64 {
+ext fn stats_min(stack f64 *r+ data, u32 n): f64 {
     if (n == 0) { ret 0.0; }
-    stack f64 m = data[0];
+    f64 m = data[0];
     for (u32 i = 1; i < n; i++) {
         if (data[i] < m) { m = data[i]; }
     }
     ret m;
 }
 
-ext fn stats_max(stack f64 *r+ data, stack u32 n): f64 {
+ext fn stats_max(stack f64 *r+ data, u32 n): f64 {
     if (n == 0) { ret 0.0; }
-    stack f64 m = data[0];
+    f64 m = data[0];
     for (u32 i = 1; i < n; i++) {
         if (data[i] > m) { m = data[i]; }
     }
@@ -53,24 +53,23 @@ ext fn stats_max(stack f64 *r+ data, stack u32 n): f64 {
 // ── Complex numbers ───────────────────────────────────────────────────────
 
 ext type complex_t: struct {
-stack:
     ext f64 re, im;
 }
 
-ext fn complex_t.new(stack f64 re, stack f64 im): complex_t {
+ext fn complex_t.new(f64 re, f64 im): complex_t {
     ret complex_t{ .re = re, .im = im };
 }
 
-ext fn complex_add(stack complex_t a, stack complex_t b): complex_t {
+ext fn complex_add(complex_t a, complex_t b): complex_t {
     ret complex_t{ .re = a.re + b.re, .im = a.im + b.im };
 }
 
-ext fn complex_sub(stack complex_t a, stack complex_t b): complex_t {
+ext fn complex_sub(complex_t a, complex_t b): complex_t {
     ret complex_t{ .re = a.re - b.re, .im = a.im - b.im };
 }
 
 // (a+bi)(c+di) = (ac - bd) + (ad + bc)i
-ext fn complex_mul(stack complex_t a, stack complex_t b): complex_t {
+ext fn complex_mul(complex_t a, complex_t b): complex_t {
     ret complex_t{
         .re = a.re * b.re - a.im * b.im,
         .im = a.re * b.im + a.im * b.re
@@ -78,23 +77,23 @@ ext fn complex_mul(stack complex_t a, stack complex_t b): complex_t {
 }
 
 // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c^2+d^2)
-ext fn complex_div(stack complex_t a, stack complex_t b): complex_t {
-    stack f64 denom = b.re * b.re + b.im * b.im;
+ext fn complex_div(complex_t a, complex_t b): complex_t {
+    f64 denom = b.re * b.re + b.im * b.im;
     ret complex_t{
         .re = (a.re * b.re + a.im * b.im) / denom,
         .im = (a.im * b.re - a.re * b.im) / denom
     };
 }
 
-ext fn complex_abs(stack complex_t z): f64 {
+ext fn complex_abs(complex_t z): f64 {
     ret cmath.sqrt(z.re * z.re + z.im * z.im);
 }
 
-ext fn complex_conj(stack complex_t z): complex_t {
+ext fn complex_conj(complex_t z): complex_t {
     ret complex_t{ .re = z.re, .im = -z.im };
 }
 
-ext fn complex_eq(stack complex_t a, stack complex_t b): bool {
+ext fn complex_eq(complex_t a, complex_t b): bool {
     ret a.re == b.re && a.im == b.im;
 }
 
@@ -103,7 +102,7 @@ ext fn complex_eq(stack complex_t a, stack complex_t b): bool {
 test 'stats_sum' {
     heap f64 *rw data = new.(4 * 8);
     data[0] = 1.0; data[1] = 2.0; data[2] = 3.0; data[3] = 4.0;
-    stack f64 s = stats_sum(data, 4);
+    f64 s = stats_sum(data, 4);
     expect.(s == 10.0);
     rem.(data);
 }
@@ -111,7 +110,7 @@ test 'stats_sum' {
 test 'stats_mean' {
     heap f64 *rw data = new.(4 * 8);
     data[0] = 1.0; data[1] = 2.0; data[2] = 3.0; data[3] = 4.0;
-    stack f64 m = stats_mean(data, 4);
+    f64 m = stats_mean(data, 4);
     expect.(m == 2.5);
     rem.(data);
 }
@@ -129,7 +128,7 @@ test 'stats_variance' {
     heap f64 *rw data = new.(8 * 8);
     data[0] = 2.0; data[1] = 4.0; data[2] = 4.0; data[3] = 4.0;
     data[4] = 5.0; data[5] = 5.0; data[6] = 7.0; data[7] = 9.0;
-    stack f64 v = stats_variance(data, 8);
+    f64 v = stats_variance(data, 8);
     expect.(v > 3.99 && v < 4.01);
     rem.(data);
 }
@@ -138,51 +137,51 @@ test 'stats_stddev' {
     heap f64 *rw data = new.(8 * 8);
     data[0] = 2.0; data[1] = 4.0; data[2] = 4.0; data[3] = 4.0;
     data[4] = 5.0; data[5] = 5.0; data[6] = 7.0; data[7] = 9.0;
-    stack f64 sd = stats_stddev(data, 8);
+    f64 sd = stats_stddev(data, 8);
     expect.(sd > 1.99 && sd < 2.01);
     rem.(data);
 }
 
 test 'complex_add' {
-    stack complex_t a = complex_t.new(1.0, 2.0);
-    stack complex_t b = complex_t.new(3.0, 4.0);
-    stack complex_t r = complex_add(a, b);
+    complex_t a = complex_t.new(1.0, 2.0);
+    complex_t b = complex_t.new(3.0, 4.0);
+    complex_t r = complex_add(a, b);
     expect.(r.re == 4.0 && r.im == 6.0);
 }
 
 test 'complex_mul' {
     // (1+2i)(3+4i) = (3-8) + (4+6)i = -5 + 10i
-    stack complex_t a = complex_t.new(1.0, 2.0);
-    stack complex_t b = complex_t.new(3.0, 4.0);
-    stack complex_t r = complex_mul(a, b);
+    complex_t a = complex_t.new(1.0, 2.0);
+    complex_t b = complex_t.new(3.0, 4.0);
+    complex_t r = complex_mul(a, b);
     expect.(r.re == -5.0 && r.im == 10.0);
 }
 
 test 'complex_abs' {
-    stack complex_t z = complex_t.new(3.0, 4.0);
-    stack f64 mag = complex_abs(z);
+    complex_t z = complex_t.new(3.0, 4.0);
+    f64 mag = complex_abs(z);
     expect.(mag > 4.99 && mag < 5.01);
 }
 
 test 'complex_conj' {
-    stack complex_t z = complex_t.new(3.0, -4.0);
-    stack complex_t c = complex_conj(z);
+    complex_t z = complex_t.new(3.0, -4.0);
+    complex_t c = complex_conj(z);
     expect.(c.re == 3.0 && c.im == 4.0);
 }
 
 test 'complex_div' {
     // (1+2i)/(1+1i) = (1+2+2i-i)/2 = (3+i)/2 = 1.5+0.5i
-    stack complex_t a = complex_t.new(1.0, 2.0);
-    stack complex_t b = complex_t.new(1.0, 1.0);
-    stack complex_t r = complex_div(a, b);
+    complex_t a = complex_t.new(1.0, 2.0);
+    complex_t b = complex_t.new(1.0, 1.0);
+    complex_t r = complex_div(a, b);
     expect.(r.re > 1.49 && r.re < 1.51);
     expect.(r.im > 0.49 && r.im < 0.51);
 }
 
 test 'complex_eq' {
-    stack complex_t a = complex_t.new(1.0, 2.0);
-    stack complex_t b = complex_t.new(1.0, 2.0);
-    stack complex_t c = complex_t.new(1.0, 3.0);
+    complex_t a = complex_t.new(1.0, 2.0);
+    complex_t b = complex_t.new(1.0, 2.0);
+    complex_t c = complex_t.new(1.0, 3.0);
     expect.(complex_eq(a, b));
     expect.(complex_eq(a, c) == false);
 }

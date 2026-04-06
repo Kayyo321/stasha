@@ -4,19 +4,19 @@ libimp "map" from std;
 libimp "dstring" from std;
 
 fn main(void): i32 {
-    stack let employee_ids = map_t.[dstring_t, i32].new();
+    let employee_ids = map_t.[dstring_t, i32].new();
     employee_ids.insert(dstring_t.from_str('Jerry'), 188);
     employee_ids.insert(dstring_t.from_str('Jane'), 275);
     employee_ids.insert(dstring_t.from_str('Bond'), 007);
 
-    stack let [empl, jerr] = employee_ids.get(dstring_t.from_str('Jerry'));
+    let [empl, jerr] = employee_ids.get(dstring_t.from_str('Jerry'));
     if jerr != nil {
         ret 1;
     }
 
     print.('Jerry\'s ID: {}\n', empl[0]);
 
-    stack let [_, err] = employee_ids.get(dstring_t.from_str('Alfred'));
+    let [_, err] = employee_ids.get(dstring_t.from_str('Alfred'));
     print.('{}\n', err);
 
     ret 0;

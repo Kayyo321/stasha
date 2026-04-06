@@ -65,7 +65,7 @@ static void check_stack_escape(cg_t *cg, node_t *ret_val, usize_t line) {
                           "'%s' is a stack variable — it is freed when the function returns",
                           operand->as.ident.name);
                 diag_note("stack variables are destroyed when the function returns; the pointer would dangle");
-                diag_help("allocate the variable on the heap instead: heap i32 x = 0;");
+                diag_help("heap-allocate via a pointer: stack i32 *rw x = new.(sizeof.(i32));");
                 diag_finish();
             }
         }

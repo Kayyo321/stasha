@@ -172,7 +172,6 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
 
     if (match_tok(p, TokStack))      storage = StorageStack;
     else if (match_tok(p, TokHeap))  storage = StorageHeap;
-    else if (p->group_storage != StorageDefault) storage = p->group_storage;
 
     if (match_tok(p, TokAtomic))   flags |= VdeclAtomic;
     if (match_tok(p, TokConst))    flags |= VdeclConst;
@@ -233,7 +232,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         diag_begin_error("expected a type in variable declaration");
         diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                   True, "expected a type here");
-        diag_note("variable declarations require a storage qualifier and type: stack i32 x = 0;");
+        diag_note("non-pointer variables need only a type: i32 x = 0;  pointer variables need stack/heap: stack i32 *rw p;");
         diag_finish();
         p->had_error = True;
         advance_parser(p); /* skip bad token to avoid infinite loop */
@@ -313,7 +312,52 @@ static node_t *parse_with_stmt(parser_t *p) {
 
     /* Parse the binding declaration (var decl, no semicolon consumed yet) */
     node_t *decl = Null;
-    if (can_start_var_decl(p)) {
+
+    /* Bare multi-binding: [a, b] = expr  (no type prefix, no let, no qualifier) */
+    if (check(p, TokLBracket)) {
+        advance_parser(p);
+        node_list_t targets;
+        node_list_init(&targets);
+        node_list_t values;
+        node_list_init(&values);
+        do {
+            token_t name_tok = consume(p, TokIdent, "variable name");
+            node_t *var = make_node(NodeVarDecl, name_tok.line);
+            var->as.var_decl.name    = copy_token_text(name_tok);
+            var->as.var_decl.type    = NO_TYPE;
+            var->as.var_decl.storage = StorageDefault;
+            var->as.var_decl.flags   = VdeclLet;
+            node_list_push(&targets, var);
+        } while (match_tok(p, TokComma));
+        consume(p, TokRBracket, "']'");
+        consume(p, TokEq, "'='");
+        node_list_push(&values, parse_expr(p));
+        node_t *ma = make_node(NodeMultiAssign, line);
+        ma->as.multi_assign.targets = targets;
+        ma->as.multi_assign.values  = values;
+        decl = ma;
+    }
+    /* Bare single inferred binding: name = expr  (ident followed directly by '=') */
+    else if (check(p, TokIdent)) {
+        parser_state_t snap = save_state(p);
+        token_t name_tok = p->current;
+        advance_parser(p);
+        if (check(p, TokEq)) {
+            advance_parser(p); /* consume '=' */
+            node_t *init = parse_expr(p);
+            node_t *var = make_node(NodeVarDecl, name_tok.line);
+            var->as.var_decl.name    = copy_token_text(name_tok);
+            var->as.var_decl.type    = NO_TYPE;
+            var->as.var_decl.storage = StorageDefault;
+            var->as.var_decl.flags   = VdeclLet;
+            var->as.var_decl.init    = init;
+            decl = var;
+        } else {
+            restore_state(p, snap);
+        }
+    }
+
+    if (decl == Null && can_start_var_decl(p)) {
         /* parse as var decl but manually — we stop before the ';' at the ';' sep */
         storage_t storage = StorageDefault;
         int flags = 0;
@@ -359,10 +403,12 @@ static node_t *parse_with_stmt(parser_t *p) {
                 decl = var;
             }
         } else {
-            /* typed: stack T name = expr */
-            type_info_t type = parse_type(p);
+            /* type-inferred forms without 'let':
+               stack [a, b] = expr  — multi-bind inferred
+               stack name = expr    — single-bind inferred (ident immediately followed by '=') */
             if (check(p, TokLBracket)) {
-                /* multi: stack T [a, b] = expr */
+                /* multi-bind, type inferred (same as stack let [a, b] = expr) */
+                flags |= VdeclLet;
                 advance_parser(p);
                 node_list_t targets;
                 node_list_init(&targets);
@@ -372,7 +418,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                     token_t name_tok = consume(p, TokIdent, "variable name");
                     node_t *var = make_node(NodeVarDecl, name_tok.line);
                     var->as.var_decl.name    = copy_token_text(name_tok);
-                    var->as.var_decl.type    = type;
+                    var->as.var_decl.type    = NO_TYPE;
                     var->as.var_decl.storage = storage;
                     var->as.var_decl.flags   = flags;
                     node_list_push(&targets, var);
@@ -385,22 +431,72 @@ static node_t *parse_with_stmt(parser_t *p) {
                 ma->as.multi_assign.values  = values;
                 decl = ma;
             } else {
-                token_t name_tok = consume(p, TokIdent, "variable name");
-                consume(p, TokEq, "'='");
-                node_t *init = parse_expr(p);
-                node_t *var = make_node(NodeVarDecl, name_tok.line);
-                var->as.var_decl.name    = copy_token_text(name_tok);
-                var->as.var_decl.type    = type;
-                var->as.var_decl.storage = storage;
-                var->as.var_decl.flags   = flags;
-                var->as.var_decl.init    = init;
-                decl = var;
+                /* peek: if ident is immediately followed by '=', type-inferred single bind */
+                boolean_t single_inferred = False;
+                if (check(p, TokIdent)) {
+                    parser_state_t snap = save_state(p);
+                    token_t name_tok = p->current;
+                    advance_parser(p);
+                    if (check(p, TokEq)) {
+                        single_inferred = True;
+                        advance_parser(p); /* consume '=' */
+                        node_t *init = parse_expr(p);
+                        node_t *var = make_node(NodeVarDecl, name_tok.line);
+                        var->as.var_decl.name    = copy_token_text(name_tok);
+                        var->as.var_decl.type    = NO_TYPE;
+                        var->as.var_decl.storage = storage;
+                        var->as.var_decl.flags   = flags | VdeclLet;
+                        var->as.var_decl.init    = init;
+                        decl = var;
+                    } else {
+                        restore_state(p, snap);
+                    }
+                }
+                if (!single_inferred) {
+                    /* typed: stack T name = expr  or  stack T [a, b] = expr */
+                    type_info_t type = parse_type(p);
+                    if (check(p, TokLBracket)) {
+                        /* multi: stack T [a, b] = expr */
+                        advance_parser(p);
+                        node_list_t targets;
+                        node_list_init(&targets);
+                        node_list_t values;
+                        node_list_init(&values);
+                        do {
+                            token_t name_tok = consume(p, TokIdent, "variable name");
+                            node_t *var = make_node(NodeVarDecl, name_tok.line);
+                            var->as.var_decl.name    = copy_token_text(name_tok);
+                            var->as.var_decl.type    = type;
+                            var->as.var_decl.storage = storage;
+                            var->as.var_decl.flags   = flags;
+                            node_list_push(&targets, var);
+                        } while (match_tok(p, TokComma));
+                        consume(p, TokRBracket, "']'");
+                        consume(p, TokEq, "'='");
+                        node_list_push(&values, parse_expr(p));
+                        node_t *ma = make_node(NodeMultiAssign, line);
+                        ma->as.multi_assign.targets = targets;
+                        ma->as.multi_assign.values  = values;
+                        decl = ma;
+                    } else {
+                        token_t name_tok = consume(p, TokIdent, "variable name");
+                        consume(p, TokEq, "'='");
+                        node_t *init = parse_expr(p);
+                        node_t *var = make_node(NodeVarDecl, name_tok.line);
+                        var->as.var_decl.name    = copy_token_text(name_tok);
+                        var->as.var_decl.type    = type;
+                        var->as.var_decl.storage = storage;
+                        var->as.var_decl.flags   = flags;
+                        var->as.var_decl.init    = init;
+                        decl = var;
+                    }
+                }
             }
         }
-    } else {
+    } else if (decl == Null) {
         diag_begin_error("expected a variable declaration after 'with'");
         diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                  True, "expected 'stack', 'heap', or a type here");
+                  True, "expected a type (or 'stack'/'heap' for pointer vars) here");
         diag_finish();
         p->had_error = True;
         decl = make_node(NodeVarDecl, line);
@@ -420,11 +516,16 @@ static node_t *parse_with_stmt(parser_t *p) {
     }
 
     node_t *body = parse_block(p);
+    node_t *else_block = Null;
+    if (match_tok(p, TokElse)) {
+        else_block = parse_block(p);
+    }
 
     node_t *n = make_node(NodeWithStmt, line);
     n->as.with_stmt.decl = decl;
     n->as.with_stmt.cond = cond;
     n->as.with_stmt.body = body;
+    n->as.with_stmt.else_block = else_block;
     return n;
 }
 
@@ -438,24 +539,6 @@ static node_t *parse_defer_stmt(parser_t *p) {
         body = parse_statement(p);
     node_t *n = make_node(NodeDeferStmt, line);
     n->as.defer_stmt.body = body;
-    return n;
-}
-
-/* parse the body of a storage-group block: stack ( ... ) / heap ( ... )
-   Called after consuming the opening '('. Returns a NodeBlock. */
-static node_t *parse_storage_group(parser_t *p, storage_t storage) {
-    usize_t line = p->current.line;
-    storage_t prev = p->group_storage;
-    p->group_storage = storage;
-    node_list_t stmts;
-    node_list_init(&stmts);
-    while (!check(p, TokRParen) && !check(p, TokEof)) {
-        node_list_push(&stmts, parse_statement(p));
-    }
-    consume(p, TokRParen, "')'");
-    p->group_storage = prev;
-    node_t *n = make_node(NodeBlock, line);
-    n->as.block.stmts = stmts;
     return n;
 }
 
@@ -507,18 +590,6 @@ static node_t *parse_statement(parser_t *p) {
         advance_parser(p);
         consume(p, TokSemicolon, "';'");
         return make_node(NodeContinueStmt, line);
-    }
-
-    /* storage group block: stack ( ... ) or heap ( ... ) */
-    if (check(p, TokStack) || check(p, TokHeap)) {
-        storage_t grp = check(p, TokStack) ? StorageStack : StorageHeap;
-        parser_state_t saved = save_state(p);
-        advance_parser(p);
-        if (check(p, TokLParen)) {
-            advance_parser(p); /* consume '(' */
-            return parse_storage_group(p, grp);
-        }
-        restore_state(p, saved);
     }
 
     /* future.op(...) is an expression statement, not a var decl — peek ahead */

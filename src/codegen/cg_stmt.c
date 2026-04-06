@@ -104,105 +104,37 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         type = get_llvm_type(cg, ti);
     }
 
-    /* heap primitive: allocate via malloc, register for auto-free */
-    boolean_t is_heap = (node->as.var_decl.storage == StorageHeap)
-                        && is_primitive_type(ti)
-                        && !(node->as.var_decl.flags & VdeclArray);
-
-    if (is_heap) {
-        /* alloca holds the heap pointer (alloca of ptr type, in entry block) */
-        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-        LLVMValueRef alloca_val = alloc_in_entry(cg, ptr_ty, node->as.var_decl.name);
-
-        /* check cross-domain: if init is addr-of a stack variable, error */
-        if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeAddrOf) {
-            node_t *addr_op = node->as.var_decl.init->as.addr_of.operand;
-            if (addr_op->kind == NodeIdentExpr) {
-                symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
-                if (src && src->storage == StorageStack) {
-                    diag_begin_error("cannot assign a stack address to a heap pointer");
-                    diag_span(DIAG_NODE(node), True, "heap pointer assigned here");
-                    diag_note("stack variables are freed when their scope ends; the heap pointer would dangle");
-                    diag_help("allocate the source variable on the heap: heap i32 x = 0;");
-                    diag_finish();
-                }
-            }
+    /* ── New allocation rule:
+       - Non-pointer variables are always stack-allocated (StorageDefault).
+         Using 'stack' or 'heap' on a non-pointer is a semantic error.
+       - Pointer variables must specify 'stack' or 'heap'.
+         Omitting the qualifier on a pointer is a semantic error.
+       Both checks are skipped for 'let' bindings whose types are inferred
+       at code-gen time (the inferred type is checked after inference).
+    ── */
+    boolean_t is_let_binding = (node->as.var_decl.flags & VdeclLet) != 0
+                             || ti.base == TypeVoid; /* multi-assign target: no type yet */
+    if (!is_let_binding) {
+        if (node->as.var_decl.storage != StorageDefault && !ti.is_pointer && ti.base != TypeFnPtr) {
+            const char *qual = (node->as.var_decl.storage == StorageHeap) ? "heap" : "stack";
+            diag_begin_error("'%s' qualifier is not allowed on non-pointer variable '%s'",
+                             qual, node->as.var_decl.name ? node->as.var_decl.name : "?");
+            diag_span(DIAG_NODE(node), True, "declared here");
+            diag_note("non-pointer variables are always stack-allocated — omit the qualifier");
+            diag_help("remove '%s': write '%s %s;' instead",
+                      qual,
+                      node->as.var_decl.type.user_name ? node->as.var_decl.type.user_name : "T",
+                      node->as.var_decl.name ? node->as.var_decl.name : "x");
+            diag_finish();
         }
-
-        /* call malloc(sizeof(type)) */
-        LLVMValueRef sz = LLVMSizeOf(type);
-        sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
-        LLVMValueRef args[1] = { sz };
-        LLVMValueRef heap_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
-                                                cg->malloc_fn, args, 1, "hmalloc");
-        LLVMBuildStore(cg->builder, heap_ptr, alloca_val);
-
-        if (node->as.var_decl.init) {
-            cg->hint_ret_type = type;
-            LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
-            cg->hint_ret_type = Null;
-            init = coerce_int(cg, init, type);
-            LLVMBuildStore(cg->builder, init, heap_ptr);
+        if (node->as.var_decl.storage == StorageDefault && ti.is_pointer) {
+            diag_begin_error("pointer variable '%s' must specify 'stack' or 'heap'",
+                             node->as.var_decl.name ? node->as.var_decl.name : "?");
+            diag_span(DIAG_NODE(node), True, "pointer declared here");
+            diag_note("pointer variables require an explicit allocation domain");
+            diag_help("write 'stack T* name;' (pointer on stack) or 'heap T* name;' (pointer on heap)");
+            diag_finish();
         }
-
-        symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type,
-                   ti, (node->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
-        symtab_set_last_storage(&cg->locals, StorageHeap, True);
-        symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
-                              node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
-                              cg->dtor_depth, -1);
-        symtab_set_last_line(&cg->locals, node->line);
-        if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
-            symtab_set_last_nil(&cg->locals, True);
-
-        /* DI: heap primitive — declare the alloca holding the heap ptr. */
-        if (cg->debug_mode && cg->di_builder && cg->di_scope && node->line > 0) {
-            LLVMMetadataRef di_pty = get_di_type(cg, ti);
-            LLVMMetadataRef di_var = LLVMDIBuilderCreateAutoVariable(
-                cg->di_builder, cg->di_scope,
-                node->as.var_decl.name, strlen(node->as.var_decl.name),
-                cg->di_file, (unsigned)node->line,
-                di_pty, /* alwaysPreserve= */ 0, LLVMDIFlagZero, /* alignInBits= */ 0);
-            LLVMMetadataRef di_expr =
-                LLVMDIBuilderCreateExpression(cg->di_builder, Null, 0);
-            LLVMMetadataRef di_loc = di_make_location(cg, node->line);
-            LLVMDIBuilderInsertDeclareRecordAtEnd(
-                cg->di_builder, alloca_val, di_var, di_expr, di_loc,
-                LLVMGetInsertBlock(cg->builder));
-        }
-
-        add_heap_var(cg, alloca_val);
-        return;
-    }
-
-    /* heap user-type (non-pointer struct/union): allocate via malloc */
-    if ((node->as.var_decl.storage == StorageHeap)
-        && ti.base == TypeUser && !ti.is_pointer
-        && !(node->as.var_decl.flags & VdeclArray)) {
-        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-        LLVMValueRef alloca_val = alloc_in_entry(cg, ptr_ty, node->as.var_decl.name);
-        LLVMValueRef sz = LLVMSizeOf(type);
-        sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
-        LLVMValueRef malloc_args[1] = { sz };
-        LLVMValueRef heap_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
-                                                cg->malloc_fn, malloc_args, 1, "hmalloc");
-        LLVMBuildStore(cg->builder, heap_ptr, alloca_val);
-        if (node->as.var_decl.init) {
-            cg->hint_ret_type = type;
-            LLVMValueRef init = gen_expr(cg, node->as.var_decl.init);
-            cg->hint_ret_type = Null;
-            init = coerce_int(cg, init, type);
-            LLVMBuildStore(cg->builder, init, heap_ptr);
-        }
-        symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti,
-                   (node->as.var_decl.flags & VdeclAtomic) ? SymAtomic : 0);
-        symtab_set_last_storage(&cg->locals, StorageHeap, True);
-        symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
-                              node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
-                              cg->dtor_depth, -1);
-        symtab_set_last_line(&cg->locals, node->line);
-        add_heap_var(cg, alloca_val);
-        return;
     }
 
     /* emit alloca in the entry block so loop variables get a fixed slot */
@@ -227,7 +159,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                     diag_begin_error("cannot assign a stack address to a heap pointer");
                     diag_span(DIAG_NODE(node), True, "assigned here");
                     diag_note("stack addresses become invalid after their scope ends");
-                    diag_help("use 'heap' storage for the source variable");
+                    diag_help("use a heap pointer pointing to heap-allocated memory via new.()");
                     diag_finish();
                 } else if (ptr_domain == StorageStack && src->storage == StorageHeap) {
                     diag_begin_error("cannot assign a heap address to a stack pointer");
@@ -1617,11 +1549,21 @@ static void gen_with_stmt(cg_t *cg, node_t *node) {
         cg->ctx, cg->current_fn, "with.body");
     LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
         cg->ctx, cg->current_fn, "with.end");
-    LLVMBuildCondBr(cg->builder, cond, body_bb, end_bb);
+    node_t *else_block = node->as.with_stmt.else_block;
+    LLVMBasicBlockRef else_bb = else_block
+        ? LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "with.else")
+        : end_bb;
+    LLVMBuildCondBr(cg->builder, cond, body_bb, else_bb);
     LLVMPositionBuilderAtEnd(cg->builder, body_bb);
     gen_block(cg, node->as.with_stmt.body);
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         LLVMBuildBr(cg->builder, end_bb);
+    if (else_block) {
+        LLVMPositionBuilderAtEnd(cg->builder, else_bb);
+        gen_block(cg, else_block);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+            LLVMBuildBr(cg->builder, end_bb);
+    }
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     pop_dtor_scope(cg);
     cg->locals.count = saved_locals;

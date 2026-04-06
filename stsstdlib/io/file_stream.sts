@@ -9,12 +9,11 @@ ext const i32 FsAppend    = 4;
 ext const i32 FsAllFlags  = 7;
 
 ext type file_stream_t: struct {
-stack:
-    int i8 *rw fp;       // FILE* stored as opaque pointer
+    int stack i8 *rw fp;   // FILE* stored as opaque pointer
     int i32 err_flag;
 
     // Returns bytes read, or 0 on error/EOF.
-    ext fn read(stack u32 no_bytes, stack i8 *w out_buf, stack u32 out_len): u32 {
+    ext fn read(u32 no_bytes, stack i8 *w out_buf, u32 out_len): u32 {
         final u32 n = cio.fread(out_buf, 1, no_bytes, file_stream_t.(fp));
         if (cio.ferror(file_stream_t.(fp)) != 0) {
             file_stream_t.(err_flag) = 1;
@@ -23,7 +22,7 @@ stack:
     }
 
     // Returns bytes written, or 0 on error.
-    ext fn write(stack u32 no_bytes, stack i8 *r in_buf, stack u32 in_len): u32 {
+    ext fn write(u32 no_bytes, stack i8 *r in_buf, u32 in_len): u32 {
         final u32 n = cio.fwrite(in_buf, 1, no_bytes, file_stream_t.(fp));
         if (cio.ferror(file_stream_t.(fp)) != 0) {
             file_stream_t.(err_flag) = 1;
@@ -37,7 +36,7 @@ stack:
     }
 
     // Push a character back into the stream so the next get_ch returns it.
-    ext fn unget_ch(stack i32 ch): void {
+    ext fn unget_ch(i32 ch): void {
         cio.ungetc(ch, file_stream_t.(fp));
     }
 
@@ -59,8 +58,8 @@ stack:
 }
 
 // Build a fopen mode string from FsRead/FsWrite/FsAppend flags.
-int fn build_mode_str(stack i32 mode, stack i8 *w out): void {
-    stack i32 mi = 0;
+int fn build_mode_str(i32 mode, stack i8 *w out): void {
+    i32 mi = 0;
 
     if (mode & FsAppend) {
         out[mi++] = 'a';
@@ -77,8 +76,8 @@ int fn build_mode_str(stack i32 mode, stack i8 *w out): void {
     out[mi] = 0;
 }
 
-ext fn file_stream_t.new(stack i8 *r path, stack i32 mode): file_stream_t {
-    stack i8 mode_str[4];
+ext fn file_stream_t.new(stack i8 *r path, i32 mode): file_stream_t {
+    i8 mode_str[4];
     build_mode_str(mode, mode_str);
 
     stack i8 *rw fp = cio.fopen(path, mode_str);
@@ -97,45 +96,45 @@ ext fn file_stream_t.rem(void): void {
 }
 
 test 'file_stream open for write' {
-    stack file_stream_t fs = file_stream_t.new("/tmp/stasha_fs_test.txt", FsWrite);
+    file_stream_t fs = file_stream_t.new("/tmp/stasha_fs_test.txt", FsWrite);
     expect.(fs.is_open());
     expect.(!fs.had_err());
 }
 
 test 'file_stream write and read' {
-    stack i8 msg[6];
+    i8 msg[6];
     msg[0] = 'h'; msg[1] = 'e'; msg[2] = 'l'; msg[3] = 'l'; msg[4] = 'o'; msg[5] = 0;
 
-    stack file_stream_t fw = file_stream_t.new("/tmp/stasha_fs_rw_test.txt", FsWrite);
+    file_stream_t fw = file_stream_t.new("/tmp/stasha_fs_rw_test.txt", FsWrite);
     expect.(fw.is_open());
-    stack u32 written = fw.write(5, msg, 6);
+    u32 written = fw.write(5, msg, 6);
     expect_eq.(written, 5);
     fw.flush();
 
-    stack file_stream_t fr = file_stream_t.new("/tmp/stasha_fs_rw_test.txt", FsRead);
+    file_stream_t fr = file_stream_t.new("/tmp/stasha_fs_rw_test.txt", FsRead);
     expect.(fr.is_open());
-    stack i8 buf[16];
-    stack u32 n = fr.read(5, buf, 16);
+    i8 buf[16];
+    u32 n = fr.read(5, buf, 16);
     expect_eq.(n, 5);
     expect_eq.(buf[0], 'h');
     expect_eq.(buf[4], 'o');
 }
 
 test 'file_stream open nonexistent for read fails' {
-    stack file_stream_t fs = file_stream_t.new("/tmp/stasha_no_such_file_xyz.txt", FsRead);
+    file_stream_t fs = file_stream_t.new("/tmp/stasha_no_such_file_xyz.txt", FsRead);
     expect.(!fs.is_open());
 }
 
 test 'file_stream get_ch' {
-    stack i8 data[2];
+    i8 data[2];
     data[0] = 65; data[1] = 0;
-    stack file_stream_t fw = file_stream_t.new("/tmp/stasha_getch_test.txt", FsWrite);
+    file_stream_t fw = file_stream_t.new("/tmp/stasha_getch_test.txt", FsWrite);
     expect.(fw.is_open());
     fw.write(1, data, 2);
     fw.flush();
 
-    stack file_stream_t fr = file_stream_t.new("/tmp/stasha_getch_test.txt", FsRead);
+    file_stream_t fr = file_stream_t.new("/tmp/stasha_getch_test.txt", FsRead);
     expect.(fr.is_open());
-    stack i32 ch = fr.get_ch();
+    i32 ch = fr.get_ch();
     expect_eq.(ch, 65);
 }

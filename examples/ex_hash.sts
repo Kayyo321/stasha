@@ -5,11 +5,11 @@ lib "stdio" = io;
 // ── Point: uses the auto-generated default struct hash ──────────────────────
 
 ext type Point: struct {
-    stack: ext i32 x, y;
+    ext i32 x, y;
 };
 
-ext fn Point.new(stack i32 x, y): Point {
-    stack Point p;
+ext fn Point.new(i32 x, y): Point {
+    Point p;
     p.x = x;
     p.y = y;
     ret p;
@@ -18,11 +18,11 @@ ext fn Point.new(stack i32 x, y): Point {
 // ── Color: provides a custom hash method ────────────────────────────────────
 
 ext type Color: struct {
-    stack: ext u8 r, g, b;
+    ext u8 r, g, b;
 };
 
-ext fn Color.new(stack u8 r, g, b): Color {
-    stack Color c;
+ext fn Color.new(u8 r, g, b): Color {
+    Color c;
     c.r = r;
     c.g = g;
     c.b = b;
@@ -31,7 +31,7 @@ ext fn Color.new(stack u8 r, g, b): Color {
 
 // Custom hash: pack RGB channels into a single u64
 ext fn Color.hash(void): u64 {
-    stack u64 h = (u64) Color.(r);
+    u64 h = (u64) Color.(r);
     h = h << 8 | (u64) Color.(g);
     h = h << 8 | (u64) Color.(b);
     ret h;
@@ -41,14 +41,14 @@ ext fn Color.hash(void): u64 {
 
 fn main(void): i32 {
     // --- primitives ---
-    stack i32  n = 42;
-    stack f64  f = 3.14;
-    stack bool t = true;
-    stack bool ff = false;
-    stack u64  hn  = hash.(n);
-    stack u64  hf  = hash.(f);
-    stack u64  ht  = hash.(t);
-    stack u64  hff = hash.(ff);
+    i32  n = 42;
+    f64  f = 3.14;
+    bool t = true;
+    bool ff = false;
+    u64  hn  = hash.(n);
+    u64  hf  = hash.(f);
+    u64  ht  = hash.(t);
+    u64  hff = hash.(ff);
 
     io.printf("=== primitive hashes ===\n");
     io.printf("hash(42)    = %llu\n", hn);
@@ -57,24 +57,24 @@ fn main(void): i32 {
     io.printf("hash(false) = %llu\n", hff);
 
     // same value => same hash
-    stack i32 n2 = 42;
-    stack u64 hn2 = hash.(n2);
+    i32 n2 = 42;
+    u64 hn2 = hash.(n2);
     io.printf("hash(42) == hash(42): %d\n", hn == hn2);
 
     // different values => different hashes
-    stack i32 m = 43;
-    stack u64 hm = hash.(m);
+    i32 m = 43;
+    u64 hm = hash.(m);
     io.printf("hash(42) != hash(43): %d\n", hn != hm);
 
     // --- struct default hash ---
     io.printf("\n=== struct default hash (Point) ===\n");
-    stack Point a = Point.new(3, 4);
-    stack Point b = Point.new(3, 4);
-    stack Point c = Point.new(1, 2);
+    Point a = Point.new(3, 4);
+    Point b = Point.new(3, 4);
+    Point c = Point.new(1, 2);
 
-    stack u64 ha = hash.(a);
-    stack u64 hb = hash.(b);
-    stack u64 hc = hash.(c);
+    u64 ha = hash.(a);
+    u64 hb = hash.(b);
+    u64 hc = hash.(c);
 
     io.printf("hash(3,4)   = %llu\n", ha);
     io.printf("hash(3,4)   = %llu\n", hb);
@@ -84,13 +84,13 @@ fn main(void): i32 {
 
     // --- struct custom hash ---
     io.printf("\n=== struct custom hash (Color) ===\n");
-    stack Color red   = Color.new(255, 0, 0);
-    stack Color green = Color.new(0, 255, 0);
-    stack Color red2  = Color.new(255, 0, 0);
+    Color red   = Color.new(255, 0, 0);
+    Color green = Color.new(0, 255, 0);
+    Color red2  = Color.new(255, 0, 0);
 
-    stack u64 hr  = hash.(red);
-    stack u64 hg  = hash.(green);
-    stack u64 hr2 = hash.(red2);
+    u64 hr  = hash.(red);
+    u64 hg  = hash.(green);
+    u64 hr2 = hash.(red2);
 
     io.printf("hash(red)   = %llu\n", hr);
     io.printf("hash(green) = %llu\n", hg);

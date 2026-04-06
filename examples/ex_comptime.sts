@@ -10,13 +10,12 @@ mod ex_comptime;
 // ------------------------------------------------------------
 
 type Sizes: struct {
-stack:
     ext i32 ptr_bytes;
     ext i32 word_bytes;
 }
 
 fn platform_sizes(void): Sizes {
-    stack Sizes s;
+    Sizes s;
 
     @comptime if os == "macos" {
         s.ptr_bytes  = 8;
@@ -53,9 +52,7 @@ fn arch_label(void): void {
 // ------------------------------------------------------------
 
 type Buffer: struct {
-heap:
-    ext u8 *rw data;
-stack:
+    heap ext u8 *rw data;
     ext i32 len, cap;
 @comptime:
     ext i32 align    = 16;   // required alignment of .data
@@ -71,7 +68,6 @@ stack:
 
 // @comptime fields can also vary per platform.
 type Handle: struct {
-stack:
     ext i32 fd;
 @comptime:
     @comptime if os == "windows" {
@@ -91,22 +87,20 @@ stack:
 
 // Single type parameter — a heap-allocated growable array.
 type arr_t: @comptime[T] struct {
-heap:
-    ext T *rw buf;
-stack:
+    heap ext T *rw buf;
     ext i32 len, cap;
 
-    fn push(stack T val): void { // gets T from line 93
+    fn push(T val): void { // gets T from line above
         arr_t.(buf)[arr_t.(len)] = val;
         arr_t.(len) = arr_t.(len) + 1;
     }
 
-    fn at(stack u32 idx): T {
+    fn at(u32 idx): T {
         ret this.buf[idx];
     }
 }
 
-fn @comptime[T] arr_t.new(stack i32 cap): arr_t.[T] {
+fn @comptime[T] arr_t.new(i32 cap): arr_t.[T] {
     ret arr_t.[T] {
         .buf = new.(sizeof.(T) * cap),
         .len = 0,
@@ -121,20 +115,17 @@ fn arr_t.rem(void): void { // should have access to T if need be
 
 // Two type parameters — a key/value pair.
 type pair_t: @comptime[K, V] struct {
-stack:
     ext K key;
     ext V val;
 }
 
-fn @comptime[K, V] pair_t.new(stack K key, stack V val): pair_t.[K, V] {
+fn @comptime[K, V] pair_t.new(K key, V val): pair_t.[K, V] {
     ret pair_t.[K, V] { .key = key, .val = val };
 }
 
 // Generics and @comptime: fields compose naturally.
 type table_t: @comptime[K, V] struct {
-heap:
-    ext pair_t.[K, V] *rw entries;
-stack:
+    heap ext pair_t.[K, V] *rw entries;
     ext i32 len, cap;
 @comptime:
     ext i32 load_pct = 75;  // max load percentage before resize
@@ -153,7 +144,6 @@ stack:
 // ------------------------------------------------------------
 
 type Vec3: struct {
-stack:
     ext f32 x, y, z;
 }
 
@@ -167,7 +157,7 @@ stack:
 @comptime assert.(true);
 
 fn main(void): i32 {
-    stack Sizes s = platform_sizes();
+    Sizes s = platform_sizes();
     print.('ptr_bytes={} word_bytes={}\n', s.ptr_bytes, s.word_bytes);
 
     arch_label();
@@ -176,7 +166,7 @@ fn main(void): i32 {
     @comptime assert.(sizeof.(i64) == 8, 'i64 must be 8 bytes');
 
     // Instantiate a generic struct with a concrete type.
-    stack arr_t.[i32] nums = arr_t.[i32].new(8);
+    arr_t.[i32] nums = arr_t.[i32].new(8);
     nums.push(10);
     nums.push(20);
     print.('nums.len={}\n', nums.len); // destructor called by default
@@ -184,7 +174,7 @@ fn main(void): i32 {
     print.('nums[0] = {}\nnums[1] = {}\n', nums.at(0), nums.at(1));
 
     // Two-parameter instantiation.
-    stack pair_t.[i32, f32] p = pair_t.[i32, f32].new(1, 3.14);
+    pair_t.[i32, f32] p = pair_t.[i32, f32].new(1, 3.14);
     print.('pair: key={} val={}\n', p.key, p.val);
 
     ret 0;

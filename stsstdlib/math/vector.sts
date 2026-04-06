@@ -5,97 +5,95 @@ lib "math" = cmath;
 // ── vec2_t ────────────────────────────────────────────────────────────────
 
 ext type vec2_t: struct {
-stack:
     ext f32 x, y;
 }
 
-ext fn vec2_t.new(stack f32 x, stack f32 y): vec2_t {
+ext fn vec2_t.new(f32 x, f32 y): vec2_t {
     ret vec2_t{ .x = x, .y = y };
 }
 
-ext fn vec2_add(stack vec2_t a, stack vec2_t b): vec2_t {
+ext fn vec2_add(vec2_t a, vec2_t b): vec2_t {
     ret vec2_t{ .x = a.x + b.x, .y = a.y + b.y };
 }
 
-ext fn vec2_sub(stack vec2_t a, stack vec2_t b): vec2_t {
+ext fn vec2_sub(vec2_t a, vec2_t b): vec2_t {
     ret vec2_t{ .x = a.x - b.x, .y = a.y - b.y };
 }
 
-ext fn vec2_scale(stack vec2_t v, stack f32 s): vec2_t {
+ext fn vec2_scale(vec2_t v, f32 s): vec2_t {
     ret vec2_t{ .x = v.x * s, .y = v.y * s };
 }
 
-ext fn vec2_dot(stack vec2_t a, stack vec2_t b): f32 {
+ext fn vec2_dot(vec2_t a, vec2_t b): f32 {
     ret a.x * b.x + a.y * b.y;
 }
 
-ext fn vec2_length_sq(stack vec2_t v): f32 {
+ext fn vec2_length_sq(vec2_t v): f32 {
     ret v.x * v.x + v.y * v.y;
 }
 
-ext fn vec2_length(stack vec2_t v): f32 {
+ext fn vec2_length(vec2_t v): f32 {
     ret cmath.sqrtf(v.x * v.x + v.y * v.y);
 }
 
-ext fn vec2_normalize(stack vec2_t v): vec2_t {
-    stack f32 len = cmath.sqrtf(v.x * v.x + v.y * v.y);
+ext fn vec2_normalize(vec2_t v): vec2_t {
+    f32 len = cmath.sqrtf(v.x * v.x + v.y * v.y);
     if (len == 0.0) { ret vec2_t{ .x = 0.0, .y = 0.0 }; }
     ret vec2_t{ .x = v.x / len, .y = v.y / len };
 }
 
-ext fn vec2_lerp(stack vec2_t a, stack vec2_t b, stack f32 t): vec2_t {
+ext fn vec2_lerp(vec2_t a, vec2_t b, f32 t): vec2_t {
     ret vec2_t{
         .x = a.x + t * (b.x - a.x),
         .y = a.y + t * (b.y - a.y)
     };
 }
 
-ext fn vec2_eq(stack vec2_t a, stack vec2_t b): bool {
+ext fn vec2_eq(vec2_t a, vec2_t b): bool {
     ret a.x == b.x && a.y == b.y;
 }
 
 // ── vec3_t ────────────────────────────────────────────────────────────────
 
 ext type vec3_t: struct {
-stack:
     ext f32 x, y, z;
 }
 
-ext fn vec3_t.new(stack f32 x, stack f32 y, stack f32 z): vec3_t {
+ext fn vec3_t.new(f32 x, f32 y, f32 z): vec3_t {
     ret vec3_t{ .x = x, .y = y, .z = z };
 }
 
-ext fn vec3_add(stack vec3_t a, stack vec3_t b): vec3_t {
+ext fn vec3_add(vec3_t a, vec3_t b): vec3_t {
     ret vec3_t{ .x = a.x + b.x, .y = a.y + b.y, .z = a.z + b.z };
 }
 
-ext fn vec3_sub(stack vec3_t a, stack vec3_t b): vec3_t {
+ext fn vec3_sub(vec3_t a, vec3_t b): vec3_t {
     ret vec3_t{ .x = a.x - b.x, .y = a.y - b.y, .z = a.z - b.z };
 }
 
-ext fn vec3_scale(stack vec3_t v, stack f32 s): vec3_t {
+ext fn vec3_scale(vec3_t v, f32 s): vec3_t {
     ret vec3_t{ .x = v.x * s, .y = v.y * s, .z = v.z * s };
 }
 
-ext fn vec3_dot(stack vec3_t a, stack vec3_t b): f32 {
+ext fn vec3_dot(vec3_t a, vec3_t b): f32 {
     ret a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-ext fn vec3_length_sq(stack vec3_t v): f32 {
+ext fn vec3_length_sq(vec3_t v): f32 {
     ret v.x * v.x + v.y * v.y + v.z * v.z;
 }
 
-ext fn vec3_length(stack vec3_t v): f32 {
+ext fn vec3_length(vec3_t v): f32 {
     ret cmath.sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-ext fn vec3_normalize(stack vec3_t v): vec3_t {
-    stack f32 len = cmath.sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+ext fn vec3_normalize(vec3_t v): vec3_t {
+    f32 len = cmath.sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
     if (len == 0.0) { ret vec3_t{ .x = 0.0, .y = 0.0, .z = 0.0 }; }
     ret vec3_t{ .x = v.x / len, .y = v.y / len, .z = v.z / len };
 }
 
-ext fn vec3_lerp(stack vec3_t a, stack vec3_t b, stack f32 t): vec3_t {
+ext fn vec3_lerp(vec3_t a, vec3_t b, f32 t): vec3_t {
     ret vec3_t{
         .x = a.x + t * (b.x - a.x),
         .y = a.y + t * (b.y - a.y),
@@ -103,11 +101,11 @@ ext fn vec3_lerp(stack vec3_t a, stack vec3_t b, stack f32 t): vec3_t {
     };
 }
 
-ext fn vec3_eq(stack vec3_t a, stack vec3_t b): bool {
+ext fn vec3_eq(vec3_t a, vec3_t b): bool {
     ret a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
-ext fn vec3_cross(stack vec3_t a, stack vec3_t b): vec3_t {
+ext fn vec3_cross(vec3_t a, vec3_t b): vec3_t {
     ret vec3_t{
         .x = a.y * b.z - a.z * b.y,
         .y = a.z * b.x - a.x * b.z,
@@ -118,41 +116,40 @@ ext fn vec3_cross(stack vec3_t a, stack vec3_t b): vec3_t {
 // ── vec4_t ────────────────────────────────────────────────────────────────
 
 ext type vec4_t: struct {
-stack:
     ext f32 x, y, z, w;
 }
 
-ext fn vec4_t.new(stack f32 x, stack f32 y, stack f32 z, stack f32 w): vec4_t {
+ext fn vec4_t.new(f32 x, f32 y, f32 z, f32 w): vec4_t {
     ret vec4_t{ .x = x, .y = y, .z = z, .w = w };
 }
 
-ext fn vec4_add(stack vec4_t a, stack vec4_t b): vec4_t {
+ext fn vec4_add(vec4_t a, vec4_t b): vec4_t {
     ret vec4_t{ .x = a.x + b.x, .y = a.y + b.y, .z = a.z + b.z, .w = a.w + b.w };
 }
 
-ext fn vec4_sub(stack vec4_t a, stack vec4_t b): vec4_t {
+ext fn vec4_sub(vec4_t a, vec4_t b): vec4_t {
     ret vec4_t{ .x = a.x - b.x, .y = a.y - b.y, .z = a.z - b.z, .w = a.w - b.w };
 }
 
-ext fn vec4_scale(stack vec4_t v, stack f32 s): vec4_t {
+ext fn vec4_scale(vec4_t v, f32 s): vec4_t {
     ret vec4_t{ .x = v.x * s, .y = v.y * s, .z = v.z * s, .w = v.w * s };
 }
 
-ext fn vec4_dot(stack vec4_t a, stack vec4_t b): f32 {
+ext fn vec4_dot(vec4_t a, vec4_t b): f32 {
     ret a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
 }
 
-ext fn vec4_length(stack vec4_t v): f32 {
+ext fn vec4_length(vec4_t v): f32 {
     ret cmath.sqrtf(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
 }
 
-ext fn vec4_normalize(stack vec4_t v): vec4_t {
-    stack f32 len = cmath.sqrtf(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
+ext fn vec4_normalize(vec4_t v): vec4_t {
+    f32 len = cmath.sqrtf(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
     if (len == 0.0) { ret vec4_t{ .x = 0.0, .y = 0.0, .z = 0.0, .w = 0.0 }; }
     ret vec4_t{ .x = v.x / len, .y = v.y / len, .z = v.z / len, .w = v.w / len };
 }
 
-ext fn vec4_lerp(stack vec4_t a, stack vec4_t b, stack f32 t): vec4_t {
+ext fn vec4_lerp(vec4_t a, vec4_t b, f32 t): vec4_t {
     ret vec4_t{
         .x = a.x + t * (b.x - a.x),
         .y = a.y + t * (b.y - a.y),
@@ -161,93 +158,93 @@ ext fn vec4_lerp(stack vec4_t a, stack vec4_t b, stack f32 t): vec4_t {
     };
 }
 
-ext fn vec4_eq(stack vec4_t a, stack vec4_t b): bool {
+ext fn vec4_eq(vec4_t a, vec4_t b): bool {
     ret a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 test 'vec2_add' {
-    stack vec2_t a = vec2_t.new(1.0, 2.0);
-    stack vec2_t b = vec2_t.new(3.0, 4.0);
-    stack vec2_t r = vec2_add(a, b);
+    vec2_t a = vec2_t.new(1.0, 2.0);
+    vec2_t b = vec2_t.new(3.0, 4.0);
+    vec2_t r = vec2_add(a, b);
     expect.(r.x == 4.0 && r.y == 6.0);
 }
 
 test 'vec2_sub' {
-    stack vec2_t a = vec2_t.new(5.0, 7.0);
-    stack vec2_t b = vec2_t.new(2.0, 3.0);
-    stack vec2_t r = vec2_sub(a, b);
+    vec2_t a = vec2_t.new(5.0, 7.0);
+    vec2_t b = vec2_t.new(2.0, 3.0);
+    vec2_t r = vec2_sub(a, b);
     expect.(r.x == 3.0 && r.y == 4.0);
 }
 
 test 'vec2_scale' {
-    stack vec2_t v = vec2_t.new(2.0, 3.0);
-    stack vec2_t r = vec2_scale(v, 2.0);
+    vec2_t v = vec2_t.new(2.0, 3.0);
+    vec2_t r = vec2_scale(v, 2.0);
     expect.(r.x == 4.0 && r.y == 6.0);
 }
 
 test 'vec2_dot' {
-    stack vec2_t a = vec2_t.new(1.0, 0.0);
-    stack vec2_t b = vec2_t.new(0.0, 1.0);
+    vec2_t a = vec2_t.new(1.0, 0.0);
+    vec2_t b = vec2_t.new(0.0, 1.0);
     expect.(vec2_dot(a, b) == 0.0);
-    stack vec2_t c = vec2_t.new(1.0, 0.0);
+    vec2_t c = vec2_t.new(1.0, 0.0);
     expect.(vec2_dot(a, c) == 1.0);
 }
 
 test 'vec2_length' {
-    stack vec2_t v = vec2_t.new(3.0, 4.0);
-    stack f32 len = vec2_length(v);
+    vec2_t v = vec2_t.new(3.0, 4.0);
+    f32 len = vec2_length(v);
     expect.(len > 4.99 && len < 5.01);
 }
 
 test 'vec2_normalize' {
-    stack vec2_t v = vec2_t.new(3.0, 0.0);
-    stack vec2_t n = vec2_normalize(v);
+    vec2_t v = vec2_t.new(3.0, 0.0);
+    vec2_t n = vec2_normalize(v);
     expect.(n.x == 1.0 && n.y == 0.0);
 }
 
 test 'vec2_lerp' {
-    stack vec2_t a = vec2_t.new(0.0, 0.0);
-    stack vec2_t b = vec2_t.new(10.0, 10.0);
-    stack vec2_t r = vec2_lerp(a, b, 0.5);
+    vec2_t a = vec2_t.new(0.0, 0.0);
+    vec2_t b = vec2_t.new(10.0, 10.0);
+    vec2_t r = vec2_lerp(a, b, 0.5);
     expect.(r.x == 5.0 && r.y == 5.0);
 }
 
 test 'vec2_eq' {
-    stack vec2_t a = vec2_t.new(1.0, 2.0);
-    stack vec2_t b = vec2_t.new(1.0, 2.0);
-    stack vec2_t c = vec2_t.new(1.0, 3.0);
+    vec2_t a = vec2_t.new(1.0, 2.0);
+    vec2_t b = vec2_t.new(1.0, 2.0);
+    vec2_t c = vec2_t.new(1.0, 3.0);
     expect.(vec2_eq(a, b));
     expect.(vec2_eq(a, c) == false);
 }
 
 test 'vec3_cross' {
-    stack vec3_t x = vec3_t.new(1.0, 0.0, 0.0);
-    stack vec3_t y = vec3_t.new(0.0, 1.0, 0.0);
-    stack vec3_t z = vec3_cross(x, y);
+    vec3_t x = vec3_t.new(1.0, 0.0, 0.0);
+    vec3_t y = vec3_t.new(0.0, 1.0, 0.0);
+    vec3_t z = vec3_cross(x, y);
     expect.(z.x == 0.0 && z.y == 0.0 && z.z == 1.0);
 }
 
 test 'vec3_normalize' {
-    stack vec3_t v = vec3_t.new(0.0, 0.0, 5.0);
-    stack vec3_t n = vec3_normalize(v);
+    vec3_t v = vec3_t.new(0.0, 0.0, 5.0);
+    vec3_t n = vec3_normalize(v);
     expect.(n.z > 0.99 && n.z < 1.01);
 }
 
 test 'vec4_dot' {
-    stack vec4_t a = vec4_t.new(1.0, 2.0, 3.0, 4.0);
-    stack vec4_t b = vec4_t.new(1.0, 1.0, 1.0, 1.0);
+    vec4_t a = vec4_t.new(1.0, 2.0, 3.0, 4.0);
+    vec4_t b = vec4_t.new(1.0, 1.0, 1.0, 1.0);
     expect.(vec4_dot(a, b) == 10.0);
 }
 
 test 'vec4_length' {
-    stack vec4_t v = vec4_t.new(1.0, 0.0, 0.0, 0.0);
+    vec4_t v = vec4_t.new(1.0, 0.0, 0.0, 0.0);
     expect.(vec4_length(v) == 1.0);
 }
 
 test 'vec4_eq' {
-    stack vec4_t a = vec4_t.new(1.0, 2.0, 3.0, 4.0);
-    stack vec4_t b = vec4_t.new(1.0, 2.0, 3.0, 4.0);
+    vec4_t a = vec4_t.new(1.0, 2.0, 3.0, 4.0);
+    vec4_t b = vec4_t.new(1.0, 2.0, 3.0, 4.0);
     expect.(vec4_eq(a, b));
 }

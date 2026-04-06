@@ -11,9 +11,9 @@ lib "stdio" = io;
 //   tls     — thread-local storage (each thread gets its own independent copy)
 //   restrict — no-alias hint on pointer params, enables auto-vectorization
 //
-// Storage group blocks: apply one qualifier to many declarations at once
-//   stack ( i32 x = 1; i32 y = 2; )
-//   heap  ( i32 a = 0; i32 b = 0; )
+// Pointer declarations: pointers must specify 'stack' or 'heap'
+//   stack i32 *rw p = &x;    // pointer variable on the stack
+//   heap  u8  *rw buf;       // pointer variable on the heap
 //
 // Struct attributes (before `struct` keyword):
 //   @packed      — remove padding between fields
@@ -52,9 +52,8 @@ int fn internal_helper(void): void {
 // ── comptime_assert at module scope ─────────────────────────────────────────
 
 type WireHeader: struct {
-    stack:
-        ext i32 magic;
-        ext i32 version;
+    ext i32 magic;
+    ext i32 version;
 };
 comptime_assert.(sizeof.(WireHeader) == 8);
 
@@ -73,30 +72,25 @@ int fn const_final_demo(void): void {
     // stack i32 *rw bad = &limit;  // ERROR: writable pointer from const
 }
 
-int fn storage_groups_demo(void): void {
-    // Apply one qualifier to many variables at once
-    stack (
-        i32 x = 1;
-        i32 y = 2;
-        i32 z = 3;
-    )
-    io.printf('stack group: %d %d %d\n', x, y, z);   // 1 2 3
+int fn vars_demo(void): void {
+    // Declare multiple variables — no storage qualifier on non-pointers
+    i32 x = 1;
+    i32 y = 2;
+    i32 z = 3;
+    io.printf('x y z: %d %d %d\n', x, y, z);   // 1 2 3
 
-    heap (
-        i32 count = 0;
-        i32 total = 0;
-    )
-    for (stack i32 i = 1; i <= 5; ++i) {
+    i32 count = 0;
+    i32 total = 0;
+    for (i32 i = 1; i <= 5; ++i) {
         count = count + 1;
         total = total + i;
     }
-    io.printf('heap group: count=%d total=%d\n', count, total);  // 5  15
-    // count and total freed here
+    io.printf('count=%d total=%d\n', count, total);  // 5  15
 }
 
 int fn qualifiers_demo(void): void {
     // volatile: loads and stores are never optimized away (MMIO, spin-wait)
-    stack volatile i32 flag = 0;
+    volatile i32 flag = 0;
     flag = 1;
     io.printf('volatile flag=%d\n', flag);
 
@@ -133,15 +127,15 @@ fn main(void): i16 {
     io.printf('--- const / final ---\n');
     const_final_demo();
 
-    io.printf('\n--- storage groups ---\n');
-    storage_groups_demo();
+    io.printf('\n--- vars ---\n');
+    vars_demo();
 
     io.printf('\n--- volatile / tls ---\n');
     qualifiers_demo();
 
     io.printf('\n--- restrict ---\n');
-    stack i32 a = 10;
-    stack i32 b = 20;
+    i32 a = 10;
+    i32 b = 20;
     restrict_add(&a, &b);
     io.printf('a after restrict_add = %d\n', a);   // 30
 

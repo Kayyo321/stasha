@@ -5,16 +5,16 @@ lib "time" = ctime;
 
 ext const i32 RandMax = 2147483647;
 
-ext fn random_range(stack i32 min, max): i32 {
+ext fn random_range(i32 min, max): i32 {
     return crng.rand() % (max - min + 1) + min;
 }
 
-ext fn random_frange(stack f32 fmin, fmax): f32 {
-    stack final f32 scale = (f32)crng.rand() / (f32)RandMax;
+ext fn random_frange(f32 fmin, fmax): f32 {
+    final f32 scale = (f32)crng.rand() / (f32)RandMax;
     return fmin + scale * (fmax - fmin);
 }
 
-ext fn random_seed(stack u32 seed): void {
+ext fn random_seed(u32 seed): void {
     crng.srand(seed);
 }
 
@@ -24,28 +24,28 @@ ext fn random_set_seed_to_time(void): void {
 
 test 'random_range in bounds' {
     random_seed(42);
-    stack i32 v = random_range(1, 10);
+    i32 v = random_range(1, 10);
     expect.(v >= 1);
     expect.(v <= 10);
 }
 
 test 'random_range lower bound' {
     random_seed(99);
-    stack i32 v = random_range(5, 5);
+    i32 v = random_range(5, 5);
     expect_eq.(v, 5);
 }
 
 test 'random_frange in bounds' {
     random_seed(123);
-    stack f32 v = random_frange(0.0, 1.0);
+    f32 v = random_frange(0.0, 1.0);
     expect.(v >= 0.0);
     expect.(v <= 1.0);
 }
 
 test 'random_seed deterministic' {
     random_seed(7);
-    stack i32 a = random_range(0, 1000000);
+    i32 a = random_range(0, 1000000);
     random_seed(7);
-    stack i32 b = random_range(0, 1000000);
+    i32 b = random_range(0, 1000000);
     expect_eq.(a, b);
 }

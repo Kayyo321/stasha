@@ -3,7 +3,7 @@
 mod diag_ptr_arith;
 
 int fn main(void): i32 {
-    stack i32 x = 42;
+    i32 x = 42;
     // *r pointer: read-only, no arithmetic permitted
     stack i32 *r p = &x;
     // This should fail: p lacks '+' permission

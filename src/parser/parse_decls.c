@@ -66,23 +66,9 @@ static void parse_type_params_into(parser_t *p,
 
 static void parse_struct_body(parser_t *p, node_t *decl) {
     consume(p, TokLBrace, "'{'");
-    storage_t current_section = StorageStack;
     boolean_t in_comptime_section = False;
 
     while (!check(p, TokRBrace) && !check(p, TokEof)) {
-        /* section markers: stack: / heap: / @comptime: */
-        if (check(p, TokStack) || check(p, TokHeap)) {
-            boolean_t is_heap = check(p, TokHeap);
-            parser_state_t saved = save_state(p);
-            advance_parser(p);
-            if (match_tok(p, TokColon)) {
-                current_section = is_heap ? StorageHeap : StorageStack;
-                in_comptime_section = False;
-                continue;
-            }
-            restore_state(p, saved);
-        }
-
         /* @comptime: section marker OR @comptime if inside a @comptime: section */
         if (check(p, TokAt)) {
             parser_state_t saved = save_state(p);
@@ -118,16 +104,26 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                         if (cond_match) {
                             /* parse and keep the field */
                             linkage_t fl = LinkageNone;
+                            storage_t fstore = StorageDefault;
                             if (check(p, TokInt) || check(p, TokExt)) {
                                 fl = check(p, TokInt) ? LinkageInternal : LinkageExternal;
                                 advance_parser(p);
+                                if (check(p, TokStack))      { fstore = StorageStack; advance_parser(p); }
+                                else if (check(p, TokHeap)) { fstore = StorageHeap;  advance_parser(p); }
+                            } else if (check(p, TokStack) || check(p, TokHeap)) {
+                                if (check(p, TokStack))      { fstore = StorageStack; advance_parser(p); }
+                                else                        { fstore = StorageHeap;  advance_parser(p); }
+                                if (check(p, TokInt) || check(p, TokExt)) {
+                                    fl = check(p, TokInt) ? LinkageInternal : LinkageExternal;
+                                    advance_parser(p);
+                                }
                             }
                             type_info_t ftype = parse_type(p);
                             token_t fname = consume(p, TokIdent, "field name");
                             node_t *field = make_node(NodeVarDecl, fname.line);
                             field->as.var_decl.name = copy_token_text(fname);
                             field->as.var_decl.type = ftype;
-                            field->as.var_decl.storage = current_section;
+                            field->as.var_decl.storage = fstore;
                             field->as.var_decl.linkage = fl;
                             field->as.var_decl.flags |= VdeclComptimeField;
                             if (match_tok(p, TokEq))
@@ -149,16 +145,26 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                         while (!check(p, TokRBrace) && !check(p, TokEof)) {
                             if (!cond_match) {
                                 linkage_t fl = LinkageNone;
+                                storage_t fstore = StorageDefault;
                                 if (check(p, TokInt) || check(p, TokExt)) {
                                     fl = check(p, TokInt) ? LinkageInternal : LinkageExternal;
                                     advance_parser(p);
+                                    if (check(p, TokStack))      { fstore = StorageStack; advance_parser(p); }
+                                    else if (check(p, TokHeap)) { fstore = StorageHeap;  advance_parser(p); }
+                                } else if (check(p, TokStack) || check(p, TokHeap)) {
+                                    if (check(p, TokStack))      { fstore = StorageStack; advance_parser(p); }
+                                    else                        { fstore = StorageHeap;  advance_parser(p); }
+                                    if (check(p, TokInt) || check(p, TokExt)) {
+                                        fl = check(p, TokInt) ? LinkageInternal : LinkageExternal;
+                                        advance_parser(p);
+                                    }
                                 }
                                 type_info_t ftype = parse_type(p);
                                 token_t fname = consume(p, TokIdent, "field name");
                                 node_t *field = make_node(NodeVarDecl, fname.line);
                                 field->as.var_decl.name = copy_token_text(fname);
                                 field->as.var_decl.type = ftype;
-                                field->as.var_decl.storage = current_section;
+                                field->as.var_decl.storage = fstore;
                                 field->as.var_decl.linkage = fl;
                                 field->as.var_decl.flags |= VdeclComptimeField;
                                 if (match_tok(p, TokEq))
@@ -179,10 +185,21 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             restore_state(p, saved);
         }
 
+        /* accept either order: [int|ext] [stack|heap] T  or  [stack|heap] [int|ext] T */
         linkage_t field_link = LinkageNone;
+        storage_t field_storage = StorageDefault;
         if (check(p, TokInt) || check(p, TokExt)) {
             field_link = check(p, TokInt) ? LinkageInternal : LinkageExternal;
             advance_parser(p);
+            if (check(p, TokStack))      { field_storage = StorageStack; advance_parser(p); }
+            else if (check(p, TokHeap)) { field_storage = StorageHeap;  advance_parser(p); }
+        } else if (check(p, TokStack) || check(p, TokHeap)) {
+            if (check(p, TokStack))      { field_storage = StorageStack; advance_parser(p); }
+            else                        { field_storage = StorageHeap;  advance_parser(p); }
+            if (check(p, TokInt) || check(p, TokExt)) {
+                field_link = check(p, TokInt) ? LinkageInternal : LinkageExternal;
+                advance_parser(p);
+            }
         }
 
         /* inline method — not allowed in @comptime: section */
@@ -322,7 +339,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             node_t *field = make_node(NodeVarDecl, fname.line);
             field->as.var_decl.name = copy_token_text(fname);
             field->as.var_decl.type = ftype;
-            field->as.var_decl.storage = current_section;
+            field->as.var_decl.storage = field_storage;
             field->as.var_decl.linkage = field_link;
             field->as.var_decl.bitfield_width = 0;
             if (in_comptime_section)

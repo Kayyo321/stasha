@@ -3,15 +3,12 @@ mod dstring;
 lib "stdio" = io;
 
 type dstring_t: struct {
-heap:
-    int i8 *chars; // TODO: change parse rules so you CAN return an ext 
-                   // pointer to int data AS LONG as the ext pointer only has 
-                   // READ permissions
-
-stack:
+    int heap i8 *rw chars; // TODO: change parse rules so you CAN return an ext
+                           // pointer to int data AS LONG as the ext pointer only has
+                           // READ permissions
     int i32 len, cap;
 
-    int fn make_space_for(stack u32 add): void {
+    int fn make_space_for(u32 add): void {
         final i32 needed = dstring_t.(len) + add + 1; // +1 for null terminator
 
         if (needed <= dstring_t.(cap)) { ret; }
@@ -26,7 +23,7 @@ stack:
         dstring_t.(cap) = new_cap;
     }
 
-    ext fn append_ch(stack i8 ch): void {
+    ext fn append_ch(i8 ch): void {
         dstring_t.(make_space_for)(1);
 
         dstring_t.(chars)[dstring_t.(len)++] = ch;
@@ -63,67 +60,67 @@ stack:
         dstring_t.(chars)[dstring_t.(len)] = 0;
     }
 
-    ext fn append_i8(stack i8 v): void {
+    ext fn append_i8(i8 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%d", v);
         append_cstr(buf);
     }
 
-    ext fn append_i16(stack i16 v): void {
+    ext fn append_i16(i16 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%d", v);
         append_cstr(buf);
     }
 
-    ext fn append_i32(stack i32 v): void {
+    ext fn append_i32(i32 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%d", v);
         append_cstr(buf);
     }
 
-    ext fn append_i64(stack i64 v): void {
+    ext fn append_i64(i64 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%lld", v);
         append_cstr(buf);
     }
 
-    ext fn append_u8(stack u8 v): void {
+    ext fn append_u8(u8 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%u", v);
         append_cstr(buf);
     }
 
-    ext fn append_u16(stack u16 v): void {
+    ext fn append_u16(u16 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%u", v);
         append_cstr(buf);
     }
 
-    ext fn append_u32(stack u32 v): void {
+    ext fn append_u32(u32 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%u", v);
         append_cstr(buf);
     }
 
-    ext fn append_u64(stack u64 v): void {
+    ext fn append_u64(u64 v): void {
         final i8 buf[32];
         io.snprintf(buf, sizeof.(buf), "%llu", v);
         append_cstr(buf);
     }
 
-    ext fn append_f32(stack f32 v): void {
+    ext fn append_f32(f32 v): void {
         final i8 buf[64];
         io.snprintf(buf, sizeof.(buf), "%g", v);
         append_cstr(buf);
     }
 
-    ext fn append_f64(stack f64 v): void {
+    ext fn append_f64(f64 v): void {
         final i8 buf[64];
         io.snprintf(buf, sizeof.(buf), "%g", v);
         append_cstr(buf);
     }
 
-    ext fn insert_ch(stack i8 ch, stack u32 pos): void {
+    ext fn insert_ch(i8 ch, u32 pos): void {
         if (pos > dstring_t.(len)) { pos = dstring_t.(len); }
 
         dstring_t.(make_space_for)(1);
@@ -154,7 +151,7 @@ stack:
     // Content-based hash: FNV-1a over each byte so two dstring_t values
     // with identical text always produce the same hash.(key) result.
     ext fn hash(void): u64 {
-        stack u64 h = 0xcbf29ce484222325;  // FNV-1a offset basis
+        u64 h = 0xcbf29ce484222325;  // FNV-1a offset basis
         final u64 prime = 0x100000001b3;   // FNV prime
         for (i32 i = 0; i < dstring_t.(len); i++) {
             h = h ^ (u64)(u8)dstring_t.(chars)[i];
@@ -186,7 +183,7 @@ ext fn dstring_t.new(void): dstring_t {
 ext fn dstring_t.from_str(stack i8 *r txt): dstring_t {
     final i32 len = byte_cnt_till_term(txt);
 
-    heap i8 *buf = new.(sizeof.(i8) * (len + 1));
+    heap i8 *rw buf = new.(sizeof.(i8) * (len + 1));
 
     cpy_str_from(buf, txt, len);
     buf[len] = 0;
@@ -208,7 +205,7 @@ ext fn dstring_t.rem(void): void {
 
 // Count bytes until null terminator
 int fn byte_cnt_till_term(stack i8 *r bs): i32 {
-    stack i32 i = 0;
+    i32 i = 0;
 
     for (; bs && *bs != 0; ++bs) { ++i; }
 
@@ -216,8 +213,8 @@ int fn byte_cnt_till_term(stack i8 *r bs): i32 {
 }
 
 // Copy N bytes
-int fn cpy_str_from(stack i8 *w dest, stack i8 *r src, stack u32 n): u32 {
-    stack u32 written = 0;
+int fn cpy_str_from(stack i8 *w dest, stack i8 *r src, u32 n): u32 {
+    u32 written = 0;
 
     for (; written < n; ++written) { dest[written] = src[written]; }
 
@@ -225,50 +222,50 @@ int fn cpy_str_from(stack i8 *w dest, stack i8 *r src, stack u32 n): u32 {
 }
 
 test 'dstring new is empty' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     expect_eq.(ds.length(), 0);
 }
 
 test 'dstring append_cstr' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     ds.append_cstr("hello");
     expect_eq.(ds.length(), 5);
 }
 
 test 'dstring append_ch' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     ds.append_ch((i8)65);
     ds.append_ch((i8)66);
     expect_eq.(ds.length(), 2);
 }
 
 test 'dstring append_i32' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     ds.append_i32(42);
     expect.(ds.length() > 0);
 }
 
 test 'dstring clear resets length' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     ds.append_cstr("test");
     ds.clear();
     expect_eq.(ds.length(), 0);
 }
 
 test 'dstring from_str' {
-    heap dstring_t ds = dstring_t.from_str("world");
+    dstring_t ds = dstring_t.from_str("world");
     expect_eq.(ds.length(), 5);
 }
 
 test 'dstring append multiple' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     ds.append_cstr("foo");
     ds.append_ch((i8)33);
     expect_eq.(ds.length(), 4);
 }
 
 test 'dstring characters not nil after append' {
-    heap dstring_t ds = dstring_t.new();
+    dstring_t ds = dstring_t.new();
     ds.append_cstr("hi");
     stack i8 *r chars = ds.characters();
     expect.(chars != nil);

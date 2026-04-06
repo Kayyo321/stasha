@@ -14,7 +14,7 @@ ext const i32 FsSeekEnd = 2;
 // ── Internal helpers ───────────────────────────────────────────────────────
 
 int fn fs_strlen(stack i8 *r+ s): u32 {
-    stack u32 n = 0;
+    u32 n = 0;
     while (s[n] != 0) { n++; }
     ret n;
 }
@@ -22,9 +22,9 @@ int fn fs_strlen(stack i8 *r+ s): u32 {
 // ── Path utilities ─────────────────────────────────────────────────────────
 
 // Join base path and name with a '/'. Result written into dst (dst_len bytes).
-ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, stack u32 dst_len): void {
-    stack u32 bi = 0;
-    stack u32 di = 0;
+ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, u32 dst_len): void {
+    u32 bi = 0;
+    u32 di = 0;
 
     // Copy base into dst
     while (base[bi] != 0 && di < dst_len - 2) {
@@ -40,7 +40,7 @@ ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, stac
     }
 
     // Append name
-    stack u32 ni = 0;
+    u32 ni = 0;
     while (name[ni] != 0 && di < dst_len - 1) {
         dst[di] = name[ni];
         ni++;
@@ -51,10 +51,10 @@ ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, stac
 }
 
 // Extract directory component of path into dst.
-ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, stack u32 dst_len): void {
-    stack u32 len = fs_strlen(path);
-    stack i32 last_slash = -1;
-    stack u32 i = 0;
+ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, u32 dst_len): void {
+    u32 len = fs_strlen(path);
+    i32 last_slash = -1;
+    u32 i = 0;
 
     while (i < len) {
         if (path[i] == 47) { last_slash = (i32)i; }  // '/'
@@ -75,7 +75,7 @@ ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, stack u32 dst_len): 
         ret;
     }
 
-    stack u32 copy_len = (u32)last_slash;
+    u32 copy_len = (u32)last_slash;
     if (copy_len >= dst_len) { copy_len = dst_len - 1; }
 
     i = 0;
@@ -88,9 +88,9 @@ ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, stack u32 dst_len): 
 
 // Return pointer to the filename component (after last '/'), or path itself.
 ext fn fs_path_basename(stack i8 *r+ path): i8 *r+ {
-    stack u32 len = fs_strlen(path);
-    stack i32 last_slash = -1;
-    stack u32 i = 0;
+    u32 len = fs_strlen(path);
+    i32 last_slash = -1;
+    u32 i = 0;
 
     while (i < len) {
         if (path[i] == 47) { last_slash = (i32)i; }  // '/'
@@ -103,9 +103,9 @@ ext fn fs_path_basename(stack i8 *r+ path): i8 *r+ {
 
 // Return pointer to the extension (last '.'), or nil if none.
 ext fn fs_path_extension(stack i8 *r+ path): i8 *r+ {
-    stack u32 len = fs_strlen(path);
-    stack i32 last_dot = -1;
-    stack u32 i = 0;
+    u32 len = fs_strlen(path);
+    i32 last_dot = -1;
+    u32 i = 0;
 
     while (i < len) {
         if (path[i] == 46) { last_dot = (i32)i; }  // '.'
@@ -141,7 +141,7 @@ ext fn fs_is_writable(stack i8 *r+ path): bool {
 // ── Current working directory ──────────────────────────────────────────────
 
 // Fill buf with the CWD. Return error if getcwd returns nil.
-ext fn fs_getcwd(stack i8 *w+ buf, stack u32 buf_len): error {
+ext fn fs_getcwd(stack i8 *w+ buf, u32 buf_len): error {
     stack i8 *rw result = cunistd.getcwd(buf, buf_len);
     if (result == nil) {
         ret error.('getcwd failed');
@@ -158,7 +158,7 @@ ext fn fs_file_size(stack i8 *r+ path): [i64, error] {
         ret -1, error.('fopen failed');
     }
     cio.fseek(fp, 0, FsSeekEnd);
-    stack i64 sz = cio.ftell(fp);
+    i64 sz = cio.ftell(fp);
     cio.fclose(fp);
     if (sz < 0) {
         ret -1, error.('ftell failed');
@@ -176,26 +176,26 @@ ext fn fs_read_all(stack i8 *r+ path): [u8 *rw, u64, error] {
         ret nil, 0, error.('fs_read_all: fopen failed');
     }
     cio.fseek(fp, 0, FsSeekEnd);
-    stack i64 sz = cio.ftell(fp);
+    i64 sz = cio.ftell(fp);
     cio.rewind(fp);
     if (sz < 0) {
         cio.fclose(fp);
         ret nil, 0, error.('fs_read_all: ftell failed');
     }
     heap u8 *rw buf = new.((u64)sz + 1);
-    stack u64 nread = cio.fread(buf, 1, (u64)sz, fp);
+    u64 nread = cio.fread(buf, 1, (u64)sz, fp);
     cio.fclose(fp);
     buf[nread] = 0;
     ret buf, nread, nil;
 }
 
 // Write buffer to file (overwrite). Return nil on success, error on failure.
-ext fn fs_write_all(stack i8 *r+ path, stack u8 *r+ data, stack u64 len): error {
+ext fn fs_write_all(stack i8 *r+ path, stack u8 *r+ data, u64 len): error {
     stack i8 *rw fp = cio.fopen(path, "wb");
     if (fp == nil) {
         ret error.('fs_write_all: fopen failed');
     }
-    stack u64 nwritten = cio.fwrite(data, 1, len, fp);
+    u64 nwritten = cio.fwrite(data, 1, len, fp);
     cio.fclose(fp);
     if (nwritten != len) {
         ret error.('fs_write_all: write incomplete');
@@ -205,9 +205,9 @@ ext fn fs_write_all(stack i8 *r+ path, stack u8 *r+ data, stack u64 len): error 
 
 // Copy src file to dst. Return nil on success.
 ext fn fs_copy(stack i8 *r+ src, stack i8 *r+ dst): error {
-    stack let [buf, sz, e] = fs_read_all(src);
+    let [buf, sz, e] = fs_read_all(src);
     if (e != nil) { ret e; }
-    stack error we = fs_write_all(dst, buf, sz);
+    error we = fs_write_all(dst, buf, sz);
     rem.(buf);
     ret we;
 }
@@ -295,12 +295,12 @@ test 'fs_exists on nonexistent path' {
 test 'fs_write_all and fs_read_all roundtrip' {
     stack i8 *r test_path = "/tmp/stasha_fs_test.txt";
     stack i8 *r content   = "hello stasha filesystem";
-    stack u64 content_len = 23;
+    u64 content_len = 23;
 
-    stack error we = fs_write_all(test_path, (u8 *r+)content, content_len);
+    error we = fs_write_all(test_path, (u8 *r+)content, content_len);
     expect.(we == nil);
 
-    stack let [buf, sz, re] = fs_read_all(test_path);
+    let [buf, sz, re] = fs_read_all(test_path);
     expect.(re == nil);
     expect_eq.(sz, content_len);
     // Check first byte 'h' = 104
@@ -314,7 +314,7 @@ test 'fs_file_size' {
     stack i8 *r content = "hello stasha filesystem";
     fs_write_all(test_path, (u8 *r+)content, 23);
 
-    stack let [sz, e] = fs_file_size(test_path);
+    let [sz, e] = fs_file_size(test_path);
     expect.(e == nil);
     expect_eq.(sz, 23);
 }

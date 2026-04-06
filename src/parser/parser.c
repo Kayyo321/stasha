@@ -7,7 +7,6 @@ typedef struct {
     token_t current;
     token_t previous;
     boolean_t had_error;
-    storage_t group_storage; /* current storage-group qualifier, StorageDefault = none */
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
@@ -159,7 +158,7 @@ static type_info_t parse_type(parser_t *p) {
                     p->had_error = True;
                     break;
                 }
-                storage_t ps = StorageStack; /* default */
+                storage_t ps = StorageDefault;
                 if (match_tok(p, TokStack))      ps = StorageStack;
                 else if (match_tok(p, TokHeap)) ps = StorageHeap;
 
@@ -313,7 +312,6 @@ static node_t *parse_statement(parser_t *p);
 static node_t *parse_match_stmt(parser_t *p);
 static node_t *parse_var_decl(parser_t *p, linkage_t linkage);
 static node_t *parse_defer_stmt(parser_t *p);
-static node_t *parse_storage_group(parser_t *p, storage_t storage);
 static node_t *parse_switch_stmt(parser_t *p);
 static node_t *parse_asm_stmt(parser_t *p);
 static node_t *parse_comptime_if(parser_t *p);
@@ -350,10 +348,30 @@ static token_t consume_name(parser_t *p, const char *msg) {
 }
 
 static boolean_t can_start_var_decl(parser_t *p) {
-    return check(p, TokStack) || check(p, TokHeap) || check(p, TokAtomic)
-        || check(p, TokConst)  || check(p, TokFinal)
-        || check(p, TokVolatile) || check(p, TokTls)
-        || is_builtin_type_token(p->current.kind);
+    /* storage qualifiers prefix pointer declarations */
+    if (check(p, TokStack) || check(p, TokHeap)) return True;
+    /* 'let' alone starts an inferred-type var decl */
+    if (check(p, TokLet)) return True;
+    /* flag qualifiers: const, atomic, etc. always start a decl */
+    if (check(p, TokAtomic) || check(p, TokConst) || check(p, TokFinal)
+            || check(p, TokVolatile) || check(p, TokTls)) return True;
+    /* built-in type tokens always start a decl */
+    if (is_builtin_type_token(p->current.kind)) return True;
+    /* user-defined type: look one or two tokens ahead.
+       "Ident Ident", "Ident *", or "Ident . [" (generic) signals a var decl. */
+    if (check(p, TokIdent)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p);
+        boolean_t result = check(p, TokIdent) || check(p, TokStar);
+        /* generic instantiation: TypeName.[T1,T2,...] VarName */
+        if (!result && check(p, TokDot)) {
+            advance_parser(p);
+            result = check(p, TokLBracket);
+        }
+        restore_state(p, snap);
+        return result;
+    }
+    return False;
 }
 
 /*
@@ -404,7 +422,6 @@ node_t *parse(const char *source) {
     parser_t p;
     init_lexer(&p.lexer, source);
     p.had_error = False;
-    p.group_storage = StorageDefault;
     advance_parser(&p);
 
     consume(&p, TokMod, "'mod'");

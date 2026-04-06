@@ -3,7 +3,7 @@
 mod diag_pointer_safety;
 
 int fn main(void): i32 {
-    stack i32 x = 42;
+    i32 x = 42;
     // Taking the address of a stack variable and storing it in a heap pointer
     // is a lifetime error: the heap pointer outlives the stack frame.
     heap i32 *rw ptr = &x;

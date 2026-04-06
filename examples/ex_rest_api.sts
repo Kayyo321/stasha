@@ -12,18 +12,17 @@ lib "string" = cstring;
 // ── In-memory "database" (simple fixed array for demo) ────────────────────────
 
 ext type user_t: struct {
-stack:
     ext i32  id;
     ext i32  age;
     ext bool active;
     ext i8   name[64];
 }
 
-stack atomic i32     g_user_count = 0;
-stack user_t         g_users[64];
-stack atomic i32     g_next_id    = 1;
+atomic i32     g_user_count = 0;
+user_t         g_users[64];
+atomic i32     g_next_id    = 1;
 
-int fn find_user(stack i32 id): i32 {
+int fn find_user(i32 id): i32 {
     for (i32 i = 0; i < g_user_count; i++) {
         if (g_users[i].id == id) { ret i; }
     }
@@ -32,7 +31,7 @@ int fn find_user(stack i32 id): i32 {
 
 // ── JSON serialization helpers ────────────────────────────────────────────────
 
-int fn user_to_json(stack user_t *r u, stack i8 *w buf, stack i32 buf_len): void {
+int fn user_to_json(stack user_t *r u, stack i8 *w buf, i32 buf_len): void {
     cio.snprintf(buf, buf_len,
         "{\"id\":%d,\"name\":\"%s\",\"age\":%d,\"active\":%s}",
         u.id, u.name, u.age, u.active ? "true" : "false");
@@ -42,11 +41,11 @@ int fn user_to_json(stack user_t *r u, stack i8 *w buf, stack i32 buf_len): void
 
 // GET /users  →  list all users
 ext fn handle_list_users(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
-    stack http_res_t res = http_res_t.from(raw_res);
+    http_res_t res = http_res_t.new(raw_res);
 
-    stack json_t arr = json.array();
+    json_t arr = json.array();
     for (i32 i = 0; i < g_user_count; i++) {
-        stack json_t u = json.obj();
+        json_t u = json.obj();
         u.set_i64("id",   (i64)g_users[i].id);
         u.set_string("name", g_users[i].name);
         u.set_i64("age",  (i64)g_users[i].age);
@@ -66,8 +65,8 @@ ext fn handle_list_users(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
 
 // GET /users/:id  →  get single user
 ext fn handle_get_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
-    stack http_req_t req = http_req_t.from(raw_req);
-    stack http_res_t res = http_res_t.from(raw_res);
+    http_req_t req = http_req_t.new(raw_req);
+    http_res_t res = http_res_t.new(raw_res);
 
     stack i8 *r id_str = req.param("id");
     if (id_str == nil) {
@@ -76,8 +75,8 @@ ext fn handle_get_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
         ret;
     }
 
-    stack i32 id  = (i32)cio.atoi(id_str);
-    stack i32 idx = find_user(id);
+    i32 id  = (i32)cio.atoi(id_str);
+    i32 idx = find_user(id);
 
     if (idx < 0) {
         res.status(404);
@@ -85,7 +84,7 @@ ext fn handle_get_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
         ret;
     }
 
-    stack json_t u = json.obj();
+    json_t u = json.obj();
     u.set_i64("id",   (i64)g_users[idx].id);
     u.set_string("name", g_users[idx].name);
     u.set_i64("age",  (i64)g_users[idx].age);
@@ -104,8 +103,8 @@ ext fn handle_get_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
 // POST /users  →  create user from JSON body
 // Body: {"name":"Bob","age":25}
 ext fn handle_create_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
-    stack http_req_t req = http_req_t.from(raw_req);
-    stack http_res_t res = http_res_t.from(raw_res);
+    http_req_t req = http_req_t.new(raw_req);
+    http_res_t res = http_res_t.new(raw_res);
 
     stack i8 *r body = req.body();
     if (body == nil || body[0] == 0) {
@@ -114,7 +113,7 @@ ext fn handle_create_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
         ret;
     }
 
-    stack let [parsed, pe] = json.parse(body);
+    let [parsed, pe] = json.parse(body);
     if (pe != nil) {
         res.status(400);
         res.json("{\"error\":\"invalid json\"}");
@@ -128,7 +127,7 @@ ext fn handle_create_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
         ret;
     }
 
-    stack i32 slot = g_user_count;
+    i32 slot = g_user_count;
     g_user_count++;
     g_users[slot].id     = g_next_id;
     g_next_id++;
@@ -136,12 +135,12 @@ ext fn handle_create_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
     g_users[slot].age    = 0;
     cstring.strncpy(g_users[slot].name, "Unknown", 63);
 
-    stack let [name, ne] = parsed.get_string("name");
+    let [name, ne] = parsed.get_string("name");
     if (ne == nil && name != nil) {
         cstring.strncpy(g_users[slot].name, name, 63);
     }
 
-    stack let [age, ae] = parsed.get_number("age");
+    let [age, ae] = parsed.get_number("age");
     if (ae == nil) {
         g_users[slot].age = (i32)age;
     }
@@ -149,7 +148,7 @@ ext fn handle_create_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
     parsed.rem();
 
     // Respond with the created user.
-    stack json_t u = json.obj();
+    json_t u = json.obj();
     u.set_i64("id",   (i64)g_users[slot].id);
     u.set_string("name", g_users[slot].name);
     u.set_i64("age",  (i64)g_users[slot].age);
@@ -168,8 +167,8 @@ ext fn handle_create_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
 
 // DELETE /users/:id  →  remove user
 ext fn handle_delete_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
-    stack http_req_t req = http_req_t.from(raw_req);
-    stack http_res_t res = http_res_t.from(raw_res);
+    http_req_t req = http_req_t.new(raw_req);
+    http_res_t res = http_res_t.new(raw_res);
 
     stack i8 *r id_str = req.param("id");
     if (id_str == nil) {
@@ -178,8 +177,8 @@ ext fn handle_delete_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
         ret;
     }
 
-    stack i32 id  = (i32)cio.atoi(id_str);
-    stack i32 idx = find_user(id);
+    i32 id  = (i32)cio.atoi(id_str);
+    i32 idx = find_user(id);
     if (idx < 0) {
         res.status(404);
         res.json("{\"error\":\"user not found\"}");
@@ -197,13 +196,13 @@ ext fn handle_delete_user(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
 
 // GET /health  →  health check
 ext fn handle_health(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
-    stack http_res_t res = http_res_t.from(raw_res);
+    http_res_t res = http_res_t.new(raw_res);
     res.json("{\"status\":\"ok\"}");
 }
 
 // Catch-all 404
 ext fn handle_404(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
-    stack http_res_t res = http_res_t.from(raw_res);
+    http_res_t res = http_res_t.new(raw_res);
     res.status(404);
     res.json("{\"error\":\"not found\"}");
 }
@@ -211,14 +210,14 @@ ext fn handle_404(stack i8 *rw raw_req, stack i8 *rw raw_res): void {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main(void): i32 {
-    stack http_server_t api = http_server_t.new(8080);
+    http_server_t api = http_server_t.new(8080);
 
     api.get("/health",       handle_health);
     api.get("/users",        handle_list_users);
     api.get("/users/:id",    handle_get_user);
     api.post("/users",       handle_create_user);
     api.delete("/users/:id", handle_delete_user);
-    api.any("/*",            handle_404);
+    api.route_any("/*",            handle_404);
 
     cio.printf("REST API on http://localhost:8080\n\n");
     cio.printf("Endpoints:\n");
@@ -229,7 +228,7 @@ fn main(void): i32 {
     cio.printf("  DELETE /users/:id\n\n");
     cio.printf("Press Ctrl-C to stop.\n");
 
-    stack i32 rc = api.listen();
+    i32 rc = api.listen();
     api.rem();
     ret rc;
 }

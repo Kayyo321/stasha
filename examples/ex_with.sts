@@ -1,6 +1,6 @@
 mod ex_with;
 
-int fn divide(stack i32 a, stack i32 b): [i32, error] {
+int fn divide(i32 a, i32 b): [i32, error] {
     if (b == 0) {
         ret 0, error.('division by zero');
     }
@@ -8,7 +8,7 @@ int fn divide(stack i32 a, stack i32 b): [i32, error] {
 }
 
 ext fn main(void): i32 {
-    with stack let [result, err] = divide(10, 2); err == nil {
+    with let [result, err] = divide(10, 2); err == nil {
         print.('{}\n', result);
     }
     ret 0;

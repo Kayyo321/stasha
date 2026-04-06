@@ -38,15 +38,15 @@ fn main(void): i16 {
     io.printf('pow(2, 10)          = %d\n', pow(2, 10));         // 1024
     io.printf('clamp(150, 0, 100)  = %d\n', clamp_i32(150, 0, 100));  // 100
 
-    stack point_t origin = point_t.new(0, 0);
-    stack point_t target = point_t.new(3, 4);
+    point_t origin = point_t.new(0, 0);
+    point_t target = point_t.new(3, 4);
     io.printf('manhattan(origin, target) = %d\n', origin.manhattan(target));  // 7
 
     io.printf('\n--- veclib: vec2_t methods ---\n');
-    stack vec2_t u = vec2_t.new(3.0, 4.0);
-    stack vec2_t v = vec2_t.new(1.0, 2.0);
+    vec2_t u = vec2_t.new(3.0, 4.0);
+    vec2_t v = vec2_t.new(1.0, 2.0);
 
-    stack vec2_t s = u.add(v);
+    vec2_t s = u.add(v);
     io.printf('add   = (%.1f, %.1f)\n', s.x, s.y);   // (4.0, 6.0)
     io.printf('dot   = %.1f\n', u.dot(v));             // 11.0
     io.printf('scale = (%.1f, %.1f)\n', u.scale(2.0).x, u.scale(2.0).y);  // (6.0, 8.0)

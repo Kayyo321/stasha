@@ -12,87 +12,87 @@ ext const f64 MathLn10  = 2.30258509299404568402;
 
 // ── Basic ─────────────────────────────────────────────────────────────────
 
-ext fn math_abs_f64(stack f64 x): f64 { ret cmath.fabs(x); }
-ext fn math_abs_f32(stack f32 x): f32 { ret cmath.fabsf(x); }
+ext fn math_abs_f64(f64 x): f64 { ret cmath.fabs(x); }
+ext fn math_abs_f32(f32 x): f32 { ret cmath.fabsf(x); }
 
-ext fn math_min_f64(stack f64 a, b): f64 { ret (a < b) ? a : b; }
-ext fn math_max_f64(stack f64 a, b): f64 { ret (a > b) ? a : b; }
-ext fn math_min_f32(stack f32 a, b): f32 { ret (a < b) ? a : b; }
-ext fn math_max_f32(stack f32 a, b): f32 { ret (a > b) ? a : b; }
-ext fn math_min_i32(stack i32 a, b): i32 { ret (a < b) ? a : b; }
-ext fn math_max_i32(stack i32 a, b): i32 { ret (a > b) ? a : b; }
+ext fn math_min_f64(f64 a, b): f64 { ret (a < b) ? a : b; }
+ext fn math_max_f64(f64 a, b): f64 { ret (a > b) ? a : b; }
+ext fn math_min_f32(f32 a, b): f32 { ret (a < b) ? a : b; }
+ext fn math_max_f32(f32 a, b): f32 { ret (a > b) ? a : b; }
+ext fn math_min_i32(i32 a, b): i32 { ret (a < b) ? a : b; }
+ext fn math_max_i32(i32 a, b): i32 { ret (a > b) ? a : b; }
 
-ext fn math_clamp_f64(stack f64 x, lo, hi): f64 {
+ext fn math_clamp_f64(f64 x, lo, hi): f64 {
     ret (x < lo) ? lo : (x > hi) ? hi : x;
 }
-ext fn math_clamp_f32(stack f32 x, lo, hi): f32 {
+ext fn math_clamp_f32(f32 x, lo, hi): f32 {
     ret (x < lo) ? lo : (x > hi) ? hi : x;
 }
-ext fn math_clamp_i32(stack i32 x, lo, hi): i32 {
+ext fn math_clamp_i32(i32 x, lo, hi): i32 {
     ret (x < lo) ? lo : (x > hi) ? hi : x;
 }
 
 // ── Rounding ──────────────────────────────────────────────────────────────
 
-ext fn math_floor(stack f64 x): f64 { ret cmath.floor(x); }
-ext fn math_ceil(stack f64 x):  f64 { ret cmath.ceil(x);  }
-ext fn math_round(stack f64 x): f64 { ret cmath.round(x); }
-ext fn math_trunc(stack f64 x): f64 { ret cmath.trunc(x); }
+ext fn math_floor(f64 x): f64 { ret cmath.floor(x); }
+ext fn math_ceil(f64 x):  f64 { ret cmath.ceil(x);  }
+ext fn math_round(f64 x): f64 { ret cmath.round(x); }
+ext fn math_trunc(f64 x): f64 { ret cmath.trunc(x); }
 
-ext fn math_floor_f32(stack f32 x): f32 { ret cmath.floorf(x); }
-ext fn math_ceil_f32(stack f32 x):  f32 { ret cmath.ceilf(x);  }
-ext fn math_round_f32(stack f32 x): f32 { ret cmath.roundf(x); }
+ext fn math_floor_f32(f32 x): f32 { ret cmath.floorf(x); }
+ext fn math_ceil_f32(f32 x):  f32 { ret cmath.ceilf(x);  }
+ext fn math_round_f32(f32 x): f32 { ret cmath.roundf(x); }
 
 // ── Power / root ──────────────────────────────────────────────────────────
 
-ext fn math_sqrt(stack f64 x):             f64 { ret cmath.sqrt(x);       }
-ext fn math_cbrt(stack f64 x):             f64 { ret cmath.cbrt(x);       }
-ext fn math_pow(stack f64 base, exp):      f64 { ret cmath.pow(base, exp); }
-ext fn math_hypot(stack f64 x, y):         f64 { ret cmath.hypot(x, y);   }
-ext fn math_sqrt_f32(stack f32 x):         f32 { ret cmath.sqrtf(x);      }
-ext fn math_pow_f32(stack f32 base, exp):  f32 { ret cmath.powf(base, exp); }
+ext fn math_sqrt(f64 x):          f64 { ret cmath.sqrt(x);       }
+ext fn math_cbrt(f64 x):          f64 { ret cmath.cbrt(x);       }
+ext fn math_pow(f64 base, exp):   f64 { ret cmath.pow(base, exp); }
+ext fn math_hypot(f64 x, y):      f64 { ret cmath.hypot(x, y);   }
+ext fn math_sqrt_f32(f32 x):      f32 { ret cmath.sqrtf(x);      }
+ext fn math_pow_f32(f32 base, exp): f32 { ret cmath.powf(base, exp); }
 
 // ── Exponential / logarithm ───────────────────────────────────────────────
 
-ext fn math_exp(stack f64 x):   f64 { ret cmath.exp(x);   }
-ext fn math_exp2(stack f64 x):  f64 { ret cmath.exp2(x);  }
-ext fn math_log(stack f64 x):   f64 { ret cmath.log(x);   }
-ext fn math_log2(stack f64 x):  f64 { ret cmath.log2(x);  }
-ext fn math_log10(stack f64 x): f64 { ret cmath.log10(x); }
+ext fn math_exp(f64 x):   f64 { ret cmath.exp(x);   }
+ext fn math_exp2(f64 x):  f64 { ret cmath.exp2(x);  }
+ext fn math_log(f64 x):   f64 { ret cmath.log(x);   }
+ext fn math_log2(f64 x):  f64 { ret cmath.log2(x);  }
+ext fn math_log10(f64 x): f64 { ret cmath.log10(x); }
 
 // ── Trigonometry ──────────────────────────────────────────────────────────
 
-ext fn math_sin(stack f64 x):         f64 { ret cmath.sin(x);        }
-ext fn math_cos(stack f64 x):         f64 { ret cmath.cos(x);        }
-ext fn math_tan(stack f64 x):         f64 { ret cmath.tan(x);        }
-ext fn math_asin(stack f64 x):        f64 { ret cmath.asin(x);       }
-ext fn math_acos(stack f64 x):        f64 { ret cmath.acos(x);       }
-ext fn math_atan(stack f64 x):        f64 { ret cmath.atan(x);       }
-ext fn math_atan2(stack f64 y, x):    f64 { ret cmath.atan2(y, x);   }
-ext fn math_sinh(stack f64 x):        f64 { ret cmath.sinh(x);       }
-ext fn math_cosh(stack f64 x):        f64 { ret cmath.cosh(x);       }
-ext fn math_tanh(stack f64 x):        f64 { ret cmath.tanh(x);       }
+ext fn math_sin(f64 x):      f64 { ret cmath.sin(x);        }
+ext fn math_cos(f64 x):      f64 { ret cmath.cos(x);        }
+ext fn math_tan(f64 x):      f64 { ret cmath.tan(x);        }
+ext fn math_asin(f64 x):     f64 { ret cmath.asin(x);       }
+ext fn math_acos(f64 x):     f64 { ret cmath.acos(x);       }
+ext fn math_atan(f64 x):     f64 { ret cmath.atan(x);       }
+ext fn math_atan2(f64 y, x): f64 { ret cmath.atan2(y, x);   }
+ext fn math_sinh(f64 x):     f64 { ret cmath.sinh(x);       }
+ext fn math_cosh(f64 x):     f64 { ret cmath.cosh(x);       }
+ext fn math_tanh(f64 x):     f64 { ret cmath.tanh(x);       }
 
 // Convert degrees to radians and back.
-ext fn math_deg_to_rad(stack f64 deg): f64 { ret deg * (MathPI / 180.0); }
-ext fn math_rad_to_deg(stack f64 rad): f64 { ret rad * (180.0 / MathPI); }
+ext fn math_deg_to_rad(f64 deg): f64 { ret deg * (MathPI / 180.0); }
+ext fn math_rad_to_deg(f64 rad): f64 { ret rad * (180.0 / MathPI); }
 
 // ── Misc ──────────────────────────────────────────────────────────────────
 
 // Linear interpolation: (1-t)*a + t*b, no clamping.
-ext fn math_lerp(stack f64 a, b, t): f64 { ret a + t * (b - a); }
+ext fn math_lerp(f64 a, b, t): f64 { ret a + t * (b - a); }
 
 // True if x is approximately zero within `eps`.
-ext fn math_near_zero(stack f64 x, eps): bool {
+ext fn math_near_zero(f64 x, eps): bool {
     ret cmath.fabs(x) <= eps;
 }
 
 // True if a and b are within `eps` of each other.
-ext fn math_near_eq(stack f64 a, b, eps): bool {
+ext fn math_near_eq(f64 a, b, eps): bool {
     ret cmath.fabs(a - b) <= eps;
 }
 
-ext fn math_sign_f64(stack f64 x): f64 {
+ext fn math_sign_f64(f64 x): f64 {
     ret (x > 0.0) ? 1.0 : (x < 0.0) ? -1.0 : 0.0;
 }
 
@@ -115,14 +115,14 @@ test 'math_clamp_f64' {
 }
 
 test 'math_sqrt' {
-    stack f64 r = math_sqrt(4.0);
-    stack f64 diff = r - 2.0;
+    f64 r = math_sqrt(4.0);
+    f64 diff = r - 2.0;
     if (diff < 0.0) { diff = diff * -1.0; }
     expect.(diff < 0.001);
 }
 
 test 'math_pow' {
-    stack f64 r = math_pow(2.0, 10.0);
+    f64 r = math_pow(2.0, 10.0);
     expect.(math_near_eq(r, 1024.0, 0.001));
 }
 

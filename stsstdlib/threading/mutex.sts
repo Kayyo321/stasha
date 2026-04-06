@@ -13,10 +13,7 @@ const u32 RwlockSize = 192;
 // ── mutex_t ────────────────────────────────────────────────────────────────
 
 ext type mutex_t: struct {
-heap:
-    int u8 *rw handle;
-
-stack:
+    int heap u8 *rw handle;
     int bool initialized;
 
     // Lock the mutex.
@@ -56,10 +53,7 @@ ext fn mutex_t.rem(void): void {
 // ── rwlock_t ───────────────────────────────────────────────────────────────
 
 ext type rwlock_t: struct {
-heap:
-    int u8 *rw handle;
-
-stack:
+    int heap u8 *rw handle;
     int bool initialized;
 
     // Acquire a read (shared) lock.
@@ -114,17 +108,14 @@ ext fn rwlock_t.rem(void): void {
 // ── atomic_counter_t ───────────────────────────────────────────────────────
 
 ext type atomic_counter_t: struct {
-heap:
-    int u8 *rw mutex_handle;
-
-stack:
+    int heap u8 *rw mutex_handle;
     int i64 value;
 
     // Increment and return new value.
     ext fn increment(void): i64 {
         cpthread.pthread_mutex_lock(atomic_counter_t.(mutex_handle));
         atomic_counter_t.(value) = atomic_counter_t.(value) + 1;
-        stack i64 v = atomic_counter_t.(value);
+        i64 v = atomic_counter_t.(value);
         cpthread.pthread_mutex_unlock(atomic_counter_t.(mutex_handle));
         ret v;
     }
@@ -133,16 +124,16 @@ stack:
     ext fn decrement(void): i64 {
         cpthread.pthread_mutex_lock(atomic_counter_t.(mutex_handle));
         atomic_counter_t.(value) = atomic_counter_t.(value) - 1;
-        stack i64 v = atomic_counter_t.(value);
+        i64 v = atomic_counter_t.(value);
         cpthread.pthread_mutex_unlock(atomic_counter_t.(mutex_handle));
         ret v;
     }
 
     // Add n and return new value.
-    ext fn add(stack i64 n): i64 {
+    ext fn add(i64 n): i64 {
         cpthread.pthread_mutex_lock(atomic_counter_t.(mutex_handle));
         atomic_counter_t.(value) = atomic_counter_t.(value) + n;
-        stack i64 v = atomic_counter_t.(value);
+        i64 v = atomic_counter_t.(value);
         cpthread.pthread_mutex_unlock(atomic_counter_t.(mutex_handle));
         ret v;
     }
@@ -150,20 +141,20 @@ stack:
     // Get current value.
     ext fn get(void): i64 {
         cpthread.pthread_mutex_lock(atomic_counter_t.(mutex_handle));
-        stack i64 v = atomic_counter_t.(value);
+        i64 v = atomic_counter_t.(value);
         cpthread.pthread_mutex_unlock(atomic_counter_t.(mutex_handle));
         ret v;
     }
 
     // Set value.
-    ext fn set(stack i64 n): void {
+    ext fn set(i64 n): void {
         cpthread.pthread_mutex_lock(atomic_counter_t.(mutex_handle));
         atomic_counter_t.(value) = n;
         cpthread.pthread_mutex_unlock(atomic_counter_t.(mutex_handle));
     }
 }
 
-ext fn atomic_counter_t.new(stack i64 initial): atomic_counter_t {
+ext fn atomic_counter_t.new(i64 initial): atomic_counter_t {
     heap u8 *rw h = new.(MutexSize);
     cpthread.pthread_mutex_init(h, nil);
     ret atomic_counter_t{
@@ -182,14 +173,14 @@ ext fn atomic_counter_t.rem(void): void {
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 test 'mutex create and destroy' {
-    stack mutex_t m = mutex_t.new();
+    mutex_t m = mutex_t.new();
     expect.(m.initialized);
     mutex_t.rem();
     expect.(m.initialized == false);
 }
 
 test 'mutex lock and unlock' {
-    stack mutex_t m = mutex_t.new();
+    mutex_t m = mutex_t.new();
     m.lock();
     m.unlock();
     // No deadlock means success
@@ -198,8 +189,8 @@ test 'mutex lock and unlock' {
 }
 
 test 'mutex try_lock when unlocked returns true' {
-    stack mutex_t m = mutex_t.new();
-    stack bool got = m.try_lock();
+    mutex_t m = mutex_t.new();
+    bool got = m.try_lock();
     expect.(got);
     // Must unlock after successful try_lock
     m.unlock();
@@ -207,14 +198,14 @@ test 'mutex try_lock when unlocked returns true' {
 }
 
 test 'rwlock create and destroy' {
-    stack rwlock_t rw = rwlock_t.new();
+    rwlock_t rw = rwlock_t.new();
     expect.(rw.initialized);
     rwlock_t.rem();
     expect.(rw.initialized == false);
 }
 
 test 'rwlock read lock and unlock' {
-    stack rwlock_t rw = rwlock_t.new();
+    rwlock_t rw = rwlock_t.new();
     rw.read_lock();
     rw.read_unlock();
     expect.(true);
@@ -222,7 +213,7 @@ test 'rwlock read lock and unlock' {
 }
 
 test 'rwlock write lock and unlock' {
-    stack rwlock_t rw = rwlock_t.new();
+    rwlock_t rw = rwlock_t.new();
     rw.write_lock();
     rw.write_unlock();
     expect.(true);
@@ -230,36 +221,36 @@ test 'rwlock write lock and unlock' {
 }
 
 test 'atomic_counter increment and decrement' {
-    stack atomic_counter_t c = atomic_counter_t.new(0);
-    stack i64 v1 = c.increment();
+    atomic_counter_t c = atomic_counter_t.new(0);
+    i64 v1 = c.increment();
     expect_eq.(v1, 1);
-    stack i64 v2 = c.increment();
+    i64 v2 = c.increment();
     expect_eq.(v2, 2);
-    stack i64 v3 = c.decrement();
+    i64 v3 = c.decrement();
     expect_eq.(v3, 1);
     atomic_counter_t.rem();
 }
 
 test 'atomic_counter add and get' {
-    stack atomic_counter_t c = atomic_counter_t.new(10);
-    stack i64 v = c.add((i64)5);
+    atomic_counter_t c = atomic_counter_t.new(10);
+    i64 v = c.add((i64)5);
     expect_eq.(v, 15);
-    stack i64 g = c.get();
+    i64 g = c.get();
     expect_eq.(g, 15);
     atomic_counter_t.rem();
 }
 
 test 'atomic_counter set' {
-    stack atomic_counter_t c = atomic_counter_t.new(0);
+    atomic_counter_t c = atomic_counter_t.new(0);
     c.set((i64)42);
-    stack i64 v = c.get();
+    i64 v = c.get();
     expect_eq.(v, 42);
     atomic_counter_t.rem();
 }
 
 test 'atomic_counter initial value' {
-    stack atomic_counter_t c = atomic_counter_t.new(100);
-    stack i64 v = c.get();
+    atomic_counter_t c = atomic_counter_t.new(100);
+    i64 v = c.get();
     expect_eq.(v, 100);
     atomic_counter_t.rem();
 }

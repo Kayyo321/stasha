@@ -1,11 +1,12 @@
 mod ex_alloc;
 
+// THIS FEATURE HASN'T BEEN MADE YET!
+// THIS WILL FAIL COMPILATION
 // example of an allocator
 type my_a: allocator {
-stack:
     int i32 bytes_allocated;
 
-    .new(stack u64 no_bytes): [heap i8 *rw+, error] {
+    .new(u64 no_bytes): [heap i8 *rw+, error] {
         heap i8 *rw+ bytes = new.(no_bytes); // alloc w c-std allocator
         if !bytes {
             ret nil, error.('Error! couldn't get {} bytes!', no_bytes);
@@ -16,7 +17,7 @@ stack:
         ret bytes, nil;
     }
 
-    .mov(heap i8 *rw+ old, stack u64 old_size, stack u64 new_size): [heap i8 *rw+, error] {
+    .mov(heap i8 *rw+ old, u64 old_size, u64 new_size): [heap i8 *rw+, error] {
         if !old {
             ret nil, error.('Cannot move nil-memory!');
         }
@@ -32,7 +33,7 @@ stack:
         ret new_bytes, nil;
     }
 
-    .rem(heap i8 *rw+ old, stack u64 old_size): error {
+    .rem(heap i8 *rw+ old, u64 old_size): error {
         if !old || old_size > this.bytes_allocated {
             ewr error.('Memory exceeds amount previously allocated!');
         }
@@ -53,23 +54,20 @@ fn my_a.rem(void): void { // custom destructor
 // inject_alloc throws errors if any code within any member functions
 // of my_type uses the c-std-allocator (new, mov, rem)
 type my_type: @inject_alloc struct {
-heap:
-    int i8 *heap_data;
-
-stack:
+    int heap i8 *rw heap_data;
     int allocator alloc;
     int u32 heap_size;
 
-    ext fn add(stack i8 an_i8): error {
+    ext fn add(i8 an_i8): error {
         if this.heap_size == 0 {
-            heap let [allocated, err] = new.[this.alloc].(sizeof.(i8) * 1);
+            let [allocated, err] = new.[this.alloc].(sizeof.(i8) * 1);
             if err != nil {
                 ret err;
             }
 
             this.heap_data = allocated;
         } else {
-            heap let [allocated, err] = mov.[this.alloc].(this.heap_data, sizeof.(i8) * this.heap_size, sizeof.(i8) * (this.heap_size + 1));
+            let [allocated, err] = mov.[this.alloc].(this.heap_data, sizeof.(i8) * this.heap_size, sizeof.(i8) * (this.heap_size + 1));
             if err != nil {
                 ret err;
             }
@@ -80,22 +78,22 @@ stack:
         this.heap_data[this.heap_size++] = an_i8;
     }
 
-    ext fn at(stack u32 idx): [stack i8, error] {
+    ext fn at(u32 idx): [i8, error] {
         if (idx > this.heap_size) {
             return 0, error.('Out of bounds!');
         }
 
-        stack i8 at_idx = this.heap_data[idx];
+        i8 at_idx = this.heap_data[idx];
         ret at_idx;
     }
 }
 
-fn my_type.new(stack allocator a): my_type {
+fn my_type.new(allocator a): my_type {
     ret my_type{.alloc = a};
 }
 
 fn main(void): i32 {
-    stack m = my_type.new(my_a{});
+    let m = my_type.new(my_a{});
     m.add(10);
     m.add(20);
 

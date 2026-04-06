@@ -14,12 +14,12 @@ ext fn clock_ticks(void): i64 {
 }
 
 // Convert ticks to milliseconds.
-ext fn clock_ticks_to_ms(stack i64 ticks): f64 {
+ext fn clock_ticks_to_ms(i64 ticks): f64 {
     ret (f64)ticks * 1000.0 / (f64)StsClockPerSec;
 }
 
 // Convert ticks to microseconds.
-ext fn clock_ticks_to_us(stack i64 ticks): f64 {
+ext fn clock_ticks_to_us(i64 ticks): f64 {
     ret (f64)ticks * 1000000.0 / (f64)StsClockPerSec;
 }
 
@@ -27,7 +27,6 @@ ext fn clock_ticks_to_us(stack i64 ticks): f64 {
 // Measures CPU time between new() / reset() and elapsed_*() calls.
 
 ext type stopwatch_t: struct {
-stack:
     int i64 t0;
 
     // Elapsed CPU time in milliseconds since construction or last reset().
@@ -67,22 +66,22 @@ ext fn clock_unix_time(void): i64 {
 }
 
 test 'clock_unix_time positive' {
-    stack i64 t = clock_unix_time();
+    i64 t = clock_unix_time();
     expect.(t > 0);
 }
 
 test 'clock_ticks non-negative' {
-    stack i64 t = clock_ticks();
+    i64 t = clock_ticks();
     expect.(t >= 0);
 }
 
 test 'stopwatch elapsed non-negative' {
-    stack stopwatch_t sw = stopwatch_t.new();
-    stack f64 ms = sw.elapsed_ms();
+    stopwatch_t sw = stopwatch_t.new();
+    f64 ms = sw.elapsed_ms();
     expect.(ms >= 0.0);
 }
 
 test 'clock_ticks_to_ms conversion' {
-    stack f64 ms = clock_ticks_to_ms(1000000);
+    f64 ms = clock_ticks_to_ms(1000000);
     expect.(ms > 0.0);
 }

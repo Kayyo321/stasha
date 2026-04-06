@@ -15,10 +15,9 @@ ext const u32 CryptoSha256Len = 32;
 // CC_SHA256_CTX is 96 bytes on macOS arm64.
 
 ext type sha256_t: struct {
-heap:
-    ext u8 *rw ctx;
+    ext heap u8 *rw ctx;
 
-    ext fn update(stack u8 *r+ data, stack u64 len): void {
+    ext fn update(stack u8 *r+ data, u64 len): void {
         csha.CC_SHA256_Update(sha256_t.(ctx), data, len);
     }
 
@@ -44,12 +43,12 @@ ext fn sha256_t.rem(void): void {
 }
 
 // One-shot SHA-256: writes 32 bytes into digest
-ext fn crypto_sha256(stack u8 *r+ data, stack u64 len, stack u8 *w+ digest): void {
+ext fn crypto_sha256(stack u8 *r+ data, u64 len, stack u8 *w+ digest): void {
     csha.CC_SHA256(data, len, digest);
 }
 
 // One-shot SHA-256 as hex string: hex_out must be >= 65 bytes
-ext fn crypto_sha256_hex(stack u8 *r+ data, stack u64 len, stack i8 *w+ hex_out): void {
+ext fn crypto_sha256_hex(stack u8 *r+ data, u64 len, stack i8 *w+ hex_out): void {
     heap u8 *rw digest = new.(32);
     csha.CC_SHA256(data, len, digest);
     for (i32 i = 0; i < 32; i++) {
@@ -60,12 +59,12 @@ ext fn crypto_sha256_hex(stack u8 *r+ data, stack u64 len, stack i8 *w+ hex_out)
 }
 
 // Secure random bytes from /dev/urandom
-ext fn crypto_random_bytes(stack u8 *w+ buf, stack u32 len): error {
+ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
     stack i8 *rw fp = cio.fopen("/dev/urandom", "rb");
     if (fp == nil) {
         ret error.('failed to open /dev/urandom');
     }
-    stack u32 n = cio.fread(buf, 1, len, fp);
+    u32 n = cio.fread(buf, 1, len, fp);
     cio.fclose(fp);
     if (n != len) {
         ret error.('short read from /dev/urandom');
@@ -77,7 +76,7 @@ ext fn crypto_random_bytes(stack u8 *w+ buf, stack u32 len): error {
 
 test 'sha256_t incremental hash' {
     // hash "hello" and check the known first byte: SHA256("hello")[0] = 0x2c = 44
-    stack sha256_t h = sha256_t.new();
+    sha256_t h = sha256_t.new();
     heap u8 *rw data = new.(5);
     data[0] = 104; // h
     data[1] = 101; // e
@@ -121,10 +120,10 @@ test 'crypto_sha256_hex empty string' {
 test 'crypto_random_bytes' {
     heap u8 *rw buf = new.(16);
     for (i32 i = 0; i < 16; i++) { buf[i] = 0; }
-    stack error e = crypto_random_bytes(buf, 16);
+    error e = crypto_random_bytes(buf, 16);
     expect.(e == nil);
     // Probabilistic: at least one byte should be non-zero
-    stack bool any_nonzero = false;
+    bool any_nonzero = false;
     for (i32 i = 0; i < 16; i++) {
         if (buf[i] != 0) { any_nonzero = true; }
     }

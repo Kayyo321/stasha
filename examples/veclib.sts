@@ -5,20 +5,19 @@ lib "math";
 // ── 2-D floating-point vector ────────────────────────────────────────────
 
 ext type vec2_t: struct {
-stack:
     ext f64 x;
     ext f64 y;
 };
 
-ext fn vec2_t.new(stack f64 x, y): vec2_t {
-    stack vec2_t v;
+ext fn vec2_t.new(f64 x, y): vec2_t {
+    vec2_t v;
     v.x = x;
     v.y = y;
     ret v;
 }
 
 // Vector addition
-ext fn vec2_t.add(stack vec2_t other): vec2_t {
+ext fn vec2_t.add(vec2_t other): vec2_t {
     ret vec2_t.new(
         vec2_t.(x) + other.x,
         vec2_t.(y) + other.y
@@ -26,12 +25,12 @@ ext fn vec2_t.add(stack vec2_t other): vec2_t {
 }
 
 // Scalar multiplication
-ext fn vec2_t.scale(stack f64 s): vec2_t {
+ext fn vec2_t.scale(f64 s): vec2_t {
     ret vec2_t.new(vec2_t.(x) * s, vec2_t.(y) * s);
 }
 
 // Dot product
-ext fn vec2_t.dot(stack vec2_t other): f64 {
+ext fn vec2_t.dot(vec2_t other): f64 {
     ret vec2_t.(x) * other.x + vec2_t.(y) * other.y;
 }
 

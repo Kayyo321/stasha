@@ -3,13 +3,12 @@ mod ex_print;
 lib "stdio" = io;
 
 type simple_t: struct {
-stack:
     ext i32 x, y, z;
     int i32 priv;
 }
 
-fn simple_t.new(stack i32 x, y, z, priv): simple_t {
-    stack simple_t s;
+fn simple_t.new(i32 x, y, z, priv): simple_t {
+    simple_t s;
     s.x = x;
     s.y = y;
     s.z = z;
@@ -18,15 +17,14 @@ fn simple_t.new(stack i32 x, y, z, priv): simple_t {
 }
 
 type complex_t: struct {
-stack:
-    ext i8 *r chars;
+    ext stack i8 *r chars;
     ext i32 len;
 }
 
 // Override print for complex_t: fn Type.print(void): void
 // print.(...) calls this instead of the default field-by-field output.
 fn complex_t.print(void): void {
-    for (stack i32 i = 0; i < complex_t.(len); i++) {
+    for (i32 i = 0; i < complex_t.(len); i++) {
         print.('{}', complex_t.(chars)[i]);
     }
 }

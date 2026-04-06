@@ -1,9 +1,9 @@
 mod ex_expr_body;
 
-ext fn double(stack i32 x): i32 => x * 2;
-ext fn add(stack i32 a, stack i32 b): i32 => a + b;
+ext fn double(i32 x): i32 => x * 2;
+ext fn add(i32 a, i32 b): i32 => a + b;
 
 ext fn main(void): i32 {
-    stack i32 r = double(5);
+    i32 r = double(5);
     ret 0;
 }

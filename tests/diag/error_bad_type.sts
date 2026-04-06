@@ -3,8 +3,8 @@
 mod diag_bad_type;
 
 int fn main(void): i32 {
-    stack i32 a = 1;
+    i32 a = 1;
     // 'xyz' is not a valid type keyword
-    stack xyz b = 2;
+    xyz b = 2;
     ret a + b;
 }

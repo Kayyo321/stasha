@@ -362,8 +362,8 @@ struct node {
         /* NodeConstructorCall: type_name.(args) — sugar for type_name.new(args) */
         struct { char *type_name; node_list_t args; } ctor_call;
 
-        /* NodeWithStmt: with decl; cond { body } */
-        struct { node_t *decl; node_t *cond; node_t *body; } with_stmt;
+        /* NodeWithStmt: with decl; cond { body } [else { else_block }] */
+        struct { node_t *decl; node_t *cond; node_t *body; node_t *else_block; } with_stmt;
 
         /* NodeErrPropCall: fn.?(args) — call fn, propagate error if non-nil */
         struct { char *callee; node_list_t args; } err_prop_call;

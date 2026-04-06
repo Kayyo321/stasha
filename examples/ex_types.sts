@@ -16,7 +16,7 @@ type color_t: enum {
     Yellow,
 }
 
-int fn mix(stack color_t a, stack color_t b): color_t {
+int fn mix(color_t a, color_t b): color_t {
     if (a == color_t.Red   && b == color_t.Green) { ret color_t.Yellow; }
     if (a == color_t.Green && b == color_t.Red)   { ret color_t.Yellow; }
     ret a;
@@ -25,12 +25,12 @@ int fn mix(stack color_t a, stack color_t b): color_t {
 // ── Tagged enum (Rust-style): variants carry typed payloads ─────────────────
 
 type Shape: enum {
-    Circle(stack f64),
-    Rectangle(stack f64),
+    Circle(f64),
+    Rectangle(f64),
     Point,
 }
 
-int fn describe(stack Shape s): void {
+int fn describe(Shape s): void {
     match s {
         Shape.Circle(r)    => { io.printf('Circle r=%f\n', r); }
         Shape.Rectangle(w) => { io.printf('Rect   w=%f\n', w); }
@@ -42,53 +42,48 @@ int fn describe(stack Shape s): void {
 // ── Union ──────────────────────────────────────────────────────────────────
 
 type Value: union {
-    stack:
-        ext i32 as_int;
-        ext f32 as_float;
-        ext u8  as_byte;
+    ext i32 as_int;
+    ext f32 as_float;
+    ext u8  as_byte;
 };
 
 // ── Bitfields ──────────────────────────────────────────────────────────────
 
 type Flags: struct {
-    stack:
-        ext i32 readable:   1;
-        ext i32 writable:   1;
-        ext i32 executable: 1;
-        ext i32 priority:   4;
+    ext i32 readable:   1;
+    ext i32 writable:   1;
+    ext i32 executable: 1;
+    ext i32 priority:   4;
 };
 
 // ── @packed and @c_layout struct attributes ─────────────────────────────────
 
 type PackedHeader: @packed struct {
-    stack:
-        ext u8  version;
-        ext i32 length;
-        ext u8  flags;
+    ext u8  version;
+    ext i32 length;
+    ext u8  flags;
 };
 // sizeof(PackedHeader) == 6  (no padding; default would be 12)
 
 type CPoint: @c_layout struct {
-    stack:
-        ext f64 x;
-        ext f64 y;
+    ext f64 x;
+    ext f64 y;
 };
 comptime_assert.(sizeof.(CPoint) == 16);
 
 // ── Designated initializers ────────────────────────────────────────────────
 
 type Vec3: struct {
-    stack:
-        ext i32 x;
-        ext i32 y;
-        ext i32 z;
+    ext i32 x;
+    ext i32 y;
+    ext i32 z;
 };
 
 fn main(void): i16 {
     io.printf('--- simple enum ---\n');
-    stack color_t r = color_t.Red;
-    stack color_t g = color_t.Green;
-    stack color_t mixed = mix(r, g);
+    color_t r = color_t.Red;
+    color_t g = color_t.Green;
+    color_t mixed = mix(r, g);
     io.printf('mix(Red,Green) = %d  (Yellow=3)\n', (i32)mixed);   // 3
     io.printf('Red==%d Blue==%d\n', r == color_t.Red, r == color_t.Blue);  // 1 0
 
@@ -102,25 +97,25 @@ fn main(void): i16 {
     }
 
     io.printf('\n--- union ---\n');
-    stack Value v;
+    Value v;
     v.as_int = 42;
     io.printf('as_int=%d  sizeof(Value)=%lu\n', v.as_int, sizeof.(Value));   // 42  4
 
     io.printf('\n--- bitfields ---\n');
-    stack Flags f;
+    Flags f;
     f.readable = 1; f.writable = 0; f.executable = 1; f.priority = 7;
     io.printf('rwe=%d%d%d priority=%d\n',
               f.readable, f.writable, f.executable, f.priority);   // 101 7
 
     io.printf('\n--- @packed ---\n');
     io.printf('sizeof(PackedHeader) = %lu\n', sizeof.(PackedHeader));   // 6
-    stack PackedHeader hdr;
+    PackedHeader hdr;
     hdr.version = 1; hdr.length = 1024; hdr.flags = 7;
     io.printf('v=%d len=%d fl=%d\n', (i32)hdr.version, hdr.length, (i32)hdr.flags);
 
     io.printf('\n--- designated init ---\n');
-    stack Vec3 p = Vec3 { .x = 10, .y = 20, .z = 30 };
-    stack Vec3 q = Vec3 { .y = 99 };   // x and z default to 0
+    Vec3 p = Vec3 { .x = 10, .y = 20, .z = 30 };
+    Vec3 q = Vec3 { .y = 99 };   // x and z default to 0
     io.printf('p=(%d,%d,%d)\n', p.x, p.y, p.z);   // (10,20,30)
     io.printf('q=(%d,%d,%d)\n', q.x, q.y, q.z);   // (0,99,0)
 

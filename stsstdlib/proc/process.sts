@@ -25,7 +25,7 @@ ext fn proc_getenv_or(stack i8 *r name, stack i8 *r fallback): i8 *r {
 
 // Set environment variable name=val (overwrite=1). Returns error on failure.
 ext fn proc_setenv(stack i8 *r name, stack i8 *r val): error {
-    stack i32 rc = cstdlib.setenv(name, val, 1);
+    i32 rc = cstdlib.setenv(name, val, 1);
     if (rc != 0) {
         ret error.('setenv failed');
     }
@@ -52,7 +52,7 @@ ext fn proc_getuid(void): u32 {
 // ── Process control ────────────────────────────────────────────────────────
 
 // Exit the process with the given code.
-ext fn proc_exit(stack i32 code): void {
+ext fn proc_exit(i32 code): void {
     cstdlib.exit(code);
 }
 
@@ -64,7 +64,7 @@ ext fn proc_system(stack i8 *r cmd): i32 {
 // ── Working directory ──────────────────────────────────────────────────────
 
 // Get current working directory into buf. Returns error if getcwd fails.
-ext fn proc_getcwd(stack i8 *w buf, stack u32 len): error {
+ext fn proc_getcwd(stack i8 *w buf, u32 len): error {
     stack i8 *rw result = cunistd.getcwd(buf, len);
     if (result == nil) {
         ret error.('getcwd failed');
@@ -76,14 +76,14 @@ ext fn proc_getcwd(stack i8 *w buf, stack u32 len): error {
 
 // Run cmd, capture stdout into buf (up to buf_len-1 bytes).
 // Returns [exit_code, nil] on success, [exit_code, error] on failure.
-ext fn proc_run(stack i8 *r cmd, stack i8 *w buf, stack u32 buf_len): [i32, error] {
+ext fn proc_run(stack i8 *r cmd, stack i8 *w buf, u32 buf_len): [i32, error] {
     stack i8 *rw fp = cio.popen(cmd, "r");
     if (fp == nil) {
         ret -1, error.('popen failed');
     }
 
-    stack u32 total = 0;
-    stack i32 ch = cio.fgetc(fp);
+    u32 total = 0;
+    i32 ch = cio.fgetc(fp);
     while (ch != -1 && total < buf_len - 1) {
         buf[total] = (i8)ch;
         total++;
@@ -91,7 +91,7 @@ ext fn proc_run(stack i8 *r cmd, stack i8 *w buf, stack u32 buf_len): [i32, erro
     }
     buf[total] = 0;
 
-    stack i32 rc = cio.pclose(fp);
+    i32 rc = cio.pclose(fp);
     ret rc, nil;
 }
 
@@ -116,29 +116,29 @@ test 'proc_getenv_or returns actual value when set' {
 }
 
 test 'proc_getpid returns positive integer' {
-    stack i32 pid = proc_getpid();
+    i32 pid = proc_getpid();
     expect.(pid > 0);
 }
 
 test 'proc_getppid returns positive integer' {
-    stack i32 ppid = proc_getppid();
+    i32 ppid = proc_getppid();
     expect.(ppid > 0);
 }
 
 test 'proc_getuid returns valid uid' {
-    stack u32 _uid = proc_getuid();
+    u32 _uid = proc_getuid();
     // uid is always >= 0 since it's unsigned; just verify it doesn't crash
     expect.(true);
 }
 
 test 'proc_system echo returns 0' {
-    stack i32 rc = proc_system("echo hello > /tmp/proc_test.txt");
+    i32 rc = proc_system("echo hello > /tmp/proc_test.txt");
     expect_eq.(rc, 0);
 }
 
 test 'proc_run captures output' {
     heap u8 *rw buf = new.(256);
-    stack let [rc, e] = proc_run("echo hello", (i8 *w)buf, 256);
+    let [rc, e] = proc_run("echo hello", (i8 *w)buf, 256);
     expect.(e == nil);
     // 'h' = 104
     expect_eq.(buf[0], 104);
@@ -146,7 +146,7 @@ test 'proc_run captures output' {
 }
 
 test 'proc_setenv and proc_getenv roundtrip' {
-    stack error e = proc_setenv("STASHA_TEST_KEY", "testvalue");
+    error e = proc_setenv("STASHA_TEST_KEY", "testvalue");
     expect.(e == nil);
     stack i8 *r val = proc_getenv("STASHA_TEST_KEY");
     expect.(val != nil);

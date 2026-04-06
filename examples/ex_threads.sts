@@ -10,54 +10,54 @@ lib "stdio" = io;
 // future.get.(T)(f)    — block and return typed result
 // future.drop(f)       — wait (if needed) + free the handle
 
-int stack atomic i32 work_done = 0;
+int atomic i32 work_done = 0;
 
 int fn worker(void): void {
     work_done = work_done + 1;
 }
 
-int fn square(stack i32 x): i32 {
+int fn square(i32 x): i32 {
     ret x * x;
 }
 
-int fn add(stack i32 a, stack i32 b): i32 {
+int fn add(i32 a, i32 b): i32 {
     ret a + b;
 }
 
-int fn double_it(stack i32 x): i32 {
+int fn double_it(i32 x): i32 {
     ret x * 2;
 }
 
 fn main(void): i16 {
     // ── Void dispatch: wait + drop ─────────────────────────────────────────
-    stack future f1 = thread.(worker)();
-    stack future f2 = thread.(worker)();
+    future f1 = thread.(worker)();
+    future f2 = thread.(worker)();
     future.wait(f1); future.drop(f1);
     future.wait(f2); future.drop(f2);
     io.printf('work_done = %d\n', work_done);   // 2 (atomic global, both increments visible)
 
     // ── Return values: future.get.(T) ──────────────────────────────────────
-    stack future fs = thread.(square)(7);
-    stack i32 sq = future.get.(i32)(fs);        // blocks until done
+    future fs = thread.(square)(7);
+    i32 sq = future.get.(i32)(fs);        // blocks until done
     io.printf('7^2 = %d\n', sq);               // 49
     future.drop(fs);
 
     // ── Concurrent dispatch: fire all, then collect ─────────────────────────
-    stack future fa = thread.(square)(3);
-    stack future fb = thread.(add)(10, 32);
-    stack future fc = thread.(double_it)(21);
-    stack future fd = thread.(square)(9);
-    stack i32 ra = future.get.(i32)(fa);   //  9
-    stack i32 rb = future.get.(i32)(fb);   // 42
-    stack i32 rc = future.get.(i32)(fc);   // 42
-    stack i32 rd = future.get.(i32)(fd);   // 81
+    future fa = thread.(square)(3);
+    future fb = thread.(add)(10, 32);
+    future fc = thread.(double_it)(21);
+    future fd = thread.(square)(9);
+    i32 ra = future.get.(i32)(fa);   //  9
+    i32 rb = future.get.(i32)(fb);   // 42
+    i32 rc = future.get.(i32)(fc);   // 42
+    i32 rd = future.get.(i32)(fd);   // 81
     io.printf('%d %d %d %d\n', ra, rb, rc, rd);
     future.drop(fa); future.drop(fb); future.drop(fc); future.drop(fd);
 
     // ── future.ready: non-blocking completion check ─────────────────────────
-    stack future fw = thread.(square)(5);
+    future fw = thread.(square)(5);
     future.wait(fw);
-    stack bool r = future.ready(fw);      // true after wait
+    bool r = future.ready(fw);      // true after wait
     io.printf('ready after wait = %d\n', (i32)r);
     future.drop(fw);
 
@@ -65,14 +65,14 @@ fn main(void): i16 {
 }
 
 test 'return value via future.get' {
-    stack future f = thread.(square)(5);
+    future f = thread.(square)(5);
     expect_eq.(future.get.(i32)(f), 25);
     future.drop(f);
 }
 
 test 'concurrent futures are independent' {
-    stack future fa = thread.(square)(4);
-    stack future fb = thread.(add)(6, 7);
+    future fa = thread.(square)(4);
+    future fb = thread.(add)(6, 7);
     expect_eq.(future.get.(i32)(fa), 16);
     expect_eq.(future.get.(i32)(fb), 13);
     future.drop(fa);
@@ -80,16 +80,16 @@ test 'concurrent futures are independent' {
 }
 
 test 'wait then ready is true' {
-    stack future f = thread.(worker)();
+    future f = thread.(worker)();
     future.wait(f);
     expect.(future.ready(f));
     future.drop(f);
 }
 
 test 'double_it: 8 parallel jobs' {
-    stack future f0 = thread.(double_it)(0);
-    stack future f1 = thread.(double_it)(1);
-    stack future f7 = thread.(double_it)(7);
+    future f0 = thread.(double_it)(0);
+    future f1 = thread.(double_it)(1);
+    future f7 = thread.(double_it)(7);
     expect_eq.(future.get.(i32)(f0),  0);
     expect_eq.(future.get.(i32)(f1),  2);
     expect_eq.(future.get.(i32)(f7), 14);

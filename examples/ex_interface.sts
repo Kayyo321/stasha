@@ -5,42 +5,41 @@ type entity_i: interface {
 }
 
 type movable_i: interface.[entity_i] {
-    move(stack i32 x, y); // returns void
+    move(i32 x, y); // returns void
 }
 
 type attackable_i: interface.[entity_i] {
-    attack(stack entity_i target); 
+    attack(entity_i target);
 }
 
 type character_i: interface.[movable_t, attackable_i] {
     get_health(void): i32;
-    set_health(stack i32);
+    set_health(i32);
 }
 
 type renderable_i: interface {
     render(); // (void): void
 }
 
-//                                               Would throw err if didn't impl properly 
+//                                               Would throw err if didn't impl properly
 //                   <~~~~~~~~~~~~~~~~~~~~~~~~~~ (i.e. all functions correctly named && implemented)
 type player_t: struct.[character_i, renderable_i] {
-stack:
     int i32 player_id, player_health, player_x, player_y;
 
     ext fn id(void): i32 => this.player_id;
     ext fn get_health(void): i32 => this.player_health;
-    ext fn set_health(stack i32 new_health): void {
+    ext fn set_health(i32 new_health): void {
         this.player_health = new_health;
     }
 
-    ext fn move(stack i32 x, y) {
+    ext fn move(i32 x, y) {
         this.player_x += x;
         this.player_y += y;
 
         print.('Player {} moved to ({},{})\n', this.id(), this.player_x, this.player_y);
     }
 
-    ext fn attack(stack entity_i target) {
+    ext fn attack(entity_i target) {
         print.('Player {} attacks entity {}\n', this.id(), target.id());
     }
 
@@ -49,7 +48,7 @@ stack:
     }
 }
 
-fn player_t.new(stack i32 id, health, x, y): player_t {
+fn player_t.new(i32 id, health, x, y): player_t {
     ret player_t{.player_id = id, .player_health = health, .player_x = x, .player_y = y};
 }
 
@@ -74,8 +73,7 @@ type duck_t: struct.[flyable_i, swimmable_i] {
 
 // expected generics         <~~~~~~~~~~~~ if T doesn't implement N expected... error!
 type entity_holder: @comptime[T.[entity_i]] struct {
-stack:
-    int T *r entity;
+    int stack T *r entity;
 
     ext fn print_id(void) {
         print.('Entity id: {}\n', this.entity.id());
@@ -88,7 +86,7 @@ fn @comptime[T.[entity_i]] entity_holder.new(stack T *r ent): entity_holder.[T] 
 
 fn main(void): i32 {
     // Create a player
-    stack player_t p = player_t.(1, 100, 0, 0);
+    player_t p = player_t.(1, 100, 0, 0);
     print.("Player id: {}\n", p.id());
     print.("Player health: {}\n", p.get_health());
     p.set_health(80);
@@ -99,14 +97,13 @@ fn main(void): i32 {
     p.render();
 
     // Duck example
-    stack duck_t d = duck_t.();
+    duck_t d = duck_t.();
     d.flyable_i.move();
     d.swimmable_i.move();
 
     // Entity holder example
-    heap entity_holder.[player_t] holder = entity_holder.[player_t].(&p);
+    entity_holder.[player_t] holder = entity_holder.[player_t].(&p);
     holder.print_id();
-    rem.(holder);
 
     ret 0;
 }

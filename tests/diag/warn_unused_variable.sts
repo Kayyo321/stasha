@@ -3,9 +3,9 @@
 mod diag_warn_unused;
 
 ext fn main(void): i32 {
-    stack i32 used = 5;
-    stack i32 unused = 10;      // never read — should warn
-    stack i32 _ignored = 99;    // _ prefix suppresses warning
-    stack i32 tmp = used + 1;   // tmp itself never read — should warn
+    i32 used = 5;
+    i32 unused = 10;      // never read — should warn
+    i32 _ignored = 99;    // _ prefix suppresses warning
+    i32 tmp = used + 1;   // tmp itself never read — should warn
     ret used;
 }

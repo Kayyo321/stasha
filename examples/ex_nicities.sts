@@ -1,6 +1,6 @@
 mod ex_nicities;
 
-fn foo(stack i32 x): [i32, error] {
+fn foo(i32 x): [i32, error] {
     if x < 0 {
         return 0, error.('Error!, x is lower than zero!');
     }
@@ -9,7 +9,7 @@ fn foo(stack i32 x): [i32, error] {
 }
 
 // same proc, but doesn't return an i32
-fn bar(stack i32 x): error {
+fn bar(i32 x): error {
     if x < 0 {
         return error.('Error!, x is lower than zero!');
     }
@@ -26,20 +26,20 @@ fn use_bar(void): error {
 }
 
 fn main(void): i32 {
-    with stack [xs, e] = foo(100); e != nil {
-        with stack x = xs; true {                   // pretty useless, but shows how you can just
+    with [xs, e] = foo(100); e == nil {
+        with x = xs; true {                   // pretty useless, but shows how you can just
             print.('x = {}, e = {}\n', x, e); // | set one var using `with`
         }
     }
 
     // now to goof things up
-    with stack [_, e] = foo(-1); e != nil { // this shows with creates it's own scope
-        // never here                        | so you can redef e without issue
+    with [_, e] = foo(-1); e == nil { // this shows with creates it's own scope
+        // never here                  | so you can redef e without issue
     } else {
         print.('{}\n', e); // should print out the error from ln 5
     }
 
-    stack let e = use_bar();
+    let e = use_bar();
     print.('e = {}\n', e);
 
     ret 0;

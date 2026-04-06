@@ -43,6 +43,10 @@ MONGOOSE_OBJ = build/obj/extlib/mongoose.o
 HTTP_WRAP_SRC = std/http/http_wrapper.c
 HTTP_WRAP_OBJ = build/obj/std/http/http_wrapper.o
 
+# ── cl_args runtime ─────────────────────────────────────────────────────────
+CLARGS_RT_SRC = std/cl_args/cl_args_rt.c
+CLARGS_RT_OBJ = build/obj/std/cl_args/cl_args_rt.o
+
 SRCS = src/main.c         \
        src/common/common.c \
        src/lexer/lexer.c   \
@@ -71,7 +75,7 @@ THREAD_TEST_SRCS = examples/thread_basic.sts    \
 STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 
 # Modules that have custom bundled-archive rules (exclude from default foreach).
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts
 
 # Files for the default compile-only rule.
 STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
@@ -107,7 +111,7 @@ all: $(TARGET) thread-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
-stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stdlib-test
+stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stdlib-test
 	@mkdir -p bin/stdlib
 	@for s in $(STDLIB_SRCS); do \
 	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
@@ -118,6 +122,8 @@ stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhtt
 	@cp stsstdlib/serial/json.sts  bin/stdlib/
 	@cp stsstdlib/net/libhttp.a    bin/stdlib/
 	@cp stsstdlib/net/http.sts     bin/stdlib/
+	@cp stsstdlib/sys/libcl_args.a bin/stdlib/
+	@cp stsstdlib/sys/cl_args.sts  bin/stdlib/
 	@echo "stdlib installed -> bin/stdlib/"
 
 # Modules that require platform-specific external libs not available everywhere.
@@ -129,11 +135,12 @@ STDLIB_TEST_SKIP =
 STDLIB_TEST_BUNDLED_JSON      = stsstdlib/serial/json.sts
 STDLIB_TEST_BUNDLED_HTTP      = stsstdlib/net/http.sts
 STDLIB_TEST_BUNDLED_CRNG      = stsstdlib/random/complex_rng.sts
+STDLIB_TEST_BUNDLED_CLARGS    = stsstdlib/sys/cl_args.sts
 STDLIB_BUNDLED_CRNG_LIB       = stsstdlib/random/libcomplex_rng.a
 
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a $(STDLIB_BUNDLED_CRNG_LIB)
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a $(STDLIB_BUNDLED_CRNG_LIB)
 	@echo ""
 	@echo "=== stdlib tests ==="
 	@pass=0; fail=0; skip=0; \
@@ -182,6 +189,15 @@ stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a $(STDL
 	    echo "FAIL"; fail=$$((fail+1)); \
 	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
 	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLARGS) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CLARGS)" -l stsstdlib/sys/libcl_args.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	fi; \
 	echo ""; \
 	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
 	echo ""; \
@@ -208,6 +224,10 @@ $(MONGOOSE_OBJ): $(MONGOOSE_SRC)
 $(HTTP_WRAP_OBJ): $(HTTP_WRAP_SRC) std/http/http_wrapper.h extlib/mongoose/mongoose.h
 	@mkdir -p $(dir $@)
 	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
+
+$(CLARGS_RT_OBJ): $(CLARGS_RT_SRC) std/cl_args/cl_args_rt.h
+	@mkdir -p $(dir $@)
+	$(CC) $(EXTLIB_CFLAGS) -c -o $@ $<
 
 # ── Generated rule: stsstdlib/<cat>/lib<name>.a ← stsstdlib/<cat>/<name>.sts ─
 #
@@ -238,6 +258,14 @@ stsstdlib/net/libhttp.a: stsstdlib/net/http.sts $(TARGET) \
 	@mkdir -p stsstdlib/net
 	$(TARGET) lib stsstdlib/net/http.sts -o $@
 	ar q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
+	ranlib $@
+
+# ── cl_args: bundle C runtime into the archive ───────────────────────────────
+
+stsstdlib/sys/libcl_args.a: stsstdlib/sys/cl_args.sts $(TARGET) $(CLARGS_RT_OBJ)
+	@mkdir -p stsstdlib/sys
+	$(TARGET) lib stsstdlib/sys/cl_args.sts -o $@
+	ar q $@ $(CLARGS_RT_OBJ)
 	ranlib $@
 
 # ── complex_rng: bundle OpenSSL libcrypto into the archive ────────────────────
