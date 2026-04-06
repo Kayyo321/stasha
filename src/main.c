@@ -128,6 +128,133 @@ static void free_imp_sources(void) {
     imp_list_heap.priv    = NULL;
 }
 
+/* ── pre-scan: collect exported macro sets from imported modules ── */
+/*
+ * Before preprocessing the main file we quick-scan it for `imp` declarations,
+ * preprocess each referenced module, and collect their exported macro sets.
+ * Those sets are then passed to pp_process() for the main file so that
+ * external macros (ext macro fn/let) become available for expansion.
+ *
+ * We keep the intermediate pp_stream_t objects alive in a static array
+ * (they own the export sets) and free them after the main pp_process finishes.
+ */
+
+#define MAX_PP_IMP_STREAMS 64
+
+static pp_stream_t *s_pp_imp_streams[MAX_PP_IMP_STREAMS];
+static int          s_pp_imp_cnt = 0;
+
+static void free_pp_imp_streams(void) {
+    for (int i = 0; i < s_pp_imp_cnt; i++)
+        pp_stream_free(s_pp_imp_streams[i]);
+    s_pp_imp_cnt = 0;
+}
+
+#define MAX_PP_IMPORT_SETS 64
+static pp_macro_set_t *s_import_sets[MAX_PP_IMPORT_SETS];
+static int             s_import_set_cnt = 0;
+
+/*
+ * gather_import_macro_sets — lex `source` to find `imp` declarations, then
+ * preprocess each imported .sts file to extract its ext-macro exports.
+ *
+ * Returns a pointer to the static s_import_sets array; writes count to *out_count.
+ * After use, call free_pp_imp_streams() to release the intermediate streams.
+ */
+static pp_macro_set_t **gather_import_macro_sets(const char *source,
+                                                   const char *source_path,
+                                                   int *out_count) {
+    s_import_set_cnt = 0;
+    s_pp_imp_cnt     = 0;
+    *out_count       = 0;
+
+    /* Derive source directory for resolving relative imports. */
+    char dir[512];
+    strncpy(dir, source_path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    {
+        char *sep = strrchr(dir, '/');
+        if (!sep) sep = strrchr(dir, '\\');
+        if (sep)  *sep = '\0';
+        else { dir[0] = '.'; dir[1] = '\0'; }
+    }
+
+    /* Quick-lex the source to collect imported module names. */
+    char mod_names[MAX_PP_IMPORT_SETS][256];
+    int  mod_count = 0;
+
+    lexer_t lex;
+    init_lexer(&lex, source);
+    for (;;) {
+        token_t tok = next_token(&lex);
+        if (tok.kind == TokEof) break;
+
+        if (tok.kind != TokImp) continue;
+        if (mod_count >= MAX_PP_IMPORT_SETS) break;
+
+        /* imp  dotted.name  ( = alias )?  ; */
+        char mod[256];
+        int  mlen = 0;
+        tok = next_token(&lex);
+        while (tok.kind == TokIdent && mlen < 254) {
+            int tlen = (int)tok.length;
+            if (mlen + tlen >= 254) break;
+            memcpy(mod + mlen, tok.start, (size_t)tlen);
+            mlen += tlen;
+            tok = next_token(&lex);
+            if (tok.kind == TokDot) {
+                tok = next_token(&lex);
+                if (tok.kind == TokIdent && mlen < 253) {
+                    mod[mlen++] = '.';
+                    continue;
+                }
+                break;
+            }
+            break;
+        }
+        mod[mlen] = '\0';
+
+        /* Skip remainder (optional alias, etc.) up to ';'. */
+        while (tok.kind != TokSemicolon && tok.kind != TokEof)
+            tok = next_token(&lex);
+
+        if (mlen > 0) {
+            strncpy(mod_names[mod_count++], mod, 255);
+            mod_names[mod_count - 1][255] = '\0';
+        }
+    }
+
+    /* Preprocess each imported module and collect ext-macro exports. */
+    for (int i = 0; i < mod_count; i++) {
+        /* Convert dotted name → relative filesystem path. */
+        char rel[512];
+        strncpy(rel, mod_names[i], sizeof(rel) - 1);
+        for (char *c = rel; *c; c++) if (*c == '.') *c = '/';
+
+        char mod_path[1024];
+        snprintf(mod_path, sizeof(mod_path), "%s/%s.sts", dir, rel);
+
+        char *src = read_imp_source(mod_path);
+        if (!src) continue;
+
+        pp_stream_t *mod_pp = pp_process(src, mod_path, NULL, 0);
+        if (!mod_pp) continue;
+
+        pp_macro_set_t *exp = pp_get_exports(mod_pp);
+        if (exp && (exp->fn_count > 0 || exp->let_count > 0)
+                && s_import_set_cnt < MAX_PP_IMPORT_SETS
+                && s_pp_imp_cnt < MAX_PP_IMP_STREAMS) {
+            s_import_sets[s_import_set_cnt++] = exp;
+            s_pp_imp_streams[s_pp_imp_cnt++]  = mod_pp;
+        } else {
+            pp_stream_free(mod_pp);
+        }
+    }
+
+    *out_count = s_import_set_cnt;
+    return s_import_set_cnt > 0 ? s_import_sets : NULL;
+}
+
 /*
  * is_lib_backed — check whether `mod_name` matches any `lib "name" from "path"`
  * declaration in the primary AST.  If so, the module's compiled code already
@@ -281,12 +408,13 @@ static void resolve_imports(node_t *ast, const char *input_path) {
             continue;
         }
 
-        /* Point diagnostics at the imported file while parsing it. */
-        diag_set_file(mod_path);
-        char *pp_src = preprocess(src);
-        node_t *mod_ast = parse(pp_src ? pp_src : src);
-        /* pp_src is a plain malloc allocation; freed on process exit */
-        /* Restore primary file context. */
+        /* Preprocess and parse the imported file.
+           pp_process registers the source with the diagnostic system,
+           and parse_from_stream restores the diagnostic file as it reads. */
+        pp_stream_t *mod_pp = pp_process(src, mod_path, Null, 0);
+        node_t *mod_ast = mod_pp ? parse_from_stream(mod_pp) : Null;
+        pp_stream_free(mod_pp);
+        /* Restore primary file context after parsing the import. */
         diag_set_file(input_path);
         if (!mod_ast) {
             log_err("line %lu: failed to parse module '%s'", decl->line, mod_name);
@@ -667,9 +795,13 @@ int main(int argc, char **argv) {
     diag_set_file(input_path);
 
     log_msg("parsing '%s'", input_path);
-    char *pp_source = preprocess(source);
-    node_t *ast = parse(pp_source ? pp_source : source);
-    /* pp_source is a plain malloc allocation; freed on process exit */
+    int imp_macro_count = 0;
+    pp_macro_set_t **imp_macros = gather_import_macro_sets(source, input_path,
+                                                            &imp_macro_count);
+    pp_stream_t *pp = pp_process(source, input_path, imp_macros, imp_macro_count);
+    node_t *ast = pp ? parse_from_stream(pp) : Null;
+    pp_stream_free(pp);
+    free_pp_imp_streams(); /* release intermediate import pp_streams */
     if (!ast) {
         log_err("parsing failed");
         compile_cleanup();

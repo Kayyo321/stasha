@@ -169,14 +169,16 @@ typedef enum {
     TokWith,        /* with — scoped binding statement */
     TokAny,         /* any — inline tagged-union type */
     TokInterface,   /* interface — interface declaration */
+    TokMacro,       /* macro — preprocessor macro keyword */
 } token_kind_t;
 
 typedef struct {
     token_kind_t kind;
-    const char *start;
-    usize_t length;
-    usize_t line;
-    usize_t col;    /* 1-based column of the first character of this token */
+    const char  *start;
+    usize_t      length;
+    usize_t      line;
+    usize_t      col;   /* 1-based column of the first character of this token */
+    const char  *file;  /* source file path; NULL = set by caller after lexing */
 } token_t;
 
 typedef struct {

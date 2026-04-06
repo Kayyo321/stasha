@@ -47,6 +47,7 @@ static token_t make_token(lexer_t *lex, token_kind_t kind) {
     tok.length = (usize_t)(lex->current - lex->start);
     tok.line   = lex->line;
     tok.col    = (usize_t)(lex->start - lex->line_start) + 1;
+    tok.file   = Null;  /* caller fills this in after lexing */
     return tok;
 }
 
@@ -57,6 +58,7 @@ static token_t error_token(lexer_t *lex, const char *msg) {
     tok.length = (usize_t)strlen(msg);
     tok.line   = lex->line;
     tok.col    = (usize_t)(lex->current - lex->line_start) + 1;
+    tok.file   = Null;
     return tok;
 }
 
@@ -177,6 +179,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("with", TokWith);
     KW("any", TokAny);
     KW("interface", TokInterface);
+    KW("macro", TokMacro);
 
     KW("i8", TokI8);
     KW("i16", TokI16);

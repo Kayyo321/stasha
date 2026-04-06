@@ -31,8 +31,48 @@ static const char *g_source   = Null;
 static diagnostic_t g_pending;
 static boolean_t    g_has_pending = False;
 
+/* ── Multi-file source registry ── */
+
+#define DIAG_MAX_REGISTERED_SOURCES 64
+
+typedef struct {
+    const char *filename;
+    const char *source;
+} diag_source_entry_t;
+
+static diag_source_entry_t g_source_registry[DIAG_MAX_REGISTERED_SOURCES];
+static int                 g_source_registry_count = 0;
+
+void diag_register_source(const char *filename, const char *source) {
+    if (!filename || !source) return;
+    /* Update existing entry if already registered. */
+    for (int i = 0; i < g_source_registry_count; i++) {
+        if (strcmp(g_source_registry[i].filename, filename) == 0) {
+            g_source_registry[i].source = source;
+            return;
+        }
+    }
+    if (g_source_registry_count < DIAG_MAX_REGISTERED_SOURCES) {
+        g_source_registry[g_source_registry_count].filename = filename;
+        g_source_registry[g_source_registry_count].source   = source;
+        g_source_registry_count++;
+    }
+}
+
+static const char *lookup_registered_source(const char *filename) {
+    if (!filename) return Null;
+    for (int i = 0; i < g_source_registry_count; i++) {
+        if (strcmp(g_source_registry[i].filename, filename) == 0)
+            return g_source_registry[i].source;
+    }
+    return Null;
+}
+
 void diag_set_file(const char *filename) {
     g_filename = filename ? filename : "<unknown>";
+    /* Auto-switch the active source text for snippet rendering. */
+    const char *registered = lookup_registered_source(g_filename);
+    if (registered) g_source = registered;
 }
 
 void diag_set_source(const char *source) {

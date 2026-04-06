@@ -73,6 +73,14 @@ void diag_set_file(const char *filename);
 void diag_set_source(const char *source);
 const char *diag_get_file(void);
 
+/*
+ * Register a (file → source text) mapping so that the diagnostic renderer
+ * can show code snippets for any file, not just the main translation unit.
+ * Called by the preprocessor for every file it processes.
+ * The `source` pointer must outlive all diagnostics for that file.
+ */
+void diag_register_source(const char *filename, const char *source);
+
 /* ── Builder API ── */
 
 /* Start accumulating a new diagnostic.  Calling diag_begin_* discards any

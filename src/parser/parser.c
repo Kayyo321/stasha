@@ -3,42 +3,106 @@
 #include "parser.h"
 
 typedef struct {
+    /* ── Stream mode (preferred) ── */
+    const pp_token_t *stream;       /* NULL → use legacy lexer mode       */
+    int               stream_idx;
+    int               stream_count;
+    pp_expansion_t   *current_expansion; /* expansion chain of current token */
+
+    /* ── Legacy lexer mode ── */
     lexer_t lexer;
-    token_t current;
-    token_t previous;
+
+    /* ── Shared ── */
+    token_t   current;
+    token_t   previous;
     boolean_t had_error;
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
 
 typedef struct {
-    lexer_t lexer;
-    token_t current;
-    token_t previous;
+    /* stream fields */
+    int              stream_idx;
+    pp_expansion_t  *current_expansion;
+    /* lexer field */
+    lexer_t          lexer;
+    /* tokens */
+    token_t          current;
+    token_t          previous;
 } parser_state_t;
 
 static parser_state_t save_state(parser_t *p) {
-    return (parser_state_t){p->lexer, p->current, p->previous};
+    parser_state_t s;
+    s.stream_idx         = p->stream_idx;
+    s.current_expansion  = p->current_expansion;
+    s.lexer              = p->lexer;
+    s.current            = p->current;
+    s.previous           = p->previous;
+    return s;
 }
 
 static void restore_state(parser_t *p, parser_state_t s) {
-    p->lexer = s.lexer;
-    p->current = s.current;
-    p->previous = s.previous;
+    p->stream_idx        = s.stream_idx;
+    p->current_expansion = s.current_expansion;
+    p->lexer             = s.lexer;
+    p->current           = s.current;
+    p->previous          = s.previous;
 }
 
 /* ── helpers ── */
 
 static void advance_parser(parser_t *p) {
     p->previous = p->current;
-    for (;;) {
-        p->current = next_token(&p->lexer);
-        if (p->current.kind != TokError) break;
-        /* Lexer errors: unterminated string, unexpected character, etc. */
-        diag_begin_error("%.*s", (int)p->current.length, p->current.start);
-        diag_span(SRC_LOC(p->current.line, p->current.col, 1), True, "here");
-        diag_finish();
-        p->had_error = True;
+
+    if (p->stream) {
+        /* ── Stream mode: read from preprocessed token array ── */
+        for (;;) {
+            if (p->stream_idx >= p->stream_count) {
+                /* Past the end: synthesize EOF. */
+                token_t eof;
+                memset(&eof, 0, sizeof(eof));
+                eof.kind = TokEof;
+                p->current           = eof;
+                p->current_expansion = NULL;
+                return;
+            }
+
+            const pp_token_t *pt = &p->stream[p->stream_idx++];
+
+            if (pt->tok.kind == TokError) {
+                /* Lex error recorded during preprocessing. */
+                const char *f = pt->tok.file;
+                if (f && f != diag_get_file()) diag_set_file(f);
+                diag_begin_error("%.*s",
+                                 (int)pt->tok.length, pt->tok.start);
+                diag_span(SRC_LOC(pt->tok.line, pt->tok.col, 1), True, "here");
+                diag_finish();
+                p->had_error = True;
+                continue;
+            }
+
+            /* Switch diagnostic context when crossing a file boundary. */
+            if (pt->tok.file && pt->tok.file != diag_get_file())
+                diag_set_file(pt->tok.file);
+
+            p->current           = pt->tok;
+            p->current_expansion = pt->expansion;
+            return;
+        }
+    } else {
+        /* ── Legacy lexer mode ── */
+        for (;;) {
+            p->current = next_token(&p->lexer);
+            if (p->current.kind != TokError) break;
+            /* Lexer errors: unterminated string, unexpected character, etc. */
+            diag_begin_error("%.*s",
+                             (int)p->current.length, p->current.start);
+            diag_span(SRC_LOC(p->current.line, p->current.col, 1),
+                      True, "here");
+            diag_finish();
+            p->had_error = True;
+        }
+        p->current_expansion = NULL;
     }
 }
 
@@ -413,29 +477,53 @@ static char *parse_dotted_name(parser_t *p) {
 #include "parse_stmt.c"
 #include "parse_decls.c"
 
-/* ── entry point ── */
+/* ── internal parse body (shared by both entry points) ── */
+
+static node_t *run_parse(parser_t *p) {
+    consume(p, TokMod, "'mod'");
+    char *mod_name = parse_dotted_name(p);
+    consume(p, TokSemicolon, "';'");
+
+    node_t *module = make_node(NodeModule, 1);
+    module->as.module.name = mod_name;
+    node_list_init(&module->as.module.decls);
+
+    while (!check(p, TokEof)) {
+        node_list_push(&module->as.module.decls, parse_top_decl(p));
+    }
+
+    if (p->had_error) return Null;
+    return module;
+}
+
+/* ── entry point: legacy (raw source string) ── */
 
 node_t *parse(const char *source) {
     /* Register source text so diagnostics can print code snippets. */
     diag_set_source(source);
 
     parser_t p;
-    init_lexer(&p.lexer, source);
+    memset(&p, 0, sizeof(p));
+    p.stream    = NULL;  /* lexer mode */
     p.had_error = False;
+    init_lexer(&p.lexer, source);
     advance_parser(&p);
 
-    consume(&p, TokMod, "'mod'");
-    char *mod_name = parse_dotted_name(&p);
-    consume(&p, TokSemicolon, "';'");
+    return run_parse(&p);
+}
 
-    node_t *module = make_node(NodeModule, 1);
-    module->as.module.name = mod_name;
-    node_list_init(&module->as.module.decls);
+/* ── entry point: stream-based (preferred) ── */
 
-    while (!check(&p, TokEof)) {
-        node_list_push(&module->as.module.decls, parse_top_decl(&p));
-    }
+node_t *parse_from_stream(const pp_stream_t *stream) {
+    if (!stream || stream->count == 0) return Null;
 
-    if (p.had_error) return Null;
-    return module;
+    parser_t p;
+    memset(&p, 0, sizeof(p));
+    p.stream       = stream->tokens;
+    p.stream_count = stream->count;
+    p.stream_idx   = 0;
+    p.had_error    = False;
+    advance_parser(&p);
+
+    return run_parse(&p);
 }

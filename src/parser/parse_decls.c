@@ -840,8 +840,11 @@ static node_t *parse_libimp(parser_t *p) {
 
 static node_t *parse_imp(parser_t *p) {
     usize_t line = p->current.line;
-    advance_parser(p);
+    advance_parser(p); /* consume 'imp' */
     char *mod_name = parse_dotted_name(p);
+    /* Optional: = alias_name  (e.g. imp ex_preproc = pp;) */
+    if (match_tok(p, TokEq))
+        advance_parser(p); /* consume the alias ident; we don't store it */
     consume(p, TokSemicolon, "';'");
     node_t *n = make_node(NodeImpDecl, line);
     n->as.imp_decl.module_name = mod_name;
