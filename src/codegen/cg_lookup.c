@@ -21,6 +21,8 @@ static type_info_t resolve_alias(cg_t *cg, type_info_t ti) {
                 if (ti.is_pointer && !actual.is_pointer) {
                     actual.is_pointer = True;
                     actual.ptr_perm   = ti.ptr_perm;
+                    actual.ptr_depth  = ti.ptr_depth;
+                    memcpy(actual.ptr_perms, ti.ptr_perms, sizeof(ti.ptr_perms));
                 }
                 return actual;
             }

@@ -3,6 +3,29 @@
 /* forward declaration — defined in cg_expr.c */
 static struct_reg_t *try_instantiate_any(cg_t *cg, const char *name);
 
+/* Remove one pointer level from a type.
+ * For depth==1 (or legacy is_pointer without depth), returns the base type.
+ * For depth>1, returns the type with depth decremented and perms shifted. */
+static type_info_t ti_deref_one(type_info_t ti) {
+    if (!ti.is_pointer) return ti;
+    int depth = ti.ptr_depth > 0 ? ti.ptr_depth : 1; /* handle legacy depth=0 */
+    if (depth <= 1) {
+        ti.is_pointer = False;
+        ti.ptr_perm   = PtrNone;
+        ti.ptr_depth  = 0;
+        memset(ti.ptr_perms, 0, sizeof(ti.ptr_perms));
+    } else {
+        /* Remove outermost level: shift ptr_perms left by one */
+        ti.ptr_depth--;
+        for (int i = 0; i < ti.ptr_depth && i < 7; i++)
+            ti.ptr_perms[i] = ti.ptr_perms[i + 1];
+        ti.ptr_perms[ti.ptr_depth] = PtrNone;
+        ti.ptr_perm   = ti.ptr_perms[0];
+        ti.is_pointer = True;
+    }
+    return ti;
+}
+
 static boolean_t is_float_type(type_info_t ti) {
     return ti.base == TypeF32 || ti.base == TypeF64;
 }

@@ -45,8 +45,10 @@ typedef struct {
     type_kind_t base;
     char *user_name;            /* non-null when base == TypeUser */
     boolean_t is_pointer;
-    ptr_perm_t ptr_perm;
+    ptr_perm_t ptr_perm;        /* permissions of the outermost pointer level */
     fn_ptr_desc_t *fn_ptr_desc; /* non-null when base == TypeFnPtr */
+    int ptr_depth;              /* 0 = not a pointer; 1 = *; 2 = **; 3 = ***; etc. */
+    ptr_perm_t ptr_perms[8];    /* per-level perms: [0]=outermost … [depth-1]=innermost */
 } type_info_t;
 
 /* ── storage / linkage ── */
@@ -70,7 +72,7 @@ struct fn_ptr_desc {
     type_info_t ret_type;
 };
 
-#define NO_TYPE ((type_info_t){TypeVoid, Null, False, PtrNone, Null})
+#define NO_TYPE ((type_info_t){.base=TypeVoid, .user_name=Null, .is_pointer=False, .ptr_perm=PtrNone, .fn_ptr_desc=Null, .ptr_depth=0})
 
 typedef enum {
     LinkageNone,

@@ -14,6 +14,8 @@ static type_info_t subst_type_info(cg_t *cg, type_info_t ti) {
             /* keep pointer wrapping from original */
             c.is_pointer = ti.is_pointer;
             c.ptr_perm   = ti.ptr_perm;
+            c.ptr_depth  = ti.ptr_depth;
+            memcpy(c.ptr_perms, ti.ptr_perms, sizeof(ti.ptr_perms));
             return c;
         }
     }

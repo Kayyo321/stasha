@@ -335,31 +335,40 @@ static type_info_t parse_type(parser_t *p) {
     }
 
     parse_type_ptr:
-    /* pointer: * or *r or *w or *rw, optionally followed by + for arith */
-    if (check(p, TokStar)) {
-        advance_parser(p);
-        info.is_pointer = True;
-        info.ptr_perm = PtrRead | PtrWrite | PtrArith; /* bare * = rw+ */
-
-        if (check(p, TokIdent)) {
-            const char *s = p->current.start;
-            usize_t len = p->current.length;
-            if (len == 1 && s[0] == 'r') {
-                info.ptr_perm = PtrRead;
-                advance_parser(p);
-            } else if (len == 1 && s[0] == 'w') {
-                info.ptr_perm = PtrWrite;
-                advance_parser(p);
-            } else if (len == 2 && s[0] == 'r' && s[1] == 'w') {
-                info.ptr_perm = PtrReadWrite;
-                advance_parser(p);
-            }
-        }
-
-        /* optional + suffix grants pointer arithmetic */
-        if (check(p, TokPlus)) {
-            info.ptr_perm |= PtrArith;
+    /* Pointer levels: *, *r, *w, *rw, each optionally followed by + for arith.
+     * Multiple levels are allowed: **, *r *rw, *rw+ *r, etc.
+     * Reading left to right: first * = innermost level, last * = outermost level
+     * (the level the variable itself is).  ptr_perms[0] = outermost perms,
+     * ptr_perms[depth-1] = innermost perms.  ptr_perm mirrors ptr_perms[0]. */
+    {
+        ptr_perm_t tmp[8];
+        int depth = 0;
+        while (check(p, TokStar) && depth < 8) {
             advance_parser(p);
+            ptr_perm_t perm = PtrRead | PtrWrite | PtrArith; /* bare * = rw+ */
+            if (check(p, TokIdent)) {
+                const char *s = p->current.start;
+                usize_t len = p->current.length;
+                if (len == 1 && s[0] == 'r') {
+                    perm = PtrRead; advance_parser(p);
+                } else if (len == 1 && s[0] == 'w') {
+                    perm = PtrWrite; advance_parser(p);
+                } else if (len == 2 && s[0] == 'r' && s[1] == 'w') {
+                    perm = PtrReadWrite; advance_parser(p);
+                }
+            }
+            /* optional + grants pointer arithmetic for this level */
+            if (check(p, TokPlus)) { perm |= PtrArith; advance_parser(p); }
+            tmp[depth++] = perm;
+        }
+        if (depth > 0) {
+            info.is_pointer = True;
+            info.ptr_depth  = depth;
+            /* Reverse: tmp[0]=first *=innermost → ptr_perms[depth-1];
+               tmp[depth-1]=last *=outermost → ptr_perms[0]. */
+            for (int i = 0; i < depth; i++)
+                info.ptr_perms[i] = tmp[depth - 1 - i];
+            info.ptr_perm = info.ptr_perms[0];
         }
     }
 

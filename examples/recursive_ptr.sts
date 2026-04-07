@@ -1,0 +1,62 @@
+mod recursive_ptr;
+
+lib "stdio" = io;
+
+/*
+ * Recursive pointer (pointer-to-pointer) example.
+ *
+ * Syntax: each additional `*` adds one indirection level.
+ * Left = innermost, right = outermost (what the variable is).
+ *
+ *   i32 *rw p        — single pointer: p points to an i32
+ *   i32 *rw *rw pp   — double pointer: pp points to a (pointer to i32)
+ *   i32 *rw *rw *rw ppp — triple pointer, etc.
+ *
+ * Permissions apply per-level; the outermost level is what the variable IS.
+ */
+
+/* Sets the value through a double pointer — like a C **int param */
+fn set_via_pp(stack i32 *rw *rw pp, stack i32 val): void {
+    stack i32 *rw p = *pp;   /* dereference once → inner pointer */
+    p[0] = val;               /* write through the inner pointer  */
+}
+
+/* Swap two single pointers via double pointers */
+fn swap_ptrs(stack i32 *rw *rw a, stack i32 *rw *rw b): void {
+    stack i32 *rw tmp = *a;   /* tmp = *a  (inner pointer of a) */
+    stack i32 *rw rb  = *b;   /* rb  = *b  (inner pointer of b) */
+    a[0] = rb;                 /* *a = rb  — write through double pointer */
+    b[0] = tmp;                /* *b = tmp */
+}
+
+fn main(void): i32 {
+    stack i32 x = 10;
+    stack i32 y = 20;
+
+    /* single pointers to x and y */
+    stack i32 *rw px = &x;
+    stack i32 *rw py = &y;
+
+    io.printf("before: x=%d  y=%d\n", x, y);
+
+    /* double pointers — pointer to the single pointers */
+    stack i32 *rw *rw ppx = &px;
+    stack i32 *rw *rw ppy = &py;
+
+    /* read through two levels of indirection */
+    io.printf("**ppx = %d   **ppy = %d\n", **ppx, **ppy);
+
+    /* write through a double pointer */
+    set_via_pp(ppx, 42);
+    io.printf("after set_via_pp(ppx, 42): x=%d\n", x);
+
+    /* swap the inner pointers via double pointers */
+    swap_ptrs(&px, &py);
+    io.printf("after swap: *px=%d  *py=%d (px now points to y, py to x)\n", *px, *py);
+
+    /* triple pointer demo */
+    stack i32 *rw *rw *rw pppx = &ppx;
+    io.printf("***pppx = %d\n", ***pppx);
+
+    ret 0;
+}

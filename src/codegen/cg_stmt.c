@@ -54,6 +54,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 type_info_t concrete = cg->generic_concs[gi];
                 concrete.is_pointer = ti.is_pointer;
                 concrete.ptr_perm   = ti.ptr_perm;
+                concrete.ptr_depth  = ti.ptr_depth;
+                memcpy(concrete.ptr_perms, ti.ptr_perms, sizeof(ti.ptr_perms));
                 ti = concrete;
                 break;
             }

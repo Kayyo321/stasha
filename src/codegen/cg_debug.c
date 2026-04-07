@@ -208,9 +208,8 @@ static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti) {
     type_info_t resolved = resolve_alias(cg, ti);
 
     if (resolved.is_pointer) {
-        /* Pointee type (de-reference the pointer flag). */
-        type_info_t pointee   = resolved;
-        pointee.is_pointer    = False;
+        /* Remove one pointer level; recurse for multi-level pointers. */
+        type_info_t pointee   = ti_deref_one(resolved);
         LLVMMetadataRef inner = get_di_type(cg, pointee);
         /* Pointer width: 64-bit on all currently supported targets. */
         return LLVMDIBuilderCreatePointerType(

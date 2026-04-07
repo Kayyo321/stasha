@@ -459,7 +459,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
 
     /* declare C runtime functions */
-    type_info_t rt_dummy = {TypeVoid, Null, False, PtrNone, Null};
+    type_info_t rt_dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
 
     LLVMTypeRef printf_param[] = { LLVMPointerTypeInContext(cg.ctx, 0) };
     cg.printf_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), printf_param, 1, 1);
@@ -489,7 +489,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg.ctx);
         LLVMTypeRef i32_t  = LLVMInt32TypeInContext(cg.ctx);
         LLVMTypeRef void_t = LLVMVoidTypeInContext(cg.ctx);
-        type_info_t rt_dummy2 = {TypeVoid, Null, False, PtrNone, Null};
+        type_info_t rt_dummy2 = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
 
         /* __thread_dispatch(fn_ptr, args_ptr, result_size) -> future_ptr */
         LLVMTypeRef td_params[3] = { ptr_t, ptr_t, i64_t };
@@ -986,7 +986,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 }
             }
 
-            type_info_t dummy = {TypeVoid, Null, False, PtrNone, Null};
+            type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
 
             if (total_params > 0) deallocate(ptypes_heap);
@@ -1073,7 +1073,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (method->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
-            type_info_t dummy = {TypeVoid, Null, False, PtrNone, Null};
+            type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
             deallocate(ptypes_heap);
 
@@ -1160,8 +1160,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             di_ptypes[0] = get_di_type(&cg, decl->as.fn_decl.return_types[0]);
             usize_t di_pi = 1;
             if (is_instance && decl->as.fn_decl.struct_name) {
-                type_info_t thi = {TypeUser, decl->as.fn_decl.struct_name,
-                                   True, PtrReadWrite, Null};
+                type_info_t thi = {.base=TypeUser, .user_name=decl->as.fn_decl.struct_name, .is_pointer=True, .ptr_perm=PtrReadWrite, .ptr_depth=1, .ptr_perms={PtrReadWrite}};
                 di_ptypes[di_pi++] = get_di_type(&cg, thi);
             }
             for (usize_t j = 0; j < nparam; j++) {
@@ -1206,7 +1205,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                        : LLVMPointerTypeInContext(cg.ctx, 0);
             LLVMValueRef this_alloca = LLVMBuildAlloca(cg.builder, this_type, "this");
             LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, 0), this_alloca);
-            type_info_t this_ti = {TypeUser, decl->as.fn_decl.struct_name, True, PtrReadWrite, Null};
+            type_info_t this_ti = {.base=TypeUser, .user_name=decl->as.fn_decl.struct_name, .is_pointer=True, .ptr_perm=PtrReadWrite, .ptr_depth=1, .ptr_perms={PtrReadWrite}};
             symtab_add(&cg.locals, "this", this_alloca, this_type, this_ti, False);
             param_offset = 1;
         }
@@ -1332,7 +1331,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 heap_t  di_pt_heap = allocate(total_di, sizeof(LLVMMetadataRef));
                 LLVMMetadataRef *di_ptypes = di_pt_heap.pointer;
                 di_ptypes[0] = get_di_type(&cg, method->as.fn_decl.return_types[0]);
-                type_info_t thi = {TypeUser, decl->as.type_decl.name, True, PtrReadWrite, Null};
+                type_info_t thi = {.base=TypeUser, .user_name=decl->as.type_decl.name, .is_pointer=True, .ptr_perm=PtrReadWrite, .ptr_depth=1, .ptr_perms={PtrReadWrite}};
                 di_ptypes[1] = get_di_type(&cg, thi);
                 for (usize_t j = 0; j < nparam; j++) {
                     type_info_t pti = resolve_alias(&cg,
@@ -1366,7 +1365,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             LLVMTypeRef this_type = LLVMPointerTypeInContext(cg.ctx, 0);
             LLVMValueRef this_alloca = LLVMBuildAlloca(cg.builder, this_type, "this");
             LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, 0), this_alloca);
-            type_info_t this_ti = {TypeUser, decl->as.type_decl.name, True, PtrReadWrite, Null};
+            type_info_t this_ti = {.base=TypeUser, .user_name=decl->as.type_decl.name, .is_pointer=True, .ptr_perm=PtrReadWrite, .ptr_depth=1, .ptr_perms={PtrReadWrite}};
             symtab_add(&cg.locals, "this", this_alloca, this_type, this_ti, False);
             (void)sr;
 

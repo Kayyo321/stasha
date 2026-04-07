@@ -712,8 +712,7 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         }
         LLVMValueRef result;
         if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMPointerTypeKind) {
-            type_info_t elem_ti = sym->stype;
-            elem_ti.is_pointer = False;
+            type_info_t elem_ti = ti_deref_one(sym->stype);
             LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
             long long delta = (node->as.unary.op == TokPlusPlus) ? 1 : -1;
             LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
@@ -743,17 +742,27 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         LLVMValueRef operand = gen_expr(cg, node->as.unary.operand);
         return LLVMBuildNot(cg->builder, operand, "bnot");
     }
-    /* pointer dereference: *ptr — load the value the pointer points to */
+    /* pointer dereference: *ptr — load the value the pointer points to.
+     * For multi-level dereferences like **pp or ***ppp, walk the chain of
+     * unary-star nodes to the root identifier, count total depth, then apply
+     * ti_deref_one that many times to determine the correct pointee type. */
     if (node->as.unary.op == TokStar) {
         LLVMValueRef ptr = gen_expr(cg, node->as.unary.operand);
-        /* determine pointee type from the source expression */
         LLVMTypeRef pointee_type = Null;
+
+        /* walk the * chain to find the root identifier and total deref count */
         node_t *inner = node->as.unary.operand;
+        int deref_depth = 1; /* how many times WE dereference from here */
+        while (inner->kind == NodeUnaryPrefixExpr && inner->as.unary.op == TokStar) {
+            deref_depth++;
+            inner = inner->as.unary.operand;
+        }
         if (inner->kind == NodeIdentExpr) {
             symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
             if (sym && sym->stype.is_pointer) {
                 type_info_t pt = sym->stype;
-                pt.is_pointer = False;
+                for (int i = 0; i < deref_depth && pt.is_pointer; i++)
+                    pt = ti_deref_one(pt);
                 pointee_type = get_llvm_type(cg, pt);
             }
         }
@@ -831,8 +840,7 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
     }
     LLVMValueRef result;
     if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMPointerTypeKind) {
-        type_info_t elem_ti = sym->stype;
-        elem_ti.is_pointer = False;
+        type_info_t elem_ti = ti_deref_one(sym->stype);
         LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
         long long delta = (node->as.unary.op == TokPlusPlus) ? 1 : -1;
         LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
@@ -1184,7 +1192,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     LLVMTypeRef ftype = LLVMFunctionType(ret_type, param_types,
                                                           param_count, is_varargs);
                     LLVMValueRef fn = LLVMAddFunction(cg->module, method, ftype);
-                    type_info_t dummy = {TypeI32, Null, False, PtrNone, Null};
+                    type_info_t dummy = {.base=TypeI32, .is_pointer=False, .ptr_perm=PtrNone};
                     symtab_add(&cg->globals, method, fn, Null, dummy, False);
                     fn_sym = cg_lookup(cg, method);
                     if (ptypes_heap.pointer) deallocate(ptypes_heap);
@@ -1921,8 +1929,7 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             } else if (llvm_is_ptr(sym->type)) {
                 /* pointer indexing: load pointer, then GEP with element type */
                 LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-                type_info_t elem_ti = sym->stype;
-                elem_ti.is_pointer = False;
+                type_info_t elem_ti = ti_deref_one(sym->stype);
                 LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
                 index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                 LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
@@ -1992,8 +1999,7 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                     }
                     LLVMTypeRef ptr_type = get_llvm_type(cg, base_sr->fields[fi].type);
                     LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
-                    type_info_t elem_ti = base_sr->fields[fi].type;
-                    elem_ti.is_pointer = False;
+                    type_info_t elem_ti = ti_deref_one(base_sr->fields[fi].type);
                     LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
                     index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                     LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "midx");
@@ -2024,8 +2030,7 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                                                                       (unsigned)sr->fields[i].index, "sfgep");
                         LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[i].type);
                         LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "sfptr");
-                        type_info_t elem_ti = sr->fields[i].type;
-                        elem_ti.is_pointer = False;
+                        type_info_t elem_ti = ti_deref_one(sr->fields[i].type);
                         LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
                         index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                         LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "sidx");
@@ -2149,8 +2154,7 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
         if (llvm_is_ptr(sym->type)) {
             LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
             /* use the declared element type for correct stride */
-            type_info_t elem_ti = sym->stype;
-            elem_ti.is_pointer = False;
+            type_info_t elem_ti = ti_deref_one(sym->stype);
             LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
             index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
             LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
@@ -2214,8 +2218,7 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
                 }
                 LLVMTypeRef ptr_type = get_llvm_type(cg, base_sr->fields[fi].type);
                 LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
-                type_info_t elem_ti = base_sr->fields[fi].type;
-                elem_ti.is_pointer = False;
+                type_info_t elem_ti = ti_deref_one(base_sr->fields[fi].type);
                 LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
                 index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                 LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "midx");
@@ -2245,8 +2248,7 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
                         this_ptr, (unsigned)sr->fields[fi].index, fname);
                     LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
                     LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "smfptr");
-                    type_info_t elem_ti = sr->fields[fi].type;
-                    elem_ti.is_pointer = False;
+                    type_info_t elem_ti = ti_deref_one(sr->fields[fi].type);
                     LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
                     index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                     LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "smidx");
@@ -2264,7 +2266,7 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
         if (obj->kind == NodeCastExpr) {
             type_info_t cti = subst_type_info(cg, obj->as.cast_expr.target);
             if (cti.is_pointer) {
-                cti.is_pointer = False;
+                cti = ti_deref_one(cti);
                 elem_ty = get_llvm_type(cg, cti);
                 /* only use the type if it resolves to something useful (not opaque ptr) */
                 if (LLVMGetTypeKind(elem_ty) == LLVMPointerTypeKind)
@@ -2845,8 +2847,7 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
             }
             if (llvm_is_ptr(sym->type)) {
                 LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-                type_info_t elem_ti = sym->stype;
-                elem_ti.is_pointer = False;
+                type_info_t elem_ti = ti_deref_one(sym->stype);
                 LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
                 index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                 return LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidxptr");
@@ -2872,8 +2873,7 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
                             this_ptr, (unsigned)sr->fields[fi].index, fname);
                         LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
                         LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "smfptr");
-                        type_info_t elem_ti = sr->fields[fi].type;
-                        elem_ti.is_pointer = False;
+                        type_info_t elem_ti = ti_deref_one(sr->fields[fi].type);
                         LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
                         index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                         /* GEP only — no load, we want the address */

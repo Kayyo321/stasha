@@ -534,9 +534,9 @@ static type_info_t infer_expr_type(resolve_ctx_t *ctx, const node_t *expr) {
             }
             return NO_TYPE;
         }
-        case NodeIntLitExpr: return (type_info_t){TypeI64, Null, False, PtrNone, Null};
-        case NodeFloatLitExpr: return (type_info_t){TypeF64, Null, False, PtrNone, Null};
-        case NodeBoolLitExpr: return (type_info_t){TypeBool, Null, False, PtrNone, Null};
+        case NodeIntLitExpr:   return (type_info_t){.base=TypeI64,  .is_pointer=False, .ptr_perm=PtrNone};
+        case NodeFloatLitExpr: return (type_info_t){.base=TypeF64,  .is_pointer=False, .ptr_perm=PtrNone};
+        case NodeBoolLitExpr:  return (type_info_t){.base=TypeBool, .is_pointer=False, .ptr_perm=PtrNone};
         case NodeStrLitExpr:
         case NodeCharLitExpr:
             return NO_TYPE;
