@@ -398,3 +398,184 @@ restore:
     if (saved_bb && cg->builder)
         LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 }
+
+/* ── Lazy instantiation for standalone @comptime[T] functions ──────────────
+ * Called from gen_call when a mangled name like "max_G_i32" is not found.
+ * Finds the template, sets up substitution, generates the function, then
+ * returns the symbol so the caller can proceed with the call. */
+static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) {
+    /* already generated? */
+    symbol_t *existing = cg_lookup(cg, mangled_name);
+    if (existing) return existing;
+
+    /* parse mangled name → template + arg strings */
+    char tmpl_name[256];
+    char arg_names[8][256];
+    usize_t n_args = 0;
+    if (!parse_mangled_generic(mangled_name, tmpl_name, sizeof(tmpl_name),
+                               arg_names, &n_args))
+        return Null;
+
+    /* find the function template */
+    node_t *tmpl = Null;
+    for (usize_t i = 0; i < cg->generic_fn_template_count; i++) {
+        if (strcmp(cg->generic_fn_templates[i], tmpl_name) == 0) {
+            tmpl = cg->generic_fn_template_decls[i];
+            break;
+        }
+    }
+    if (!tmpl) return Null;
+    if (n_args != tmpl->as.fn_decl.type_param_count) return Null;
+
+    /* ── save substitution context ── */
+    char      *saved_params[8];
+    type_info_t saved_concs[8];
+    usize_t    saved_n    = cg->generic_n;
+    char      *saved_tmpl = cg->generic_tmpl_name;
+    char      *saved_inst = cg->generic_inst_name;
+    memcpy(saved_params, cg->generic_params, sizeof(saved_params));
+    memcpy(saved_concs,  cg->generic_concs,  sizeof(saved_concs));
+
+    /* ── save outer function-generation context ── */
+    LLVMValueRef      saved_fn          = cg->current_fn;
+    char             *saved_struct_name = cg->current_struct_name;
+    linkage_t         saved_fn_linkage  = cg->current_fn_linkage;
+    usize_t           saved_dtor_depth  = cg->dtor_depth;
+    dtor_scope_t     *saved_dtor_stack  = cg->dtor_stack;
+    heap_t            saved_dtor_heap   = cg->dtor_stack_heap;
+    usize_t           saved_dtor_cap    = cg->dtor_cap;
+    symtab_t          saved_locals      = cg->locals;
+    LLVMBasicBlockRef saved_bb          = cg->builder
+                                         ? LLVMGetInsertBlock(cg->builder) : Null;
+
+    memset(&cg->locals, 0, sizeof(cg->locals));
+    cg->dtor_stack      = Null;
+    cg->dtor_stack_heap = NullHeap;
+    cg->dtor_cap        = 0;
+    cg->dtor_depth      = 0;
+
+    /* set substitution */
+    char *inst_name_intern = ast_strdup(mangled_name, strlen(mangled_name));
+    cg->generic_n         = n_args;
+    cg->generic_tmpl_name = tmpl_name;
+    cg->generic_inst_name = inst_name_intern;
+    for (usize_t i = 0; i < n_args; i++) {
+        cg->generic_params[i] = tmpl->as.fn_decl.type_params[i];
+        cg->generic_concs[i]  = type_name_to_ti(arg_names[i]);
+        if (cg->generic_concs[i].base == TypeUser && cg->generic_concs[i].user_name
+                && strstr(cg->generic_concs[i].user_name, "_G_")) {
+            try_instantiate_generic(cg, cg->generic_concs[i].user_name);
+        }
+    }
+
+    /* ── build LLVM function type with substituted param types ── */
+    usize_t pc = tmpl->as.fn_decl.params.count;
+    heap_t ptypes_heap = NullHeap;
+    LLVMTypeRef *ptypes = Null;
+    if (pc > 0) {
+        ptypes_heap = allocate(pc, sizeof(LLVMTypeRef));
+        ptypes = ptypes_heap.pointer;
+        for (usize_t j = 0; j < pc; j++) {
+            type_info_t pti = subst_type_info(cg,
+                resolve_alias(cg, tmpl->as.fn_decl.params.items[j]->as.var_decl.type));
+            ptypes[j] = get_llvm_type(cg, pti);
+        }
+    }
+
+    /* return type */
+    usize_t ret_count = tmpl->as.fn_decl.return_count;
+    type_info_t rti = subst_type_info(cg,
+        resolve_alias(cg, tmpl->as.fn_decl.return_types[0]));
+    LLVMTypeRef ret_type;
+    if (ret_count > 1) {
+        heap_t rt_heap = allocate(ret_count, sizeof(LLVMTypeRef));
+        LLVMTypeRef *rt_fields = rt_heap.pointer;
+        for (usize_t j = 0; j < ret_count; j++) {
+            type_info_t rtj = subst_type_info(cg,
+                resolve_alias(cg, tmpl->as.fn_decl.return_types[j]));
+            rt_fields[j] = get_llvm_type(cg, rtj);
+        }
+        ret_type = LLVMStructTypeInContext(cg->ctx, rt_fields, (unsigned)ret_count, 0);
+        deallocate(rt_heap);
+    } else {
+        ret_type = get_llvm_type(cg, rti);
+    }
+
+    boolean_t is_variadic = tmpl->as.fn_decl.is_variadic;
+    LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes, (unsigned)pc, is_variadic ? 1 : 0);
+    LLVMValueRef fn = LLVMAddFunction(cg->module, inst_name_intern, fn_type);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+
+    type_info_t dummy; memset(&dummy, 0, sizeof(dummy));
+    symtab_add(&cg->globals, inst_name_intern, fn, Null, dummy, False);
+    if (pc > 0) deallocate(ptypes_heap);
+
+    /* ── generate body ── */
+    if (tmpl->as.fn_decl.body) {
+        char saved_module_prefix[512];
+        memcpy(saved_module_prefix, cg->current_module_prefix,
+               sizeof(saved_module_prefix));
+        if (tmpl->module_name)
+            mangle_module_prefix(tmpl->module_name, cg->current_module_prefix,
+                                 sizeof(cg->current_module_prefix));
+
+        cg->current_fn          = fn;
+        cg->current_struct_name = Null;
+        cg->current_fn_linkage  = LinkageInternal;
+
+        LLVMBasicBlockRef entry =
+            LLVMAppendBasicBlockInContext(cg->ctx, fn, "entry");
+        LLVMPositionBuilderAtEnd(cg->builder, entry);
+
+        for (usize_t j = 0; j < pc; j++) {
+            node_t *param = tmpl->as.fn_decl.params.items[j];
+            type_info_t pti = subst_type_info(cg,
+                resolve_alias(cg, param->as.var_decl.type));
+            LLVMTypeRef ptype = get_llvm_type(cg, pti);
+            LLVMValueRef alloca_val =
+                LLVMBuildAlloca(cg->builder, ptype, param->as.var_decl.name);
+            LLVMBuildStore(cg->builder, LLVMGetParam(fn, (unsigned)j), alloca_val);
+            symtab_add(&cg->locals, param->as.var_decl.name,
+                       alloca_val, ptype, pti, False);
+        }
+
+        gen_block(cg, tmpl->as.fn_decl.body);
+
+        LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg->builder);
+        if (!LLVMGetBasicBlockTerminator(cur_bb)) {
+            if (ret_count <= 1 && rti.base == TypeVoid && !rti.is_pointer)
+                LLVMBuildRetVoid(cg->builder);
+            else
+                LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
+        }
+
+        cg->current_fn = Null;
+        memcpy(cg->current_module_prefix, saved_module_prefix,
+               sizeof(cg->current_module_prefix));
+    }
+
+    /* look up what we just generated */
+    symbol_t *result = cg_lookup(cg, inst_name_intern);
+
+    /* ── restore ── */
+    cg->generic_n         = saved_n;
+    cg->generic_tmpl_name = saved_tmpl;
+    cg->generic_inst_name = saved_inst;
+    memcpy(cg->generic_params, saved_params, sizeof(saved_params));
+    memcpy(cg->generic_concs,  saved_concs,  sizeof(saved_concs));
+
+    symtab_free(&cg->locals);
+    cg->locals              = saved_locals;
+    if (cg->dtor_stack_heap.pointer) deallocate(cg->dtor_stack_heap);
+    cg->dtor_stack          = saved_dtor_stack;
+    cg->dtor_stack_heap     = saved_dtor_heap;
+    cg->dtor_cap            = saved_dtor_cap;
+    cg->dtor_depth          = saved_dtor_depth;
+    cg->current_fn          = saved_fn;
+    cg->current_struct_name = saved_struct_name;
+    cg->current_fn_linkage  = saved_fn_linkage;
+    if (saved_bb && cg->builder)
+        LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
+
+    return result;
+}

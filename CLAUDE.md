@@ -119,11 +119,21 @@ fn Foo.new(stack i32 x): Foo { ... }
 fn Foo.method(stack i32 x): void { Foo.(x) = x; }
 fn Foo.rem(void): void { ... }  // auto-called at scope exit
 
+// Generics — @comptime[T] on structs and standalone functions
+type arr_t: @comptime[T] struct { heap ext T *rw buf; ext i32 len; }
+fn @comptime[T] arr_t.new(stack i32 cap): arr_t.[T] { ... }
+arr_t.[i32] a = arr_t.[i32].new(8);  // instantiate with concrete type
+fn @comptime[T] identity(stack T val): T { ret val; }  // standalone generic fn
+stack i32 x = identity.[i32](42);    // instantiate at call site
+
 // Control flow
 for (stack i32 i = 0; i < n; i++) {}
 while (cond) {}    do {} while (cond);    inf {}
 if (x) {} else if (y) {} else {}
 match s { Shape.Circle(r) => { } _ => {} }
+match n { 0 => {} 1 => {} _ => {} }            // integer literal arms
+match s { Shape.Circle(r) if r > 10 => {} _ => {} }  // guard clauses
+match st { Status.Ok => {} other => {} }        // wildcard binding
 switch (x) { case 0: break; default: }
 defer rem.(buf);
 break;      // exit innermost for/while/do-while/inf/switch

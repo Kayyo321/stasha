@@ -190,6 +190,7 @@ typedef enum {
     NodeConstructorCall, /* type_name.(args) — alternate constructor syntax */
     NodeWithStmt,        /* with decl; cond { body } — scoped binding */
     NodeErrPropCall,     /* fn.?(args) — error propagation call */
+    NodeErrProp,         /* expr? — postfix error propagation operator */
     NodeAnyTypeExpr,     /* any.(expr) — extract runtime type tag from any value */
     NodeSpreadExpr,      /* ..expr inside compound initializers */
     NodeRangeExpr,       /* start..end / start..=end / start..end:step */
@@ -304,10 +305,13 @@ struct node {
         struct { node_t *expr; node_list_t arms; } match_stmt;
         struct {
             boolean_t is_wildcard;
-            char *enum_name;    /* null for wildcard */
-            char *variant_name; /* null for wildcard */
-            char *bind_name;    /* payload binding name, null if none */
+            char *enum_name;       /* null for wildcard / literal / bind-wildcard */
+            char *variant_name;    /* null for wildcard / literal / bind-wildcard */
+            char *bind_name;       /* payload/subject binding name, null if none */
             node_t *body;
+            node_t *guard_expr;    /* optional: `if expr` guard, null = no guard */
+            boolean_t is_literal;  /* True: integer literal pattern arm */
+            long literal_value;    /* value when is_literal */
         } match_arm;
 
         /* switch statement */
@@ -380,6 +384,9 @@ struct node {
 
         /* NodeErrPropCall: fn.?(args) — call fn, propagate error if non-nil */
         struct { char *callee; node_list_t args; } err_prop_call;
+
+        /* NodeErrProp: expr? — evaluate expr, propagate if error, else yield value */
+        struct { node_t *operand; } err_prop;
 
         /* NodeAnyTypeExpr: any.(expr) — extract runtime type discriminant */
         struct { node_t *operand; } any_type_expr;

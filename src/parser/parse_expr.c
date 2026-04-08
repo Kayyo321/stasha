@@ -844,6 +844,33 @@ static node_t *parse_postfix(parser_t *p) {
             continue;
         }
 
+        /* postfix ? — error propagation: expr?
+           Disambiguate from ternary (cond ? a : b) by peeking one token ahead.
+           If after '?' the next token could start an expression, it is ternary;
+           leave '?' for parse_ternary to consume.  Otherwise it is error prop. */
+        if (check(p, TokQuestion)) {
+            parser_state_t snap = save_state(p);
+            advance_parser(p); /* tentatively consume '?' */
+            token_kind_t nk = p->current.kind;
+            boolean_t next_starts_expr =
+                (nk == TokIdent || nk == TokIntLit || nk == TokFloatLit ||
+                 nk == TokStackStr || nk == TokHeapStr || nk == TokCharLit ||
+                 nk == TokTrue || nk == TokFalse || nk == TokLParen ||
+                 nk == TokBang || nk == TokMinus || nk == TokTilde ||
+                 nk == TokAmp || nk == TokNew || nk == TokSizeof ||
+                 nk == TokNil || nk == TokMov || nk == TokThis ||
+                 nk == TokAny || nk == TokLBracket || nk == TokDot);
+            if (next_starts_expr) {
+                restore_state(p, snap);
+                break; /* leave '?' for ternary */
+            }
+            /* confirmed error propagation postfix */
+            node_t *n = make_node(NodeErrProp, expr->line);
+            n->as.err_prop.operand = expr;
+            expr = n;
+            continue;
+        }
+
         break;
     }
     return expr;

@@ -384,6 +384,18 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
     consume(p, TokRBrace, "'}'");
 }
 
+/* ── peek helpers ── */
+
+/* Returns True if the token immediately following the current one is TokIntLit.
+   Uses save/restore so no tokens are consumed. */
+static boolean_t peek_is_int_lit(parser_t *p) {
+    parser_state_t snap = save_state(p);
+    advance_parser(p);
+    boolean_t result = check(p, TokIntLit);
+    restore_state(p, snap);
+    return result;
+}
+
 /* ── match statement ── */
 
 static node_t *parse_match_stmt(parser_t *p) {
@@ -407,6 +419,9 @@ static node_t *parse_match_stmt(parser_t *p) {
         arm->any_bind_name = Null;
         arm->any_bind_ti   = NO_TYPE;
         arm->any_bind_storage = StorageDefault;
+        arm->as.match_arm.guard_expr    = Null;
+        arm->as.match_arm.is_literal    = False;
+        arm->as.match_arm.literal_value = 0;
 
         /* wildcard arm: _ => { ... } */
         if (check(p, TokIdent) &&
@@ -416,6 +431,23 @@ static node_t *parse_match_stmt(parser_t *p) {
             arm->as.match_arm.enum_name    = Null;
             arm->as.match_arm.variant_name = Null;
             arm->as.match_arm.bind_name    = Null;
+
+        /* integer literal arm: 0 => { ... }, -1 => { ... } */
+        } else if (check(p, TokIntLit) ||
+                   (check(p, TokMinus) && peek_is_int_lit(p))) {
+            arm->as.match_arm.is_wildcard = False;
+            arm->as.match_arm.is_literal  = True;
+            arm->as.match_arm.enum_name   = Null;
+            arm->as.match_arm.variant_name = Null;
+            arm->as.match_arm.bind_name   = Null;
+            long sign = 1;
+            if (match_tok(p, TokMinus)) sign = -1;
+            long val = 0;
+            for (usize_t i = 0; i < p->current.length; i++)
+                val = val * 10 + (p->current.start[i] - '0');
+            arm->as.match_arm.literal_value = sign * val;
+            advance_parser(p); /* consume int literal */
+
         } else if (is_any_match && (is_builtin_type_token(p->current.kind) || check(p, TokIdent))) {
             /* any-type arm: TypeName(storage TypeName binding) => { ... } */
             arm->as.match_arm.is_wildcard = False;
@@ -443,20 +475,50 @@ static node_t *parse_match_stmt(parser_t *p) {
                 arm->as.match_arm.bind_name = arm->any_bind_name;
                 consume(p, TokRParen, "')'");
             }
-        } else {
-            /* pattern: EnumName.Variant  or  EnumName.Variant(bind) */
-            arm->as.match_arm.is_wildcard = False;
-            token_t etok = consume(p, TokIdent, "enum name");
-            arm->as.match_arm.enum_name = copy_token_text(etok);
-            consume(p, TokDot, "'.'");
-            token_t vtok = consume(p, TokIdent, "variant name");
-            arm->as.match_arm.variant_name = copy_token_text(vtok);
-            arm->as.match_arm.bind_name = Null;
-            if (match_tok(p, TokLParen)) {
-                token_t btok = consume(p, TokIdent, "binding name");
-                arm->as.match_arm.bind_name = copy_token_text(btok);
-                consume(p, TokRParen, "')'");
+
+        } else if (check(p, TokIdent)) {
+            /* Speculate: if ident is NOT followed by '.', treat as binding wildcard.
+               If followed by '.', treat as enum pattern EnumName.Variant. */
+            parser_state_t snap = save_state(p);
+            token_t etok = p->current;
+            advance_parser(p);
+            if (!check(p, TokDot)) {
+                /* binding wildcard: v => { use v } */
+                arm->as.match_arm.is_wildcard = True;
+                arm->as.match_arm.enum_name    = Null;
+                arm->as.match_arm.variant_name = Null;
+                arm->as.match_arm.bind_name    = copy_token_text(etok);
+            } else {
+                /* enum pattern: EnumName.Variant  or  EnumName.Variant(bind) */
+                consume(p, TokDot, "'.'");
+                token_t vtok = consume(p, TokIdent, "variant name");
+                arm->as.match_arm.is_wildcard  = False;
+                arm->as.match_arm.enum_name    = copy_token_text(etok);
+                arm->as.match_arm.variant_name = copy_token_text(vtok);
+                arm->as.match_arm.bind_name    = Null;
+                if (match_tok(p, TokLParen)) {
+                    token_t btok = consume(p, TokIdent, "binding name");
+                    arm->as.match_arm.bind_name = copy_token_text(btok);
+                    consume(p, TokRParen, "')'");
+                }
             }
+            (void)snap; /* snap used implicitly; save_state for restore if needed */
+        } else {
+            diag_begin_error("expected match arm pattern");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected '_', integer literal, or EnumName.Variant");
+            diag_finish();
+            p->had_error = True;
+            advance_parser(p);
+            arm->as.match_arm.is_wildcard = True;
+            arm->as.match_arm.enum_name   = Null;
+            arm->as.match_arm.variant_name = Null;
+            arm->as.match_arm.bind_name   = Null;
+        }
+
+        /* optional guard clause: if expr */
+        if (match_tok(p, TokIf)) {
+            arm->as.match_arm.guard_expr = parse_expr(p);
         }
 
         consume(p, TokFatArrow, "'=>'");

@@ -1102,6 +1102,15 @@ static void gen_match(cg_t *cg, node_t *node) {
             case_count++;
     }
 
+    /* if any wildcard arm wants to bind the subject, store discriminant now
+       (must happen before switch so alloc_in_entry goes in the entry block) */
+    LLVMValueRef disc_alloca = Null;
+    if (wildcard_arm && wildcard_arm->as.match_arm.bind_name) {
+        LLVMTypeRef i32ty = LLVMInt32TypeInContext(cg->ctx);
+        disc_alloca = alloc_in_entry(cg, i32ty, wildcard_arm->as.match_arm.bind_name);
+        LLVMBuildStore(cg->builder, discriminant, disc_alloca);
+    }
+
     LLVMBasicBlockRef end_bb =
         LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.end");
     LLVMBasicBlockRef default_bb = end_bb;
@@ -1156,6 +1165,15 @@ static void gen_match(cg_t *cg, node_t *node) {
                 arm_bb);
             LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
 
+            /* guard clause for any-arm */
+            if (arm->as.match_arm.guard_expr) {
+                LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+                    cg->ctx, cg->current_fn, "match.any.body");
+                LLVMValueRef guard_val = gen_expr(cg, arm->as.match_arm.guard_expr);
+                LLVMBuildCondBr(cg->builder, guard_val, body_bb, default_bb);
+                LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+            }
+
             usize_t saved_locals = cg->locals.count;
 
             /* bind the concrete typed value if requested */
@@ -1188,69 +1206,137 @@ static void gen_match(cg_t *cg, node_t *node) {
             continue;
         }
 
-        /* find variant discriminant value */
-        variant_info_t *vi = Null;
-        enum_reg_t *arm_er = er ? er : find_enum(cg, arm->as.match_arm.enum_name);
-        if (arm_er) {
-            for (usize_t j = 0; j < arm_er->variant_count; j++) {
-                if (strcmp(arm_er->variants[j].name, arm->as.match_arm.variant_name) == 0) {
-                    disc_val = arm_er->variants[j].value;
-                    vi = &arm_er->variants[j];
-                    break;
+        /* integer literal arm: use the stored literal value directly */
+        if (arm->as.match_arm.is_literal) {
+            disc_val = arm->as.match_arm.literal_value;
+        } else {
+            /* find variant discriminant value */
+            variant_info_t *vi_tmp = Null;
+            enum_reg_t *arm_er_tmp = er ? er : find_enum(cg, arm->as.match_arm.enum_name);
+            if (arm_er_tmp) {
+                for (usize_t j = 0; j < arm_er_tmp->variant_count; j++) {
+                    if (arm->as.match_arm.variant_name &&
+                        strcmp(arm_er_tmp->variants[j].name,
+                               arm->as.match_arm.variant_name) == 0) {
+                        disc_val = arm_er_tmp->variants[j].value;
+                        vi_tmp = &arm_er_tmp->variants[j];
+                        break;
+                    }
                 }
             }
-        }
-        if (disc_val < 0) {
-            diag_begin_error("unknown variant '%s'", arm->as.match_arm.variant_name);
-            diag_span(DIAG_NODE(arm), True, "");
-            diag_note("check the enum definition for valid variants");
-            diag_finish();
+            if (disc_val < 0) {
+                diag_begin_error("unknown variant '%s'",
+                    arm->as.match_arm.variant_name
+                        ? arm->as.match_arm.variant_name : "(null)");
+                diag_span(DIAG_NODE(arm), True, "");
+                diag_note("check the enum definition for valid variants");
+                diag_finish();
+                continue;
+            }
+
+            /* declare vi/arm_er in outer scope for payload binding below */
+            variant_info_t *vi = vi_tmp;
+            enum_reg_t *arm_er = arm_er_tmp ? arm_er_tmp : (er ? er : Null);
+
+            LLVMBasicBlockRef arm_bb =
+                LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.arm");
+            LLVMAddCase(sw,
+                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+                             (unsigned long long)disc_val, 0),
+                arm_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
+
+            /* scope: save locals count so binding is invisible after this arm */
+            usize_t saved_locals = cg->locals.count;
+
+            /* bind payload BEFORE evaluating guard (guard may reference binding) */
+            if (arm->as.match_arm.bind_name && vi && vi->has_payload && subject_alloca) {
+                LLVMValueRef payload_ptr = LLVMBuildStructGEP2(
+                    cg->builder, arm_er->llvm_type, subject_alloca, 1, "payload_ptr");
+                LLVMTypeRef payload_lltype = get_llvm_type(cg, vi->payload_type);
+                LLVMValueRef payload_val = LLVMBuildLoad2(
+                    cg->builder, payload_lltype, payload_ptr, arm->as.match_arm.bind_name);
+                LLVMValueRef bind_alloca =
+                    alloc_in_entry(cg, payload_lltype, arm->as.match_arm.bind_name);
+                LLVMBuildStore(cg->builder, payload_val, bind_alloca);
+                symtab_add(&cg->locals, arm->as.match_arm.bind_name,
+                           bind_alloca, payload_lltype, vi->payload_type, False);
+            }
+
+            /* guard clause: if arm has guard, branch on it; fail → default_bb */
+            if (arm->as.match_arm.guard_expr) {
+                LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+                    cg->ctx, cg->current_fn, "match.arm.body");
+                LLVMValueRef guard_val = gen_expr(cg, arm->as.match_arm.guard_expr);
+                LLVMBuildCondBr(cg->builder, guard_val, body_bb, default_bb);
+                LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+            }
+
+            push_dtor_scope(cg);
+            for (usize_t s = 0; s < arm->as.match_arm.body->as.block.stmts.count; s++)
+                gen_stmt(cg, arm->as.match_arm.body->as.block.stmts.items[s]);
+            pop_dtor_scope(cg);
+
+            cg->locals.count = saved_locals;
+
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+                LLVMBuildBr(cg->builder, end_bb);
             continue;
         }
 
-        LLVMBasicBlockRef arm_bb =
-            LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.arm");
-        LLVMAddCase(sw,
-            LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
-                         (unsigned long long)disc_val, 0),
-            arm_bb);
-        LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
+        /* literal arm code path */
+        {
+            LLVMBasicBlockRef arm_bb =
+                LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.lit.arm");
+            LLVMAddCase(sw,
+                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+                             (unsigned long long)(long long)disc_val, 0),
+                arm_bb);
+            LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
 
-        /* scope: save locals count so binding is invisible after this arm */
-        usize_t saved_locals = cg->locals.count;
+            /* guard clause for literal arm */
+            if (arm->as.match_arm.guard_expr) {
+                LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+                    cg->ctx, cg->current_fn, "match.lit.body");
+                LLVMValueRef guard_val = gen_expr(cg, arm->as.match_arm.guard_expr);
+                LLVMBuildCondBr(cg->builder, guard_val, body_bb, default_bb);
+                LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+            }
 
-        /* bind payload value if requested */
-        if (arm->as.match_arm.bind_name && vi && vi->has_payload && subject_alloca) {
-            LLVMValueRef payload_ptr = LLVMBuildStructGEP2(
-                cg->builder, arm_er->llvm_type, subject_alloca, 1, "payload_ptr");
-            LLVMTypeRef payload_lltype = get_llvm_type(cg, vi->payload_type);
-            LLVMValueRef payload_val = LLVMBuildLoad2(
-                cg->builder, payload_lltype, payload_ptr, arm->as.match_arm.bind_name);
-            LLVMValueRef bind_alloca =
-                alloc_in_entry(cg, payload_lltype, arm->as.match_arm.bind_name);
-            LLVMBuildStore(cg->builder, payload_val, bind_alloca);
-            symtab_add(&cg->locals, arm->as.match_arm.bind_name,
-                       bind_alloca, payload_lltype, vi->payload_type, False);
+            usize_t saved_locals = cg->locals.count;
+            push_dtor_scope(cg);
+            for (usize_t s = 0; s < arm->as.match_arm.body->as.block.stmts.count; s++)
+                gen_stmt(cg, arm->as.match_arm.body->as.block.stmts.items[s]);
+            pop_dtor_scope(cg);
+            cg->locals.count = saved_locals;
+
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+                LLVMBuildBr(cg->builder, end_bb);
         }
-
-        push_dtor_scope(cg);
-        for (usize_t s = 0; s < arm->as.match_arm.body->as.block.stmts.count; s++)
-            gen_stmt(cg, arm->as.match_arm.body->as.block.stmts.items[s]);
-        pop_dtor_scope(cg);
-
-        cg->locals.count = saved_locals;
-
-        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
-            LLVMBuildBr(cg->builder, end_bb);
     }
 
     /* generate wildcard / default arm */
     if (wildcard_arm) {
         LLVMPositionBuilderAtEnd(cg->builder, default_bb);
+        usize_t saved_locals = cg->locals.count;
+
+        /* wildcard binding: bind the matched subject value to the given name */
+        if (wildcard_arm->as.match_arm.bind_name && disc_alloca) {
+            type_info_t bind_ti;
+            memset(&bind_ti, 0, sizeof(bind_ti));
+            bind_ti.base = TypeI32;
+            LLVMTypeRef i32ty = LLVMInt32TypeInContext(cg->ctx);
+            symtab_add(&cg->locals, wildcard_arm->as.match_arm.bind_name,
+                       disc_alloca, i32ty, bind_ti, False);
+        }
+
         push_dtor_scope(cg);
         for (usize_t s = 0; s < wildcard_arm->as.match_arm.body->as.block.stmts.count; s++)
             gen_stmt(cg, wildcard_arm->as.match_arm.body->as.block.stmts.items[s]);
         pop_dtor_scope(cg);
+
+        cg->locals.count = saved_locals;
+
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
             LLVMBuildBr(cg->builder, end_bb);
     }

@@ -261,6 +261,10 @@ typedef struct {
     char *generic_templates[64];
     node_t *generic_template_decls[64]; /* parallel AST decl nodes */
     usize_t generic_template_count;
+    /* standalone generic function templates (@comptime[T] fn foo(...)) */
+    char *generic_fn_templates[64];
+    node_t *generic_fn_template_decls[64];
+    usize_t generic_fn_template_count;
     /* active generic substitution context (set during instantiation of a generic struct) */
     char *generic_params[8];        /* formal param names, e.g. "T", "K", "V" */
     type_info_t generic_concs[8];   /* concrete types, e.g. TypeI32 */
@@ -331,6 +335,7 @@ static void emit_struct_field_cleanup(cg_t *cg, struct_reg_t *sr, LLVMValueRef a
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node);
 static void gen_stmt(cg_t *cg, node_t *node);
 static void gen_block(cg_t *cg, node_t *node);
+static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name);
 
 /* DI helpers — defined after the registry helpers but called from gen_local_var
    and gen_stmt which appear earlier in the file. */
@@ -895,8 +900,17 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->as.fn_decl.is_method && decl->as.fn_decl.struct_name
                     && is_generic_template(&cg, decl->as.fn_decl.struct_name))
                 continue;
-            /* skip functions with their own @comptime[T] params
-               (they get generated on demand during generic instantiation) */
+            /* standalone generic functions: register template, generate on demand */
+            if (decl->as.fn_decl.type_param_count > 0 && !decl->as.fn_decl.is_method) {
+                if (cg.generic_fn_template_count < 64) {
+                    cg.generic_fn_templates[cg.generic_fn_template_count] =
+                        decl->as.fn_decl.name;
+                    cg.generic_fn_template_decls[cg.generic_fn_template_count] = decl;
+                    cg.generic_fn_template_count++;
+                }
+                continue;
+            }
+            /* method-level @comptime[T] params: generated on demand by instantiate_method */
             if (decl->as.fn_decl.type_param_count > 0) continue;
 
             /* build the LLVM symbol name: mangle for imported Stasha modules,

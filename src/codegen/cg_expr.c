@@ -921,6 +921,10 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         sym = cg_lookup(cg, mangled);
         if (sym) is_sibling_call = True;
     }
+    /* lazy instantiation for standalone @comptime[T] generic functions */
+    if (!sym && strstr(node->as.call.callee, "_G_")) {
+        sym = try_instantiate_generic_fn(cg, node->as.call.callee);
+    }
     if (!sym) {
         diag_begin_error("undefined function or function pointer '%s'", node->as.call.callee);
         diag_span(DIAG_NODE(node), True, "not defined in this module");
@@ -3326,6 +3330,38 @@ static LLVMValueRef gen_err_prop_call(cg_t *cg, node_t *node) {
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
+/* ── NodeErrProp: expr? — evaluate expr; if error flag set, propagate ── */
+/* Semantics: expr must yield an error struct { i1 has_err; ptr msg }.
+   If has_err is set, early-return the error from the current function
+   (which must itself return error).  Otherwise execution continues.
+   Mirrors gen_err_prop_call; valid only inside error-returning functions. */
+
+static LLVMValueRef gen_err_prop(cg_t *cg, node_t *node) {
+    LLVMValueRef result = gen_expr(cg, node->as.err_prop.operand);
+
+    LLVMTypeRef result_type = LLVMTypeOf(result);
+    if (LLVMGetTypeKind(result_type) != LLVMStructTypeKind ||
+        LLVMCountStructElementTypes(result_type) < 1) {
+        /* operand does not have error type — no-op propagation */
+        return result;
+    }
+
+    LLVMValueRef has_err = LLVMBuildExtractValue(cg->builder, result, 0, "err_flag");
+
+    LLVMBasicBlockRef prop_bb = LLVMAppendBasicBlockInContext(
+        cg->ctx, cg->current_fn, "errop.ret");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
+        cg->ctx, cg->current_fn, "errop.cont");
+    LLVMBuildCondBr(cg->builder, has_err, prop_bb, cont_bb);
+
+    /* propagate path: return the error (enclosing function must return error) */
+    LLVMPositionBuilderAtEnd(cg->builder, prop_bb);
+    LLVMBuildRet(cg->builder, result);
+
+    LLVMPositionBuilderAtEnd(cg->builder, cont_bb);
+    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+}
+
 /* ── NodeAnyTypeExpr: any.(expr) — extract type discriminant tag ── */
 
 static LLVMValueRef gen_any_type_expr(cg_t *cg, node_t *node) {
@@ -3552,6 +3588,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         }
         case NodeConstructorCall: return gen_constructor_call(cg, node);
         case NodeErrPropCall:     return gen_err_prop_call(cg, node);
+        case NodeErrProp:         return gen_err_prop(cg, node);
         case NodeAnyTypeExpr:     return gen_any_type_expr(cg, node);
         default:
             diag_begin_error("unexpected node kind %d in expression", node->kind);

@@ -407,6 +407,11 @@ static boolean_t can_start_param_type(parser_t *p) {
     parser_state_t snap = save_state(p);
     advance_parser(p);
     boolean_t result = check(p, TokIdent) || check(p, TokStar);
+    /* also allow generic instantiation: Ident.[  */
+    if (!result && check(p, TokDot)) {
+        advance_parser(p);
+        result = check(p, TokLBracket);
+    }
     restore_state(p, snap);
     return result;
 }
@@ -436,10 +441,24 @@ static boolean_t can_start_var_decl(parser_t *p) {
         parser_state_t snap = save_state(p);
         advance_parser(p);
         boolean_t result = check(p, TokIdent) || check(p, TokStar);
-        /* generic instantiation: TypeName.[T1,T2,...] VarName */
+        /* generic instantiation: TypeName.[T1,T2,...] VarName
+           Only a var-decl if ']' is followed by an identifier (the var name),
+           NOT if followed by '(' which would be a function call. */
         if (!result && check(p, TokDot)) {
             advance_parser(p);
-            result = check(p, TokLBracket);
+            if (check(p, TokLBracket)) {
+                advance_parser(p); /* consume '[' */
+                /* scan past the type arguments to find ']' */
+                int depth = 1;
+                while (!check(p, TokEof) && depth > 0) {
+                    if (check(p, TokLBracket)) depth++;
+                    else if (check(p, TokRBracket)) depth--;
+                    if (depth > 0) advance_parser(p);
+                }
+                if (check(p, TokRBracket)) advance_parser(p); /* consume ']' */
+                /* var decl only if followed by an identifier, not '(' */
+                result = check(p, TokIdent);
+            }
         }
         restore_state(p, snap);
         return result;
