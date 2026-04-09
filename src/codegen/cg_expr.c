@@ -1799,6 +1799,25 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
             diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
+    } else if (target->kind == NodeUnaryPrefixExpr && target->as.unary.op == TokStar) {
+        /* *.(expr) compound assign */
+        store_ptr = gen_expr(cg, target->as.unary.operand);
+        node_t *inner = target->as.unary.operand;
+        int dd = 1;
+        while (inner->kind == NodeUnaryPrefixExpr && inner->as.unary.op == TokStar) {
+            dd++;
+            inner = inner->as.unary.operand;
+        }
+        if (inner->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
+            if (sym && sym->stype.is_pointer) {
+                type_info_t pt = sym->stype;
+                for (int i = 0; i < dd && pt.is_pointer; i++)
+                    pt = ti_deref_one(pt);
+                store_type = get_llvm_type(cg, pt);
+            }
+        }
+        if (!store_type) store_type = LLVMInt8TypeInContext(cg->ctx);
     } else {
         diag_begin_error("compound assignment target must be assignable");
         diag_span(DIAG_NODE(target), True, "");
@@ -2121,6 +2140,32 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                 }
             }
         }
+    }
+
+    if (target->kind == NodeUnaryPrefixExpr && target->as.unary.op == TokStar) {
+        /* *.(expr) = rhs — store through pointer */
+        LLVMValueRef ptr = gen_expr(cg, target->as.unary.operand);
+        /* determine pointee type by walking the deref chain to its base ident */
+        LLVMTypeRef pointee_type = Null;
+        node_t *inner = target->as.unary.operand;
+        int deref_depth = 1;
+        while (inner->kind == NodeUnaryPrefixExpr && inner->as.unary.op == TokStar) {
+            deref_depth++;
+            inner = inner->as.unary.operand;
+        }
+        if (inner->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
+            if (sym && sym->stype.is_pointer) {
+                type_info_t pt = sym->stype;
+                for (int i = 0; i < deref_depth && pt.is_pointer; i++)
+                    pt = ti_deref_one(pt);
+                pointee_type = get_llvm_type(cg, pt);
+            }
+        }
+        if (!pointee_type) pointee_type = LLVMInt8TypeInContext(cg->ctx);
+        rhs = coerce_int(cg, rhs, pointee_type);
+        LLVMBuildStore(cg->builder, rhs, ptr);
+        return rhs;
     }
 
     diag_begin_error("invalid assignment target");

@@ -1,0 +1,8 @@
+mod ex_slices;
+
+fn main(void): i32 {
+    let s1 = <i32>.(1);
+    
+
+    ret 0;
+}

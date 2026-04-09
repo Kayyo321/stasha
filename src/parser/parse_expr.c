@@ -888,10 +888,21 @@ static node_t *parse_unary(parser_t *p) {
         n->as.addr_of.operand = operand;
         return n;
     }
-    /* pointer dereference: *expr */
+    /* pointer dereference: *expr  or  *.(expr) */
     if (check(p, TokStar)) {
         usize_t line = p->current.line;
         advance_parser(p);
+        if (check(p, TokDot)) {
+            /* *.(expr) — explicit call-style dereference */
+            advance_parser(p); /* consume '.' */
+            consume(p, TokLParen, "'('");
+            node_t *operand = parse_expr(p);
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeUnaryPrefixExpr, line);
+            n->as.unary.op = TokStar;
+            n->as.unary.operand = operand;
+            return n;
+        }
         node_t *operand = parse_unary(p);
         node_t *n = make_node(NodeUnaryPrefixExpr, line);
         n->as.unary.op = TokStar;
@@ -1139,7 +1150,8 @@ static node_t *parse_assignment(parser_t *p) {
     node_t *expr = parse_ternary(p);
 
     if (expr->kind == NodeIdentExpr || expr->kind == NodeIndexExpr
-        || expr->kind == NodeMemberExpr || expr->kind == NodeSelfMemberExpr) {
+        || expr->kind == NodeMemberExpr || expr->kind == NodeSelfMemberExpr
+        || (expr->kind == NodeUnaryPrefixExpr && expr->as.unary.op == TokStar)) {
         if (check(p, TokEq)) {
             advance_parser(p);
             node_t *value = parse_assignment(p);
