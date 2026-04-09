@@ -174,6 +174,15 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         case TypeFuture:
             /* future is an opaque pointer to __future_t in the thread runtime */
             return LLVMPointerTypeInContext(cg->ctx, 0);
+        case TypeSlice: {
+            /* fat pointer: { ptr, i32, i32 } = (data, len, cap) */
+            LLVMTypeRef fields[3] = {
+                LLVMPointerTypeInContext(cg->ctx, 0),
+                LLVMInt32TypeInContext(cg->ctx),
+                LLVMInt32TypeInContext(cg->ctx),
+            };
+            return LLVMStructTypeInContext(cg->ctx, fields, 3, 0);
+        }
     }
     return LLVMVoidTypeInContext(cg->ctx);
 }
@@ -265,6 +274,7 @@ static usize_t payload_type_size(type_info_t ti) {
         case TypeI16:  case TypeU16:               return 2;
         case TypeI32:  case TypeU32: case TypeF32: return 4;
         case TypeI64:  case TypeU64: case TypeF64: return 8;
+        case TypeSlice: return 16; /* ptr(8) + len(4) + cap(4) */
         default: return 8; /* conservative default for user types */
     }
 }

@@ -433,6 +433,122 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* make.([]T, len) / make.([]T, len, cap) — allocate an owned slice.
+       Speculative: only treat as builtin if followed by '.(' */
+    if (check(p, TokMake)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokDot)) {
+            advance_parser(p);
+            if (check(p, TokLParen)) {
+                advance_parser(p);
+                /* parse element type: expects []T */
+                consume(p, TokLBracket, "'['");
+                consume(p, TokRBracket, "']'");
+                type_info_t elem_ti = parse_type(p);
+                consume(p, TokComma, "','");
+                node_t *len_expr = parse_expr(p);
+                node_t *cap_expr = Null;
+                if (match_tok(p, TokComma))
+                    cap_expr = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                node_t *n = make_node(NodeMakeExpr, line);
+                n->as.make_expr.elem_type = elem_ti;
+                n->as.make_expr.len       = len_expr;
+                n->as.make_expr.cap       = cap_expr;
+                return n;
+            }
+        }
+        restore_state(p, snap);
+    }
+
+    /* append.(slice, val) — append value to slice, return new slice.
+       Speculative: only treat as builtin if followed by '.(' */
+    if (check(p, TokAppend)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokDot)) {
+            advance_parser(p);
+            if (check(p, TokLParen)) {
+                advance_parser(p);
+                node_t *slice = parse_expr(p);
+                consume(p, TokComma, "','");
+                node_t *val = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                node_t *n = make_node(NodeAppendExpr, line);
+                n->as.append_expr.slice = slice;
+                n->as.append_expr.val   = val;
+                return n;
+            }
+        }
+        restore_state(p, snap);
+    }
+
+    /* copy.(dst, src) — copy min(len(dst),len(src)) elements, return count.
+       Speculative: only treat as builtin if followed by '.(' */
+    if (check(p, TokCopy)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokDot)) {
+            advance_parser(p);
+            if (check(p, TokLParen)) {
+                advance_parser(p);
+                node_t *dst = parse_expr(p);
+                consume(p, TokComma, "','");
+                node_t *src = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                node_t *n = make_node(NodeCopyExpr, line);
+                n->as.copy_expr.dst = dst;
+                n->as.copy_expr.src = src;
+                return n;
+            }
+        }
+        restore_state(p, snap);
+    }
+
+    /* len.(s) — current element count.
+       Speculative: only treat as builtin if followed by '.(' */
+    if (check(p, TokLen)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokDot)) {
+            advance_parser(p);
+            if (check(p, TokLParen)) {
+                advance_parser(p);
+                node_t *operand = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                node_t *n = make_node(NodeLenExpr, line);
+                n->as.len_expr.operand = operand;
+                return n;
+            }
+        }
+        restore_state(p, snap);
+    }
+
+    /* cap.(s) — backing capacity.
+       Speculative: only treat as builtin if followed by '.(' */
+    if (check(p, TokCap)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokDot)) {
+            advance_parser(p);
+            if (check(p, TokLParen)) {
+                advance_parser(p);
+                node_t *operand = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                node_t *n = make_node(NodeCapExpr, line);
+                n->as.len_expr.operand = operand;
+                return n;
+            }
+        }
+        restore_state(p, snap);
+    }
+
     /* this — self-reference inside method bodies */
     if (check(p, TokThis)) {
         token_t this_tok = p->current;
@@ -445,8 +561,10 @@ static node_t *parse_primary(parser_t *p) {
     }
 
     /* identifier — may be designated initializer: Type { .x = 1, .y = 2 } */
-    /* soft keywords used as variable names: from, new, rem */
-    if (check(p, TokFrom) || check(p, TokNew) || check(p, TokRem)) {
+    /* soft keywords used as variable names: from, new, rem, len, cap, make, append, copy */
+    if (check(p, TokFrom) || check(p, TokNew) || check(p, TokRem)
+            || check(p, TokLen) || check(p, TokCap)
+            || check(p, TokMake) || check(p, TokAppend) || check(p, TokCopy)) {
         token_t ident_tok = p->current;
         usize_t line = p->current.line;
         char *name = copy_token_text(p->current);
@@ -475,7 +593,7 @@ static node_t *parse_primary(parser_t *p) {
                 node_list_init(&n->as.desig_init.values);
                 do {
                     consume(p, TokDot, "'.'");
-                    token_t fname = consume(p, TokIdent, "field name");
+                    token_t fname = consume_name(p, "field name");
                     node_t *fn_node = make_node(NodeIdentExpr, fname.line);
                     ast_set_loc(fn_node, fname);
                     fn_node->as.ident.name = copy_token_text(fname);
@@ -593,11 +711,44 @@ static node_t *parse_postfix(parser_t *p) {
             continue;
         }
 
-        /* array index: expr[idx] */
+        /* array/slice index: expr[idx] or slice expression expr[lo:hi] */
         if (check(p, TokLBracket)) {
             usize_t line = p->current.line;
-            advance_parser(p);
+            advance_parser(p); /* consume '[' */
+
+            /* arr[:] — whole slice with no lo */
+            if (check(p, TokColon)) {
+                advance_parser(p); /* consume ':' */
+                node_t *hi = Null;
+                if (!check(p, TokRBracket))
+                    hi = parse_expr(p);
+                consume(p, TokRBracket, "']'");
+                node_t *n = make_node(NodeSliceExpr, line);
+                n->as.slice_expr.object = expr;
+                n->as.slice_expr.lo     = Null;
+                n->as.slice_expr.hi     = hi;
+                expr = n;
+                continue;
+            }
+
             node_t *index = parse_expr(p);
+
+            /* check for ':' after the first expression — this is a slice */
+            if (check(p, TokColon)) {
+                advance_parser(p); /* consume ':' */
+                node_t *hi = Null;
+                if (!check(p, TokRBracket))
+                    hi = parse_expr(p);
+                consume(p, TokRBracket, "']'");
+                node_t *n = make_node(NodeSliceExpr, line);
+                n->as.slice_expr.object = expr;
+                n->as.slice_expr.lo     = index; /* lo */
+                n->as.slice_expr.hi     = hi;
+                expr = n;
+                continue;
+            }
+
+            /* plain index */
             consume(p, TokRBracket, "']'");
             node_t *n = make_node(NodeIndexExpr, line);
             n->as.index_expr.object = expr;
@@ -642,7 +793,7 @@ static node_t *parse_postfix(parser_t *p) {
                         node_list_init(&di->as.desig_init.values);
                         do {
                             consume(p, TokDot, "'.'");
-                            token_t fname = consume(p, TokIdent, "field name");
+                            token_t fname = consume_name(p, "field name");
                             node_t *fn_node = make_node(NodeIdentExpr, fname.line);
                             ast_set_loc(fn_node, fname);
                             fn_node->as.ident.name = copy_token_text(fname);
@@ -666,7 +817,7 @@ static node_t *parse_postfix(parser_t *p) {
                 /* consume method/field name */
                 char *field_name;
                 token_t field_tok;
-                if (check(p, TokIdent)) {
+                if (is_name_token(p)) {
                     field_tok = p->current;
                     field_name = copy_token_text(p->current);
                     advance_parser(p);
@@ -735,7 +886,7 @@ static node_t *parse_postfix(parser_t *p) {
                 advance_parser(p); /* consume '(' */
                 boolean_t is_self_member = False;
                 token_t field_tok = p->current;
-                if (check(p, TokIdent)) {
+                if (is_name_token(p)) {
                     advance_parser(p);
                     if (check(p, TokRParen)) {
                         /* Exactly (ident) — self member access */
@@ -775,20 +926,12 @@ static node_t *parse_postfix(parser_t *p) {
                 continue;
             }
 
-            /* consume method/field name — accept keywords new/rem/print as method names */
+            /* consume method/field name — accept contextual keywords as method names */
             char *field_name;
             token_t field_tok;
-            if (check(p, TokIdent)) {
+            if (is_name_token(p)) {
                 field_tok = p->current;
                 field_name = copy_token_text(p->current);
-                advance_parser(p);
-            } else if (check(p, TokNew)) {
-                field_tok = p->current;
-                field_name = ast_strdup("new", 3);
-                advance_parser(p);
-            } else if (check(p, TokRem)) {
-                field_tok = p->current;
-                field_name = ast_strdup("rem", 3);
                 advance_parser(p);
             } else if (check(p, TokPrint)) {
                 field_tok = p->current;

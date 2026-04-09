@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "parser.h"
 
 typedef struct {
@@ -184,12 +185,31 @@ static const char *comptime_type_name(type_info_t ti) {
         case TypeF32:   return "f32";
         case TypeF64:   return "f64";
         case TypeUser:  return ti.user_name ? ti.user_name : "user";
+        case TypeSlice: return "slice";
         default:        return "type";
     }
 }
 
 static type_info_t parse_type(parser_t *p) {
     type_info_t info = NO_TYPE;
+
+    /* slice type: []T — [ immediately followed by ] */
+    if (check(p, TokLBracket)) {
+        /* peek at what follows the '[' without consuming */
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* consume '[' */
+        if (check(p, TokRBracket)) {
+            advance_parser(p); /* consume ']' */
+            type_info_t elem = parse_type(p);
+            type_info_t ti = NO_TYPE;
+            ti.base = TypeSlice;
+            ti.elem_type = alloc_type_array(1);
+            ti.elem_type[0] = elem;
+            return ti;
+        }
+        /* not a slice — restore */
+        restore_state(p, snap);
+    }
 
     /* function pointer type: fn*(params): ret_type */
     if (check(p, TokFn)) {
@@ -393,6 +413,14 @@ static node_t *parse_comptime_assert(parser_t *p);
 static node_t *parse_at_comptime_assert(parser_t *p);
 
 static boolean_t can_start_type(parser_t *p) {
+    if (check(p, TokLBracket)) {
+        /* []T slice type — peek to confirm next is ']' */
+        parser_state_t snap = save_state(p);
+        advance_parser(p);
+        boolean_t is_slice = check(p, TokRBracket);
+        restore_state(p, snap);
+        if (is_slice) return True;
+    }
     return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn)
         || check(p, TokAny);
 }
@@ -403,6 +431,14 @@ static boolean_t can_start_type(parser_t *p) {
 static boolean_t can_start_param_type(parser_t *p) {
     if (is_builtin_type_token(p->current.kind)) return True;
     if (check(p, TokFn)) return True; /* fn* function pointer type */
+    /* []T slice type */
+    if (check(p, TokLBracket)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p);
+        boolean_t is_slice = check(p, TokRBracket);
+        restore_state(p, snap);
+        if (is_slice) return True;
+    }
     if (!check(p, TokIdent)) return False;
     parser_state_t snap = save_state(p);
     advance_parser(p);
@@ -416,9 +452,19 @@ static boolean_t can_start_param_type(parser_t *p) {
     return result;
 }
 
-/* accept an identifier or a contextual keyword used as a name (from, new, rem) */
+/* Returns true if the current token can be used as an identifier/name.
+   Slice builtins (len, cap, make, append, copy) are contextual keywords —
+   they parse as special expressions but are also valid names in all other
+   contexts (field names, parameter names, variable names, etc.). */
+static boolean_t is_name_token(parser_t *p) {
+    token_kind_t k = p->current.kind;
+    return k == TokIdent || k == TokFrom || k == TokNew || k == TokRem
+        || k == TokLen || k == TokCap || k == TokMake || k == TokAppend || k == TokCopy;
+}
+
+/* accept an identifier or a contextual keyword used as a name */
 static token_t consume_name(parser_t *p, const char *msg) {
-    if (check(p, TokIdent) || check(p, TokFrom) || check(p, TokNew) || check(p, TokRem)) {
+    if (is_name_token(p)) {
         advance_parser(p);
         return p->previous;
     }

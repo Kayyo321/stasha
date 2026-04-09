@@ -275,7 +275,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         return n;
     }
 
-    token_t name_tok = consume(p, TokIdent, "variable name");
+    token_t name_tok = consume_name(p, "variable name");
     char *name = copy_token_text(name_tok);
 
     /* array: type name[size] — size may be an int literal or a named const */

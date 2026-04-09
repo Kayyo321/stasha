@@ -181,6 +181,11 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("any", TokAny);
     KW("interface", TokInterface);
     KW("macro", TokMacro);
+    KW("make",   TokMake);
+    KW("append", TokAppend);
+    KW("copy",   TokCopy);
+    KW("len",    TokLen);
+    KW("cap",    TokCap);
 
     KW("i8", TokI8);
     KW("i16", TokI16);

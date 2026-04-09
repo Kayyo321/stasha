@@ -7,6 +7,11 @@ static type_info_t subst_type_info(cg_t *cg, type_info_t ti);
 static struct_reg_t *try_instantiate_any(cg_t *cg, const char *name);
 static LLVMValueRef wrap_in_any(cg_t *cg, struct_reg_t *sr, LLVMValueRef val, usize_t variant_idx);
 
+/* forward declarations for slice helpers defined later in this file */
+static LLVMTypeRef get_slice_elem_llvm_type(cg_t *cg, type_info_t elem_ti);
+static LLVMTypeRef slice_struct_type(cg_t *cg);
+static LLVMTypeRef elem_type_from_sym(cg_t *cg, symbol_t *sym);
+
 /* Find the struct registry entry whose LLVM type matches ty.
  * This is more reliable than LLVMGetStructName + find_struct because the
  * LLVM struct name is mangled (e.g. "dstring__dstring_t") while the registry
@@ -1754,7 +1759,7 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
         store_type = sym->type;
         atomic = (sym->flags & SymAtomic) != 0;
     } else if (target->kind == NodeIndexExpr) {
-        /* arr[i] compound assign */
+        /* arr[i] / slice[i] compound assign */
         node_t *obj = target->as.index_expr.object;
         node_t *idx = target->as.index_expr.index;
         if (obj->kind == NodeIdentExpr) {
@@ -1767,12 +1772,23 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
                 return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
             }
             LLVMValueRef index_val = gen_expr(cg, idx);
-            LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-            index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-            LLVMValueRef indices[2] = { zero, index_val };
-            LLVMTypeRef elem_type = LLVMGetElementType(sym->type);
-            store_ptr = LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "idx");
-            store_type = elem_type;
+            if (sym->stype.base == TypeSlice) {
+                /* slice compound assign: load struct, GEP, use as store_ptr */
+                LLVMTypeRef sl_ty  = slice_struct_type(cg);
+                LLVMValueRef sl    = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
+                LLVMValueRef dptr  = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+                LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
+                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                store_ptr  = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
+                store_type = elem_ty;
+            } else {
+                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
+                LLVMValueRef indices[2] = { zero, index_val };
+                LLVMTypeRef elem_type = LLVMGetElementType(sym->type);
+                store_ptr = LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "idx");
+                store_type = elem_type;
+            }
         }
     } else if (target->kind == NodeSelfMemberExpr) {
         symbol_t *this_sym = cg_lookup(cg, "this");
@@ -1956,6 +1972,16 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
                 LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
                 index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
                 LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
+                rhs = coerce_int(cg, rhs, elem_ty);
+                LLVMBuildStore(cg->builder, rhs, gep);
+            } else if (sym->stype.base == TypeSlice) {
+                /* slice[i] = rhs: load struct, GEP into data ptr, store */
+                LLVMTypeRef sl_ty  = slice_struct_type(cg);
+                LLVMValueRef sl    = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
+                LLVMValueRef dptr  = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+                LLVMTypeRef elem_ty = elem_type_from_sym(cg, sym);
+                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+                LLVMValueRef gep   = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
                 rhs = coerce_int(cg, rhs, elem_ty);
                 LLVMBuildStore(cg->builder, rhs, gep);
             }
@@ -2208,6 +2234,16 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
             index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
             LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
             return LLVMBuildLoad2(cg->builder, elem_ty, gep, "pelem");
+        }
+        if (sym->stype.base == TypeSlice) {
+            /* slice[i]: load struct, extract ptr, GEP and load */
+            LLVMTypeRef sl_ty  = slice_struct_type(cg);
+            LLVMValueRef sl    = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
+            LLVMValueRef dptr  = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+            LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
+            index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+            LLVMValueRef gep   = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
+            return LLVMBuildLoad2(cg->builder, elem_ty, gep, "selem");
         }
     }
 
@@ -3407,6 +3443,305 @@ static LLVMValueRef gen_err_prop(cg_t *cg, node_t *node) {
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
+/* ── slice helpers ──────────────────────────────────────────────────────────── */
+
+/* Apply generic type-param substitution to a slice element type. */
+static LLVMTypeRef get_slice_elem_llvm_type(cg_t *cg, type_info_t elem_ti) {
+    if (elem_ti.base == TypeUser && elem_ti.user_name && cg->generic_n > 0) {
+        for (usize_t i = 0; i < cg->generic_n; i++) {
+            if (strcmp(elem_ti.user_name, cg->generic_params[i]) == 0) {
+                elem_ti = cg->generic_concs[i];
+                break;
+            }
+        }
+        if (elem_ti.base == TypeUser && elem_ti.user_name) {
+            const char *sub = cg_subst_name(cg, elem_ti.user_name);
+            if (sub != elem_ti.user_name) elem_ti.user_name = (char *)sub;
+        }
+    }
+    return get_llvm_type(cg, elem_ti);
+}
+
+/* Build the anonymous slice struct type { ptr, i32, i32 }. */
+static LLVMTypeRef slice_struct_type(cg_t *cg) {
+    LLVMTypeRef fields[3] = {
+        LLVMPointerTypeInContext(cg->ctx, 0),
+        LLVMInt32TypeInContext(cg->ctx),
+        LLVMInt32TypeInContext(cg->ctx),
+    };
+    return LLVMStructTypeInContext(cg->ctx, fields, 3, 0);
+}
+
+/* Get element LLVM type from a symbol whose stype is TypeSlice. */
+static LLVMTypeRef elem_type_from_sym(cg_t *cg, symbol_t *sym) {
+    if (sym && sym->stype.base == TypeSlice && sym->stype.elem_type)
+        return get_slice_elem_llvm_type(cg, sym->stype.elem_type[0]);
+    return LLVMInt8TypeInContext(cg->ctx);
+}
+
+/* ── NodeSliceExpr: arr[lo:hi] / arr[:] / arr[lo:] / arr[:hi] ── */
+
+static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
+    node_t *obj    = node->as.slice_expr.object;
+    node_t *lo_nd  = node->as.slice_expr.lo;
+    node_t *hi_nd  = node->as.slice_expr.hi;
+
+    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
+    LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef sl_ty   = slice_struct_type(cg);
+
+    LLVMValueRef base_ptr = Null;
+    LLVMValueRef orig_len = Null;
+    LLVMValueRef orig_cap = Null;
+    LLVMTypeRef  elem_ty  = LLVMInt8TypeInContext(cg->ctx);
+
+    if (obj->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+        if (sym) {
+            if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
+                /* fixed array → borrow as slice */
+                long arr_sz = sym->array_size > 0 ? sym->array_size : 0;
+                LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+                LLVMValueRef idx[2] = { zero, zero };
+                base_ptr = LLVMBuildGEP2(cg->builder, sym->type, sym->value, idx, 2, "arr2sl.ptr");
+                elem_ty  = LLVMGetElementType(sym->type);
+                orig_len = LLVMConstInt(i32_ty, (unsigned long long)arr_sz, 0);
+                orig_cap = orig_len;
+            } else if (sym->stype.base == TypeSlice) {
+                /* slice → reslice */
+                LLVMValueRef sl = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "rsl");
+                base_ptr = LLVMBuildExtractValue(cg->builder, sl, 0, "rsl.ptr");
+                orig_len = LLVMBuildExtractValue(cg->builder, sl, 1, "rsl.len");
+                orig_cap = LLVMBuildExtractValue(cg->builder, sl, 2, "rsl.cap");
+                elem_ty  = elem_type_from_sym(cg, sym);
+            }
+        }
+    }
+
+    /* fallback: evaluate the object as an expression */
+    if (!base_ptr) {
+        LLVMValueRef val = gen_expr(cg, obj);
+        if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMStructTypeKind) {
+            base_ptr = LLVMBuildExtractValue(cg->builder, val, 0, "rsl.ptr");
+            orig_len = LLVMBuildExtractValue(cg->builder, val, 1, "rsl.len");
+            orig_cap = LLVMBuildExtractValue(cg->builder, val, 2, "rsl.cap");
+        } else if (llvm_is_ptr(LLVMTypeOf(val))) {
+            base_ptr = val;
+            orig_len = LLVMConstInt(i32_ty, 0, 0);
+            orig_cap = orig_len;
+        } else {
+            return LLVMConstNull(sl_ty);
+        }
+    }
+
+    LLVMValueRef lo = lo_nd
+        ? coerce_int(cg, gen_expr(cg, lo_nd), i32_ty)
+        : LLVMConstInt(i32_ty, 0, 0);
+    LLVMValueRef hi = hi_nd
+        ? coerce_int(cg, gen_expr(cg, hi_nd), i32_ty)
+        : orig_len;
+
+    /* new_ptr = GEP(base_ptr, lo) */
+    LLVMValueRef lo64    = LLVMBuildZExt(cg->builder, lo, i64_ty, "lo64");
+    LLVMValueRef new_ptr = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &lo64, 1, "sl.nptr");
+
+    /* new_len = hi - lo,  new_cap = orig_cap - lo */
+    LLVMValueRef new_len = LLVMBuildSub(cg->builder, hi,       lo, "sl.nlen");
+    LLVMValueRef new_cap = LLVMBuildSub(cg->builder, orig_cap, lo, "sl.ncap");
+
+    LLVMValueRef result = LLVMGetUndef(sl_ty);
+    result = LLVMBuildInsertValue(cg->builder, result, new_ptr, 0, "sl.0");
+    result = LLVMBuildInsertValue(cg->builder, result, new_len, 1, "sl.1");
+    result = LLVMBuildInsertValue(cg->builder, result, new_cap, 2, "sl.2");
+    return result;
+}
+
+/* ── NodeMakeExpr: make.([]T, len) / make.([]T, len, cap) ── */
+
+static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
+    type_info_t elem_ti = node->as.make_expr.elem_type;
+    LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
+
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+    LLVMTypeRef sl_ty  = slice_struct_type(cg);
+
+    LLVMValueRef len_val = coerce_int(cg, gen_expr(cg, node->as.make_expr.len), i32_ty);
+    LLVMValueRef cap_val = node->as.make_expr.cap
+        ? coerce_int(cg, gen_expr(cg, node->as.make_expr.cap), i32_ty)
+        : len_val;
+
+    /* bytes = (i64)cap * sizeof(elem) */
+    LLVMValueRef elem_sz = LLVMSizeOf(elem_ty);
+    LLVMValueRef cap64   = LLVMBuildZExt(cg->builder, cap_val, i64_ty, "cap64");
+    LLVMValueRef bytes   = LLVMBuildMul(cg->builder, cap64, elem_sz, "mk.bytes");
+
+    /* ptr = malloc(bytes); zero-init with memset */
+    LLVMValueRef margs[1] = { bytes };
+    LLVMValueRef ptr = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
+                                      margs, 1, "mk.ptr");
+    LLVMBuildMemSet(cg->builder, ptr,
+                    LLVMConstInt(LLVMInt8TypeInContext(cg->ctx), 0, 0),
+                    bytes, 0);
+
+    LLVMValueRef result = LLVMGetUndef(sl_ty);
+    result = LLVMBuildInsertValue(cg->builder, result, ptr,     0, "mk.0");
+    result = LLVMBuildInsertValue(cg->builder, result, len_val, 1, "mk.1");
+    result = LLVMBuildInsertValue(cg->builder, result, cap_val, 2, "mk.2");
+    return result;
+}
+
+/* ── NodeAppendExpr: append.(slice, val) ── */
+
+static LLVMValueRef gen_append_expr(cg_t *cg, node_t *node) {
+    node_t *slice_nd = node->as.append_expr.slice;
+    node_t *val_nd   = node->as.append_expr.val;
+
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef sl_ty  = slice_struct_type(cg);
+
+    /* determine element type from the slice variable */
+    LLVMTypeRef elem_ty = LLVMInt8TypeInContext(cg->ctx);
+    if (slice_nd->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, slice_nd->as.ident.name);
+        elem_ty = elem_type_from_sym(cg, sym);
+    }
+    LLVMValueRef elem_sz = LLVMSizeOf(elem_ty);
+
+    /* load or synthesize the slice struct (nil → zero struct) */
+    LLVMValueRef sl;
+    if (slice_nd->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, slice_nd->as.ident.name);
+        if (sym && sym->stype.base == TypeSlice)
+            sl = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "ap.sl");
+        else
+            sl = LLVMConstNull(sl_ty);
+    } else {
+        sl = gen_expr(cg, slice_nd);
+        if (LLVMGetTypeKind(LLVMTypeOf(sl)) != LLVMStructTypeKind)
+            sl = LLVMConstNull(sl_ty);
+    }
+
+    LLVMValueRef old_ptr = LLVMBuildExtractValue(cg->builder, sl, 0, "ap.optr");
+    LLVMValueRef old_len = LLVMBuildExtractValue(cg->builder, sl, 1, "ap.olen");
+    LLVMValueRef old_cap = LLVMBuildExtractValue(cg->builder, sl, 2, "ap.ocap");
+
+    /* if len == cap, reallocate */
+    LLVMValueRef need_grow = LLVMBuildICmp(cg->builder, LLVMIntEQ, old_len, old_cap, "ap.grow");
+
+    LLVMBasicBlockRef grow_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ap.grow");
+    LLVMBasicBlockRef cont_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ap.cont");
+    LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ap.merge");
+
+    LLVMBuildCondBr(cg->builder, need_grow, grow_bb, cont_bb);
+
+    /* grow path: new_cap = cap == 0 ? 1 : cap*2; realloc(ptr, new_cap*elem_sz) */
+    LLVMPositionBuilderAtEnd(cg->builder, grow_bb);
+    LLVMValueRef is_zero  = LLVMBuildICmp(cg->builder, LLVMIntEQ, old_cap,
+                                           LLVMConstInt(i32_ty, 0, 0), "ap.czero");
+    LLVMValueRef dbl_cap  = LLVMBuildMul(cg->builder, old_cap,
+                                          LLVMConstInt(i32_ty, 2, 0), "ap.dbl");
+    LLVMValueRef new_cap_g = LLVMBuildSelect(cg->builder, is_zero,
+                                              LLVMConstInt(i32_ty, 1, 0), dbl_cap, "ap.ncap");
+    LLVMValueRef ncap64   = LLVMBuildZExt(cg->builder, new_cap_g, i64_ty, "ap.ncap64");
+    LLVMValueRef nbytes   = LLVMBuildMul(cg->builder, ncap64, elem_sz, "ap.nbytes");
+    LLVMValueRef realloc_args[2] = { old_ptr, nbytes };
+    LLVMValueRef new_ptr_g = LLVMBuildCall2(cg->builder, cg->realloc_type, cg->realloc_fn,
+                                             realloc_args, 2, "ap.nptr");
+    LLVMBuildBr(cg->builder, merge_bb);
+
+    /* no-grow path: keep old ptr/cap */
+    LLVMPositionBuilderAtEnd(cg->builder, cont_bb);
+    LLVMBuildBr(cg->builder, merge_bb);
+
+    /* merge: phi for ptr and cap */
+    LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
+
+    LLVMValueRef phi_ptr = LLVMBuildPhi(cg->builder, ptr_ty, "ap.rptr");
+    {
+        LLVMValueRef phi_vals[2] = { new_ptr_g, old_ptr };
+        LLVMBasicBlockRef phi_bbs[2] = { grow_bb, cont_bb };
+        LLVMAddIncoming(phi_ptr, phi_vals, phi_bbs, 2);
+    }
+
+    LLVMValueRef phi_cap = LLVMBuildPhi(cg->builder, i32_ty, "ap.rcap");
+    {
+        LLVMValueRef phi_vals[2] = { new_cap_g, old_cap };
+        LLVMBasicBlockRef phi_bbs[2] = { grow_bb, cont_bb };
+        LLVMAddIncoming(phi_cap, phi_vals, phi_bbs, 2);
+    }
+
+    /* store val at ptr[len] */
+    LLVMValueRef ilen64 = LLVMBuildZExt(cg->builder, old_len, i64_ty, "ap.ilen64");
+    LLVMValueRef slot   = LLVMBuildGEP2(cg->builder, elem_ty, phi_ptr, &ilen64, 1, "ap.slot");
+    LLVMValueRef val    = coerce_int(cg, gen_expr(cg, val_nd), elem_ty);
+    LLVMBuildStore(cg->builder, val, slot);
+
+    LLVMValueRef new_len = LLVMBuildAdd(cg->builder, old_len,
+                                         LLVMConstInt(i32_ty, 1, 0), "ap.nlen");
+
+    LLVMValueRef result = LLVMGetUndef(sl_ty);
+    result = LLVMBuildInsertValue(cg->builder, result, phi_ptr, 0, "ap.s0");
+    result = LLVMBuildInsertValue(cg->builder, result, new_len,  1, "ap.s1");
+    result = LLVMBuildInsertValue(cg->builder, result, phi_cap,  2, "ap.s2");
+    return result;
+}
+
+/* ── NodeCopyExpr: copy.(dst, src) → i32 ── */
+
+static LLVMValueRef gen_copy_expr(cg_t *cg, node_t *node) {
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+
+    /* determine element type from dst */
+    LLVMTypeRef elem_ty = LLVMInt8TypeInContext(cg->ctx);
+    if (node->as.copy_expr.dst->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, node->as.copy_expr.dst->as.ident.name);
+        elem_ty = elem_type_from_sym(cg, sym);
+    }
+    LLVMValueRef elem_sz = LLVMSizeOf(elem_ty);
+
+    LLVMValueRef dst_sl = gen_expr(cg, node->as.copy_expr.dst);
+    LLVMValueRef src_sl = gen_expr(cg, node->as.copy_expr.src);
+
+    LLVMValueRef dst_ptr = LLVMBuildExtractValue(cg->builder, dst_sl, 0, "cp.dptr");
+    LLVMValueRef dst_len = LLVMBuildExtractValue(cg->builder, dst_sl, 1, "cp.dlen");
+    LLVMValueRef src_ptr = LLVMBuildExtractValue(cg->builder, src_sl, 0, "cp.sptr");
+    LLVMValueRef src_len = LLVMBuildExtractValue(cg->builder, src_sl, 1, "cp.slen");
+
+    /* n = min(dst_len, src_len) */
+    LLVMValueRef cmp = LLVMBuildICmp(cg->builder, LLVMIntSLE, dst_len, src_len, "cp.cmp");
+    LLVMValueRef n   = LLVMBuildSelect(cg->builder, cmp, dst_len, src_len, "cp.n");
+
+    /* bytes = n * sizeof(elem); memmove for overlap safety */
+    LLVMValueRef n64   = LLVMBuildZExt(cg->builder, n, i64_ty, "cp.n64");
+    LLVMValueRef bytes = LLVMBuildMul(cg->builder, n64, elem_sz, "cp.bytes");
+    LLVMBuildMemMove(cg->builder, dst_ptr, 0, src_ptr, 0, bytes);
+
+    return n;
+}
+
+/* ── NodeLenExpr / NodeCapExpr ── */
+
+static LLVMValueRef gen_len_expr(cg_t *cg, node_t *node) {
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef val   = gen_expr(cg, node->as.len_expr.operand);
+    if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMStructTypeKind)
+        return LLVMBuildExtractValue(cg->builder, val, 1, "sl.len");
+    return LLVMConstInt(i32_ty, 0, 0);
+}
+
+static LLVMValueRef gen_cap_expr(cg_t *cg, node_t *node) {
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef val   = gen_expr(cg, node->as.len_expr.operand);
+    if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMStructTypeKind)
+        return LLVMBuildExtractValue(cg->builder, val, 2, "sl.cap");
+    return LLVMConstInt(i32_ty, 0, 0);
+}
+
 /* ── NodeAnyTypeExpr: any.(expr) — extract type discriminant tag ── */
 
 static LLVMValueRef gen_any_type_expr(cg_t *cg, node_t *node) {
@@ -3635,6 +3970,12 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeErrPropCall:     return gen_err_prop_call(cg, node);
         case NodeErrProp:         return gen_err_prop(cg, node);
         case NodeAnyTypeExpr:     return gen_any_type_expr(cg, node);
+        case NodeSliceExpr:       return gen_slice_expr(cg, node);
+        case NodeMakeExpr:        return gen_make_expr(cg, node);
+        case NodeAppendExpr:      return gen_append_expr(cg, node);
+        case NodeCopyExpr:        return gen_copy_expr(cg, node);
+        case NodeLenExpr:         return gen_len_expr(cg, node);
+        case NodeCapExpr:         return gen_cap_expr(cg, node);
         default:
             diag_begin_error("unexpected node kind %d in expression", node->kind);
             diag_finish();

@@ -132,7 +132,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     boolean_t is_let_binding = (node->as.var_decl.flags & VdeclLet) != 0
                              || ti.base == TypeVoid; /* multi-assign target: no type yet */
     if (!is_let_binding) {
-        if (node->as.var_decl.storage == StorageHeap && !ti.is_pointer && ti.base != TypeFnPtr) {
+        if (node->as.var_decl.storage == StorageHeap && !ti.is_pointer
+                && ti.base != TypeFnPtr && ti.base != TypeSlice) {
             const char *qual = "heap";
             diag_begin_error("'%s' qualifier is not allowed on non-pointer variable '%s'",
                              qual, node->as.var_decl.name ? node->as.var_decl.name : "?");
@@ -193,6 +194,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* nil → error type produces a nil error struct */
         if (node->as.var_decl.init->kind == NodeNilExpr && ti.base == TypeError) {
             init = make_nil_error(cg);
+        } else if (node->as.var_decl.init->kind == NodeNilExpr && ti.base == TypeSlice) {
+            /* nil → zero-initialised slice { null, 0, 0 } */
+            init = LLVMConstNull(type);
         } else {
             cg->hint_ret_type = type;
             init = gen_expr(cg, node->as.var_decl.init);
@@ -249,6 +253,10 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         if (sr && sr->destructor)
             add_dtor_var(cg, alloca_val, ti.user_name);
     }
+
+    /* register heap []T for auto-free of backing allocation at scope exit */
+    if (ti.base == TypeSlice && node->as.var_decl.storage == StorageHeap)
+        add_heap_slice(cg, alloca_val);
 }
 
 static void gen_for(cg_t *cg, node_t *node) {

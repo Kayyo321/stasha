@@ -1,8 +1,213 @@
 mod ex_slices;
 
+// ── Slices ─────────────────────────────────────────────────────────────────
+//
+// A slice is a fat pointer — (ptr, len, cap) — giving a dynamic view over a
+// contiguous sequence of elements.  Unlike a fixed array, size is not part
+// of the type.
+//
+// Ownership is expressed through the storage qualifier, consistent with the
+// rest of the language:
+//
+//   heap []T s = make.([]T, len)   — owns the backing allocation;
+//                                    auto-freed when s goes out of scope.
+//   stack []T v = arr[:]           — borrowed view into an existing array
+//                                    or slice; never frees.
+//
+// Slice expressions:
+//   arr[:]        whole array as a view
+//   arr[lo:hi]    elements (lo, hi)
+//   arr[lo:]      from lo to end
+//   arr[:hi]      from 0 to hi
+//   s[lo:hi]      reslice — narrower view into the same backing store
+//
+// Builtin operations:
+//   make.([]T, len)        allocate an owned slice, zeroed, cap = len
+//   make.([]T, len, cap)   as above with explicit capacity
+//   append.(s, val)        return a new heap []T with val appended;
+//                          reallocates 2× if len == cap
+//   copy.(dst, src)        copy min(len(dst),len(src)) elements; return count
+//   len.(s)                current element count
+//   cap.(s)                backing capacity
+// ───────────────────────────────────────────────────────────────────────────
+
+// ── Slice parameters are always stack []T (borrowed view) ─────────────────
+//
+// Functions receive a view — callers pass either a heap or stack slice
+// and the fat pointer is copied.  Mutations reach the shared backing store.
+
+int fn sum(stack []i32 s): i32 {
+    stack i32 total = 0;
+    for (stack i32 i = 0; i < len.(s); i++) {
+        total += s[i];
+    }
+    ret total;
+}
+
+int fn fill(stack []i32 s, stack i32 val): void {
+    for (stack i32 i = 0; i < len.(s); i++) {
+        s[i] = val;
+    }
+}
+
+int fn print_slice(stack []i32 s): void {
+    print.('[');
+    for (stack i32 i = 0; i < len.(s); i++) {
+        if (i > 0) { print.(' '); }
+        print.('{:3}', s[i]);
+    }
+    print.(']\n');
+}
+
+fn @comptime[T] contains(stack []T s, stack T val): bool {
+    for (stack i32 i = 0; i < len.(s); i++) {
+        if (s[i] == val) { ret true; }
+    }
+    ret false;
+}
+
+fn @comptime[T] reverse(stack []T s): void {
+    stack i32 lo = 0;
+    stack i32 hi = len.(s) - 1;
+    while (lo < hi) {
+        stack T tmp = s[lo];
+        s[lo]       = s[hi];
+        s[hi]       = tmp;
+        lo++; hi--;
+    }
+}
+
 fn main(void): i32 {
-    let s1 = <i32>.(1);
-    
+
+    // ── Borrowed views into a stack array ──────────────────────────────────
+    //
+    // arr lives on the stack; the slices are zero-cost views — no allocation.
+    // None of the slice variables own memory, so no cleanup is needed.
+
+    print.('--- array-backed views ---\n');
+
+    stack i32 arr[8] = .{ 10, 20, 30, 40, 50, 60, 70, 80 };
+
+    stack []i32 full = arr[:];      // len=8 cap=8
+    stack []i32 mid  = arr[2:6];    // len=4 cap=6  (elements 30..60)
+    stack []i32 tail = arr[5:];     // len=3 cap=3  (elements 60..80)
+
+    print.('full: '); print_slice(full);           // [ 10  20  30  40  50  60  70  80]
+    print.('mid:  '); print_slice(mid);            // [ 30  40  50  60]
+    print.('tail: '); print_slice(tail);           // [ 60  70  80]
+    print.('sum(mid) = {}\n', sum(mid));           // 180
+
+    // Mutations through a view affect the original array.
+    mid[0] = 999;
+    print.('arr[2] after mid[0]=999: {}\n', arr[2]);   // 999
+    mid[0] = 30;   // restore
+
+    // ── Reslicing ──────────────────────────────────────────────────────────
+    //
+    // Reslicing produces another view into the same backing store.
+    // cap shrinks as the window moves right.
+
+    print.('\n--- reslicing ---\n');
+
+    stack []i32 a = arr[:];        // len=8 cap=8
+    stack []i32 b = a[1:5];        // len=4 cap=7
+    stack []i32 c = b[1:3];        // len=2 cap=6
+    print.('a len={} cap={} → ', len.(a), cap.(a)); print_slice(a);
+    print.('b len={} cap={} → ', len.(b), cap.(b)); print_slice(b);
+    print.('c len={} cap={} → ', len.(c), cap.(c)); print_slice(c);
+
+    // ── Owned slices with make.() ──────────────────────────────────────────
+    //
+    // heap []T owns the backing allocation.  When the variable goes out of
+    // scope the runtime frees it — no rem.() required.
+
+    print.('\n--- owned slices (heap) ---\n');
+
+    heap []i32 s = make.([]i32, 6);    // [0 0 0 0 0 0]  len=cap=6
+    for (stack i32 i = 0; i < len.(s); i++) {
+        s[i] = (i + 1) * (i + 1);     // 1 4 9 16 25 36
+    }
+    print.('squares: '); print_slice(s);
+    print.('sum     = {}\n', sum(s));              // 91
+    print.('has 16? = {}\n', contains.[i32](s, 16));  // true
+    print.('has 10? = {}\n', contains.[i32](s, 10));  // false
+    reverse.[i32](s);
+    print.('reversed: '); print_slice(s);          // 36 25 16 9 4 1
+    // s freed here automatically
+
+    // Explicit capacity — useful when the final size is known upfront.
+    heap []i32 buf = make.([]i32, 0, 8);   // len=0 cap=8; no realloc until 9th append
+    for (stack i32 i = 0; i < 8; i++) {
+        buf = append.(buf, i * 10);
+    }
+    print.('evens: '); print_slice(buf);            // 0 10 20 30 40 50 60 70
+
+    // Passing a heap slice to a function expecting stack []T is implicit.
+    fill(buf, 0);
+    print.('zeroed: '); print_slice(buf);           // [  0  0  0  0  0  0  0  0]
+    // buf freed here automatically
+
+    // ── append.() and growth ───────────────────────────────────────────────
+    //
+    // append.(s, val) returns a new heap []T.
+    //   · If len < cap: the same backing store is reused (O(1)).
+    //   · If len == cap: a new allocation (2× cap) is made, data copied,
+    //     old backing store freed.
+    //
+    // Always assign the result back:  s = append.(s, val);
+
+    print.('\n--- append and growth ---\n');
+
+    heap []i32 grow = make.([]i32, 0, 2);
+    for (stack i32 i = 0; i < 8; i++) {
+        stack i32 prev_cap = cap.(grow);
+        grow = append.(grow, i);
+        if (cap.(grow) != prev_cap) {
+            print.('  realloc at len={}: cap {} → {}\n', len.(grow), prev_cap, cap.(grow));
+        }
+    }
+    print_slice(grow);   // 0 1 2 3 4 5 6 7
+    // grow freed here automatically
+
+    // ── nil slice ─────────────────────────────────────────────────────────
+    //
+    // A nil slice has len=0, cap=0, and no allocation.
+    // len./cap. are safe; indexing panics.
+    // append.() on nil allocates on first use — idiomatic for optional output.
+
+    print.('\n--- nil slice ---\n');
+
+    heap []i32 out = nil;
+    print.('nil: len={} cap={}\n', len.(out), cap.(out));   // 0 0
+
+    for (stack i32 i = 1; i <= 5; i++) {
+        out = append.(out, i * i);
+    }
+    print.('after appends: '); print_slice(out);    // 1 4 9 16 25
+    // out freed here automatically
+
+    // ── copy.() ───────────────────────────────────────────────────────────
+    //
+    // copy.(dst, src) copies min(len(dst), len(src)) elements and returns
+    // the count.  dst and src may overlap — copy handles it correctly.
+
+    print.('\n--- copy ---\n');
+
+    heap []i32 src = make.([]i32, 5);
+    for (stack i32 i = 0; i < 5; i++) { src[i] = (i + 1) * 10; }   // 10 20 30 40 50
+
+    heap []i32 dst = make.([]i32, 8);   // longer than src; tail stays zeroed
+    stack i32 n = copy.(dst, src);
+    print.('copied {} elements\n', n);   // 5
+    print.('dst: '); print_slice(dst);   // [ 10  20  30  40  50   0   0   0]
+
+    // Copy into a sub-view of dst (no allocation).
+    stack []i32 dst_mid = dst[3:];
+    copy.(dst_mid, src[:3]);             // src[0..2] → dst[3..5]
+    print.('after partial copy into dst[3:]: '); print_slice(dst);
+    // [ 10  20  30  10  20  30   0   0]
+
+    // src and dst freed here automatically
 
     ret 0;
 }

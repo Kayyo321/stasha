@@ -23,9 +23,10 @@ typedef enum {
     TypeError,      /* built-in error type: nil or message */
     TypeFnPtr,      /* function pointer with domain-tagged parameters */
     TypeFuture,     /* future handle — opaque ptr to __future_t (thread result) */
+    TypeSlice,      /* []T — fat pointer (ptr, len, cap) */
 } type_kind_t;
 
-/* ── forward declaration for fn_ptr_desc_t used inside type_info_t ── */
+/* ── forward declaration for fn_ptr_desc_t and type_info_t ── */
 typedef struct fn_ptr_desc fn_ptr_desc_t;
 
 /* ── pointer permissions (bit flags) ── */
@@ -41,7 +42,8 @@ enum {
 
 /* ── rich type descriptor ── */
 
-typedef struct {
+typedef struct type_info type_info_t;
+struct type_info {
     type_kind_t base;
     char *user_name;            /* non-null when base == TypeUser */
     boolean_t is_pointer;
@@ -49,7 +51,8 @@ typedef struct {
     fn_ptr_desc_t *fn_ptr_desc; /* non-null when base == TypeFnPtr */
     int ptr_depth;              /* 0 = not a pointer; 1 = *; 2 = **; 3 = ***; etc. */
     ptr_perm_t ptr_perms[8];    /* per-level perms: [0]=outermost … [depth-1]=innermost */
-} type_info_t;
+    type_info_t *elem_type;     /* non-null when base == TypeSlice; heap-allocated [1] */
+};
 
 /* ── storage / linkage ── */
 
@@ -72,7 +75,7 @@ struct fn_ptr_desc {
     type_info_t ret_type;
 };
 
-#define NO_TYPE ((type_info_t){.base=TypeVoid, .user_name=Null, .is_pointer=False, .ptr_perm=PtrNone, .fn_ptr_desc=Null, .ptr_depth=0})
+#define NO_TYPE ((type_info_t){.base=TypeVoid, .user_name=Null, .is_pointer=False, .ptr_perm=PtrNone, .fn_ptr_desc=Null, .ptr_depth=0, .elem_type=Null})
 
 typedef enum {
     LinkageNone,
@@ -194,6 +197,14 @@ typedef enum {
     NodeAnyTypeExpr,     /* any.(expr) — extract runtime type tag from any value */
     NodeSpreadExpr,      /* ..expr inside compound initializers */
     NodeRangeExpr,       /* start..end / start..=end / start..end:step */
+
+    /* slice builtins — keep at end to avoid shifting existing values */
+    NodeSliceExpr,   /* arr[lo:hi] / arr[lo:] / arr[:hi] / arr[:]       */
+    NodeMakeExpr,    /* make.([]T, len) / make.([]T, len, cap)           */
+    NodeAppendExpr,  /* append.(s, val)                                   */
+    NodeCopyExpr,    /* copy.(dst, src) → i32                            */
+    NodeLenExpr,     /* len.(s) → i32                                    */
+    NodeCapExpr,     /* cap.(s) → i32                                    */
 } node_kind_t;
 
 /* ── future operation kinds ── */
@@ -392,6 +403,25 @@ struct node {
         struct { node_t *operand; } any_type_expr;
         struct { node_t *expr; } spread_expr;
         struct { node_t *start; node_t *end; node_t *step; boolean_t inclusive; } range_expr;
+
+        /* ── slice builtins — keep at end ── */
+
+        /* NodeSliceExpr: arr[lo:hi] / arr[lo:] / arr[:hi] / arr[:]
+           lo==Null means 0; hi==Null means len(object) */
+        struct { node_t *object; node_t *lo; node_t *hi; } slice_expr;
+
+        /* NodeMakeExpr: make.([]T, len) / make.([]T, len, cap)
+           cap==Null means cap=len */
+        struct { type_info_t elem_type; node_t *len; node_t *cap; } make_expr;
+
+        /* NodeAppendExpr: append.(slice, val) */
+        struct { node_t *slice; node_t *val; } append_expr;
+
+        /* NodeCopyExpr: copy.(dst, src) → i32 */
+        struct { node_t *dst; node_t *src; } copy_expr;
+
+        /* NodeLenExpr / NodeCapExpr — reuse len_expr for both */
+        struct { node_t *operand; } len_expr;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

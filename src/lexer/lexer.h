@@ -173,6 +173,13 @@ typedef enum {
     TokAny,         /* any — inline tagged-union type */
     TokInterface,   /* interface — interface declaration */
     TokMacro,       /* macro — preprocessor macro keyword */
+
+    /* slice builtins — keep at end to avoid shifting existing values */
+    TokMake,        /* make   */
+    TokAppend,      /* append */
+    TokCopy,        /* copy   */
+    TokLen,         /* len    */
+    TokCap,         /* cap    */
 } token_kind_t;
 
 typedef struct {

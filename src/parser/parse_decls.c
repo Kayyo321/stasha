@@ -119,7 +119,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                                 }
                             }
                             type_info_t ftype = parse_type(p);
-                            token_t fname = consume(p, TokIdent, "field name");
+                            token_t fname = consume_name(p, "field name");
                             node_t *field = make_node(NodeVarDecl, fname.line);
                             ast_set_loc(field, fname);
                             field->as.var_decl.name = copy_token_text(fname);
@@ -161,7 +161,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                                     }
                                 }
                                 type_info_t ftype = parse_type(p);
-                                token_t fname = consume(p, TokIdent, "field name");
+                                token_t fname = consume_name(p, "field name");
                                 node_t *field = make_node(NodeVarDecl, fname.line);
                                 ast_set_loc(field, fname);
                                 field->as.var_decl.name = copy_token_text(fname);
@@ -338,7 +338,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
         type_info_t ftype = parse_type(p);
 
         do {
-            token_t fname = consume(p, TokIdent, "field name");
+            token_t fname = consume_name(p, "field name");
             node_t *field = make_node(NodeVarDecl, fname.line);
             ast_set_loc(field, fname);
             field->as.var_decl.name = copy_token_text(fname);
@@ -604,7 +604,7 @@ static void parse_interface_body(parser_t *p, node_t *decl) {
                     while (check(p, TokComma)) {
                         parser_state_t snap = save_state(p);
                         advance_parser(p); /* consume comma */
-                        if (check(p, TokIdent) && !can_start_param_type(p)) {
+                        if (is_name_token(p) && !can_start_param_type(p)) {
                             token_t gname = p->current; advance_parser(p);
                             node_t *gparam = make_node(NodeVarDecl, gname.line);
                             ast_set_loc(gparam, gname);

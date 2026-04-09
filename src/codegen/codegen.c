@@ -143,8 +143,9 @@ typedef struct {
 
 typedef struct {
     LLVMValueRef alloca_val;
-    char *struct_name;      /* non-null for struct dtors */
+    char *struct_name;       /* non-null for struct dtors */
     boolean_t is_heap_alloc; /* True for heap primitive auto-free */
+    boolean_t is_heap_slice; /* True for heap []T auto-free (frees the data ptr inside the struct) */
 } dtor_var_t;
 
 typedef struct {
