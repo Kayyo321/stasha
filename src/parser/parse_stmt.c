@@ -278,20 +278,23 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     token_t name_tok = consume_name(p, "variable name");
     char *name = copy_token_text(name_tok);
 
-    /* array: type name[size] — size may be an int literal or a named const */
-    long array_size = 0;
-    char *array_size_name = Null;
-    if (match_tok(p, TokLBracket)) {
-        flags |= VdeclArray;
+    /* array: type name[d0][d1]... — arbitrary nesting depth up to 8 */
+    int  arr_ndim = 0;
+    long arr_sizes[8]       = {0,0,0,0,0,0,0,0};
+    char *arr_size_names[8] = {Null,Null,Null,Null,Null,Null,Null,Null};
+    while (check(p, TokLBracket) && arr_ndim < 8) {
+        advance_parser(p); /* consume '[' */
         if (check(p, TokIntLit)) {
-            array_size = parse_int_value(p->current);
+            arr_sizes[arr_ndim] = parse_int_value(p->current);
             advance_parser(p);
         } else if (check(p, TokIdent)) {
-            array_size_name = copy_token_text(p->current);
+            arr_size_names[arr_ndim] = copy_token_text(p->current);
             advance_parser(p);
         }
         consume(p, TokRBracket, "']'");
+        arr_ndim++;
     }
+    if (arr_ndim > 0) flags |= VdeclArray;
 
     node_t *init_expr = Null;
     if (match_tok(p, TokEq)) init_expr = parse_expr(p);
@@ -299,13 +302,16 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
 
     node_t *n = make_node(NodeVarDecl, line);
     ast_set_loc(n, name_tok);
-    n->as.var_decl.name = name;
-    n->as.var_decl.type = type;
+    n->as.var_decl.name    = name;
+    n->as.var_decl.type    = type;
     n->as.var_decl.storage = storage;
     n->as.var_decl.linkage = linkage;
-    n->as.var_decl.flags = flags;
-    n->as.var_decl.array_size = array_size;
-    n->as.var_decl.array_size_name = array_size_name;
+    n->as.var_decl.flags   = flags;
+    n->as.var_decl.array_ndim = arr_ndim;
+    for (int _i = 0; _i < arr_ndim; _i++) {
+        n->as.var_decl.array_sizes[_i]      = arr_sizes[_i];
+        n->as.var_decl.array_size_names[_i] = arr_size_names[_i];
+    }
     n->as.var_decl.init = init_expr;
     return n;
 }

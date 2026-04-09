@@ -1884,6 +1884,39 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
     return result;
 }
 
+/* Walk a chain of NodeIndexExpr to find the base array symbol and collect
+ * all index values (outermost first).  Returns True iff the base symbol's
+ * LLVM type is an array AND every intermediate element type is also an
+ * array (pure N-D array access, e.g. i32 m[3][4]).
+ * idx_vals[] receives one entry per dimension; *ndim is set to the count.
+ * Indices are evaluated in outermost-to-innermost order. */
+static boolean_t mdim_collect(cg_t *cg, node_t *node,
+                               symbol_t **out_sym,
+                               LLVMValueRef *idx_vals, int *ndim) {
+    node_t *idx_nodes[8];
+    int n = 0;
+    node_t *cur = node;
+    while (cur->kind == NodeIndexExpr && n < 8) {
+        idx_nodes[n++] = cur->as.index_expr.index;
+        cur = cur->as.index_expr.object;
+    }
+    if (cur->kind != NodeIdentExpr || n == 0) return False;
+    symbol_t *sym = cg_lookup(cg, cur->as.ident.name);
+    if (!sym || LLVMGetTypeKind(sym->type) != LLVMArrayTypeKind) return False;
+    /* Every dimension must be backed by an LLVM array type. */
+    LLVMTypeRef t = sym->type;
+    for (int _i = 0; _i < n; _i++) {
+        if (LLVMGetTypeKind(t) != LLVMArrayTypeKind) return False;
+        t = LLVMGetElementType(t);
+    }
+    /* Evaluate indices outermost → innermost (idx_nodes is stored innermost first). */
+    for (int _i = n - 1; _i >= 0; _i--)
+        idx_vals[n - 1 - _i] = gen_expr(cg, idx_nodes[_i]);
+    *ndim    = n;
+    *out_sym = sym;
+    return True;
+}
+
 static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     node_t *target = node->as.assign.target;
 
@@ -1943,9 +1976,32 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
 
     if (target->kind == NodeIndexExpr) {
-        node_t *obj = target->as.index_expr.object;
-        node_t *idx = target->as.index_expr.index;
-        LLVMValueRef index_val = gen_expr(cg, idx);
+        node_t *obj      = target->as.index_expr.object;
+        node_t *idx_node = target->as.index_expr.index;
+
+        /* ── nested index: m[i][j] = val (multi-dimensional array store) ─── */
+        if (obj->kind == NodeIndexExpr) {
+            symbol_t *base_sym = Null;
+            LLVMValueRef idx_vals[8];
+            int ndim = 0;
+            if (mdim_collect(cg, target, &base_sym, idx_vals, &ndim)) {
+                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                LLVMValueRef gep_indices[9];
+                gep_indices[0] = zero;
+                for (int _d = 0; _d < ndim; _d++)
+                    gep_indices[_d + 1] = coerce_int(cg, idx_vals[_d],
+                                                      LLVMInt32TypeInContext(cg->ctx));
+                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, base_sym->type,
+                                                  base_sym->value, gep_indices, ndim + 1, "mdidx");
+                LLVMTypeRef inner_ty = base_sym->type;
+                for (int _d = 0; _d < ndim; _d++) inner_ty = LLVMGetElementType(inner_ty);
+                rhs = coerce_int(cg, rhs, inner_ty);
+                LLVMBuildStore(cg->builder, rhs, gep);
+            }
+            return rhs;
+        }
+
+        LLVMValueRef index_val = gen_expr(cg, idx_node);
 
         if (obj->kind == NodeIdentExpr) {
             symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
@@ -2203,6 +2259,50 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
     node_t *obj = node->as.index_expr.object;
+
+    /* ── nested index expressions: m[i][j], m[i][j][k], table[i][j] ──────── */
+    if (obj->kind == NodeIndexExpr) {
+        /* Case 1: pure N-D array (every level is an LLVM array type). */
+        symbol_t *base_sym = Null;
+        LLVMValueRef idx_vals[8];
+        int ndim = 0;
+        if (mdim_collect(cg, node, &base_sym, idx_vals, &ndim)) {
+            LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            LLVMValueRef gep_indices[9];
+            gep_indices[0] = zero;
+            for (int _d = 0; _d < ndim; _d++)
+                gep_indices[_d + 1] = coerce_int(cg, idx_vals[_d],
+                                                  LLVMInt32TypeInContext(cg->ctx));
+            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, base_sym->type,
+                                              base_sym->value, gep_indices, ndim + 1, "mdidx");
+            LLVMTypeRef inner_ty = base_sym->type;
+            for (int _d = 0; _d < ndim; _d++) inner_ty = LLVMGetElementType(inner_ty);
+            return LLVMBuildLoad2(cg->builder, inner_ty, gep, "mdelem");
+        }
+        /* Case 2: array-of-slices — 1-D array whose element type is a slice. */
+        node_t *inner_obj = obj->as.index_expr.object;
+        if (inner_obj->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, inner_obj->as.ident.name);
+            if (sym && LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind
+                    && sym->stype.base == TypeSlice) {
+                LLVMValueRef arr_idx = gen_expr(cg, obj->as.index_expr.index);
+                LLVMValueRef sl_idx  = gen_expr(cg, node->as.index_expr.index);
+                LLVMValueRef zero    = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                arr_idx = coerce_int(cg, arr_idx, LLVMInt32TypeInContext(cg->ctx));
+                LLVMValueRef arr_indices[2] = { zero, arr_idx };
+                LLVMTypeRef  sl_struct_ty   = slice_struct_type(cg);
+                LLVMValueRef sl_ptr = LLVMBuildGEP2(cg->builder, sym->type,
+                                                     sym->value, arr_indices, 2, "asl.ptr");
+                LLVMValueRef sl   = LLVMBuildLoad2(cg->builder, sl_struct_ty, sl_ptr, "asl");
+                LLVMValueRef dptr = LLVMBuildExtractValue(cg->builder, sl, 0, "asl.dptr");
+                LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
+                sl_idx = coerce_int(cg, sl_idx, LLVMInt64TypeInContext(cg->ctx));
+                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &sl_idx, 1, "asl.idx");
+                return LLVMBuildLoad2(cg->builder, elem_ty, gep, "asl.elem");
+            }
+        }
+    }
+
     LLVMValueRef index_val = gen_expr(cg, node->as.index_expr.index);
 
     /* null dereference check */

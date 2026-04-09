@@ -613,8 +613,9 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
                 field->as.var_decl.type = ti;
                 field->as.var_decl.storage = StorageStack;
                 if (array_len > 0) {
-                    field->as.var_decl.flags |= VdeclArray;
-                    field->as.var_decl.array_size = array_len;
+                    field->as.var_decl.flags          |= VdeclArray;
+                    field->as.var_decl.array_ndim       = 1;
+                    field->as.var_decl.array_sizes[0]   = array_len;
                 }
                 node_list_push(&tn->as.type_decl.fields, field);
             }

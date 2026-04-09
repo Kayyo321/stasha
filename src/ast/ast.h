@@ -264,8 +264,9 @@ struct node {
             storage_t storage;
             linkage_t linkage;
             int flags;             /* VdeclAtomic | VdeclConst | VdeclFinal | VdeclArray | VdeclVolatile | VdeclTls | VdeclRestrict */
-            long array_size;
-            char *array_size_name; /* non-null when size is a named const */
+            int  array_ndim;           /* number of array dimensions (0 = not an array) */
+            long array_sizes[8];       /* per-dimension sizes; [0]=outermost … [ndim-1]=innermost */
+            char *array_size_names[8]; /* non-null when a dimension's size is a named const */
             node_t *init;
             int bitfield_width;    /* >0 for bitfield: i32 flags: 3 */
             int attr_flags;        /* AttrWeak | AttrHidden */

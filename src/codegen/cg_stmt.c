@@ -87,36 +87,56 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 
     if (node->as.var_decl.flags & VdeclArray) {
         LLVMTypeRef elem = get_llvm_type(cg, ti);
-        unsigned long long array_len = (unsigned long long)node->as.var_decl.array_size;
-        if (array_len == 0 && node->as.var_decl.init
+        int ndim = node->as.var_decl.array_ndim > 0 ? node->as.var_decl.array_ndim : 1;
+
+        /* Resolve each dimension's size (named const or literal). */
+        unsigned long long sizes[8] = {0,0,0,0,0,0,0,0};
+        for (int _d = 0; _d < ndim; _d++) {
+            sizes[_d] = (unsigned long long)node->as.var_decl.array_sizes[_d];
+            if (node->as.var_decl.array_size_names[_d]) {
+                symbol_t *sym = cg_lookup(cg, node->as.var_decl.array_size_names[_d]);
+                if (sym) {
+                    if (sym->const_int_val >= 0) {
+                        /* local const integer: value recorded at declaration time */
+                        sizes[_d] = (unsigned long long)sym->const_int_val;
+                    } else {
+                        /* global const: may have an LLVM initializer */
+                        LLVMValueRef cinit = LLVMGetInitializer(sym->value);
+                        if (cinit)
+                            sizes[_d] = LLVMConstIntGetZExtValue(cinit);
+                    }
+                } else {
+                    diag_begin_error("undefined constant '%s' used as array size",
+                                     node->as.var_decl.array_size_names[_d]);
+                    diag_span(DIAG_NODE(node), True, "array declared here");
+                    diag_note("array size must be a compile-time constant declared before this point");
+                    diag_finish();
+                }
+            }
+        }
+
+        /* Infer outermost dimension from compound initializer when 0. */
+        if (sizes[0] == 0 && node->as.var_decl.init
                 && node->as.var_decl.init->kind == NodeCompoundInit) {
             boolean_t needs_trailing_nul = False;
             boolean_t inferred_ok = True;
             long inferred_len = count_compound_init_values(cg, node->as.var_decl.init,
                                                            &needs_trailing_nul, &inferred_ok);
             if (inferred_ok) {
-                if (elem == LLVMInt8TypeInContext(cg->ctx) && needs_trailing_nul)
+                if (ndim == 1 && elem == LLVMInt8TypeInContext(cg->ctx) && needs_trailing_nul)
                     inferred_len += 1;
                 if (inferred_len > 0) {
-                    array_len = (unsigned long long)inferred_len;
-                    node->as.var_decl.array_size = inferred_len;
+                    sizes[0] = (unsigned long long)inferred_len;
+                    node->as.var_decl.array_sizes[0] = inferred_len;
                 }
             }
         }
-        if (node->as.var_decl.array_size_name) {
-            symbol_t *sym = cg_lookup(cg, node->as.var_decl.array_size_name);
-            if (sym) {
-                LLVMValueRef init = LLVMGetInitializer(sym->value);
-                if (init) array_len = LLVMConstIntGetZExtValue(init);
-            } else {
-                diag_begin_error("undefined constant '%s' used as array size",
-                                 node->as.var_decl.array_size_name);
-                diag_span(DIAG_NODE(node), True, "array declared here");
-                diag_note("array size must be a compile-time constant declared before this point");
-                diag_finish();
-            }
-        }
-        type = LLVMArrayType2(elem, array_len);
+
+        /* Build nested LLVM array type from innermost dimension outward:
+           i32 arr[4][8] → [4 x [8 x i32]]  (sizes[0]=4, sizes[1]=8) */
+        type = elem;
+        for (int _d = ndim - 1; _d >= 0; _d--)
+            type = LLVMArrayType2(type, sizes[_d]);
     } else {
         type = get_llvm_type(cg, ti);
     }
@@ -215,13 +235,20 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
     {
-        long arr_sz = (node->as.var_decl.flags & VdeclArray) ? node->as.var_decl.array_size : -1;
+        long arr_sz = (node->as.var_decl.flags & VdeclArray) ? node->as.var_decl.array_sizes[0] : -1;
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
                               node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
                               cg->dtor_depth, arr_sz);
         symtab_set_last_line(&cg->locals, node->line);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
+        /* Record compile-time value for const integer locals so array dimension
+           lookup does not need to inspect LLVM IR use-chains. */
+        if ((node->as.var_decl.flags & VdeclConst) && node->as.var_decl.init
+                && node->as.var_decl.init->kind == NodeIntLitExpr
+                && cg->locals.count > 0)
+            cg->locals.entries[cg->locals.count - 1].const_int_val =
+                (long long)node->as.var_decl.init->as.int_lit.value;
     }
 
     /* pointer safety checks on initializer */
@@ -254,8 +281,11 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             add_dtor_var(cg, alloca_val, ti.user_name);
     }
 
-    /* register heap []T for auto-free of backing allocation at scope exit */
-    if (ti.base == TypeSlice && node->as.var_decl.storage == StorageHeap)
+    /* register heap []T for auto-free of backing allocation at scope exit
+       (skip for array-of-slices like 'heap []i32 table[2]' — those are
+        fixed-size stack arrays; only the individual elements need cleanup) */
+    if (ti.base == TypeSlice && node->as.var_decl.storage == StorageHeap
+            && !(node->as.var_decl.flags & VdeclArray))
         add_heap_slice(cg, alloca_val);
 }
 

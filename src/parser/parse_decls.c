@@ -348,17 +348,25 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             field->as.var_decl.bitfield_width = 0;
             if (in_comptime_section)
                 field->as.var_decl.flags |= VdeclComptimeField;
-            /* array field: type name[size] */
-            if (!in_comptime_section && match_tok(p, TokLBracket)) {
-                field->as.var_decl.flags |= VdeclArray;
-                if (check(p, TokIntLit)) {
-                    field->as.var_decl.array_size = parse_int_value(p->current);
-                    advance_parser(p);
-                } else if (check(p, TokIdent)) {
-                    field->as.var_decl.array_size_name = copy_token_text(p->current);
-                    advance_parser(p);
+            /* array field: type name[d0][d1]... — arbitrary nesting depth up to 8 */
+            if (!in_comptime_section) {
+                int _ndim = 0;
+                while (check(p, TokLBracket) && _ndim < 8) {
+                    advance_parser(p); /* consume '[' */
+                    if (check(p, TokIntLit)) {
+                        field->as.var_decl.array_sizes[_ndim] = parse_int_value(p->current);
+                        advance_parser(p);
+                    } else if (check(p, TokIdent)) {
+                        field->as.var_decl.array_size_names[_ndim] = copy_token_text(p->current);
+                        advance_parser(p);
+                    }
+                    consume(p, TokRBracket, "']'");
+                    _ndim++;
                 }
-                consume(p, TokRBracket, "']'");
+                if (_ndim > 0) {
+                    field->as.var_decl.flags     |= VdeclArray;
+                    field->as.var_decl.array_ndim  = _ndim;
+                }
             }
             /* bitfield: type name: width */
             if (!in_comptime_section && match_tok(p, TokColon)) {
@@ -1078,10 +1086,30 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             token_t pname = consume_name(p, "parameter name");
             node_t *param = make_node(NodeVarDecl, pname.line);
             ast_set_loc(param, pname);
-            param->as.var_decl.name = copy_token_text(pname);
-            param->as.var_decl.type = last_type;
+            param->as.var_decl.name    = copy_token_text(pname);
+            param->as.var_decl.type    = last_type;
             param->as.var_decl.storage = param_storage;
             if (is_restrict) param->as.var_decl.flags |= VdeclRestrict;
+            /* array parameter: name[d0][d1]... */
+            {
+                int _pndim = 0;
+                while (check(p, TokLBracket) && _pndim < 8) {
+                    advance_parser(p); /* consume '[' */
+                    if (check(p, TokIntLit)) {
+                        param->as.var_decl.array_sizes[_pndim] = parse_int_value(p->current);
+                        advance_parser(p);
+                    } else if (check(p, TokIdent)) {
+                        param->as.var_decl.array_size_names[_pndim] = copy_token_text(p->current);
+                        advance_parser(p);
+                    }
+                    consume(p, TokRBracket, "']'");
+                    _pndim++;
+                }
+                if (_pndim > 0) {
+                    param->as.var_decl.flags     |= VdeclArray;
+                    param->as.var_decl.array_ndim  = _pndim;
+                }
+            }
             node_list_push(&params, param);
         } while (match_tok(p, TokComma));
     } else if (check(p, TokVoid)) {

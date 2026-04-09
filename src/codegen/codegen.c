@@ -59,6 +59,7 @@ typedef struct {
     linkage_t linkage;
     usize_t scope_depth;    /* nesting level for lifetime checks */
     long array_size;        /* ≥0 for known-size arrays, -1 otherwise */
+    long long const_int_val; /* compile-time value of a const integer, -1 if not known */
     boolean_t used;         /* True if the variable has been read at least once */
     usize_t line;           /* source line where the variable was declared (0 = unknown) */
 } symbol_t;
@@ -745,12 +746,17 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     } else {
                         /* normal (non-bitfield) field */
                         type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
-                        long arr_sz = (field->as.var_decl.flags & VdeclArray)
-                                      ? field->as.var_decl.array_size : 0;
-                        if (arr_sz > 0) {
-                            LLVMTypeRef elem_t = get_llvm_type(&cg, fti);
-                            field_types[llvm_field_count] = LLVMArrayType2(
-                                elem_t, (unsigned long long)arr_sz);
+                        int _fndim = (field->as.var_decl.flags & VdeclArray)
+                                     ? (field->as.var_decl.array_ndim > 0
+                                        ? field->as.var_decl.array_ndim : 1)
+                                     : 0;
+                        if (_fndim > 0) {
+                            /* Build nested LLVM array type from innermost to outermost. */
+                            LLVMTypeRef _ft = get_llvm_type(&cg, fti);
+                            for (int _d = _fndim - 1; _d >= 0; _d--)
+                                _ft = LLVMArrayType2(_ft,
+                                          (unsigned long long)field->as.var_decl.array_sizes[_d]);
+                            field_types[llvm_field_count] = _ft;
                         } else {
                             field_types[llvm_field_count] = get_llvm_type(&cg, fti);
                         }
@@ -758,9 +764,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                          llvm_field_count,
                                          field->as.var_decl.linkage,
                                          field->as.var_decl.storage);
-                        /* store array size in the field_info so GEP can decay */
-                        if (arr_sz > 0 && sr->field_count > 0)
-                            sr->fields[sr->field_count - 1].array_size = arr_sz;
+                        /* store outermost dimension in field_info for GEP/decay */
+                        if (_fndim > 0 && sr->field_count > 0)
+                            sr->fields[sr->field_count - 1].array_size =
+                                field->as.var_decl.array_sizes[0];
                         llvm_field_count++;
                         j++;
                     }
@@ -946,9 +953,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     offset = 1;
                 }
                 for (usize_t j = 0; j < pc; j++) {
-                    type_info_t pti = resolve_alias(&cg,
-                        decl->as.fn_decl.params.items[j]->as.var_decl.type);
-                    ptypes[j + offset] = get_llvm_type(&cg, pti);
+                    node_t *_p = decl->as.fn_decl.params.items[j];
+                    type_info_t pti = resolve_alias(&cg, _p->as.var_decl.type);
+                    LLVMTypeRef _pt = get_llvm_type(&cg, pti);
+                    if (_p->as.var_decl.flags & VdeclArray) {
+                        int _nd = _p->as.var_decl.array_ndim > 0 ? _p->as.var_decl.array_ndim : 1;
+                        for (int _d = _nd - 1; _d >= 0; _d--)
+                            _pt = LLVMArrayType2(_pt, (unsigned long long)_p->as.var_decl.array_sizes[_d]);
+                    }
+                    ptypes[j + offset] = _pt;
                 }
             }
 
@@ -1229,6 +1242,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             node_t *param = decl->as.fn_decl.params.items[j];
             type_info_t pti = resolve_alias(&cg, param->as.var_decl.type);
             LLVMTypeRef ptype = get_llvm_type(&cg, pti);
+            if (param->as.var_decl.flags & VdeclArray) {
+                int _nd = param->as.var_decl.array_ndim > 0 ? param->as.var_decl.array_ndim : 1;
+                for (int _d = _nd - 1; _d >= 0; _d--)
+                    ptype = LLVMArrayType2(ptype, (unsigned long long)param->as.var_decl.array_sizes[_d]);
+            }
             LLVMValueRef alloca_val = LLVMBuildAlloca(cg.builder, ptype,
                                                        param->as.var_decl.name);
             LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + param_offset)),
@@ -1388,6 +1406,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 node_t *param = method->as.fn_decl.params.items[j];
                 type_info_t pti = resolve_alias(&cg, param->as.var_decl.type);
                 LLVMTypeRef ptype = get_llvm_type(&cg, pti);
+                if (param->as.var_decl.flags & VdeclArray) {
+                    int _nd = param->as.var_decl.array_ndim > 0 ? param->as.var_decl.array_ndim : 1;
+                    for (int _d = _nd - 1; _d >= 0; _d--)
+                        ptype = LLVMArrayType2(ptype, (unsigned long long)param->as.var_decl.array_sizes[_d]);
+                }
                 LLVMValueRef alloca_val = LLVMBuildAlloca(cg.builder, ptype,
                                                            param->as.var_decl.name);
                 LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + 1)),

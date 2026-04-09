@@ -26,7 +26,8 @@ static void symtab_add(symtab_t *st, const char *name, LLVMValueRef value,
     sym.type = type;
     sym.stype = stype;
     sym.flags = flags;
-    sym.array_size = -1; /* -1 = not an array / unknown size */
+    sym.array_size     = -1; /* -1 = not an array / unknown size */
+    sym.const_int_val  = -1; /* -1 = not a known compile-time integer constant */
     st->entries[st->count++] = sym;
 }
 static symbol_t *symtab_lookup(symtab_t *st, const char *name) {
