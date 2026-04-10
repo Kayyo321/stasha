@@ -186,27 +186,13 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     LLVMValueRef alloca_val = LLVMBuildAlloca(cg->builder, type, node->as.var_decl.name);
     LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 
-    /* cross-domain check for stack pointer assigned a heap address (and vice-versa) */
-    if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeAddrOf && ti.is_pointer) {
-        node_t *addr_op = node->as.var_decl.init->as.addr_of.operand;
-        if (addr_op->kind == NodeIdentExpr) {
-            symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
-            if (src) {
-                storage_t ptr_domain = node->as.var_decl.storage;
-                if (ptr_domain == StorageHeap && src->storage == StorageStack) {
-                    diag_begin_error("cannot assign a stack address to a heap pointer");
-                    diag_span(DIAG_NODE(node), True, "assigned here");
-                    diag_note("stack addresses become invalid after their scope ends");
-                    diag_help("use a heap pointer pointing to heap-allocated memory via new.()");
-                    diag_finish();
-                } else if (ptr_domain == StorageStack && src->storage == StorageHeap) {
-                    diag_begin_error("cannot assign a heap address to a stack pointer");
-                    diag_span(DIAG_NODE(node), True, "assigned here");
-                    diag_note("mixing stack and heap pointer domains is not allowed");
-                    diag_finish();
-                }
-            }
-        }
+    /* cross-domain check: heap/stack pointer domain vs initialiser provenance */
+    if (node->as.var_decl.init && ti.is_pointer
+            && (node->as.var_decl.storage == StorageStack
+                || node->as.var_decl.storage == StorageHeap)) {
+        int ak = rhs_addr_kind(cg, node->as.var_decl.init);
+        if (ak != 0)
+            check_storage_domain(cg, node->as.var_decl.storage, ak == 1, ak == -1, node->line);
     }
 
     if (node->as.var_decl.init) {

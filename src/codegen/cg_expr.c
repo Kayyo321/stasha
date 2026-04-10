@@ -1934,23 +1934,12 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
 
-        /* cross-domain check when assigning address-of */
-        if (node->as.assign.value->kind == NodeAddrOf && sym->stype.is_pointer) {
-            node_t *addr_op = node->as.assign.value->as.addr_of.operand;
-            if (addr_op->kind == NodeIdentExpr) {
-                symbol_t *src = cg_lookup(cg, addr_op->as.ident.name);
-                if (src) {
-                    if (sym->storage == StorageHeap && src->storage == StorageStack) {
-                        diag_begin_error("cannot assign stack address to heap pointer");
-                        diag_span(DIAG_NODE(node), True, "");
-                        diag_finish();
-                    } else if (sym->storage == StorageStack && src->storage == StorageHeap) {
-                        diag_begin_error("cannot assign heap address to stack pointer");
-                        diag_span(DIAG_NODE(node), True, "");
-                        diag_finish();
-                    }
-                }
-            }
+        /* cross-domain check: reject domain mismatch on pointer assignment */
+        if (sym->stype.is_pointer
+                && (sym->storage == StorageStack || sym->storage == StorageHeap)) {
+            int ak = rhs_addr_kind(cg, node->as.assign.value);
+            if (ak != 0)
+                check_storage_domain(cg, sym->storage, ak == 1, ak == -1, node->line);
         }
 
         /* pointer safety checks on assignment */
@@ -4182,6 +4171,16 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
                 if (hsym && (hsym->flags & SymZone)) {
                     LLVMValueRef fa[1] = { hsym->value }; /* alloca = void** */
                     LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+                /* guard: cannot rem.() a stack-qualified pointer */
+                if (cg->in_unsafe == 0 && hsym && hsym->stype.is_pointer
+                        && hsym->storage == StorageStack) {
+                    diag_begin_error("cannot call rem.() on a stack pointer");
+                    diag_span(DIAG_NODE(node), True, "'%s' is declared as a stack pointer",
+                              ptr_node->as.ident.name);
+                    diag_note("only heap pointers (declared with 'heap') can be freed");
+                    diag_finish();
                     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
                 }
                 /* heap []T slice: load slice struct, extract data ptr, call free */

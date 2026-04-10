@@ -145,9 +145,9 @@ int fn unsafe_demo(void): void {
 
     // Use raw heap pointers.  *rw+ grants read, write, and arithmetic perms
     // so it can be narrowed to the *r+ the function requires.
-    stack i32 *rw+ src = new.(sizeof.(i32) * 4);
+    heap i32 *rw+ src = new.(sizeof.(i32) * 4);
     defer rem.(src);
-    stack i32 *rw+ dst = new.(sizeof.(i32) * 4);
+    heap i32 *rw+ dst = new.(sizeof.(i32) * 4);
     defer rem.(dst);
     src[0] = 1; src[1] = 2; src[2] = 3; src[3] = 4;
 
@@ -169,7 +169,7 @@ int fn unsafe_demo(void): void {
 // is called on all exit paths.
 
 // process_and_free takes ownership of buf — the caller must not use buf after.
-ext fn process_and_free(@frees stack u8 *rw buf, stack i32 n): i32 {
+ext fn process_and_free(@frees heap u8 *rw buf, stack i32 n): i32 {
     stack i32 sum = 0;
     for (stack i32 i = 0; i < n; i++) { sum += buf[i]; }
     rem.(buf);   // required: @frees means we must free on every path
@@ -179,7 +179,7 @@ ext fn process_and_free(@frees stack u8 *rw buf, stack i32 n): i32 {
 int fn frees_demo(void): void {
     print.('--- @frees parameter ---\n');
 
-    stack u8 *rw data = new.(4);
+    heap u8 *rw data = new.(4);
     data[0] = 10; data[1] = 20; data[2] = 30; data[3] = 40;
 
     // Transfer ownership: data is freed inside process_and_free.
@@ -215,7 +215,7 @@ int fn nullable_demo(void): void {
     nums[0] = 4; nums[1] = 8; nums[2] = 15; nums[3] = 16; nums[4] = 23; nums[5] = 42;
 
     // find_copy returns ?i32 *rw — always check for nil before dereferencing.
-    stack ?i32 *rw found = find_copy(nums, 15);
+    heap ?i32 *rw found = find_copy(nums, 15);
     if found != nil {
         print.('  found 15: {}\n', *.(found));   // 15
         rem.(found);
@@ -223,7 +223,7 @@ int fn nullable_demo(void): void {
         print.('  15 not found\n');
     }
 
-    stack ?i32 *rw missing = find_copy(nums, 99);
+    heap ?i32 *rw missing = find_copy(nums, 99);
     if missing == nil {
         print.('  99 not found (nil)\n');
     }

@@ -191,6 +191,67 @@ Equivalent to writing `lib "name" from <path>; imp name;` but in one declaration
 
 ---
 
+## Pointer & Memory Safety Rules
+
+These rules are enforced by the compiler at every declaration and assignment.
+
+### Storage domain — `heap` vs `stack` on pointer variables
+
+The storage qualifier on a **pointer** variable describes where the *pointed-to data* lives:
+
+| Qualifier | Pointed-to data | `new.()` allowed? | `rem.()` required? |
+|-----------|----------------|-------------------|-------------------|
+| `heap T *perm p` | Heap-allocated | Yes (`new.(n)`) | Yes — programmer is responsible |
+| `stack T *perm p` | Stack variable (`&local`) or zone allocation | Only via `new.(n) in zone` | Never — zone or scope owns the memory |
+| Unqualified (`const`/`final`/bare) | Either | No check applied | No check applied |
+
+**Domain is permanent.** Once declared, every subsequent assignment to the pointer must respect the same domain. A heap pointer can never be made to point at stack memory, and vice versa.
+
+### What the compiler enforces
+
+1. **Non-pointer heap vars are rejected.** `heap i32 x = 5;` is a compile error. Use `heap i32 *rw p = new.(sizeof.(i32));`. Exception: `heap []T` slice types are allowed (they carry an internal heap-owned data pointer).
+
+2. **Wrong-domain pointer init/assign is rejected.**
+   - `stack T *rw p = new.(n);` → error: heap alloc into stack pointer
+   - `heap T *rw p = &some_local;` → error: stack address into heap pointer
+   - `heap T *rw p = new.(n); p = &some_local;` → same error on the assignment
+
+3. **Zone allocations are stack-like.** `new.(n) in zone_name` is zone-managed, not heap-owned. It may be stored in a `stack` pointer. Never call `rem.()` on it — call `rem.(zone_name)` to free the whole arena.
+
+4. **`rem.()` on a stack pointer is rejected.** Only `heap` pointers may be freed with `rem.()`.
+
+5. **All checks are suppressed inside `unsafe {}` blocks.**
+
+### Correct patterns
+
+```
+heap i32 *rw p = new.(sizeof.(i32));   // heap pointer — must call rem.(p)
+stack i32 x = 42;
+stack i32 *r  q = &x;                  // stack pointer — scope-owned
+zone z;
+stack u8 *rw buf = new.(64) in z;      // zone alloc — rem.(z) frees it
+rem.(z);                               // frees entire zone
+```
+
+### Common mistakes that produce compile errors
+
+```
+heap i32 x = 5;                        // non-pointer heap var — ERROR
+stack i32 *rw p = new.(sizeof.(i32));  // heap alloc → stack ptr — ERROR
+heap i32 *rw p = new.(4);
+p = &some_local;                       // stack addr → heap ptr on assign — ERROR
+stack i32 *rw q = new.(4) in z;
+rem.(q);                               // rem on stack pointer — ERROR
+```
+
+### Implementation
+
+- `src/codegen/cg_safety.c` — `rhs_addr_kind` (classifies RHS as heap/stack/unknown), `check_storage_domain` (emits domain mismatch errors)
+- `src/codegen/cg_stmt.c` — `gen_local_var`: calls `rhs_addr_kind` + `check_storage_domain` at declaration
+- `src/codegen/cg_expr.c` — `gen_assign`: same checks on every assignment; `NodeRemStmt` handler guards against `rem.()` on stack pointers
+
+---
+
 ## TODO
 
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries

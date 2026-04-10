@@ -301,7 +301,8 @@ static void check_storage_domain(cg_t *cg, storage_t ptr_qual, boolean_t rhs_is_
  * Returns: 1 = heap, -1 = stack, 0 = unknown */
 static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
     if (!rhs) return 0;
-    if (rhs->kind == NodeNewExpr || rhs->kind == NodeNewInZone) return 1;   /* heap */
+    if (rhs->kind == NodeNewExpr)   return  1;   /* heap — needs rem.() */
+    if (rhs->kind == NodeNewInZone) return -1;   /* zone-managed, stack-like */
     if (rhs->kind == NodeAddrOf) {
         node_t *op = rhs->as.addr_of.operand;
         if (op->kind == NodeIdentExpr) {
@@ -310,6 +311,14 @@ static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
             if (sym && sym->storage == StorageHeap)  return  1; /* heap  */
         }
         return -1; /* default: &var is stack */
+    }
+    if (rhs->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, rhs->as.ident.name);
+        if (sym && sym->stype.is_pointer) {
+            if (sym->storage == StorageStack) return -1;
+            if (sym->storage == StorageHeap)  return  1;
+        }
+        return 0;
     }
     return 0;
 }
