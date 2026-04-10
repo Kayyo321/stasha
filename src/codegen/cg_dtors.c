@@ -48,49 +48,8 @@ static void add_dtor_var(cg_t *cg, LLVMValueRef alloca_val, const char *struct_n
         scope->vars = scope->heap.pointer;
         scope->capacity = new_cap;
     }
-    scope->vars[scope->count].alloca_val    = alloca_val;
-    scope->vars[scope->count].struct_name   = (char *)struct_name;
-    scope->vars[scope->count].is_heap_alloc = False;
-    scope->vars[scope->count].is_heap_slice = False;
-    scope->count++;
-}
-
-static void add_heap_var(cg_t *cg, LLVMValueRef alloca_val) {
-    if (cg->dtor_depth == 0) return;
-    dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
-    if (scope->count >= scope->capacity) {
-        usize_t new_cap = scope->capacity < 4 ? 4 : scope->capacity * 2;
-        if (scope->heap.pointer == Null)
-            scope->heap = allocate(new_cap, sizeof(dtor_var_t));
-        else
-            scope->heap = reallocate(scope->heap, new_cap * sizeof(dtor_var_t));
-        scope->vars = scope->heap.pointer;
-        scope->capacity = new_cap;
-    }
-    scope->vars[scope->count].alloca_val    = alloca_val;
-    scope->vars[scope->count].struct_name   = Null;
-    scope->vars[scope->count].is_heap_alloc = True;
-    scope->vars[scope->count].is_heap_slice = False;
-    scope->count++;
-}
-
-/* Register a heap []T variable for auto-free of its data pointer at scope exit. */
-static void add_heap_slice(cg_t *cg, LLVMValueRef alloca_val) {
-    if (cg->dtor_depth == 0) return;
-    dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
-    if (scope->count >= scope->capacity) {
-        usize_t new_cap = scope->capacity < 4 ? 4 : scope->capacity * 2;
-        if (scope->heap.pointer == Null)
-            scope->heap = allocate(new_cap, sizeof(dtor_var_t));
-        else
-            scope->heap = reallocate(scope->heap, new_cap * sizeof(dtor_var_t));
-        scope->vars = scope->heap.pointer;
-        scope->capacity = new_cap;
-    }
-    scope->vars[scope->count].alloca_val    = alloca_val;
-    scope->vars[scope->count].struct_name   = Null;
-    scope->vars[scope->count].is_heap_alloc = False;
-    scope->vars[scope->count].is_heap_slice = True;
+    scope->vars[scope->count].alloca_val  = alloca_val;
+    scope->vars[scope->count].struct_name = (char *)struct_name;
     scope->count++;
 }
 
@@ -146,28 +105,11 @@ static void emit_dtor_calls(cg_t *cg, dtor_scope_t *scope) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder))) break;
         gen_stmt(cg, scope->deferred[i - 1]);
     }
-    /* then run destructors / heap-var frees in LIFO order */
+    /* then run struct destructors in LIFO order */
     for (usize_t i = scope->count; i > 0; i--) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder))) break;
         dtor_var_t *dv = &scope->vars[i - 1];
-        if (dv->is_heap_alloc) {
-            /* free heap-allocated primitive (free(null) is safe, no branch needed) */
-            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-            LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
-                                                    dv->alloca_val, "hptr");
-            LLVMValueRef args[1] = { heap_ptr };
-            LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
-        } else if (dv->is_heap_slice) {
-            /* free heap []T: load slice struct, extract ptr field 0, call free */
-            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-            LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
-            LLVMTypeRef sfields[3] = { ptr_ty, i32_ty, i32_ty };
-            LLVMTypeRef sl_ty = LLVMStructTypeInContext(cg->ctx, sfields, 3, 0);
-            LLVMValueRef sl   = LLVMBuildLoad2(cg->builder, sl_ty, dv->alloca_val, "sldt");
-            LLVMValueRef dptr = LLVMBuildExtractValue(cg->builder, sl, 0, "sldt.ptr");
-            LLVMValueRef args[1] = { dptr };
-            LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
-        } else if (dv->struct_name) {
+        if (dv->struct_name) {
             struct_reg_t *sr = find_struct(cg, dv->struct_name);
             /* emit_struct_cleanup calls rem() then auto-frees heap fields
                and recursively destroys nested struct-typed fields */

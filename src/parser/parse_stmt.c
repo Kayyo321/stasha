@@ -575,6 +575,54 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokAsm))          return parse_asm_stmt(p);
     if (check(p, TokComptimeIf))   return parse_comptime_if(p);
 
+    /* unsafe { body } */
+    if (check(p, TokUnsafe)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'unsafe' */
+        node_t *body = parse_block(p);
+        node_t *n = make_node(NodeUnsafeBlock, line);
+        n->as.unsafe_block.body = body;
+        return n;
+    }
+
+    /* zone name { body }  — lexical zone: freed at closing brace */
+    /* zone name;          — manual zone variable declaration      */
+    if (check(p, TokZone)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'zone' */
+
+        /* zone.free / zone.move no longer exist — rem.() and mov.() handle those */
+        if (check(p, TokDot)) {
+            diag_begin_error("'zone.free' and 'zone.move' have been removed");
+            diag_span(SRC_LOC(line, 0, 0), True, "use rem.(zone_name) to free a zone");
+            diag_help("mov.(zone_name, ptr, size) escapes a pointer out of a zone");
+            diag_finish();
+            p->had_error = True;
+            /* skip to end of statement to keep parsing */
+            while (!check(p, TokSemicolon) && !check(p, TokEof)) advance_parser(p);
+            if (check(p, TokSemicolon)) advance_parser(p);
+            return make_node(NodeExprStmt, line);
+        }
+
+        token_t name_tok = consume(p, TokIdent, "zone name");
+        char *zone_name = copy_token_text(name_tok);
+
+        if (check(p, TokLBrace)) {
+            /* lexical zone: zone name { body } */
+            node_t *body = parse_block(p);
+            node_t *n = make_node(NodeZoneDecl, line);
+            n->as.zone_decl.name = zone_name;
+            n->as.zone_decl.body = body;
+            return n;
+        }
+
+        /* manual zone statement: zone name; */
+        consume(p, TokSemicolon, "';'");
+        node_t *n = make_node(NodeZoneStmt, line);
+        n->as.zone_stmt.name = zone_name;
+        return n;
+    }
+
     /* @comptime if / @comptime assert in statement context */
     if (check(p, TokAt)) {
         parser_state_t snap = save_state(p);

@@ -122,6 +122,198 @@ static void check_null_deref(cg_t *cg, const char *name, usize_t line) {
     }
 }
 
+/* ── Provenance tracking ── */
+
+/* Assign a fresh provenance tag to a newly-declared pointer variable.
+ * Called from gen_local_var when init is a new.() or new_in_zone(). */
+static void prov_record_alloc(cg_t *cg, const char *var_name) {
+    if (cg->in_unsafe > 0) return;
+    for (int i = cg->provenance_count - 1; i >= 0; i--) {
+        if (!cg->provenance[i].name) {
+            cg->provenance[i].name = (char *)var_name;
+            return;
+        }
+    }
+}
+
+/* Mark a provenance tag as closed when rem.(p) is called.
+ * var_name is the name of the pointer variable being freed. */
+static void prov_close(cg_t *cg, const char *var_name, usize_t line) {
+    if (cg->in_unsafe > 0) return;
+    for (int i = 0; i < cg->provenance_count; i++) {
+        if (cg->provenance[i].name && strcmp(cg->provenance[i].name, var_name) == 0) {
+            cg->provenance[i].closed     = True;
+            cg->provenance[i].close_line = line;
+            return;
+        }
+    }
+}
+
+/* Check: use of a pointer with closed provenance (use-after-free). */
+static void prov_check_use(cg_t *cg, const char *var_name, usize_t line) {
+    if (cg->in_unsafe > 0) return;
+    for (int i = 0; i < cg->provenance_count; i++) {
+        if (cg->provenance[i].name && strcmp(cg->provenance[i].name, var_name) == 0
+                && cg->provenance[i].closed) {
+            diag_begin_error("use-after-free: pointer '%s' was freed on line %zu",
+                             var_name, cg->provenance[i].close_line);
+            diag_span(SRC_LOC(line, 0, 0), True,
+                      "use of freed pointer '%s' here", var_name);
+            diag_note("the memory pointed to by '%s' was released via rem.()", var_name);
+            diag_help("do not use a pointer after calling rem.() on it");
+            diag_finish();
+            return;
+        }
+    }
+}
+
+/* Propagate provenance: when `dst = src`, dst inherits src's provenance tag */
+static void prov_propagate(cg_t *cg, const char *dst, const char *src) {
+    if (!dst || !src || cg->in_unsafe > 0) return;
+    for (int i = 0; i < cg->provenance_count; i++) {
+        if (cg->provenance[i].name && strcmp(cg->provenance[i].name, src) == 0) {
+            /* dst now shares the same provenance entry name chain — we just
+             * record dst as an alias pointing to the same tag. */
+            if (cg->provenance_count < 255) {
+                cg->provenance[cg->provenance_count].name       = (char *)dst;
+                cg->provenance[cg->provenance_count].tag        = cg->provenance[i].tag;
+                cg->provenance[cg->provenance_count].closed     = cg->provenance[i].closed;
+                cg->provenance[cg->provenance_count].close_line = cg->provenance[i].close_line;
+                cg->provenance_count++;
+            }
+            return;
+        }
+    }
+}
+
+/* ── @frees enforcement ── */
+
+/* Check: a function with @frees param must call rem.(param) or pass to @frees fn.
+ * Called on function exit when checking params.
+ * This is a simple conservative check: we verify the function body contains at
+ * least one rem.(param) statement for each @frees parameter.  More precise
+ * dataflow analysis would be needed for path coverage, but this catches the
+ * obvious cases. */
+static void check_frees_param(cg_t *cg, node_t *fn_decl) {
+    if (cg->in_unsafe > 0) return;
+    for (usize_t pi = 0; pi < fn_decl->as.fn_decl.params.count; pi++) {
+        node_t *param = fn_decl->as.fn_decl.params.items[pi];
+        if (!(param->as.var_decl.flags & VdeclFrees)) continue;
+        const char *pname = param->as.var_decl.name;
+        if (!pname) continue;
+        /* walk the body looking for rem.(pname) or a call to an @frees fn with pname */
+        boolean_t found_rem = False;
+        node_t *body = fn_decl->as.fn_decl.body;
+        if (!body) continue;
+        /* simplified: search the top-level block statements */
+        node_t *block = body;
+        for (usize_t si = 0; si < block->as.block.stmts.count && !found_rem; si++) {
+            node_t *stmt = block->as.block.stmts.items[si];
+            if (stmt->kind == NodeRemStmt) {
+                node_t *ptr = stmt->as.rem_stmt.ptr;
+                if (ptr && ptr->kind == NodeIdentExpr
+                        && strcmp(ptr->as.ident.name, pname) == 0)
+                    found_rem = True;
+            }
+        }
+        if (!found_rem) {
+            diag_begin_error("@frees parameter '%s' must be freed on all paths",
+                             pname);
+            diag_span(DIAG_NODE(fn_decl), True,
+                      "function declared with @frees '%s' here", pname);
+            diag_note("@frees parameters must either call rem.(p) directly or pass to "
+                      "another @frees function on every code path");
+            diag_help("add rem.(%s); at the end of the function", pname);
+            diag_finish();
+        }
+    }
+}
+
+/* Check: calling rem.(p) on a parameter without @frees annotation is forbidden
+ * (unless inside unsafe {}).  Called from gen_rem in cg_expr.c. */
+static void check_rem_on_param(cg_t *cg, const char *var_name, usize_t line) {
+    if (cg->in_unsafe > 0) return;
+    /* find the symbol; if it was declared as a function parameter (scope_depth == 1
+     * and storage is a param), check for @frees flag */
+    symbol_t *sym = symtab_lookup(&cg->locals, var_name);
+    if (!sym) sym = symtab_lookup(&cg->globals, var_name);
+    if (!sym) return;
+    /* we check the @frees flag stored in sym->flags — need to extend symbol_t */
+    /* For now: if sym is a parameter and lacks @frees, emit warning-level note.
+     * (Full enforcement requires the @frees flag to be stored in symbol_t.) */
+    (void)line; /* suppress unused warning until symbol_t gains a frees flag */
+}
+
+/* ── Nullable pointer dereference check ── */
+
+/* Check: dereferencing a nullable pointer without a nil-check guard.
+ * Called when a pointer access is performed on a nullable type. */
+static void check_nullable_deref(cg_t *cg, const char *var_name, boolean_t nullable, usize_t line) {
+    if (!nullable || cg->in_unsafe > 0) return;
+    /* Simplified: if the type is nullable and we see a direct deref without a prior
+     * nil-check in scope, emit an error.  A full dominator-based nil-check analysis
+     * would require tracking "narrowed to non-null" in the symbol table per scope. */
+    symbol_t *sym = cg_lookup(cg, var_name);
+    if (!sym) return;
+    if (sym->stype.nullable) {
+        diag_begin_error("dereference of nullable pointer '%s' without nil-check", var_name);
+        diag_span(SRC_LOC(line, 0, 0), True,
+                  "'%s' has type '?T *' and may be nil", var_name);
+        diag_note("nullable pointers must be checked against nil before dereferencing");
+        diag_help("wrap the dereference in: if (%s != nil) { ... }", var_name);
+        diag_finish();
+    }
+}
+
+/* Record that a variable is in a nil-checked scope (narrowed to non-null).
+ * Called from gen_if when the condition is `p != nil` or `nil != p`. */
+static void prov_narrow_nonnull(cg_t *cg, const char *var_name) {
+    /* Set the nullable flag to False in the local symbol so nullable_deref checks
+     * pass inside the if-body.  The flag is restored when the scope exits. */
+    symbol_t *sym = symtab_lookup(&cg->locals, var_name);
+    if (sym) sym->stype.nullable = False;
+}
+
+/* ── Storage-qualified pointer restriction checks ── */
+
+/* Check: a heap-qualified pointer must not point at stack memory.
+ * A stack-qualified pointer must not point at heap memory.
+ * Called from gen_assign and gen_local_var when storing a pointer value. */
+static void check_storage_domain(cg_t *cg, storage_t ptr_qual, boolean_t rhs_is_heap,
+                                  boolean_t rhs_is_stack, usize_t line) {
+    if (cg->in_unsafe > 0) return;
+    if (ptr_qual == StorageHeap && rhs_is_stack) {
+        diag_begin_error("cannot assign a stack address to a heap pointer");
+        diag_span(SRC_LOC(line, 0, 0), True, "assignment here");
+        diag_note("heap-qualified pointers can only point at heap-allocated memory");
+        diag_help("use a heap pointer pointing to heap memory via new.()");
+        diag_finish();
+    } else if (ptr_qual == StorageStack && rhs_is_heap) {
+        diag_begin_error("cannot assign a heap address to a stack pointer");
+        diag_span(SRC_LOC(line, 0, 0), True, "assignment here");
+        diag_note("stack-qualified pointers can only point at stack variables");
+        diag_help("declare the pointer without a storage qualifier: T *p = new.(...)");
+        diag_finish();
+    }
+}
+
+/* Determine if a RHS node expression produces a heap or stack address.
+ * Returns: 1 = heap, -1 = stack, 0 = unknown */
+static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
+    if (!rhs) return 0;
+    if (rhs->kind == NodeNewExpr || rhs->kind == NodeNewInZone) return 1;   /* heap */
+    if (rhs->kind == NodeAddrOf) {
+        node_t *op = rhs->as.addr_of.operand;
+        if (op->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, op->as.ident.name);
+            if (sym && sym->storage == StorageStack) return -1; /* stack */
+            if (sym && sym->storage == StorageHeap)  return  1; /* heap  */
+        }
+        return -1; /* default: &var is stack */
+    }
+    return 0;
+}
+
 /* Check: pointer arithmetic permission and known array bounds */
 static void check_ptr_arith_bounds(cg_t *cg, node_t *node) {
     if (node->as.binary.op != TokPlus && node->as.binary.op != TokMinus) return;

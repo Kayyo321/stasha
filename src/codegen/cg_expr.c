@@ -958,7 +958,11 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
             node_t *arg_node = node->as.call.args.items[i];
             if (arg_node->kind == NodeIdentExpr) {
                 symbol_t *asym = cg_lookup(cg, arg_node->as.ident.name);
-                if (asym) {
+                if (asym && !asym->stype.is_pointer) {
+                    /* Only check storage domain for value types, not pointers.
+                     * For pointers the symbol's storage is where the pointer
+                     * variable lives, not where the pointed-to data lives —
+                     * those are different things and can't be compared here. */
                     storage_t declared = desc->params[i].storage;
                     storage_t actual   = asym->storage;
                     if (declared != StorageDefault && actual != StorageDefault
@@ -2336,12 +2340,60 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
             return LLVMBuildLoad2(cg->builder, elem_ty, gep, "pelem");
         }
         if (sym->stype.base == TypeSlice) {
-            /* slice[i]: load struct, extract ptr, GEP and load */
-            LLVMTypeRef sl_ty  = slice_struct_type(cg);
-            LLVMValueRef sl    = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
-            LLVMValueRef dptr  = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+            /* slice[i]: load struct, extract ptr, GEP and load.
+             * Emit a runtime bounds check unless we are inside unsafe{} or
+             * the index is a compile-time constant within [0, known_len). */
+            LLVMTypeRef sl_ty    = slice_struct_type(cg);
+            LLVMValueRef sl      = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
+            LLVMValueRef dptr    = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+            LLVMValueRef len_val = LLVMBuildExtractValue(cg->builder, sl, 1, "sl.len");
             LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
-            index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
+            LLVMTypeRef  i64_t   = LLVMInt64TypeInContext(cg->ctx);
+
+            /* bounds check: if in_unsafe == 0, emit check */
+            boolean_t skip_check = (cg->in_unsafe > 0);
+            /* static elimination: constant index within known-constant length */
+            if (!skip_check && node->as.index_expr.index->kind == NodeIntLitExpr) {
+                long ci = node->as.index_expr.index->as.int_lit.value;
+                /* If we have a compile-time known len from sym->array_size, use it.
+                 * For slices, sym->array_size stores the declared length if from make.() */
+                if (sym->array_size >= 0 && ci >= 0 && ci < sym->array_size)
+                    skip_check = True;
+            }
+            if (!skip_check) {
+                /* bounds check: 0 <= i < len
+                 * len_val is i64 (from slice struct); coerce index to i64 too */
+                LLVMValueRef idx_i64 = coerce_int(cg, index_val, i64_t);
+                LLVMValueRef zero64  = LLVMConstInt(i64_t, 0, 0);
+                LLVMValueRef len64   = coerce_int(cg, len_val, i64_t);
+                LLVMValueRef in_range = LLVMBuildAnd(cg->builder,
+                    LLVMBuildICmp(cg->builder, LLVMIntSGE, idx_i64, zero64, "bc.lo"),
+                    LLVMBuildICmp(cg->builder, LLVMIntSLT, idx_i64, len64,  "bc.hi"),
+                    "bc.ok");
+                LLVMBasicBlockRef ok_bb   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "bc.ok");
+                LLVMBasicBlockRef oob_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "bc.oob");
+                LLVMBuildCondBr(cg->builder, in_range, ok_bb, oob_bb);
+
+                /* out-of-bounds path: print diagnostic and trap/abort */
+                LLVMPositionBuilderAtEnd(cg->builder, oob_bb);
+                {
+                    const char *msg = "slice index out of bounds\n";
+                    LLVMValueRef msg_str = LLVMBuildGlobalStringPtr(cg->builder, msg, "oob_msg");
+                    LLVMValueRef pfmt[1] = { msg_str };
+                    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pfmt, 1, "");
+                    /* emit llvm.trap intrinsic (opaque-pointer safe: keep trap_ty) */
+                    LLVMTypeRef  trap_ty = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
+                    LLVMValueRef trap_fn = LLVMGetNamedFunction(cg->module, "llvm.trap");
+                    if (!trap_fn)
+                        trap_fn = LLVMAddFunction(cg->module, "llvm.trap", trap_ty);
+                    LLVMBuildCall2(cg->builder, trap_ty, trap_fn, Null, 0, "");
+                    LLVMBuildUnreachable(cg->builder);
+                }
+
+                LLVMPositionBuilderAtEnd(cg->builder, ok_bb);
+            }
+
+            index_val = coerce_int(cg, index_val, i64_t);
             LLVMValueRef gep   = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
             return LLVMBuildLoad2(cg->builder, elem_ty, gep, "selem");
         }
@@ -2757,7 +2809,66 @@ static LLVMValueRef gen_new(cg_t *cg, node_t *node) {
     LLVMValueRef size = gen_expr(cg, node->as.new_expr.size);
     size = coerce_int(cg, size, LLVMInt64TypeInContext(cg->ctx));
     LLVMValueRef args[1] = { size };
-    return LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn, args, 1, "alloc");
+    LLVMValueRef result = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn, args, 1, "alloc");
+    /* record provenance tag for this allocation */
+    if (cg->provenance_count < 256) {
+        cg->provenance[cg->provenance_count].name     = Null;  /* filled when stored */
+        cg->provenance[cg->provenance_count].tag      = ++cg->next_tag;
+        cg->provenance[cg->provenance_count].closed   = False;
+        cg->provenance[cg->provenance_count].close_line = 0;
+        cg->provenance_count++;
+    }
+    return result;
+}
+
+/* new.(T) in zone_name — allocate from zone arena */
+static LLVMValueRef gen_new_in_zone(cg_t *cg, node_t *node) {
+    const char *zone_name = node->as.new_in_zone.zone_name;
+    symbol_t *zsym = cg_lookup(cg, zone_name);
+    if (!zsym) {
+        diag_begin_error("undefined zone '%s'", zone_name);
+        diag_span(DIAG_NODE(node), True, "zone not declared in this scope");
+        diag_help("declare the zone first: zone %s; or zone %s { }", zone_name, zone_name);
+        diag_finish();
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    }
+    /* Pass the alloca address (void**) so __zone_alloc can lazily initialize */
+    LLVMValueRef zone_ptr_addr = zsym->value; /* alloca = void** */
+    LLVMValueRef size = gen_expr(cg, node->as.new_in_zone.size);
+    size = coerce_int(cg, size, LLVMInt64TypeInContext(cg->ctx));
+    LLVMValueRef args[2] = { zone_ptr_addr, size };
+    return LLVMBuildCall2(cg->builder, cg->zone_alloc_type, cg->zone_alloc_fn, args, 2, "zalloc");
+}
+
+/* zone.move(ptr) — copy out of zone to independent heap allocation */
+static LLVMValueRef gen_zone_move(cg_t *cg, node_t *node) {
+    LLVMValueRef ptr = gen_expr(cg, node->as.zone_move.ptr);
+    /* determine element size: use sizeof i8 as conservative default — caller
+       casts the result.  The zone runtime copies the bytes. */
+    LLVMValueRef size = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), 1, 0);
+    /* Pass void** (the alloca) so the runtime can clear the pointer if needed */
+    LLVMValueRef zone_ptr_addr = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    if (node->as.zone_move.zone_name) {
+        symbol_t *zsym = cg_lookup(cg, node->as.zone_move.zone_name);
+        if (zsym)
+            zone_ptr_addr = zsym->value; /* alloca = void** */
+    }
+    LLVMValueRef args[3] = { zone_ptr_addr, ptr, size };
+    return LLVMBuildCall2(cg->builder, cg->zone_move_type, cg->zone_move_fn, args, 3, "zmove");
+}
+
+/* buf[unchecked: i] — identical to gen_index but never emits bounds check */
+static LLVMValueRef gen_flagged_index(cg_t *cg, node_t *node) {
+    /* Temporarily set in_unsafe to skip bounds checks in gen_index */
+    cg->in_unsafe++;
+    /* Reuse gen_index by temporarily changing the node kind */
+    node->kind = NodeIndexExpr;
+    node->as.index_expr.object = node->as.flagged_index.object;
+    node->as.index_expr.index  = node->as.flagged_index.index;
+    LLVMValueRef result = gen_index(cg, node);
+    node->kind = NodeFlaggedIndex;
+    cg->in_unsafe--;
+    return result;
 }
 
 /* ── universal hash ── */
@@ -2987,6 +3098,23 @@ static LLVMValueRef gen_nil(cg_t *cg) {
 }
 
 static LLVMValueRef gen_mov(cg_t *cg, node_t *node) {
+    /* 3-arg form: mov.(zone_name, ptr, size) — escape pointer from zone to heap */
+    if (node->as.mov_expr.zone_name) {
+        symbol_t *zsym = cg_lookup(cg, node->as.mov_expr.zone_name);
+        if (!zsym || !(zsym->flags & SymZone)) {
+            diag_begin_error("first argument to 3-arg mov.() must be a zone variable");
+            diag_span(DIAG_NODE(node), True, "not a zone");
+            diag_finish();
+            return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+        }
+        LLVMValueRef zone_ptr_addr = zsym->value; /* void** alloca */
+        LLVMValueRef ptr = gen_expr(cg, node->as.mov_expr.ptr);
+        LLVMValueRef sz  = gen_expr(cg, node->as.mov_expr.size);
+        sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
+        LLVMValueRef args[3] = { zone_ptr_addr, ptr, sz };
+        return LLVMBuildCall2(cg->builder, cg->zone_move_type, cg->zone_move_fn, args, 3, "zmove");
+    }
+    /* 2-arg form: mov.(ptr, size) — realloc */
     LLVMValueRef ptr = gen_expr(cg, node->as.mov_expr.ptr);
     LLVMValueRef sz  = gen_expr(cg, node->as.mov_expr.size);
     sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
@@ -4048,9 +4176,27 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         case NodeRemStmt: {
             node_t *ptr_node = node->as.rem_stmt.ptr;
-            /* for heap primitive vars: free the heap ptr and null the alloca */
             if (ptr_node->kind == NodeIdentExpr) {
                 symbol_t *hsym = cg_lookup(cg, ptr_node->as.ident.name);
+                /* zone variable: call __zone_free(&zone_ptr) so it nulls *zone_ptr */
+                if (hsym && (hsym->flags & SymZone)) {
+                    LLVMValueRef fa[1] = { hsym->value }; /* alloca = void** */
+                    LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+                /* heap []T slice: load slice struct, extract data ptr, call free */
+                if (hsym && hsym->stype.base == TypeSlice && hsym->storage == StorageHeap) {
+                    LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(cg->ctx, 0);
+                    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+                    LLVMTypeRef sfields[3] = { ptr_ty, i32_ty, i32_ty };
+                    LLVMTypeRef sl_ty   = LLVMStructTypeInContext(cg->ctx, sfields, 3, 0);
+                    LLVMValueRef sl     = LLVMBuildLoad2(cg->builder, sl_ty, hsym->value, "sl");
+                    LLVMValueRef dptr   = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+                    LLVMValueRef fargs[1] = { dptr };
+                    LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, fargs, 1, "");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+                /* heap primitive var: free the heap ptr and null the alloca */
                 if (hsym && (hsym->flags & SymHeapVar)) {
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
                     LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
@@ -4076,6 +4222,22 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeCopyExpr:        return gen_copy_expr(cg, node);
         case NodeLenExpr:         return gen_len_expr(cg, node);
         case NodeCapExpr:         return gen_cap_expr(cg, node);
+        case NodeFlaggedIndex:    return gen_flagged_index(cg, node);
+        case NodeNewInZone:       return gen_new_in_zone(cg, node);
+        case NodeZoneMoveExpr:    return gen_zone_move(cg, node);
+        case NodeZoneFreeStmt:
+            /* zone.free(name) used as expression — emit and return void-like zero */
+            {
+                const char *zn = node->as.zone_free.name;
+                symbol_t *zsym = cg_lookup(cg, zn);
+                if (zsym) {
+                    LLVMValueRef zptr = LLVMBuildLoad2(cg->builder,
+                        LLVMPointerTypeInContext(cg->ctx, 0), zsym->value, "zfp");
+                    LLVMValueRef args[1] = { zptr };
+                    LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, args, 1, "");
+                }
+            }
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         default:
             diag_begin_error("unexpected node kind %d in expression", node->kind);
             diag_finish();

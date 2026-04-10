@@ -193,6 +193,13 @@ static const char *comptime_type_name(type_info_t ti) {
 static type_info_t parse_type(parser_t *p) {
     type_info_t info = NO_TYPE;
 
+    /* nullable pointer type: ?T *p — the ? prefixes the entire type */
+    boolean_t nullable = False;
+    if (check(p, TokQuestion)) {
+        advance_parser(p); /* consume '?' */
+        nullable = True;
+    }
+
     /* slice type: []T — [ immediately followed by ] */
     if (check(p, TokLBracket)) {
         /* peek at what follows the '[' without consuming */
@@ -392,6 +399,20 @@ static type_info_t parse_type(parser_t *p) {
         }
     }
 
+    /* A leading '?' only makes sense on a pointer type */
+    if (nullable) {
+        if (!info.is_pointer) {
+            diag_begin_error("'?' nullable qualifier is only valid on pointer types");
+            diag_span(SRC_LOC(p->previous.line, p->previous.col, 1), True,
+                      "not a pointer type");
+            diag_note("write '?T *p' to declare a nullable pointer");
+            diag_finish();
+            p->had_error = True;
+        } else {
+            info.nullable = True;
+        }
+    }
+
     return info;
 }
 
@@ -413,6 +434,8 @@ static node_t *parse_comptime_assert(parser_t *p);
 static node_t *parse_at_comptime_assert(parser_t *p);
 
 static boolean_t can_start_type(parser_t *p) {
+    /* nullable prefix '?' also starts a type */
+    if (check(p, TokQuestion)) return True;
     if (check(p, TokLBracket)) {
         /* []T slice type — peek to confirm next is ']' */
         parser_state_t snap = save_state(p);
@@ -429,6 +452,7 @@ static boolean_t can_start_type(parser_t *p) {
    another identifier or '*' (i.e. "Type name" or "Type * name").
    If followed by ',' or ')', it must be a grouped parameter name. */
 static boolean_t can_start_param_type(parser_t *p) {
+    if (check(p, TokQuestion)) return True; /* nullable pointer prefix */
     if (is_builtin_type_token(p->current.kind)) return True;
     if (check(p, TokFn)) return True; /* fn* function pointer type */
     /* []T slice type */
@@ -472,6 +496,8 @@ static token_t consume_name(parser_t *p, const char *msg) {
 }
 
 static boolean_t can_start_var_decl(parser_t *p) {
+    /* nullable pointer type: ?T *name */
+    if (check(p, TokQuestion)) return True;
     /* storage qualifiers prefix pointer declarations */
     if (check(p, TokStack) || check(p, TokHeap)) return True;
     /* 'let' alone starts an inferred-type var decl */

@@ -142,7 +142,7 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* new.(size) */
+    /* new.(size) [in zone_name] */
     if (check(p, TokNew)) {
         usize_t line = p->current.line;
         advance_parser(p);
@@ -150,9 +150,33 @@ static node_t *parse_primary(parser_t *p) {
         consume(p, TokLParen, "'('");
         node_t *size = parse_expr(p);
         consume(p, TokRParen, "')'");
+        /* optional: in zone_name */
+        if (check(p, TokIdent) && p->current.length == 2
+                && memcmp(p->current.start, "in", 2) == 0) {
+            advance_parser(p); /* consume 'in' */
+            token_t zone_tok = consume(p, TokIdent, "zone name after 'in'");
+            node_t *n = make_node(NodeNewInZone, line);
+            n->as.new_in_zone.size      = size;
+            n->as.new_in_zone.zone_name = copy_token_text(zone_tok);
+            return n;
+        }
         node_t *n = make_node(NodeNewExpr, line);
         n->as.new_expr.size = size;
         return n;
+    }
+
+    /* 'zone' in expression context is not valid.
+       Lexical zones (zone name { }) and manual zones (zone name;) are statements.
+       Use rem.(zone_name) to free a zone and mov.(zone_name, ptr, size) to escape. */
+    if (check(p, TokZone)) {
+        usize_t line = p->current.line;
+        diag_begin_error("'zone' is not an expression — use rem.() to free a zone");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "did you mean 'rem.(zone_name);' or 'mov.(zone_name, ptr, size)'?");
+        diag_finish();
+        p->had_error = True;
+        advance_parser(p); /* skip 'zone' to avoid infinite loop */
+        return make_node(NodeNilExpr, line);
     }
 
     /* hash.(expr) — universal hash */
@@ -326,19 +350,38 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* mov.(ptr, new_size) — realloc */
+    /* mov.(ptr, new_size)               — realloc
+       mov.(zone_name, ptr, size)         — escape pointer from zone to heap */
     if (check(p, TokMov)) {
         usize_t line = p->current.line;
         advance_parser(p);
         consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
-        node_t *ptr = parse_expr(p);
+        node_t *first = parse_expr(p);
         consume(p, TokComma, "','");
-        node_t *sz = parse_expr(p);
+        node_t *second = parse_expr(p);
+        node_t *ptr = first;
+        node_t *sz  = second;
+        char   *zone_name = Null;
+        if (match_tok(p, TokComma)) {
+            /* 3-arg form: mov.(zone_name, ptr, size) */
+            node_t *third = parse_expr(p);
+            if (first->kind == NodeIdentExpr) {
+                zone_name = first->as.ident.name;
+                ptr = second;
+                sz  = third;
+            } else {
+                diag_begin_error("first argument of 3-arg mov.() must be a zone name");
+                diag_span(SRC_LOC(line, 0, 0), True, "here");
+                diag_finish();
+                p->had_error = True;
+            }
+        }
         consume(p, TokRParen, "')'");
         node_t *n = make_node(NodeMovExpr, line);
-        n->as.mov_expr.ptr = ptr;
-        n->as.mov_expr.size = sz;
+        n->as.mov_expr.ptr       = ptr;
+        n->as.mov_expr.size      = sz;
+        n->as.mov_expr.zone_name = zone_name;
         return n;
     }
 
@@ -727,6 +770,19 @@ static node_t *parse_postfix(parser_t *p) {
                 n->as.slice_expr.object = expr;
                 n->as.slice_expr.lo     = Null;
                 n->as.slice_expr.hi     = hi;
+                expr = n;
+                continue;
+            }
+
+            /* buf[unchecked: i] — bounds-check-free index */
+            if (check(p, TokUnchecked)) {
+                advance_parser(p); /* consume 'unchecked' */
+                consume(p, TokColon, "':' after 'unchecked'");
+                node_t *index = parse_expr(p);
+                consume(p, TokRBracket, "']'");
+                node_t *n = make_node(NodeFlaggedIndex, line);
+                n->as.flagged_index.object = expr;
+                n->as.flagged_index.index  = index;
                 expr = n;
                 continue;
             }

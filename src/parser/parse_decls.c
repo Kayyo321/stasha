@@ -1072,15 +1072,42 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
                 is_variadic = True;
                 break;
             }
+            /* optional parameter attributes: @frees, @restrict */
+            boolean_t is_frees    = False;
+            boolean_t is_restrict = False;
+            while (check(p, TokAt)) {
+                parser_state_t attr_snap = save_state(p);
+                advance_parser(p); /* consume '@' */
+                if (check(p, TokIdent) && p->current.length == 5
+                        && memcmp(p->current.start, "frees", 5) == 0) {
+                    advance_parser(p); /* consume 'frees' identifier */
+                    is_frees = True;
+                } else if (check(p, TokRestrict)) {
+                    advance_parser(p); /* consume 'restrict' */
+                    is_restrict = True;
+                } else if (check(p, TokIdent)) {
+                    /* unknown attribute — warn and skip */
+                    diag_begin_error("unknown parameter attribute '@%.*s'",
+                                     (int)p->current.length, p->current.start);
+                    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                              True, "not a recognised parameter attribute");
+                    diag_note("valid parameter attributes: @frees, @restrict");
+                    diag_finish();
+                    p->had_error = True;
+                    advance_parser(p);
+                } else {
+                    restore_state(p, attr_snap);
+                    break;
+                }
+            }
             /* optional storage qualifier on parameter */
             storage_t param_storage = StorageDefault;
             if (check(p, TokStack))      { param_storage = StorageStack;  advance_parser(p); }
             else if (check(p, TokHeap)) { param_storage = StorageHeap;   advance_parser(p); }
             if (param_storage != StorageDefault) last_storage = param_storage;
             else param_storage = last_storage;
-            /* optional restrict qualifier */
-            boolean_t is_restrict = False;
-            if (match_tok(p, TokRestrict)) is_restrict = True;
+            /* legacy @restrict keyword after storage qualifier */
+            if (!is_restrict && match_tok(p, TokRestrict)) is_restrict = True;
             if (can_start_param_type(p))
                 last_type = parse_type(p);
             token_t pname = consume_name(p, "parameter name");
@@ -1090,6 +1117,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             param->as.var_decl.type    = last_type;
             param->as.var_decl.storage = param_storage;
             if (is_restrict) param->as.var_decl.flags |= VdeclRestrict;
+            if (is_frees)    param->as.var_decl.flags |= VdeclFrees;
             /* array parameter: name[d0][d1]... */
             {
                 int _pndim = 0;

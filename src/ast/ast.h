@@ -52,6 +52,7 @@ struct type_info {
     int ptr_depth;              /* 0 = not a pointer; 1 = *; 2 = **; 3 = ***; etc. */
     ptr_perm_t ptr_perms[8];    /* per-level perms: [0]=outermost … [depth-1]=innermost */
     type_info_t *elem_type;     /* non-null when base == TypeSlice; heap-allocated [1] */
+    boolean_t nullable;         /* True when written as ?T *p — pointer may be nil */
 };
 
 /* ── storage / linkage ── */
@@ -95,6 +96,7 @@ enum {
     VdeclRestrict      = (1 << 6),  /* restrict pointer hint         */
     VdeclLet           = (1 << 7),  /* type-inferred (let binding)   */
     VdeclComptimeField = (1 << 8),  /* @comptime: section — compile-time only, excluded from runtime layout */
+    VdeclFrees         = (1 << 9),  /* @frees: parameter must be rem()'d on all paths */
 };
 
 /* ── type declaration flavours ── */
@@ -205,6 +207,15 @@ typedef enum {
     NodeCopyExpr,    /* copy.(dst, src) → i32                            */
     NodeLenExpr,     /* len.(s) → i32                                    */
     NodeCapExpr,     /* cap.(s) → i32                                    */
+
+    /* memory-safety constructs — added for new safety redesign */
+    NodeUnsafeBlock,  /* unsafe { ... } — suppresses safety checks        */
+    NodeZoneDecl,     /* zone name { ... } — lexical zone                 */
+    NodeZoneStmt,     /* zone name; — manual zone declaration statement    */
+    NodeZoneFreeStmt, /* zone.free(name) — manual zone release             */
+    NodeZoneMoveExpr, /* zone.move(p) — extract pointer from zone         */
+    NodeNewInZone,    /* new.(T) in name — allocate into zone              */
+    NodeFlaggedIndex, /* buf[unchecked: i] — bounds-check-free index      */
 } node_kind_t;
 
 /* ── future operation kinds ── */
@@ -376,7 +387,7 @@ struct node {
         struct { type_info_t target; node_t *expr; } cast_expr;
         struct { node_t *size; } new_expr;
         struct { type_info_t type; } sizeof_expr;
-        struct { node_t *ptr; node_t *size; } mov_expr;
+        struct { node_t *ptr; node_t *size; char *zone_name; } mov_expr;
         struct { node_t *operand; } addr_of;
         struct { char *fmt; usize_t fmt_len; node_list_t args; } error_expr; /* error.('fmt', ...) */
         struct { char *name; node_t *body; } test_block; /* test 'name' { ... } */
@@ -404,6 +415,29 @@ struct node {
         struct { node_t *operand; } any_type_expr;
         struct { node_t *expr; } spread_expr;
         struct { node_t *start; node_t *end; node_t *step; boolean_t inclusive; } range_expr;
+
+        /* ── memory-safety constructs ── */
+
+        /* NodeUnsafeBlock: unsafe { body } */
+        struct { node_t *body; } unsafe_block;
+
+        /* NodeZoneDecl: zone name { body } — lexical zone freed at '}' */
+        struct { char *name; node_t *body; } zone_decl;
+
+        /* NodeZoneStmt: zone name; — manual zone variable declaration */
+        struct { char *name; } zone_stmt;
+
+        /* NodeZoneFreeStmt: zone.free(name) */
+        struct { char *name; } zone_free;
+
+        /* NodeZoneMoveExpr: zone.move(ptr_expr) → fresh-provenance pointer */
+        struct { node_t *ptr; char *zone_name; } zone_move;
+
+        /* NodeNewInZone: new.(T) in zone_name */
+        struct { node_t *size; char *zone_name; } new_in_zone;
+
+        /* NodeFlaggedIndex: buf[unchecked: i] — skip bounds check */
+        struct { node_t *object; node_t *index; } flagged_index;
 
         /* ── slice builtins — keep at end ── */
 

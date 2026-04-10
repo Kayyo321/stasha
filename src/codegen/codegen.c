@@ -47,6 +47,7 @@ enum {
     SymNil      = (1 << 4),  /* statically known to be nil  */
     SymVolatile = (1 << 5),  /* volatile qualifier          */
     SymTls      = (1 << 6),  /* thread-local storage        */
+    SymZone     = (1 << 7),  /* zone variable (freed by __zone_free) */
 };
 
 typedef struct {
@@ -110,6 +111,9 @@ typedef struct {
     /* interface support */
     boolean_t   is_interface;   /* True if this is an interface (fat pointer type) */
     LLVMTypeRef fat_ptr_type;   /* { ptr, ptr } fat pointer type (same as llvm_type for interfaces) */
+    /* destructor-freed fields (provenance tracking) */
+    char *dtor_freed_fields[16]; /* field names that rem()'d by .rem method */
+    usize_t dtor_freed_count;
 } struct_reg_t;
 
 /* ── enum registry ── */
@@ -145,8 +149,6 @@ typedef struct {
 typedef struct {
     LLVMValueRef alloca_val;
     char *struct_name;       /* non-null for struct dtors */
-    boolean_t is_heap_alloc; /* True for heap primitive auto-free */
-    boolean_t is_heap_slice; /* True for heap []T auto-free (frees the data ptr inside the struct) */
 } dtor_var_t;
 
 typedef struct {
@@ -314,6 +316,30 @@ typedef struct {
     usize_t di_type_count;
     usize_t di_type_cap;
     heap_t di_types_heap;
+
+    /* ── safety: unsafe block nesting level ── */
+    int in_unsafe;   /* > 0 when inside unsafe { } — suppresses safety checks */
+
+    /* ── safety: provenance tracking ── */
+    /* Each heap allocation (result of new.() or zone alloc) gets a tag.
+     * When rem.(p) is called, the tag is "closed".  Any subsequent load/store
+     * through a pointer carrying a closed tag is a compile error. */
+    struct {
+        char *name;           /* variable name that holds this allocation */
+        int   tag;            /* unique tag for this allocation */
+        boolean_t closed;     /* True after rem.(p) was called */
+        usize_t close_line;   /* line where rem was called */
+    } provenance[256];
+    int provenance_count;
+    int next_tag;             /* monotonically increasing tag counter */
+
+    /* ── safety: zone runtime function declarations ── */
+    LLVMValueRef zone_alloc_fn;
+    LLVMTypeRef  zone_alloc_type;
+    LLVMValueRef zone_free_fn;
+    LLVMTypeRef  zone_free_type;
+    LLVMValueRef zone_move_fn;
+    LLVMTypeRef  zone_move_type;
 } cg_t;
 
 /* ── helpers ── */
@@ -527,6 +553,32 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.future_drop_type = LLVMFunctionType(void_t, fdr_params, 1, 0);
         cg.future_drop_fn   = LLVMAddFunction(cg.module, "__future_drop", cg.future_drop_type);
         symtab_add(&cg.globals, "__future_drop", cg.future_drop_fn, Null, rt_dummy2, False);
+    }
+
+    /* ── zone runtime function declarations ──
+     * __zone_alloc(zone_ptr, size) -> void_ptr
+     * __zone_free(zone_ptr)
+     * __zone_move(zone_ptr, ptr, size) -> void_ptr  (copy out of zone, independent alloc) */
+    {
+        LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg.ctx, 0);
+        LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg.ctx);
+        LLVMTypeRef void_t = LLVMVoidTypeInContext(cg.ctx);
+        type_info_t rt_z   = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
+
+        LLVMTypeRef za_params[2] = { ptr_t, i64_t };
+        cg.zone_alloc_type = LLVMFunctionType(ptr_t, za_params, 2, 0);
+        cg.zone_alloc_fn   = LLVMAddFunction(cg.module, "__zone_alloc", cg.zone_alloc_type);
+        symtab_add(&cg.globals, "__zone_alloc", cg.zone_alloc_fn, Null, rt_z, False);
+
+        LLVMTypeRef zf_params[1] = { ptr_t };
+        cg.zone_free_type = LLVMFunctionType(void_t, zf_params, 1, 0);
+        cg.zone_free_fn   = LLVMAddFunction(cg.module, "__zone_free", cg.zone_free_type);
+        symtab_add(&cg.globals, "__zone_free", cg.zone_free_fn, Null, rt_z, False);
+
+        LLVMTypeRef zm_params[3] = { ptr_t, ptr_t, i64_t };
+        cg.zone_move_type = LLVMFunctionType(ptr_t, zm_params, 3, 0);
+        cg.zone_move_fn   = LLVMAddFunction(cg.module, "__zone_move", cg.zone_move_type);
+        symtab_add(&cg.globals, "__zone_move", cg.zone_move_fn, Null, rt_z, False);
     }
 
     /* built-in error type: { i1 has_error, ptr message } */

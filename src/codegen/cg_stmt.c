@@ -281,12 +281,6 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             add_dtor_var(cg, alloca_val, ti.user_name);
     }
 
-    /* register heap []T for auto-free of backing allocation at scope exit
-       (skip for array-of-slices like 'heap []i32 table[2]' — those are
-        fixed-size stack arrays; only the individual elements need cleanup) */
-    if (ti.base == TypeSlice && node->as.var_decl.storage == StorageHeap
-            && !(node->as.var_decl.flags & VdeclArray))
-        add_heap_slice(cg, alloca_val);
 }
 
 static void gen_for(cg_t *cg, node_t *node) {
@@ -1773,6 +1767,82 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeBlock:
             gen_block(cg, node);
             break;
+
+        /* ── unsafe { body } — suppress safety checks within block ── */
+        case NodeUnsafeBlock:
+            cg->in_unsafe++;
+            gen_block(cg, node->as.unsafe_block.body);
+            cg->in_unsafe--;
+            break;
+
+        /* ── zone name; — manual zone variable declaration ── */
+        case NodeZoneStmt: {
+            const char *zname = node->as.zone_stmt.name;
+            /* allocate a zone struct on the stack (opaque pointer placeholder).
+             * The zone pointer is initialised to null; the runtime allocates
+             * the zone block lazily on first __zone_alloc call. */
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMValueRef alloca_z = alloc_in_entry(cg, ptr_ty, zname);
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_ty), alloca_z);
+            type_info_t zone_ti = NO_TYPE;
+            zone_ti.base = TypeI64; /* opaque; used as ptr */
+            zone_ti.is_pointer = True;
+            zone_ti.ptr_perm = PtrReadWrite;
+            symtab_add(&cg->locals, zname, alloca_z, ptr_ty, zone_ti, SymZone);
+            symtab_set_last_storage(&cg->locals, StorageStack, False);
+            symtab_set_last_extra(&cg->locals, False, False, LinkageNone,
+                                  cg->dtor_depth, -1);
+            symtab_set_last_line(&cg->locals, node->line);
+            break;
+        }
+
+        /* ── zone name { body } — lexical zone, freed at closing brace ── */
+        case NodeZoneDecl: {
+            const char *zname = node->as.zone_decl.name;
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMValueRef alloca_z = alloc_in_entry(cg, ptr_ty, zname);
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_ty), alloca_z);
+            type_info_t zone_ti = NO_TYPE;
+            zone_ti.base = TypeI64;
+            zone_ti.is_pointer = True;
+            zone_ti.ptr_perm = PtrReadWrite;
+            symtab_add(&cg->locals, zname, alloca_z, ptr_ty, zone_ti, SymZone);
+            symtab_set_last_storage(&cg->locals, StorageStack, False);
+            symtab_set_last_extra(&cg->locals, False, False, LinkageNone,
+                                  cg->dtor_depth, -1);
+            symtab_set_last_line(&cg->locals, node->line);
+            /* generate the zone body */
+            gen_block(cg, node->as.zone_decl.body);
+            /* emit __zone_free(&zone_ptr) at lexical scope exit.
+             * __zone_free takes void** so it can set *zone_ptr = NULL.
+             * It is a no-op when *zone_ptr is already NULL. */
+            {
+                LLVMValueRef fa[1] = { alloca_z }; /* void** */
+                LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
+            }
+            break;
+        }
+
+        /* ── zone.free(name) as statement ── */
+        case NodeZoneFreeStmt: {
+            symbol_t *zsym = cg_lookup(cg, node->as.zone_free.name);
+            if (zsym) {
+                /* Pass void** (the alloca) so __zone_free can clear *zone_ptr */
+                LLVMValueRef fa[1] = { zsym->value };
+                LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
+            } else {
+                diag_begin_error("undefined zone '%s'", node->as.zone_free.name);
+                diag_span(DIAG_NODE(node), True, "zone not found in scope");
+                diag_finish();
+            }
+            break;
+        }
+
+        /* zone.move as stmt (expression-like, result discarded) */
+        case NodeZoneMoveExpr:
+            gen_expr(cg, node);
+            break;
+
         default:
             diag_begin_error("unexpected statement kind %d", node->kind);
             diag_finish();

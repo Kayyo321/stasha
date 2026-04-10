@@ -1445,10 +1445,13 @@ static result_t compile_file(const cfile_params_t *p) {
 #endif
 
     } else {
-        /* EmitExe / EmitTest: always link the thread runtime. */
+        /* EmitExe / EmitTest: always link the thread and zone runtimes. */
         char rt_path[512];
         snprintf(rt_path, sizeof(rt_path), "%s/thread_runtime.a", bin_dir);
         if (all_lib_count < 127) all_libs[all_lib_count++] = rt_path;
+        static char zone_rt_path[512];
+        snprintf(zone_rt_path, sizeof(zone_rt_path), "%s/zone_runtime.a", bin_dir);
+        if (all_lib_count < 127) all_libs[all_lib_count++] = zone_rt_path;
         all_libs[all_lib_count] = Null;
 
         log_msg("linking");

@@ -24,6 +24,10 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
     sr->ct_field_count = 0;
     sr->is_any_type = False;
     sr->any_variant_count = 0;
+    sr->is_interface = False;
+    sr->fat_ptr_type = Null;
+    sr->dtor_freed_count = 0;
+    memset(sr->dtor_freed_fields, 0, sizeof(sr->dtor_freed_fields));
 }
 
 static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t type,
@@ -101,6 +105,35 @@ static void register_enum(cg_t *cg, const char *name, node_list_t *variants) {
         er->variants_heap = NullHeap;
         er->variants = Null;
         er->llvm_type = LLVMInt32TypeInContext(cg->ctx);
+    }
+}
+
+/* Scan the body of a .rem destructor and record which fields it calls rem.() on.
+ * Called during the type-registration pass when a struct's .rem method is encountered.
+ * For each NodeRemStmt whose operand is a NodeMemberExpr of 'self', we record the
+ * field name in the struct's dtor_freed_fields list. */
+static void record_dtor_freed_fields(cg_t *cg, const char *struct_name, node_t *rem_body) {
+    struct_reg_t *sr = find_struct(cg, struct_name);
+    if (!sr || !rem_body) return;
+    /* Walk the body block */
+    node_t *block = rem_body;
+    if (block->kind != NodeBlock) return;
+    for (usize_t i = 0; i < block->as.block.stmts.count; i++) {
+        node_t *stmt = block->as.block.stmts.items[i];
+        if (stmt->kind == NodeRemStmt) {
+            node_t *ptr = stmt->as.rem_stmt.ptr;
+            /* rem.(self.field) — ptr is a NodeMemberExpr or NodeSelfMemberExpr */
+            char *field_name = Null;
+            if (ptr && ptr->kind == NodeMemberExpr) {
+                /* object is 'self' or the struct variable name */
+                field_name = ptr->as.member_expr.field;
+            } else if (ptr && ptr->kind == NodeSelfMemberExpr) {
+                field_name = ptr->as.self_member.field;
+            }
+            if (field_name && sr->dtor_freed_count < 16) {
+                sr->dtor_freed_fields[sr->dtor_freed_count++] = field_name;
+            }
+        }
     }
 }
 

@@ -180,6 +180,13 @@ typedef enum {
     TokCopy,        /* copy   */
     TokLen,         /* len    */
     TokCap,         /* cap    */
+
+    /* memory-safety keywords — added for new safety redesign */
+    TokZone,        /* zone — lexical/manual memory zone                    */
+    TokUnsafe,      /* unsafe — suppresses safety checks inside the block   */
+    TokUnchecked,   /* unchecked — opt-out of bounds check in buf[unchecked: i] */
+    /* NOTE: @frees is intentionally NOT a keyword — it is parsed as an    */
+    /* identifier after '@' to avoid conflicts with struct field names.     */
 } token_kind_t;
 
 typedef struct {
