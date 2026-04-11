@@ -1214,20 +1214,27 @@ static node_t *parse_relational(parser_t *p) {
     return left;
 }
 
-/* ── equality: == != ── */
+/* ── equality: == != .== ── */
 
 static node_t *parse_equality(parser_t *p) {
     node_t *left = parse_relational(p);
-    while (check(p, TokEqEq) || check(p, TokBangEq)) {
+    while (check(p, TokEqEq) || check(p, TokBangEq) || check(p, TokDotEqEq)) {
         token_kind_t op = p->current.kind;
         usize_t line = p->current.line;
         advance_parser(p);
         node_t *right = parse_relational(p);
-        node_t *n = make_node(NodeBinaryExpr, line);
-        n->as.binary.op = op;
-        n->as.binary.left = left;
-        n->as.binary.right = right;
-        left = n;
+        if (op == TokDotEqEq) {
+            node_t *n = make_node(NodeEquExpr, line);
+            n->as.equ_expr.left  = left;
+            n->as.equ_expr.right = right;
+            left = n;
+        } else {
+            node_t *n = make_node(NodeBinaryExpr, line);
+            n->as.binary.op = op;
+            n->as.binary.left = left;
+            n->as.binary.right = right;
+            left = n;
+        }
     }
     return left;
 }

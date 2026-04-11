@@ -187,6 +187,8 @@ typedef enum {
     TokUnchecked,   /* unchecked — opt-out of bounds check in buf[unchecked: i] */
     /* NOTE: @frees is intentionally NOT a keyword — it is parsed as an    */
     /* identifier after '@' to avoid conflicts with struct field names.     */
+
+    TokDotEqEq,     /* .== — infix universal equality operator              */
 } token_kind_t;
 
 typedef struct {

@@ -305,6 +305,10 @@ token_t next_token(lexer_t *lex) {
                 if (match(lex, '=')) return make_token(lex, TokDotDotEq);
                 return make_token(lex, TokDotDot);
             }
+            if (peek(lex) == '=' && peek_next(lex) == '=') {
+                advance(lex); advance(lex);
+                return make_token(lex, TokDotEqEq);
+            }
             return make_token(lex, TokDot);
         case '@': return make_token(lex, TokAt);
         case '?': return make_token(lex, TokQuestion);
