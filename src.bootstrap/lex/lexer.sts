@@ -9,6 +9,38 @@ ext type lexer_t: struct {
     int u32 cur_ln;
     int map_t.[dstring_t, token_type_t] keywords;
 
+    ext fn extract_all(void): [[]token_t, ?[]error] {
+        []token_t tokens = make.(token_t, 0); // lol
+        ?[]error errs = nil;
+
+        token_t tok;
+        do {
+            tok = this.next_tok();
+
+            match tok.kind {
+                token_type_t.TokError(e) => {
+                    if errs == nil {
+                        errs = make.(error, 1);
+                        errs[0] = e;
+                    } else {
+                        errs = append.(errs, e);
+                    }
+                }
+                _ => {
+                    tokens = append.(tokens, tok);
+                }
+            }
+        } while tok.kind != token_type_t.TokEof;
+
+        ret tokens, errs;
+    }
+
+    // lex 
+
+    int fn next_tok(void): token_t {
+
+    }
+
     // member helpers
 
     int fn is_at_end(void): bool => *this.current == `\0`;
@@ -122,7 +154,7 @@ ext lexer_t.new(heap i8 *rw+ source): lexer_t { // TODO: what permissions do we 
 
 // some helpers
 
-int fn is_alpha(i8 c): bool => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
-int fn is_digit(i8 c): bool => c >= '0' && c <= '9';
+int fn is_alpha(i8 c): bool => (c >= 'a' and <= 'z') || (c >= 'A' and <= 'Z') || c == '_';
+int fn is_digit(i8 c): bool => c >= '0' and <= '9';
 int fn is_alnum(i8 c): bool => is_alpha(c) || is_digit(c);
-int fn is_hex_digit(i8 c): bool => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+int fn is_hex_digit(i8 c): bool => (c >= '0' and <= '9') || (c >= 'a' and <= 'f') || (c >= 'A' and <= 'F');

@@ -165,14 +165,14 @@ ext type token_type_t: enum {
     TokStarBang,
 
     TokEof,
-    TokError,
+    TokError(error),
 }
 
 ext type token_t: struct {
     ext u32 line, col;
-    ext token_type_t token_type;
+    ext token_type_t kind;
 }
 
 ext token_t.new(u32 line, col, token_type_t token_type): token_t {
-    ret token_t{.line = line, .col = col, .token_type = token_type};
+    ret token_t{.line = line, .col = col, .kind = token_type};
 }
