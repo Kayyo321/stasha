@@ -84,5 +84,8 @@
     "additionalDirectories": [
       "/private/tmp"
     ]
+  },
+  "enabledPlugins": {
+    "caveman@caveman": true
   }
 }
