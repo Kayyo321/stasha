@@ -41,8 +41,8 @@ ext fn write_fd(i32 fd, i8 *r buf, u32 cnt): [i64, error] {
 ext fn write_stream(stdstream_t stdstream, i8 *r buf, u32 cnt): [i64, error] {
     final i32 desc;
     match stdstream {
-        stdstream_t.Stdout => desc = StdoutFD;
-        stdstream_t.Stderr => desc = StderrFD;
+        stdstream_t.Stdout => { desc = StdoutFD; }
+        stdstream_t.Stderr => { desc = StderrFD; }
     }
 
     ret write_fd(desc, buf, cnt);
