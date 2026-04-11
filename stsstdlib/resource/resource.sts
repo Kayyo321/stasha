@@ -24,6 +24,11 @@ ext type resource_t: struct {
     }
 }
 
+ext fn resource_t.print(void): void {
+    print.('resource_t[valid={}, owned={}]\n',
+           resource_t.(is_valid)(), resource_t.(owned));
+}
+
 // Take ownership of ptr (if owned=true, rem() will free it).
 ext fn resource_t.new(heap u8 *rw ptr, bool owned): resource_t {
     ret resource_t{
@@ -67,6 +72,11 @@ ext type counted_ref_t: struct {
             .refcount = counted_ref_t.(refcount)
         };
     }
+}
+
+ext fn counted_ref_t.print(void): void {
+    print.('counted_ref_t[valid={}, count={}]\n',
+           counted_ref_t.(data) != nil, counted_ref_t.(count)());
 }
 
 // Take ownership of ptr; refcount starts at 1.
@@ -129,6 +139,21 @@ test 'counted_ref_t basic refcount' {
     expect_eq.(cr.count(), 1);
     stack u8 *r p = cr.get();
     expect_eq.(p[0], 55);
+}
+
+test 'resource_t print does not crash' {
+    heap u8 *rw buf = new.(4);
+    resource_t r = resource_t.new(buf, true);
+    r.print();
+    expect.(true);
+}
+
+test 'counted_ref_t print does not crash' {
+    heap u8 *rw data = new.(4);
+    counted_ref_t cr = counted_ref_t.new(data);
+    cr.print();
+    cr.rem();
+    expect.(true);
 }
 
 test 'counted_ref_t retain increments count' {

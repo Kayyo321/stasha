@@ -188,6 +188,16 @@ ext type config_t: struct {
     }
 }
 
+// Print all stored key=value pairs to stdout.
+ext fn config_t.print(void): void {
+    print.('config_t[count={}]\n', config_t.(count));
+    for (u32 i = 0; i < config_t.(count); i++) {
+        stack i8 *r k = (i8 *r)config_t.(key_ptr)(i);
+        stack i8 *r v = (i8 *r)config_t.(val_ptr)(i);
+        print.('  {} = {}\n', k, v);
+    }
+}
+
 ext fn config_t.new(void): config_t {
     heap u8 *rw keys = new.(ConfigMaxEntries * ConfigKeySlot);
     heap u8 *rw vals = new.(ConfigMaxEntries * ConfigValSlot);
@@ -268,6 +278,19 @@ test 'comment and blank lines' {
     c.load_string("# this is a comment\n\nfoo = bar\n");
     expect_eq.(c.count(), 1);
     expect.(c.has("foo"));
+}
+
+test 'config print does not crash' {
+    config_t c = config_t.new();
+    c.load_string("name = Alice\nage = 30\n");
+    c.print();
+    expect.(true);
+}
+
+test 'config print empty does not crash' {
+    config_t c = config_t.new();
+    c.print();
+    expect.(true);
 }
 
 test 'spaces around equals' {

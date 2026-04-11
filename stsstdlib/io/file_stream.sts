@@ -76,6 +76,11 @@ int fn build_mode_str(i32 mode, stack i8 *w out): void {
     out[mi] = 0;
 }
 
+ext fn file_stream_t.print(void): void {
+    print.('file_stream_t[open={}, err={}]\n',
+           file_stream_t.(is_open)(), file_stream_t.(had_err)());
+}
+
 ext fn file_stream_t.new(stack i8 *r path, i32 mode): file_stream_t {
     i8 mode_str[4];
     build_mode_str(mode, mode_str);
@@ -123,6 +128,18 @@ test 'file_stream write and read' {
 test 'file_stream open nonexistent for read fails' {
     file_stream_t fs = file_stream_t.new("/tmp/stasha_no_such_file_xyz.txt", FsRead);
     expect.(!fs.is_open());
+}
+
+test 'file_stream print open does not crash' {
+    file_stream_t fs = file_stream_t.new("/tmp/stasha_fs_print_test.txt", FsWrite);
+    fs.print();
+    expect.(true);
+}
+
+test 'file_stream print closed does not crash' {
+    file_stream_t fs = file_stream_t.new("/tmp/stasha_no_such_xyz.txt", FsRead);
+    fs.print();
+    expect.(true);
 }
 
 test 'file_stream get_ch' {

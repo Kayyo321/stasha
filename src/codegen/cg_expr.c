@@ -3185,6 +3185,28 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
             }
         }
     }
+    /* &Type.(field) — address of a self-member field */
+    if (operand->kind == NodeSelfMemberExpr) {
+        symbol_t *this_sym = cg_lookup(cg, "this");
+        if (this_sym) {
+            char *type_name = operand->as.self_member.type_name;
+            if (!type_name) type_name = cg->current_struct_name;
+            if (type_name && cg->generic_tmpl_name && cg->generic_inst_name
+                    && strcmp(type_name, cg->generic_tmpl_name) == 0)
+                type_name = cg->generic_inst_name;
+            struct_reg_t *sr = type_name ? find_struct(cg, type_name) : Null;
+            if (sr) {
+                LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
+                const char *fname = operand->as.self_member.field;
+                for (usize_t fi = 0; fi < sr->field_count; fi++) {
+                    if (strcmp(sr->fields[fi].name, fname) != 0) continue;
+                    return LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
+                        this_ptr, (unsigned)sr->fields[fi].index, fname);
+                }
+            }
+        }
+    }
     diag_begin_error("address-of requires an lvalue");
     diag_span(DIAG_NODE(operand), True, "");
     diag_finish();

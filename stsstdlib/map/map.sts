@@ -178,6 +178,10 @@ ext type map_t: @comptime[K, V] struct {
     }
 }
 
+ext fn map_t.print(void): void {
+    print.('map_t[count={}, cap={}]\n', map_t.(cnt), map_t.(cap));
+}
+
 // Initial capacity 16 gives decent breathing room before the first rehash.
 ext fn @comptime[K, V] map_t.new(void): map_t.[K, V] {
     final u32 init_cap = 16;
@@ -249,6 +253,20 @@ test 'map count simple' {
     map_t.[i32, i32] m = map_t.[i32, i32].new();
     m.insert(42, 100);
     expect_eq.(m.count(), 1);
+}
+
+test 'map print does not crash' {
+    map_t.[i32, i32] m = map_t.[i32, i32].new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.print();
+    expect.(true);
+}
+
+test 'map print empty does not crash' {
+    map_t.[i32, i32] m = map_t.[i32, i32].new();
+    m.print();
+    expect.(true);
 }
 
 test 'map multiple entries' {

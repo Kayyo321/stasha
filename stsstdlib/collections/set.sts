@@ -146,6 +146,11 @@ ext type hash_set_t: struct {
     }
 }
 
+ext fn hash_set_t.print(void): void {
+    print.('hash_set_t[count={}, cap={}, item_size={}]\n',
+           hash_set_t.(count), hash_set_t.(capacity), hash_set_t.(item_size));
+}
+
 ext fn hash_set_t.new(u32 item_size): hash_set_t {
     final u32 init_cap = 16;
     final u32 ss       = 1 + item_size;
@@ -226,6 +231,11 @@ ext type bit_set_t: struct {
     }
 
     ext fn capacity(void): u32 { ret bit_set_t.(capacity_bits); }
+}
+
+ext fn bit_set_t.print(void): void {
+    print.('bit_set_t[capacity={}, set={}]\n',
+           bit_set_t.(capacity_bits), bit_set_t.(count_set)());
 }
 
 ext fn bit_set_t.new(u32 capacity_bits): bit_set_t {
@@ -367,4 +377,20 @@ test 'bit_set count_set' {
 test 'bit_set capacity' {
     bit_set_t bs = bit_set_t.new(200);
     expect_eq.(bs.capacity(), 200);
+}
+
+test 'hash_set_t print does not crash' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    i32 v = 5; stack i32 *rw vp = &v;
+    s.insert((u8 *r)vp);
+    s.print();
+    expect.(true);
+}
+
+test 'bit_set_t print does not crash' {
+    bit_set_t bs = bit_set_t.new(64);
+    bs.set(3);
+    bs.set(7);
+    bs.print();
+    expect.(true);
 }

@@ -26,6 +26,10 @@ ext type sha256_t: struct {
     }
 }
 
+ext fn sha256_t.print(void): void {
+    print.('sha256_t[ctx_valid={}]\n', sha256_t.(ctx) != nil);
+}
+
 ext fn sha256_t.new(void): sha256_t {
     heap u8 *rw c = new.(96);
     for (i32 i = 0; i < 96; i++) { c[i] = 0; }
@@ -115,6 +119,13 @@ test 'crypto_sha256_hex empty string' {
     expect_eq.((i32)hex_out[1], 51);
     rem.(hex_out);
     rem.(dummy);
+}
+
+test 'sha256_t print does not crash' {
+    sha256_t h = sha256_t.new();
+    h.print();
+    h.rem();
+    expect.(true);
 }
 
 test 'crypto_random_bytes' {

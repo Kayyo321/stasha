@@ -483,7 +483,8 @@ static boolean_t can_start_param_type(parser_t *p) {
 static boolean_t is_name_token(parser_t *p) {
     token_kind_t k = p->current.kind;
     return k == TokIdent || k == TokFrom || k == TokNew || k == TokRem
-        || k == TokLen || k == TokCap || k == TokMake || k == TokAppend || k == TokCopy;
+        || k == TokLen || k == TokCap || k == TokMake || k == TokAppend || k == TokCopy
+        || k == TokHash || k == TokEqu;
 }
 
 /* accept an identifier or a contextual keyword used as a name */

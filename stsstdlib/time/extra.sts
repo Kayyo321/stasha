@@ -58,6 +58,10 @@ ext type timer_t: struct {
     }
 }
 
+ext fn timer_t.print(void): void {
+    print.('timer_t[interval_us={}]\n', timer_t.(interval_us));
+}
+
 // Create a timer with the given interval in microseconds.
 ext fn timer_t.new(i64 interval_us): timer_t {
     ret timer_t{
@@ -92,6 +96,12 @@ test 'timer_t check after start' {
     // Just verify no crash, and check returns a bool.
     bool fired = t.check();
     expect.(fired == true || fired == false);
+}
+
+test 'timer print does not crash' {
+    timer_t t = timer_t.new(1000000);
+    t.print();
+    expect.(true);
 }
 
 test 'timer_t reset' {

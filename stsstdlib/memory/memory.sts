@@ -29,7 +29,7 @@ ext fn mem_zero(stack u8 *w+ dst, u64 n): void {
 }
 
 // Allocate n bytes. Returns a heap pointer.
-ext fn mem_alloc(u64 n): u8 *rw {
+ext fn mem_alloc(u64 n): heap u8 *rw {
     ret new.(n);
 }
 
@@ -39,12 +39,12 @@ ext fn mem_free(heap u8 *rw ptr): void {
 }
 
 // Reallocate ptr to n bytes.
-ext fn mem_realloc(heap u8 *rw ptr, u64 n): u8 *rw {
+ext fn mem_realloc(heap u8 *rw ptr, u64 n): heap u8 *rw {
     ret mov.(ptr, n);
 }
 
 // Allocate count*size zeroed bytes.
-ext fn mem_calloc(u64 count, u64 size): u8 *rw {
+ext fn mem_calloc(u64 count, u64 size): heap u8 *rw {
     u64 total = count * size;
     heap u8 *rw ptr = new.(total);
     cstring.memset(ptr, 0, total);

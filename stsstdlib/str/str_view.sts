@@ -1,5 +1,7 @@
 mod str_view;
 
+lib "stdio" = cio;
+
 // A non-owning, read-only view into a C string or dstring buffer.
 // Does NOT manage memory — the underlying string must outlive the view.
 
@@ -89,6 +91,31 @@ ext fn str_view_t.from_parts(stack i8 *r ptr, i32 len): str_view_t {
     ret str_view_t{ .ptr = ptr, .len = len };
 }
 
+// Print the view contents (exactly len bytes, not null-terminated).
+ext fn str_view_t.print(void): void {
+    cio.printf("%.*s\n", (i32)str_view_t.(len), str_view_t.(ptr));
+}
+
+// FNV-1a hash over the view bytes — enables use as a map_t key.
+ext fn str_view_t.hash(void): u64 {
+    u64 h = 14695981039346656037;
+    final u64 p = 1099511628211;
+    for (i32 i = 0; i < str_view_t.(len); i++) {
+        h = h ^ (u64)(u8)str_view_t.(ptr)[i];
+        h = h * p;
+    }
+    ret h;
+}
+
+// Byte-by-byte equality — enables use as a map_t key.
+ext fn str_view_t.equ(stack str_view_t *r other): bool {
+    if (str_view_t.(len) != other.length()) { ret false; }
+    for (i32 i = 0; i < str_view_t.(len); i++) {
+        if (str_view_t.(ptr)[i] != other.at(i)) { ret false; }
+    }
+    ret true;
+}
+
 int fn sv_byte_len(stack i8 *r s): i32 {
     i32 i = 0;
     for (; s && s[i] != 0; ++i) {}
@@ -160,4 +187,52 @@ test 'str_view equals' {
     str_view_t c = str_view_t.new("bar");
     expect.(a.equals(&b));
     expect.(!a.equals(&c));
+}
+
+test 'str_view print does not crash' {
+    str_view_t v = str_view_t.new("hello");
+    v.print();
+    expect.(true);
+}
+
+test 'str_view print empty does not crash' {
+    str_view_t v = str_view_t.new("");
+    v.print();
+    expect.(true);
+}
+
+test 'str_view hash same content same hash' {
+    str_view_t a = str_view_t.new("hello");
+    str_view_t b = str_view_t.new("hello");
+    expect_eq.(a.hash(), b.hash());
+}
+
+test 'str_view hash different content different hash' {
+    str_view_t a = str_view_t.new("hello");
+    str_view_t b = str_view_t.new("world");
+    expect.(a.hash() != b.hash());
+}
+
+test 'str_view hash empty is deterministic' {
+    str_view_t a = str_view_t.new("");
+    str_view_t b = str_view_t.new("");
+    expect_eq.(a.hash(), b.hash());
+}
+
+test 'str_view equ same content' {
+    str_view_t a = str_view_t.new("abc");
+    str_view_t b = str_view_t.new("abc");
+    expect.(a.equ(&b));
+}
+
+test 'str_view equ different content' {
+    str_view_t a = str_view_t.new("abc");
+    str_view_t b = str_view_t.new("xyz");
+    expect.(!a.equ(&b));
+}
+
+test 'str_view equ different lengths' {
+    str_view_t a = str_view_t.new("abc");
+    str_view_t b = str_view_t.new("ab");
+    expect.(!a.equ(&b));
 }

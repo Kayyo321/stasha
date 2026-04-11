@@ -101,6 +101,11 @@ ext type tcp_socket_t: struct {
     }
 }
 
+ext fn tcp_socket_t.print(void): void {
+    print.('tcp_socket_t[fd={}, connected={}]\n',
+           tcp_socket_t.(fd), tcp_socket_t.(connected));
+}
+
 ext fn tcp_socket_t.new(void): tcp_socket_t {
     i32 fd = cnet.socket(2, 1, 0);
     ret tcp_socket_t{
@@ -161,6 +166,10 @@ ext type tcp_server_t: struct {
     }
 }
 
+ext fn tcp_server_t.print(void): void {
+    print.('tcp_server_t[listen_fd={}]\n', tcp_server_t.(listen_fd));
+}
+
 ext fn tcp_server_t.new(void): tcp_server_t {
     i32 fd = cnet.socket(2, 1, 0);
     ret tcp_server_t{
@@ -204,4 +213,18 @@ test 'tcp_server_t new and rem' {
     tcp_server_t srv = tcp_server_t.new();
     expect.(srv.listen_fd != -1);
     srv.close_server();
+}
+
+test 'tcp_socket print does not crash' {
+    tcp_socket_t s = tcp_socket_t.new();
+    s.print();
+    s.close_conn();
+    expect.(true);
+}
+
+test 'tcp_server print does not crash' {
+    tcp_server_t srv = tcp_server_t.new();
+    srv.print();
+    srv.close_server();
+    expect.(true);
 }

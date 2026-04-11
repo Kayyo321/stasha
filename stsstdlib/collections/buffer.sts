@@ -51,6 +51,10 @@ ext type buffer_t: @comptime[T] struct {
     }
 }
 
+ext fn buffer_t.print(void): void {
+    print.('buffer_t[len={}, cap={}]\n', buffer_t.(length), buffer_t.(capacity));
+}
+
 ext fn @comptime[T] buffer_t.new(void): buffer_t.[T] {
     ret buffer_t.[T] {
         .buf      = nil,
@@ -105,6 +109,20 @@ test 'buffer clear resets length' {
     buf.clear();
     expect_eq.(buf.length(), 0);
     expect.(buf.is_empty());
+}
+
+test 'buffer print does not crash' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(1);
+    buf.push(2);
+    buf.print();
+    expect.(true);
+}
+
+test 'buffer print empty does not crash' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.print();
+    expect.(true);
 }
 
 test 'buffer at out of bounds returns error' {

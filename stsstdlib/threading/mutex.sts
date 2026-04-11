@@ -32,6 +32,10 @@ ext type mutex_t: struct {
     }
 }
 
+ext fn mutex_t.print(void): void {
+    print.('mutex_t[initialized={}]\n', mutex_t.(initialized));
+}
+
 ext fn mutex_t.new(void): mutex_t {
     heap u8 *rw h = new.(MutexSize);
     cpthread.pthread_mutex_init(h, nil);
@@ -85,6 +89,10 @@ ext type rwlock_t: struct {
     ext fn try_write_lock(void): bool {
         ret cpthread.pthread_rwlock_trywrlock(rwlock_t.(handle)) == 0;
     }
+}
+
+ext fn rwlock_t.print(void): void {
+    print.('rwlock_t[initialized={}]\n', rwlock_t.(initialized));
 }
 
 ext fn rwlock_t.new(void): rwlock_t {
@@ -152,6 +160,10 @@ ext type atomic_counter_t: struct {
         atomic_counter_t.(value) = n;
         cpthread.pthread_mutex_unlock(atomic_counter_t.(mutex_handle));
     }
+}
+
+ext fn atomic_counter_t.print(void): void {
+    print.('atomic_counter_t[value={}]\n', atomic_counter_t.(get)());
 }
 
 ext fn atomic_counter_t.new(i64 initial): atomic_counter_t {
@@ -253,4 +265,25 @@ test 'atomic_counter initial value' {
     i64 v = c.get();
     expect_eq.(v, 100);
     atomic_counter_t.rem();
+}
+
+test 'mutex print does not crash' {
+    mutex_t m = mutex_t.new();
+    m.print();
+    mutex_t.rem();
+    expect.(true);
+}
+
+test 'rwlock print does not crash' {
+    rwlock_t rw = rwlock_t.new();
+    rw.print();
+    rwlock_t.rem();
+    expect.(true);
+}
+
+test 'atomic_counter print does not crash' {
+    atomic_counter_t c = atomic_counter_t.new(42);
+    c.print();
+    atomic_counter_t.rem();
+    expect.(true);
 }

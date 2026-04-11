@@ -244,6 +244,20 @@ ext type json_t: struct {
 
 // ── json_t standalone methods ─────────────────────────────────────────────────
 
+ext fn json_t.print(void): void {
+    if (json_t.(handle) == nil) {
+        print.('json_t[invalid]\n');
+        ret;
+    }
+    stack i8 *rw s = json_t.(stringify_compact)();
+    if (s != nil) {
+        print.('{}\n', s);
+        cj.stdjson_free_str(s);
+    } else {
+        print.('json_t[unstringifiable]\n');
+    }
+}
+
 ext fn json_t.free(void): void {
     if (json_t.(handle) != nil && json_t.(owned)) {
         cj.stdjson_free(json_t.(handle));
@@ -503,6 +517,14 @@ ext fn json_builder_t.new_pretty(void): json_builder_t {
                         .depth = 0, .needs_comma = false, .pretty = true };
 }
 
+ext fn json_builder_t.print(void): void {
+    if (json_builder_t.(buf) != nil && json_builder_t.(buf_len) > 0) {
+        print.('{}\n', (i8 *r)json_builder_t.(buf));
+    } else {
+        print.('json_builder_t[empty]\n');
+    }
+}
+
 ext fn json_builder_t.rem(void): void {
     if (json_builder_t.(buf) != nil) {
         rem.(json_builder_t.(buf));
@@ -677,6 +699,30 @@ test 'json_builder bool and null' {
     stack i8 *r s = jb.get_string();
     expect.(cstr_eq(s, "{\"active\":true,\"data\":null}"));
     jb.rem();
+}
+
+test 'json_t print does not crash' {
+    let [j, e] = parse("{\"x\":1}");
+    expect.(e == nil);
+    j.print();
+    j.free();
+    expect.(true);
+}
+
+test 'json_t print invalid does not crash' {
+    json_t j = json_t{ .handle = nil, .owned = false };
+    j.print();
+    expect.(true);
+}
+
+test 'json_builder_t print does not crash' {
+    json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("k"); jb.value_str("v");
+    jb.end_object();
+    jb.print();
+    jb.rem();
+    expect.(true);
 }
 
 test 'json_is_valid_string' {

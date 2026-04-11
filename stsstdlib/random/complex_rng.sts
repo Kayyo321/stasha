@@ -76,6 +76,10 @@ ext type pcg32_t: struct {
     }
 }
 
+ext fn pcg32_t.print(void): void {
+    print.('pcg32_t[state={}, inc={}]\n', pcg32_t.(state), pcg32_t.(inc));
+}
+
 // Create a PCG32 seeded with `seed`.
 ext fn pcg32_t.new(u64 seed): pcg32_t {
     final u64 inc    = (seed << 1) | 1;
@@ -201,4 +205,92 @@ ext fn rand_f64(void): f64 {
                    | ((u64)buf[6] << 48)
                    | ((u64)buf[7] << 56);
     ret (f64)(bits >> 11) / 9007199254740992.0; // 2^53
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+test 'pcg32_t new has non-zero state' {
+    pcg32_t rng = pcg32_t.new(42);
+    expect.(rng.state != 0 || rng.inc != 0);
+}
+
+test 'pcg32_t next_u32 produces values' {
+    pcg32_t rng = pcg32_t.new(12345);
+    u32 v = rng.next_u32();
+    // just verify it doesn't crash; u32 is always >= 0
+    expect.(true);
+}
+
+test 'pcg32_t same seed same sequence' {
+    pcg32_t a = pcg32_t.new(99);
+    pcg32_t b = pcg32_t.new(99);
+    u32 v1 = a.next_u32();
+    u32 v2 = b.next_u32();
+    expect_eq.(v1, v2);
+}
+
+test 'pcg32_t different seeds different first output' {
+    pcg32_t a = pcg32_t.new(1);
+    pcg32_t b = pcg32_t.new(2);
+    u32 v1 = a.next_u32();
+    u32 v2 = b.next_u32();
+    expect.(v1 != v2);
+}
+
+test 'pcg32_t next_range in bounds' {
+    pcg32_t rng = pcg32_t.new(7);
+    i32 v = rng.next_range(1, 10);
+    expect.(v >= 1);
+    expect.(v <= 10);
+}
+
+test 'pcg32_t next_range single value' {
+    pcg32_t rng = pcg32_t.new(7);
+    i32 v = rng.next_range(5, 5);
+    expect_eq.(v, 5);
+}
+
+test 'pcg32_t next_f32 in unit range' {
+    pcg32_t rng = pcg32_t.new(42);
+    f32 v = rng.next_f32();
+    expect.(v >= 0.0);
+    expect.(v <= 1.0);
+}
+
+test 'pcg32_t next_frange in bounds' {
+    pcg32_t rng = pcg32_t.new(55);
+    f32 v = rng.next_frange(-1.0, 1.0);
+    expect.(v >= -1.0);
+    expect.(v <= 1.0);
+}
+
+test 'pcg32_t next_bool returns bool' {
+    pcg32_t rng = pcg32_t.new(100);
+    bool b = rng.next_bool();
+    expect.(b == true || b == false);
+}
+
+test 'pcg32_t reseed produces same output as new with same seed' {
+    pcg32_t a = pcg32_t.new(77);
+    u32 v1 = a.next_u32();
+
+    pcg32_t b = pcg32_t.new(0);
+    b.reseed(77);
+    u32 v2 = b.next_u32();
+    expect_eq.(v1, v2);
+}
+
+test 'pcg32_t generates multiple distinct values' {
+    pcg32_t rng = pcg32_t.new(999);
+    u32 a = rng.next_u32();
+    u32 b = rng.next_u32();
+    u32 c = rng.next_u32();
+    // Extremely unlikely all three are equal
+    expect.(a != b || b != c);
+}
+
+test 'pcg32_t print does not crash' {
+    pcg32_t rng = pcg32_t.new(42);
+    rng.print();
+    expect.(true);
 }

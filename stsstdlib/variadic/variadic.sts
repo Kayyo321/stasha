@@ -1,7 +1,7 @@
 mod variadic;
 
-type variadic_t: struct {
-    int stack i8 *last_seen_arg;
+ext type variadic_t: struct {
+    int stack i8 *rw last_seen_arg;
 
     /// Returns a pointer to the next argument of the given size, or error if out of bounds.
     ext fn next(u32 bytes): [stack i8 *r, error] {
@@ -15,7 +15,7 @@ type variadic_t: struct {
     }
 
     /// Resets the variadic argument pointer to a new start
-    ext fn reset(stack i8 *new_start): void {
+    ext fn reset(stack i8 *rw new_start): void {
         variadic_t.(last_seen_arg) = new_start;
     }
 
@@ -26,8 +26,60 @@ type variadic_t: struct {
 }
 
 /// Creates a new variadic_t starting at the given argument pointer
-ext fn variadic_t.new(stack i8 *last_seen_arg): variadic_t {
+ext fn variadic_t.new(stack i8 *rw last_seen_arg): variadic_t {
     variadic_t v;
     v.last_seen_arg = last_seen_arg;
     ret v;
+}
+
+ext fn variadic_t.print(void): void {
+    print.('variadic_t[ptr={}]\n', variadic_t.(last_seen_arg) != nil);
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+test 'variadic_t new stores ptr' {
+    i8 buf[8];
+    stack i8 *rw p = &buf[0];
+    variadic_t v = variadic_t.new(p);
+    expect.(v.last_seen_arg != nil);
+}
+
+test 'variadic_t reset updates ptr' {
+    i8 buf1[8];
+    i8 buf2[8];
+    stack i8 *rw p1 = &buf1[0];
+    stack i8 *rw p2 = &buf2[0];
+    variadic_t v = variadic_t.new(p1);
+    v.reset(p2);
+    expect.(v.last_seen_arg == p2);
+}
+
+test 'variadic_t end clears ptr' {
+    i8 buf[8];
+    stack i8 *rw p = &buf[0];
+    variadic_t v = variadic_t.new(p);
+    v.end();
+    expect.(v.last_seen_arg == nil);
+}
+
+test 'variadic_t next on nil returns error' {
+    variadic_t v = variadic_t.new(nil);
+    let [ptr, e] = v.next(4);
+    expect.(e != nil);
+    expect.(ptr == nil);
+}
+
+test 'variadic_t print does not crash' {
+    i8 buf[8];
+    stack i8 *rw p = &buf[0];
+    variadic_t v = variadic_t.new(p);
+    v.print();
+    expect.(true);
+}
+
+test 'variadic_t print nil does not crash' {
+    variadic_t v = variadic_t.new(nil);
+    v.print();
+    expect.(true);
 }

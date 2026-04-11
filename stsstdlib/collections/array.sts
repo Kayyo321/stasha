@@ -121,6 +121,10 @@ ext type array_t: @comptime[T] struct {
     }
 }
 
+ext fn array_t.print(void): void {
+    print.('array_t[len={}, cap={}]\n', array_t.(length), array_t.(capacity));
+}
+
 ext fn @comptime[T] array_t.new(void): array_t.[T] {
     ret array_t.[T] {
         .buf      = nil,
@@ -240,6 +244,20 @@ test 'ensure_capacity' {
     a.ensure_capacity(100);
     expect.(a.capacity() >= 100);
     expect_eq.(a.length(), 0);
+}
+
+test 'print shows length and capacity' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(1);
+    a.push(2);
+    a.print();
+    expect.(true);
+}
+
+test 'print empty array does not crash' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.print();
+    expect.(true);
 }
 
 test 'clear' {

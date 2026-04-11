@@ -53,6 +53,10 @@ ext type stopwatch_t: struct {
     }
 }
 
+ext fn stopwatch_t.print(void): void {
+    print.('stopwatch_t[elapsed_ms={}]\n', stopwatch_t.(elapsed_ms)());
+}
+
 // Start a new stopwatch (captures the current tick count).
 ext fn stopwatch_t.new(void): stopwatch_t {
     ret stopwatch_t{ .t0 = ctime.clock() };
@@ -79,6 +83,12 @@ test 'stopwatch elapsed non-negative' {
     stopwatch_t sw = stopwatch_t.new();
     f64 ms = sw.elapsed_ms();
     expect.(ms >= 0.0);
+}
+
+test 'stopwatch print does not crash' {
+    stopwatch_t sw = stopwatch_t.new();
+    sw.print();
+    expect.(true);
 }
 
 test 'clock_ticks_to_ms conversion' {

@@ -70,6 +70,11 @@ ext type logger_t: struct {
     }
 }
 
+ext fn logger_t.print(void): void {
+    print.('logger_t[level={}, timestamps={}]\n',
+           logger_t.(level), logger_t.(use_timestamps));
+}
+
 ext fn logger_t.new(i32 level, bool use_timestamps): logger_t {
     ret logger_t{
         .level          = level,
@@ -136,6 +141,12 @@ test 'free functions' {
     log_info("free info");
     log_warn("free warn");
     log_error("free error");
+    expect.(true);
+}
+
+test 'logger print does not crash' {
+    logger_t l = logger_t.new(LogInfo, false);
+    l.print();
     expect.(true);
 }
 

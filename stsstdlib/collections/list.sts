@@ -113,6 +113,10 @@ ext type slist_t: struct {
     }
 }
 
+ext fn slist_t.print(void): void {
+    print.('slist_t[len={}, item_size={}]\n', slist_t.(length), slist_t.(item_size));
+}
+
 ext fn slist_t.new(u32 item_size): slist_t {
     ret slist_t{
         .head_raw  = nil,
@@ -179,6 +183,10 @@ ext type stack_t: struct {
     ext fn is_empty(void): bool { ret stack_t.(length) == 0; }
 
     ext fn clear(void): void { stack_t.(length) = 0; }
+}
+
+ext fn stack_t.print(void): void {
+    print.('stack_t[len={}, item_size={}]\n', stack_t.(length), stack_t.(item_size));
 }
 
 ext fn stack_t.new(u32 item_size): stack_t {
@@ -261,6 +269,10 @@ ext type queue_t: struct {
         queue_t.(tail_idx) = 0;
         queue_t.(length)   = 0;
     }
+}
+
+ext fn queue_t.print(void): void {
+    print.('queue_t[len={}, item_size={}]\n', queue_t.(length), queue_t.(item_size));
 }
 
 ext fn queue_t.new(u32 item_size): queue_t {
@@ -421,6 +433,30 @@ test 'queue clear' {
     q.clear();
     expect_eq.(q.length(), 0);
     expect.(q.is_empty());
+}
+
+test 'slist_t print does not crash' {
+    slist_t lst = slist_t.new(sizeof.(i32));
+    i32 v = 1; stack i32 *rw vp = &v;
+    lst.push_back((u8 *r)vp);
+    lst.print();
+    expect.(true);
+}
+
+test 'stack_t print does not crash' {
+    stack_t s = stack_t.new(sizeof.(i32));
+    i32 v = 1; stack i32 *rw vp = &v;
+    s.push((u8 *r)vp);
+    s.print();
+    expect.(true);
+}
+
+test 'queue_t print does not crash' {
+    queue_t q = queue_t.new(sizeof.(i32));
+    i32 v = 1; stack i32 *rw vp = &v;
+    q.enqueue((u8 *r)vp);
+    q.print();
+    expect.(true);
 }
 
 test 'queue wrap-around ring buffer' {

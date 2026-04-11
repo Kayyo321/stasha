@@ -43,6 +43,10 @@ ext type regex_pat_t: struct {
     }
 }
 
+ext fn regex_pat_t.print(void): void {
+    print.('regex_pat_t[compiled={}]\n', regex_pat_t.(compiled));
+}
+
 ext fn regex_pat_t.new(void): regex_pat_t {
     heap u8 *rw h = new.(72);
     // zero the buffer
@@ -119,6 +123,21 @@ test 'regex_match free function' {
 test 'regex_match_extended' {
     expect.(regex_match_extended("[0-9]+", "abc 42 def"));
     expect.(!regex_match_extended("[0-9]+", "no digits"));
+}
+
+test 'regex_pat print compiled' {
+    regex_pat_t pat = regex_pat_t.new();
+    pat.compile("hello", 0);
+    pat.print();
+    pat.rem();
+    expect.(true);
+}
+
+test 'regex_pat print uncompiled' {
+    regex_pat_t pat = regex_pat_t.new();
+    pat.print();
+    pat.rem();
+    expect.(true);
 }
 
 test 'exec_at offset' {

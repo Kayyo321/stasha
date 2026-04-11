@@ -195,6 +195,14 @@ ext fn dstring_t.from_str(stack i8 *r txt): dstring_t {
     };
 }
 
+ext fn dstring_t.print(void): void {
+    if (dstring_t.(chars) != nil) {
+        print.('{}\n', dstring_t.(chars));
+    } else {
+        print.('\n');
+    }
+}
+
 ext fn dstring_t.rem(void): void {
     if (dstring_t.(chars)) { rem.(dstring_t.(chars)); }
 
@@ -262,6 +270,19 @@ test 'dstring append multiple' {
     ds.append_cstr("foo");
     ds.append_ch((i8)33);
     expect_eq.(ds.length(), 4);
+}
+
+test 'dstring print does not crash' {
+    dstring_t ds = dstring_t.new();
+    ds.append_cstr("hello");
+    ds.print();
+    expect.(true);
+}
+
+test 'dstring print empty does not crash' {
+    dstring_t ds = dstring_t.new();
+    ds.print();
+    expect.(true);
 }
 
 test 'dstring characters not nil after append' {
