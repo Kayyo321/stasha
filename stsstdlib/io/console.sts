@@ -1,84 +1,49 @@
 mod console;
 
-lib "stdio"  = cio;
 lib "unistd" = cunistd;
 
-// ── stdout ────────────────────────────────────────────────────────────────
+ext const i32 StdoutFD = 1;
+ext const i32 StderrFD = 2;
 
-// Write `msg` to stdout without a trailing newline.
-ext fn write(stack i8 *r msg): void {
-    cio.printf("%s", msg);
+ext type stdstream_t: enum {
+    Stdout,
+    Stderr,
 }
 
-// Write `msg` to stdout followed by a newline.
-ext fn writeln(stack i8 *r msg): void {
-    cio.puts(msg);
+ext macro log! {
+    (...@args) => {
+        @foreach arg : args {
+            print.('{} ', arg);
+        }
+        print.('\n');
+    }
 }
 
-ext fn write_i32(i32 v): void {
-    cio.printf("%d", v);
+ext macro elog! {
+    (...@args) => {
+        @foreach arg : args {
+            print.error.('{} ', arg);
+        }
+        print.error.('\n');
+    }
 }
 
-ext fn write_i64(i64 v): void {
-    cio.printf("%lld", v);
-}
-
-ext fn write_u32(u32 v): void {
-    cio.printf("%u", v);
-}
-
-ext fn write_u64(u64 v): void {
-    cio.printf("%llu", v);
-}
-
-ext fn write_f32(f32 v): void {
-    cio.printf("%g", v);
-}
-
-ext fn write_f64(f64 v): void {
-    cio.printf("%g", v);
-}
-
-ext fn write_bool(bool v): void {
-    cio.printf("%s", v ? "true" : "false");
-}
-
-ext fn write_char(i8 c): void {
-    cio.printf("%c", c);
-}
-
-// ── stdin ─────────────────────────────────────────────────────────────────
-
-// Read up to `max - 1` characters from stdin into `buf`, stopping at newline
-// or EOF. Null-terminates `buf`. Returns the number of characters read.
-ext fn read_line(stack i8 *w buf, u32 max): u32 {
-    u32 i = 0;
-    i8  ch;
-
-    while (i < max - 1) {
-        if (cunistd.read(0, &ch, 1) <= 0) { break; }
-        if (ch == 10) { break; }  // 10 = '\n'
-        buf[i++] = ch;
+ext fn write_fd(i32 fd, i8 *r buf, u32 cnt): [i64, error] {
+    // ssize_t write(int fd, const void *buf, size_t count);
+    final i64 write_result = cunistd.write(fd, buf, cnt);
+    if write_result != (i64)cnt {
+        ret write_result, error.('Expected to write {} bytes but wrote {}.', cnt, write_result);
     }
 
-    buf[i] = 0;
-    ret i;
+    ret write_result, nil;
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────
+ext fn write_stream(stdstream_t stdstream, i8 *r buf, u32 cnt): [i64, error] {
+    final i32 desc;
+    match stdstream {
+        stdstream_t.Stdout => desc = StdoutFD;
+        stdstream_t.Stderr => desc = StderrFD;
+    }
 
-int fn con_str_len(stack i8 *r s): u32 {
-    u32 n = 0;
-    while (s != nil && s[n] != 0) { ++n; }
-    ret n;
-}
-
-test 'console module loads' {
-    expect.(true);
-}
-
-test 'con_str_len basic' {
-    expect_eq.(con_str_len("hello"), 5);
-    expect_eq.(con_str_len(""), 0);
-    expect_eq.(con_str_len("ab"), 2);
+    ret write_fd(desc, buf, cnt);
 }
