@@ -3,9 +3,9 @@ mod lex.lexer;
 imp lex.token;
 
 ext type lexer_t: struct {
-    int heap i8 *start;
-    int heap i8 *current;
-    int heap i8 *start_of_ln;
+    int i8 *start;
+    int i8 *current;
+    int i8 *start_of_ln;
     int u32 cur_ln;
     int map_t.[dstring_t, token_type_t] keywords;
 

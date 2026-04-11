@@ -176,4 +176,3 @@ ext type token_t: struct {
 ext token_t.new(u32 line, col, token_type_t token_type): token_t {
     ret token_t{.line = line, .col = col, .token_type = token_type};
 }
-
