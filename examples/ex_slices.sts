@@ -6,17 +6,39 @@ mod ex_slices;
 // contiguous sequence of elements.  Unlike a fixed array, size is not part
 // of the type.
 //
-// Ownership is expressed through the storage qualifier, consistent with the
-// rest of the language:
+// Ownership is expressed through the storage qualifier:
 //
-//   heap []T s = make.([]T, len)   — owns the backing allocation;
-//                                    auto-freed when s goes out of scope.
+//   heap []T s = make.([]T, len)   — owns the backing allocation.
+//                                    heap []T is allowed because slices are
+//                                    pointer types (fat ptr: data*, len, cap).
+//                                    Caller must call rem.(s) when done.
+//
 //   stack []T v = arr[:]           — borrowed view into an existing array
-//                                    or slice; never frees.
+//                                    or slice; never allocates, never frees.
+//
+// There is no automatic heap cleanup.  Every heap []T must be freed with
+// rem.(s).  The idiomatic pattern is defer rem.(s) immediately after the
+// declaration — it runs at scope exit regardless of how the block exits.
+// The compiler will reject heap non-pointer vars
+// (e.g. heap i32 x) but heap []T is a valid exception — it carries an
+// internal heap-owned data pointer.
+//
+// Returning heap slices from functions:
+//   — Declare the return type as heap []T.
+//   — Allocate inside the function with make.() and return the slice.
+//   — Ownership transfers to the caller; caller must rem.() it.
+//   — Never return a stack []T built from a local array — that is a
+//     dangling view the moment the callee returns.
+//
+// append.() and ownership:
+//   — If len < cap: same backing store reused, no realloc.
+//   — If len == cap: new 2× allocation made, old store freed internally.
+//   — Either way the returned slice is the live owner.
+//   — rem.() the final value of the variable, not intermediate values.
 //
 // Slice expressions:
 //   arr[:]        whole array as a view
-//   arr[lo:hi]    elements (lo, hi)
+//   arr[lo:hi]    elements [lo, hi)
 //   arr[lo:]      from lo to end
 //   arr[:hi]      from 0 to hi
 //   s[lo:hi]      reslice — narrower view into the same backing store
@@ -24,8 +46,7 @@ mod ex_slices;
 // Builtin operations:
 //   make.([]T, len)        allocate an owned slice, zeroed, cap = len
 //   make.([]T, len, cap)   as above with explicit capacity
-//   append.(s, val)        return a new heap []T with val appended;
-//                          reallocates 2× if len == cap
+//   append.(s, val)        return heap []T with val appended; reallocs 2× if full
 //   copy.(dst, src)        copy min(len(dst),len(src)) elements; return count
 //   len.(s)                current element count
 //   cap.(s)                backing capacity
@@ -77,12 +98,32 @@ fn @comptime[T] reverse(stack []T s): void {
     }
 }
 
+// ── Returning a heap slice from a function ─────────────────────────────────
+//
+// Return type is heap []i32 — ownership transfers to the caller.
+// Caller must rem.() the returned slice.
+//
+// Never return a stack []T that views a local array:
+//
+//   int fn bad(void): stack []i32 {
+//       stack i32 arr[4] = .{ 1, 2, 3, 4 };
+//       ret arr[:];   // ERROR — dangling view after return
+//   }
+
+int fn make_squares(stack i32 count): heap []i32 {
+    heap []i32 s = make.([]i32, count);
+    for (stack i32 i = 0; i < count; i++) {
+        s[i] = (i + 1) * (i + 1);
+    }
+    ret s;   // ownership moves to caller; no rem.() here
+}
+
 fn main(void): i32 {
 
     // ── Borrowed views into a stack array ──────────────────────────────────
     //
-    // arr lives on the stack; the slices are zero-cost views — no allocation.
-    // None of the slice variables own memory, so no cleanup is needed.
+    // arr lives on the stack; the slices are zero-cost views — no allocation,
+    // no rem.() needed.
 
     print.('--- array-backed views ---\n');
 
@@ -105,7 +146,7 @@ fn main(void): i32 {
     // ── Reslicing ──────────────────────────────────────────────────────────
     //
     // Reslicing produces another view into the same backing store.
-    // cap shrinks as the window moves right.
+    // All stack []T — no allocation, no rem.().
 
     print.('\n--- reslicing ---\n');
 
@@ -118,12 +159,14 @@ fn main(void): i32 {
 
     // ── Owned slices with make.() ──────────────────────────────────────────
     //
-    // heap []T owns the backing allocation.  When the variable goes out of
-    // scope the runtime frees it — no rem.() required.
+    // heap []T owns the backing allocation.  heap []T is legal because the
+    // slice IS a pointer type internally.  defer rem.() immediately after
+    // declaration is the idiomatic way to ensure cleanup at scope exit.
 
     print.('\n--- owned slices (heap) ---\n');
 
     heap []i32 s = make.([]i32, 6);    // [0 0 0 0 0 0]  len=cap=6
+    defer rem.(s);
     for (stack i32 i = 0; i < len.(s); i++) {
         s[i] = (i + 1) * (i + 1);     // 1 4 9 16 25 36
     }
@@ -133,10 +176,10 @@ fn main(void): i32 {
     print.('has 10? = {}\n', contains.[i32](s, 10));  // false
     reverse.[i32](s);
     print.('reversed: '); print_slice(s);          // 36 25 16 9 4 1
-    // s freed here automatically
 
     // Explicit capacity — useful when the final size is known upfront.
     heap []i32 buf = make.([]i32, 0, 8);   // len=0 cap=8; no realloc until 9th append
+    defer rem.(buf);
     for (stack i32 i = 0; i < 8; i++) {
         buf = append.(buf, i * 10);
     }
@@ -145,20 +188,31 @@ fn main(void): i32 {
     // Passing a heap slice to a function expecting stack []T is implicit.
     fill(buf, 0);
     print.('zeroed: '); print_slice(buf);           // [  0  0  0  0  0  0  0  0]
-    // buf freed here automatically
+
+    // ── Returning a heap slice from a function ─────────────────────────────
+    //
+    // make_squares() allocates internally and returns ownership.
+    // Caller receives a heap []T and is responsible for rem.().
+
+    print.('\n--- returned heap slice ---\n');
+
+    heap []i32 sq = make_squares(5);   // caller owns allocation
+    defer rem.(sq);
+    print.('squares: '); print_slice(sq);           // 1 4 9 16 25
 
     // ── append.() and growth ───────────────────────────────────────────────
     //
-    // append.(s, val) returns a new heap []T.
-    //   · If len < cap: the same backing store is reused (O(1)).
-    //   · If len == cap: a new allocation (2× cap) is made, data copied,
-    //     old backing store freed.
+    // append.(s, val) returns the live owner of the backing store.
+    //   · len < cap: same backing store reused (O(1)); intermediate allocs
+    //     are not freed yet — only the final variable holds live ownership.
+    //   · len == cap: new 2× allocation made, old store freed internally.
     //
-    // Always assign the result back:  s = append.(s, val);
+    // rem.() the final value of the variable — not each intermediate result.
 
     print.('\n--- append and growth ---\n');
 
     heap []i32 grow = make.([]i32, 0, 2);
+    defer rem.(grow);   // frees whatever grow points to at scope exit
     for (stack i32 i = 0; i < 8; i++) {
         stack i32 prev_cap = cap.(grow);
         grow = append.(grow, i);
@@ -167,24 +221,24 @@ fn main(void): i32 {
         }
     }
     print_slice(grow);   // 0 1 2 3 4 5 6 7
-    // grow freed here automatically
 
     // ── nil slice ─────────────────────────────────────────────────────────
     //
     // A nil slice has len=0, cap=0, and no allocation.
     // len./cap. are safe; indexing panics.
     // append.() on nil allocates on first use — idiomatic for optional output.
+    // rem.() on nil is a safe no-op.
 
     print.('\n--- nil slice ---\n');
 
     heap []i32 out = nil;
+    defer rem.(out);   // rem.(nil) is a safe no-op if no appends occur
     print.('nil: len={} cap={}\n', len.(out), cap.(out));   // 0 0
 
     for (stack i32 i = 1; i <= 5; i++) {
         out = append.(out, i * i);
     }
     print.('after appends: '); print_slice(out);    // 1 4 9 16 25
-    // out freed here automatically
 
     // ── copy.() ───────────────────────────────────────────────────────────
     //
@@ -194,9 +248,11 @@ fn main(void): i32 {
     print.('\n--- copy ---\n');
 
     heap []i32 src = make.([]i32, 5);
+    defer rem.(src);
     for (stack i32 i = 0; i < 5; i++) { src[i] = (i + 1) * 10; }   // 10 20 30 40 50
 
     heap []i32 dst = make.([]i32, 8);   // longer than src; tail stays zeroed
+    defer rem.(dst);
     stack i32 n = copy.(dst, src);
     print.('copied {} elements\n', n);   // 5
     print.('dst: '); print_slice(dst);   // [ 10  20  30  40  50   0   0   0]
@@ -206,8 +262,6 @@ fn main(void): i32 {
     copy.(dst_mid, src[:3]);             // src[0..2] → dst[3..5]
     print.('after partial copy into dst[3:]: '); print_slice(dst);
     // [ 10  20  30  10  20  30   0   0]
-
-    // src and dst freed here automatically
 
     ret 0;
 }
