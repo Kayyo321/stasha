@@ -190,6 +190,9 @@ typedef struct {
     LLVMValueRef current_fn;
     LLVMValueRef printf_fn;
     LLVMTypeRef printf_type;
+    LLVMValueRef fprintf_fn;
+    LLVMTypeRef fprintf_type;
+    LLVMValueRef stderr_var;
     LLVMValueRef malloc_fn;
     LLVMTypeRef malloc_type;
     LLVMValueRef free_fn;
@@ -498,6 +501,21 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.printf_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), printf_param, 1, 1);
     cg.printf_fn = LLVMAddFunction(cg.module, "printf", cg.printf_type);
     symtab_add(&cg.globals, "printf", cg.printf_fn, Null, rt_dummy, False);
+
+    {
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg.ctx, 0);
+        LLVMTypeRef fprintf_params[] = { ptr_t, ptr_t };
+        cg.fprintf_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), fprintf_params, 2, 1);
+        cg.fprintf_fn = LLVMAddFunction(cg.module, "fprintf", cg.fprintf_type);
+
+        /* On Apple/Darwin targets, stderr is a macro expanding to __stderrp;
+           on all other platforms the symbol is stderr directly. */
+        const char *stderr_sym = (strstr(triple, "apple") || strstr(triple, "darwin"))
+                                 ? "__stderrp" : "stderr";
+        cg.stderr_var = LLVMAddGlobal(cg.module, ptr_t, stderr_sym);
+        LLVMSetLinkage(cg.stderr_var, LLVMExternalLinkage);
+        LLVMSetExternallyInitialized(cg.stderr_var, 1);
+    }
 
     LLVMTypeRef malloc_param[] = { LLVMInt64TypeInContext(cg.ctx) };
     cg.malloc_type = LLVMFunctionType(LLVMPointerTypeInContext(cg.ctx, 0), malloc_param, 1, 0);

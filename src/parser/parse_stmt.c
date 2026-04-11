@@ -120,6 +120,14 @@ static node_t *parse_print_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'print' */
     consume(p, TokDot, "'.'");
+
+    boolean_t to_stderr = False;
+    if (check(p, TokErrorType)) {
+        advance_parser(p); /* consume 'error' */
+        consume(p, TokDot, "'.'");
+        to_stderr = True;
+    }
+
     consume(p, TokLParen, "'('");
 
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
@@ -142,8 +150,9 @@ static node_t *parse_print_stmt(parser_t *p) {
     char *fmt = ast_strdup(fmt_tok.start + 1, fmt_len);
 
     node_t *n = make_node(NodePrintStmt, line);
-    n->as.print_stmt.fmt     = fmt;
-    n->as.print_stmt.fmt_len = fmt_len;
+    n->as.print_stmt.fmt       = fmt;
+    n->as.print_stmt.fmt_len   = fmt_len;
+    n->as.print_stmt.to_stderr = to_stderr;
     node_list_init(&n->as.print_stmt.args);
 
     while (match_tok(p, TokComma))

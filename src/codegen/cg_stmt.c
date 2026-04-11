@@ -513,8 +513,8 @@ static void gen_ret(cg_t *cg, node_t *node) {
      exit:   buf[msb + 1] = '\0'
              printf("%s", buf)
              ret void                                                     */
-static LLVMValueRef ensure_print_binary_fn(cg_t *cg) {
-    const char *fname = "__sts_print_bin";
+static LLVMValueRef ensure_print_binary_fn(cg_t *cg, boolean_t to_stderr) {
+    const char *fname = to_stderr ? "__sts_eprint_bin" : "__sts_print_bin";
     LLVMValueRef fn = LLVMGetNamedFunction(cg->module, fname);
     if (fn) return fn;
 
@@ -522,7 +522,6 @@ static LLVMValueRef ensure_print_binary_fn(cg_t *cg) {
     LLVMTypeRef i32_t  = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef i8_t   = LLVMInt8TypeInContext(cg->ctx);
     LLVMTypeRef void_t = LLVMVoidTypeInContext(cg->ctx);
-    LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg->ctx, 0);
 
     LLVMTypeRef fn_type = LLVMFunctionType(void_t, &i64_t, 1, 0);
     fn = LLVMAddFunction(cg->module, fname, fn_type);
@@ -595,12 +594,19 @@ static LLVMValueRef ensure_print_binary_fn(cg_t *cg) {
     LLVMValueRef null_slot = LLVMBuildGEP2(b, buf_ty, buf, null_gep_idx, 2, "nslot");
     LLVMBuildStore(b, LLVMConstInt(i8_t, 0, 0), null_slot);
 
-    /* printf("%s", buf_ptr) */
+    /* printf/fprintf("%s", buf_ptr) */
     LLVMValueRef first_idx[2] = { zero32, zero32 };
     LLVMValueRef buf_ptr = LLVMBuildGEP2(b, buf_ty, buf, first_idx, 2, "bufptr");
     LLVMValueRef pfmt = LLVMBuildGlobalStringPtr(b, "%s", "binfmt");
-    LLVMValueRef pargs[2] = { pfmt, buf_ptr };
-    LLVMBuildCall2(b, cg->printf_type, cg->printf_fn, pargs, 2, "");
+    if (to_stderr) {
+        LLVMTypeRef ptr_t2 = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMValueRef stderr_val = LLVMBuildLoad2(b, ptr_t2, cg->stderr_var, "stderr");
+        LLVMValueRef pargs[3] = { stderr_val, pfmt, buf_ptr };
+        LLVMBuildCall2(b, cg->fprintf_type, cg->fprintf_fn, pargs, 3, "");
+    } else {
+        LLVMValueRef pargs[2] = { pfmt, buf_ptr };
+        LLVMBuildCall2(b, cg->printf_type, cg->printf_fn, pargs, 2, "");
+    }
 
     LLVMBuildRetVoid(b);
 
@@ -608,14 +614,21 @@ static LLVMValueRef ensure_print_binary_fn(cg_t *cg) {
     return fn;
 }
 
-static void print_emit_cstr(cg_t *cg, const char *s) {
+static void print_emit_cstr(cg_t *cg, const char *s, boolean_t to_stderr) {
     LLVMValueRef str = LLVMBuildGlobalStringPtr(cg->builder, s, "plit");
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, "%s", "pfmt_s");
-    LLVMValueRef pargs[2] = { fmt, str };
-    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
+    if (to_stderr) {
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMValueRef stderr_val = LLVMBuildLoad2(cg->builder, ptr_t, cg->stderr_var, "stderr");
+        LLVMValueRef pargs[3] = { stderr_val, fmt, str };
+        LLVMBuildCall2(cg->builder, cg->fprintf_type, cg->fprintf_fn, pargs, 3, "");
+    } else {
+        LLVMValueRef pargs[2] = { fmt, str };
+        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
+    }
 }
 
-static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
+static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, boolean_t to_stderr) {
     const char *fmt_str;
     LLVMValueRef print_val = val;
 
@@ -644,8 +657,15 @@ static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty) {
     }
 
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, fmt_str, "pfmt");
-    LLVMValueRef pargs[2] = { fmt, print_val };
-    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
+    if (to_stderr) {
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMValueRef stderr_val = LLVMBuildLoad2(cg->builder, ptr_t, cg->stderr_var, "stderr");
+        LLVMValueRef pargs[3] = { stderr_val, fmt, print_val };
+        LLVMBuildCall2(cg->builder, cg->fprintf_type, cg->fprintf_fn, pargs, 3, "");
+    } else {
+        LLVMValueRef pargs[2] = { fmt, print_val };
+        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pargs, 2, "");
+    }
 }
 
 /* emit a value with a format spec (the part after ':' inside {}).
@@ -710,24 +730,38 @@ static print_spec_t parse_print_spec(const char *s, usize_t len) {
 }
 
 static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
-                                   const char *spec, usize_t slen) {
-    if (slen == 0) { print_emit_scalar(cg, val, ty); return; }
+                                   const char *spec, usize_t slen, boolean_t to_stderr) {
+    if (slen == 0) { print_emit_scalar(cg, val, ty, to_stderr); return; }
 
     print_spec_t sp = parse_print_spec(spec, slen);
 
     /* ── binary: custom helper (printf has no portable %b) ── */
     if (sp.base == 'b') {
-        if (sp.alt_form) print_emit_cstr(cg, "0b");
+        if (sp.alt_form) print_emit_cstr(cg, "0b", to_stderr);
         LLVMValueRef ival = val;
         if (llvm_is_int(ty) && ty != LLVMInt64TypeInContext(cg->ctx))
             ival = LLVMBuildSExt(cg->builder, val,
                                   LLVMInt64TypeInContext(cg->ctx), "i64e");
-        LLVMValueRef bfn = ensure_print_binary_fn(cg);
+        LLVMValueRef bfn = ensure_print_binary_fn(cg, to_stderr);
         LLVMTypeRef bfty = LLVMGlobalGetValueType(bfn);
         LLVMValueRef a[1] = { ival };
         LLVMBuildCall2(cg->builder, bfty, bfn, a, 1, "");
         return;
     }
+
+    /* helper: emit a printf/fprintf call with one variadic argument */
+#define EMIT_FMT1(pfmt_str, arg_val) do { \
+    LLVMValueRef _f = LLVMBuildGlobalStringPtr(cg->builder, pfmt_str, "pfmt_v"); \
+    if (to_stderr) { \
+        LLVMTypeRef _pt = LLVMPointerTypeInContext(cg->ctx, 0); \
+        LLVMValueRef _se = LLVMBuildLoad2(cg->builder, _pt, cg->stderr_var, "stderr"); \
+        LLVMValueRef _a[3] = { _se, _f, (arg_val) }; \
+        LLVMBuildCall2(cg->builder, cg->fprintf_type, cg->fprintf_fn, _a, 3, ""); \
+    } else { \
+        LLVMValueRef _a[2] = { _f, (arg_val) }; \
+        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, _a, 2, ""); \
+    } \
+} while (0)
 
     /* ── float ── */
     if (llvm_is_float(ty) || (sp.base == 0 && sp.prec != (usize_t)-1)) {
@@ -753,9 +787,8 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
         pfmt[n++] = (sp.prec != (usize_t)-1) ? 'f' : 'g';
         pfmt[n] = '\0';
 
-        LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_f");
-        LLVMValueRef a[2] = { f, dval };
-        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+        EMIT_FMT1(pfmt, dval);
+#undef EMIT_FMT1
         return;
     }
 
@@ -786,39 +819,46 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
         pfmt[n] = '\0';
 
         LLVMValueRef f = LLVMBuildGlobalStringPtr(cg->builder, pfmt, "pfmt_i");
-        LLVMValueRef a[2] = { f, ival };
-        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+        if (to_stderr) {
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMValueRef stderr_val = LLVMBuildLoad2(cg->builder, ptr_t, cg->stderr_var, "stderr");
+            LLVMValueRef a[3] = { stderr_val, f, ival };
+            LLVMBuildCall2(cg->builder, cg->fprintf_type, cg->fprintf_fn, a, 3, "");
+        } else {
+            LLVMValueRef a[2] = { f, ival };
+            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, a, 2, "");
+        }
     }
 }
 
-static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr) {
+static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *sr, boolean_t to_stderr) {
     char open[256];
     snprintf(open, sizeof(open), "%s{", sr->name);
-    print_emit_cstr(cg, open);
+    print_emit_cstr(cg, open, to_stderr);
 
     boolean_t first = True;
     for (usize_t i = 0; i < sr->field_count; i++) {
         field_info_t *f = &sr->fields[i];
         if (f->linkage != LinkageExternal) continue;
 
-        if (!first) print_emit_cstr(cg, ", ");
+        if (!first) print_emit_cstr(cg, ", ", to_stderr);
         first = False;
 
         char label[256];
         snprintf(label, sizeof(label), ".%s = ", f->name);
-        print_emit_cstr(cg, label);
+        print_emit_cstr(cg, label, to_stderr);
 
         LLVMValueRef fval = LLVMBuildExtractValue(cg->builder, val,
                                                    (unsigned)f->index, "");
-        print_emit_scalar(cg, fval, LLVMTypeOf(fval));
+        print_emit_scalar(cg, fval, LLVMTypeOf(fval), to_stderr);
     }
 
-    print_emit_cstr(cg, "}");
+    print_emit_cstr(cg, "}", to_stderr);
 }
 
 /* Emit one value argument with an optional format spec string.
    Called after the { ... } has been parsed from the format string. */
-static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen) {
+static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen, boolean_t to_stderr) {
     LLVMValueRef val = gen_expr(cg, arg);
     LLVMTypeRef ty   = LLVMTypeOf(val);
 
@@ -829,8 +869,15 @@ static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen
         LLVMValueRef nil_str = LLVMBuildGlobalStringPtr(cg->builder, "(nil error)", "nil_err_str");
         LLVMValueRef selected = LLVMBuildSelect(cg->builder, has_err, msg_ptr, nil_str, "err_sel");
         LLVMValueRef efmt = LLVMBuildGlobalStringPtr(cg->builder, "%s", "err_pfmt");
-        LLVMValueRef eargs[2] = { efmt, selected };
-        LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, eargs, 2, "");
+        if (to_stderr) {
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMValueRef stderr_val = LLVMBuildLoad2(cg->builder, ptr_t, cg->stderr_var, "stderr");
+            LLVMValueRef eargs[3] = { stderr_val, efmt, selected };
+            LLVMBuildCall2(cg->builder, cg->fprintf_type, cg->fprintf_fn, eargs, 3, "");
+        } else {
+            LLVMValueRef eargs[2] = { efmt, selected };
+            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, eargs, 2, "");
+        }
     } else if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
         /* struct: format spec is ignored — use print method or default layout */
         const char *sname = LLVMGetStructName(ty);
@@ -846,11 +893,11 @@ static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen
                 LLVMBuildCall2(cg->builder, fty, pfn, ca, 1, "");
             } else {
                 struct_reg_t *sr = find_struct(cg, sname);
-                if (sr) print_emit_struct_default(cg, val, sr);
+                if (sr) print_emit_struct_default(cg, val, sr, to_stderr);
             }
         }
     } else {
-        print_emit_scalar_spec(cg, val, ty, spec, slen);
+        print_emit_scalar_spec(cg, val, ty, spec, slen, to_stderr);
     }
 }
 
@@ -874,22 +921,23 @@ static char print_decode_esc(char c) {
 }
 
 static void gen_print(cg_t *cg, node_t *node) {
-    const char *fmt   = node->as.print_stmt.fmt;  /* raw: escape seqs not yet decoded */
-    usize_t     flen  = node->as.print_stmt.fmt_len;
-    node_list_t *args = &node->as.print_stmt.args;
-    usize_t arg_idx   = 0;
+    const char *fmt      = node->as.print_stmt.fmt;  /* raw: escape seqs not yet decoded */
+    usize_t     flen     = node->as.print_stmt.fmt_len;
+    node_list_t *args    = &node->as.print_stmt.args;
+    boolean_t   to_stderr = node->as.print_stmt.to_stderr;
+    usize_t arg_idx      = 0;
 
     /* working buffer for the current literal segment (decoded escapes) */
     heap_t seg_heap = allocate(flen + 1, 1);
     char  *seg      = seg_heap.pointer;
     usize_t seg_len = 0;
 
-#define FLUSH_SEG() do {                                    \
-    if (seg_len > 0) {                                      \
-        seg[seg_len] = '\0';                                \
-        print_emit_cstr(cg, seg);                           \
-        seg_len = 0;                                        \
-    }                                                       \
+#define FLUSH_SEG() do {                                          \
+    if (seg_len > 0) {                                            \
+        seg[seg_len] = '\0';                                      \
+        print_emit_cstr(cg, seg, to_stderr);                      \
+        seg_len = 0;                                              \
+    }                                                             \
 } while (0)
 
     for (usize_t i = 0; i < flen; ) {
@@ -931,7 +979,7 @@ static void gen_print(cg_t *cg, node_t *node) {
 
             /* emit the argument */
             if (arg_idx < args->count)
-                print_emit_arg(cg, args->items[arg_idx++], spec, slen);
+                print_emit_arg(cg, args->items[arg_idx++], spec, slen, to_stderr);
 
             i = j + 1;
             continue;
