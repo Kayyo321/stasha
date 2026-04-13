@@ -615,11 +615,10 @@ static void expand_fn_macro(macro_fn_t    *fn,
         /* ── @foreach loop_var : variadic_name { body } ── */
         if (mt->kind == TokAt
                 && i + 5 < fn->body_count
-                && fn->body[i+1].kind == TokIdent
-                && macro_tok_name_eq(&fn->body[i+1], "foreach")
-                && fn->body[i+2].kind == TokIdent   /* loop variable  */
+                && fn->body[i+1].kind == TokForeach  /* now a real keyword */
+                && fn->body[i+2].kind == TokIdent    /* loop variable      */
                 && fn->body[i+3].kind == TokColon
-                && fn->body[i+4].kind == TokIdent   /* variadic name  */
+                && fn->body[i+4].kind == TokIdent    /* variadic name      */
                 && fn->body[i+5].kind == TokLBrace
                 && fn->has_variadic) {
 

@@ -193,6 +193,10 @@ typedef enum {
     /* comparison-chain keywords */
     TokAnd,         /* and — chained comparison AND (x > 1 and < 10)        */
     TokOr,          /* or  — chained comparison OR  (x == 1 or 2 or 3)      */
+
+    /* foreach slice iteration */
+    TokForeach,     /* foreach — iterate over a slice                        */
+    TokIn,          /* in  — separates iter var from slice in foreach        */
 } token_kind_t;
 
 typedef struct {

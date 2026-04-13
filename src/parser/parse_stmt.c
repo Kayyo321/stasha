@@ -56,6 +56,25 @@ static node_t *parse_while_stmt(parser_t *p) {
     return n;
 }
 
+static node_t *parse_foreach_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'foreach' */
+
+    token_t iter_tok = consume(p, TokIdent, "iteration variable name");
+    char *iter_name  = copy_token_text(iter_tok);
+
+    consume(p, TokIn, "'in'");
+
+    node_t *slice = parse_expr(p);
+    node_t *body  = parse_block(p);
+
+    node_t *n = make_node(NodeForeachStmt, line);
+    n->as.foreach_stmt.iter_name = iter_name;
+    n->as.foreach_stmt.slice     = slice;
+    n->as.foreach_stmt.body      = body;
+    return n;
+}
+
 static node_t *parse_do_while_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'do' */
@@ -572,6 +591,7 @@ static node_t *parse_defer_stmt(parser_t *p) {
 static node_t *parse_statement(parser_t *p) {
     if (check(p, TokLBrace))       return parse_block(p);
     if (check(p, TokFor))          return parse_for_stmt(p);
+    if (check(p, TokForeach))      return parse_foreach_stmt(p);
     if (check(p, TokWhile))        return parse_while_stmt(p);
     if (check(p, TokDo))           return parse_do_while_stmt(p);
     if (check(p, TokInf))          return parse_inf_loop(p);

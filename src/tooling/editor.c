@@ -138,6 +138,8 @@ static const char *token_type_name(token_kind_t kind) {
         case TokExt:
         case TokFn:
         case TokFor:
+        case TokForeach:
+        case TokIn:
         case TokIf:
         case TokElse:
         case TokWhile:

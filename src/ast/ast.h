@@ -220,6 +220,9 @@ typedef enum {
 
     /* comparison-chain — x > 10 and < 20 / x == 1 or 2 or 3 */
     NodeCmpChain,
+
+    /* foreach slice iteration — keep at end to avoid shifting existing values */
+    NodeForeachStmt,  /* foreach elem in slice { body } */
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -325,6 +328,7 @@ struct node {
         struct { node_t *init; node_t *cond; node_t *update; node_t *body; } for_stmt;
         struct { node_t *cond; node_t *body; } while_stmt;
         struct { node_t *body; node_t *cond; } do_while_stmt;
+        struct { char *iter_name; node_t *slice; node_t *body; } foreach_stmt;
         struct { node_t *body; } inf_loop;
         struct { node_t *cond; node_t *then_block; node_t *else_block; } if_stmt;
         struct { node_list_t values; } ret_stmt;

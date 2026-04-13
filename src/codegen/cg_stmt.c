@@ -324,6 +324,92 @@ static void gen_for(cg_t *cg, node_t *node) {
     }
 }
 
+static void gen_foreach(cg_t *cg, node_t *node) {
+    LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+
+    /* Determine element LLVM type and stype from the slice expression. */
+    LLVMTypeRef elem_ty = LLVMInt8TypeInContext(cg->ctx);
+    type_info_t iter_ti = NO_TYPE;
+    if (node->as.foreach_stmt.slice->kind == NodeIdentExpr) {
+        symbol_t *sl_sym = cg_lookup(cg, node->as.foreach_stmt.slice->as.ident.name);
+        if (sl_sym && sl_sym->stype.base == TypeSlice && sl_sym->stype.elem_type) {
+            iter_ti  = sl_sym->stype.elem_type[0];
+            elem_ty  = get_slice_elem_llvm_type(cg, iter_ti);
+        }
+    }
+
+    /* Evaluate the slice expression once before the loop. */
+    LLVMValueRef slice_val = gen_expr(cg, node->as.foreach_stmt.slice);
+    if (LLVMGetTypeKind(LLVMTypeOf(slice_val)) != LLVMStructTypeKind) {
+        diag_begin_error("'foreach' requires a slice operand");
+        diag_span(DIAG_NODE(node), True, "expression is not a slice type");
+        diag_note("foreach only works on []T slice values");
+        diag_finish();
+        return;
+    }
+
+    LLVMValueRef sl_ptr = LLVMBuildExtractValue(cg->builder, slice_val, 0, "fe.ptr");
+    LLVMValueRef sl_len = LLVMBuildExtractValue(cg->builder, slice_val, 1, "fe.len");
+    sl_len = coerce_int(cg, sl_len, i64_ty);
+
+    /* Alloca for the loop index. */
+    LLVMValueRef idx_alloca = alloc_in_entry(cg, i64_ty, "fe.idx");
+    LLVMBuildStore(cg->builder, LLVMConstInt(i64_ty, 0, 0), idx_alloca);
+
+    /* Alloca for the iteration variable — visible inside the body. */
+    usize_t locals_before = cg->locals.count;
+    LLVMValueRef iter_alloca = alloc_in_entry(cg, elem_ty, node->as.foreach_stmt.iter_name);
+    if (iter_ti.base == TypeVoid && !iter_ti.is_pointer)
+        iter_ti = llvm_type_to_ti(elem_ty);
+    symtab_add(&cg->locals, node->as.foreach_stmt.iter_name,
+               iter_alloca, elem_ty, iter_ti, 0);
+    symtab_set_last_storage(&cg->locals, StorageStack, False);
+    /* Mark used immediately so unused-variable warning is never emitted for
+     * the implicit iterator — the user always reads it inside the body. */
+    cg->locals.entries[cg->locals.count - 1].used = True;
+
+    LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "fe.cond");
+    LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "fe.body");
+    LLVMBasicBlockRef inc_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "fe.inc");
+    LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "fe.end");
+
+    LLVMBasicBlockRef saved_break = cg->break_target;
+    LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    cg->break_target    = end_bb;
+    cg->continue_target = inc_bb;
+
+    LLVMBuildBr(cg->builder, cond_bb);
+
+    /* Condition: idx < len */
+    LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
+    LLVMValueRef idx = LLVMBuildLoad2(cg->builder, i64_ty, idx_alloca, "fe.i");
+    LLVMValueRef cmp = LLVMBuildICmp(cg->builder, LLVMIntSLT, idx, sl_len, "fe.ok");
+    LLVMBuildCondBr(cg->builder, cmp, body_bb, end_bb);
+
+    /* Body: bind iter_name = slice[idx], then run block */
+    LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+    LLVMValueRef gep  = LLVMBuildGEP2(cg->builder, elem_ty, sl_ptr, &idx, 1, "fe.gep");
+    LLVMValueRef elem = LLVMBuildLoad2(cg->builder, elem_ty, gep, "fe.elem");
+    LLVMBuildStore(cg->builder, elem, iter_alloca);
+    gen_block(cg, node->as.foreach_stmt.body);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
+        LLVMBuildBr(cg->builder, inc_bb);
+
+    /* Increment: idx++ */
+    LLVMPositionBuilderAtEnd(cg->builder, inc_bb);
+    LLVMValueRef idx2 = LLVMBuildLoad2(cg->builder, i64_ty, idx_alloca, "fe.i2");
+    LLVMValueRef nxt  = LLVMBuildAdd(cg->builder, idx2, LLVMConstInt(i64_ty, 1, 0), "fe.nxt");
+    LLVMBuildStore(cg->builder, nxt, idx_alloca);
+    LLVMBuildBr(cg->builder, cond_bb);
+
+    LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+    cg->break_target    = saved_break;
+    cg->continue_target = saved_cont;
+
+    /* Remove the iteration variable from locals. */
+    cg->locals.count = locals_before;
+}
+
 static void gen_while(cg_t *cg, node_t *node) {
     LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "while.cond");
     LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "while.body");
@@ -1767,6 +1853,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeVarDecl:      gen_local_var(cg, node); break;
         case NodeMultiAssign:  gen_multi_assign(cg, node); break;
         case NodeForStmt:      gen_for(cg, node); break;
+        case NodeForeachStmt:  gen_foreach(cg, node); break;
         case NodeWhileStmt:    gen_while(cg, node); break;
         case NodeDoWhileStmt:  gen_do_while(cg, node); break;
         case NodeInfLoop:      gen_inf_loop(cg, node); break;

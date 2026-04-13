@@ -191,6 +191,8 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("unchecked", TokUnchecked);
     KW("and",       TokAnd);
     KW("or",        TokOr);
+    KW("foreach",   TokForeach);
+    KW("in",        TokIn);
     /* "frees" is NOT a keyword — parsed contextually as TokIdent after '@' */
 
     KW("i8", TokI8);
