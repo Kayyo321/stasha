@@ -444,6 +444,83 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
     return load;
 }
 
+/* ── comparison chain: x > 10 and < 20 / x == 1 or 2 or 3 ──
+ *
+ * base_expr is evaluated exactly once.  Conditions are combined with integer
+ * AND/OR (non-short-circuit) on the i1 results; AND binds tighter than OR.
+ *
+ * Precedence grouping: accumulate an AND-sub-result, flush to OR whenever an
+ * OR connector is encountered, then OR all flushed groups at the end.
+ * Example: cond[0] OR cond[1] AND cond[2]
+ *   → or_acc = cond[0], and_res = AND(cond[1], cond[2])
+ *   → final  = OR(or_acc, and_res)                                           */
+
+static LLVMValueRef gen_single_cmp(cg_t *cg, LLVMValueRef base_val,
+                                   token_kind_t op, LLVMValueRef rhs_val) {
+    boolean_t is_fp = llvm_is_float(LLVMTypeOf(base_val));
+    switch (op) {
+        case TokLt:
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOLT, base_val, rhs_val, "clt")
+                         : LLVMBuildICmp(cg->builder, LLVMIntSLT,  base_val, rhs_val, "clt");
+        case TokGt:
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOGT, base_val, rhs_val, "cgt")
+                         : LLVMBuildICmp(cg->builder, LLVMIntSGT,  base_val, rhs_val, "cgt");
+        case TokLtEq:
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOLE, base_val, rhs_val, "cle")
+                         : LLVMBuildICmp(cg->builder, LLVMIntSLE,  base_val, rhs_val, "cle");
+        case TokGtEq:
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOGE, base_val, rhs_val, "cge")
+                         : LLVMBuildICmp(cg->builder, LLVMIntSGE,  base_val, rhs_val, "cge");
+        case TokEqEq:
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOEQ, base_val, rhs_val, "ceq")
+                         : LLVMBuildICmp(cg->builder, LLVMIntEQ,   base_val, rhs_val, "ceq");
+        case TokBangEq:
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealONE, base_val, rhs_val, "cne")
+                         : LLVMBuildICmp(cg->builder, LLVMIntNE,   base_val, rhs_val, "cne");
+        default:
+            return LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0);
+    }
+}
+
+static LLVMValueRef gen_cmp_chain(cg_t *cg, node_t *node) {
+    /* evaluate base once — handles getValue() > 10 and < 20 safely */
+    LLVMValueRef base_val = gen_expr(cg, node->as.cmp_chain.base_expr);
+    usize_t count = node->as.cmp_chain.count;
+
+    /* evaluate all comparison results eagerly */
+    LLVMValueRef cmp[CMP_CHAIN_MAX];
+    for (usize_t i = 0; i < count; i++) {
+        LLVMValueRef rhs_val = gen_expr(cg, node->as.cmp_chain.rhs_nodes[i]);
+        /* coerce rhs to match base type when they are integer constants */
+        if (!llvm_is_float(LLVMTypeOf(base_val))
+                && LLVMTypeOf(rhs_val) != LLVMTypeOf(base_val)
+                && LLVMGetTypeKind(LLVMTypeOf(rhs_val)) == LLVMIntegerTypeKind)
+            rhs_val = coerce_int(cg, rhs_val, LLVMTypeOf(base_val));
+        cmp[i] = gen_single_cmp(cg, base_val, node->as.cmp_chain.cmp_ops[i], rhs_val);
+    }
+
+    /* combine respecting AND > OR precedence:
+     * scan left-to-right; accumulate an AND-group; flush on OR connector      */
+    LLVMValueRef and_res  = cmp[0];
+    LLVMValueRef or_acc   = Null;   /* accumulated OR operands */
+
+    for (usize_t i = 1; i < count; i++) {
+        if (node->as.cmp_chain.logical_ops[i] == 0) {
+            /* AND: fold into current AND group */
+            and_res = LLVMBuildAnd(cg->builder, and_res, cmp[i], "chain.and");
+        } else {
+            /* OR: flush current AND group into or_acc, start new AND group */
+            or_acc  = or_acc ? LLVMBuildOr(cg->builder, or_acc, and_res, "chain.or")
+                             : and_res;
+            and_res = cmp[i];
+        }
+    }
+
+    /* combine final AND group with any pending OR accumulator */
+    return or_acc ? LLVMBuildOr(cg->builder, or_acc, and_res, "chain.final")
+                  : and_res;
+}
+
 static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
     /* short-circuit logical AND */
     if (node->as.binary.op == TokAmpAmp) {
@@ -4244,6 +4321,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeLenExpr:         return gen_len_expr(cg, node);
         case NodeCapExpr:         return gen_cap_expr(cg, node);
         case NodeFlaggedIndex:    return gen_flagged_index(cg, node);
+        case NodeCmpChain:        return gen_cmp_chain(cg, node);
         case NodeNewInZone:       return gen_new_in_zone(cg, node);
         case NodeZoneMoveExpr:    return gen_zone_move(cg, node);
         case NodeZoneFreeStmt:

@@ -1,0 +1,24 @@
+mod globl_zones;
+
+zone top_lvl; // statically initialized (needs to be freed somewhere)
+
+fn use_top_lvl(void): void {
+    let xyz = new.(100) in top_lvl;
+    defer rem.(xyz);
+    //...
+}
+
+fn pass_zone(zone z): void {
+    let xyz = new.(100) in z;
+    defer rem.(xyz);
+    //...
+}
+
+fn main(void): i32 {
+    defer rem.(top_lvl);
+
+    use_top_lvl();
+    pass_zone(top_lvl);
+
+    ret 0;
+}

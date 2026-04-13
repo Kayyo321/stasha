@@ -1239,10 +1239,116 @@ static node_t *parse_equality(parser_t *p) {
     return left;
 }
 
+/* ── comparison chain helpers ── */
+
+static boolean_t is_cmp_op_tok(token_kind_t k) {
+    return k == TokLt || k == TokGt || k == TokLtEq || k == TokGtEq
+        || k == TokEqEq || k == TokBangEq;
+}
+
+static boolean_t is_chain_literal(token_kind_t k) {
+    return k == TokIntLit || k == TokFloatLit || k == TokTrue || k == TokFalse
+        || k == TokCharLit || k == TokStackStr || k == TokHeapStr;
+}
+
+/* True when the base expression may have side effects and must be evaluated once */
+static boolean_t is_complex_base(node_t *n) {
+    switch (n->kind) {
+        case NodeIdentExpr:
+        case NodeIntLitExpr:
+        case NodeFloatLitExpr:
+        case NodeBoolLitExpr:
+        case NodeCharLitExpr:
+        case NodeStrLitExpr:
+        case NodeMemberExpr:
+        case NodeSelfMemberExpr:
+            return False;
+        default:
+            return True;
+    }
+}
+
+/* ── comparison chain: x > 10 and < 20  /  x == 1 or 2 or 3 ── */
+
+static node_t *parse_cmp_chain(parser_t *p) {
+    node_t *first = parse_equality(p);
+
+    /* fast path: no and/or keyword — return as-is */
+    if (!check(p, TokAnd) && !check(p, TokOr))
+        return first;
+
+    /* the expression before 'and'/'or' must be a comparison binary */
+    if (first->kind != NodeBinaryExpr || !is_cmp_op_tok(first->as.binary.op)) {
+        diag_begin_error("'%.*s' must follow a comparison expression",
+                         (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a comparison like 'x > 10' before '%.*s'",
+                  (int)p->current.length, p->current.start);
+        diag_note("use '&&' or '||' to combine non-comparison boolean expressions");
+        diag_finish();
+        p->had_error = True;
+        return first;
+    }
+
+    node_t *chain = make_node(NodeCmpChain, first->line);
+    chain->as.cmp_chain.base_expr  = first->as.binary.left;
+    chain->as.cmp_chain.needs_tmp  = is_complex_base(first->as.binary.left);
+    chain->as.cmp_chain.cmp_ops[0]    = first->as.binary.op;
+    chain->as.cmp_chain.rhs_nodes[0]  = first->as.binary.right;
+    chain->as.cmp_chain.logical_ops[0] = 0; /* unused — no connector before first */
+    chain->as.cmp_chain.count = 1;
+
+    while (check(p, TokAnd) || check(p, TokOr)) {
+        usize_t cnt = chain->as.cmp_chain.count;
+        if (cnt >= CMP_CHAIN_MAX) {
+            diag_begin_error("comparison chain exceeds maximum of %d conditions", CMP_CHAIN_MAX);
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "chain too long here");
+            diag_finish();
+            p->had_error = True;
+            break;
+        }
+
+        int logical = check(p, TokAnd) ? 0 : 1; /* 0=AND, 1=OR */
+        advance_parser(p); /* consume 'and'/'or' */
+
+        token_kind_t cmp_op;
+        node_t *rhs;
+
+        if (is_cmp_op_tok(p->current.kind)) {
+            /* 'and < 20' — explicit operator, reuse base */
+            cmp_op = p->current.kind;
+            advance_parser(p);
+            rhs = parse_shift(p); /* parse RHS below equality level to avoid re-triggering chain */
+        } else if (is_chain_literal(p->current.kind)) {
+            /* 'or 2' — bare literal, implied '==' */
+            cmp_op = TokEqEq;
+            rhs = parse_primary(p);
+        } else {
+            /* 'and y < 20' or other invalid form — new variable not allowed */
+            diag_begin_error("invalid comparison chain after '%s'",
+                             logical == 0 ? "and" : "or");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a comparison operator (<, >, <=, >=, ==, !=) or a literal here");
+            diag_note("to compare a different expression, use '&&' or '||' instead of 'and'/'or'");
+            diag_finish();
+            p->had_error = True;
+            break;
+        }
+
+        chain->as.cmp_chain.logical_ops[cnt] = logical;
+        chain->as.cmp_chain.cmp_ops[cnt]     = cmp_op;
+        chain->as.cmp_chain.rhs_nodes[cnt]   = rhs;
+        chain->as.cmp_chain.count++;
+    }
+
+    return chain;
+}
+
 /* ── bitwise AND: & ── */
 
 static node_t *parse_bitwise_and(parser_t *p) {
-    node_t *left = parse_equality(p);
+    node_t *left = parse_cmp_chain(p);
     while (check(p, TokAmp)) {
         usize_t line = p->current.line;
         advance_parser(p);

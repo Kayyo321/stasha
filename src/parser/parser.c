@@ -421,6 +421,7 @@ static type_info_t parse_type(parser_t *p) {
 static node_t *parse_expr(parser_t *p);
 static node_t *parse_postfix(parser_t *p);
 static node_t *parse_unary(parser_t *p);
+static node_t *parse_cmp_chain(parser_t *p);
 static node_t *parse_block(parser_t *p);
 static node_t *parse_statement(parser_t *p);
 static node_t *parse_match_stmt(parser_t *p);

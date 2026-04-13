@@ -189,6 +189,10 @@ typedef enum {
     /* identifier after '@' to avoid conflicts with struct field names.     */
 
     TokDotEqEq,     /* .== — infix universal equality operator              */
+
+    /* comparison-chain keywords */
+    TokAnd,         /* and — chained comparison AND (x > 1 and < 10)        */
+    TokOr,          /* or  — chained comparison OR  (x == 1 or 2 or 3)      */
 } token_kind_t;
 
 typedef struct {

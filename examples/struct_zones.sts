@@ -1,0 +1,30 @@
+mod struct_zones;
+
+type struct_t: struct {
+    ext zone xyz;
+    ext zone abc;
+
+    ext stack i8 *x;
+    ext stack i8 *y;
+}
+
+fn struct_t.new(void): struct_t {
+    ret struct_t{.x = nil, .y = nil};
+}
+
+fn struct_t.rem(void): void {
+    rem.(this.xyz); // clean up zones.
+    rem.(this.abc); 
+}
+
+fn main(void): i32 {
+    {
+        let s = struct_t.();
+
+        s.x = new.(100) in s.xyz;
+        s.y = new.(200) in s.abc;
+    } // when destructor is called, zones are cleaned up.
+    
+
+    ret 0;
+}

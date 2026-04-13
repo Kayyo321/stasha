@@ -216,7 +216,13 @@ typedef enum {
     NodeZoneMoveExpr, /* zone.move(p) — extract pointer from zone         */
     NodeNewInZone,    /* new.(T) in name — allocate into zone              */
     NodeFlaggedIndex, /* buf[unchecked: i] — bounds-check-free index      */
+
+    /* comparison-chain — x > 10 and < 20 / x == 1 or 2 or 3 */
+    NodeCmpChain,
 } node_kind_t;
+
+/* maximum conditions in a single comparison chain */
+#define CMP_CHAIN_MAX 32
 
 /* ── future operation kinds ── */
 typedef enum {
@@ -438,6 +444,19 @@ struct node {
 
         /* NodeFlaggedIndex: buf[unchecked: i] — skip bounds check */
         struct { node_t *object; node_t *index; } flagged_index;
+
+        /* NodeCmpChain: x > 10 and < 20 — base evaluated once, conditions chained
+         *   logical_ops[0] unused (no connector before the first condition)
+         *   logical_ops[i] = 0 → AND, 1 → OR  (connects cond[i-1] to cond[i])
+         *   AND has higher precedence than OR (same as && vs ||)               */
+        struct {
+            node_t       *base_expr;
+            boolean_t     needs_tmp;              /* base has side effects — eval once */
+            usize_t       count;
+            token_kind_t  cmp_ops[CMP_CHAIN_MAX];
+            node_t       *rhs_nodes[CMP_CHAIN_MAX];
+            int           logical_ops[CMP_CHAIN_MAX];
+        } cmp_chain;
 
         /* ── slice builtins — keep at end ── */
 
