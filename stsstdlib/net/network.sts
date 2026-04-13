@@ -68,16 +68,16 @@ ext type tcp_socket_t: struct {
         u32 addr = net_inet_addr(ip);
         u16 net_port = net_htons(port);
         net_make_sockaddr_in(addr, net_port, sa_buf);
-        i32 rc = cnet.connect(tcp_socket_t.(fd), sa_buf, 16);
+        i32 rc = cnet.connect(this.fd, sa_buf, 16);
         if (rc != 0) {
             ret error.('connect failed');
         }
-        tcp_socket_t.(connected) = true;
+        this.connected = true;
         ret nil;
     }
 
     ext fn send_data(stack u8 *r+ buf, u32 len): [i32, error] {
-        i32 n = cnet.send(tcp_socket_t.(fd), buf, len, 0);
+        i32 n = cnet.send(this.fd, buf, len, 0);
         if (n < 0) {
             ret -1, error.('send failed');
         }
@@ -85,7 +85,7 @@ ext type tcp_socket_t: struct {
     }
 
     ext fn recv_data(stack u8 *w+ buf, u32 len): [i32, error] {
-        i32 n = cnet.recv(tcp_socket_t.(fd), buf, len, 0);
+        i32 n = cnet.recv(this.fd, buf, len, 0);
         if (n < 0) {
             ret -1, error.('recv failed');
         }
@@ -93,17 +93,24 @@ ext type tcp_socket_t: struct {
     }
 
     ext fn close_conn(void): void {
-        if (tcp_socket_t.(fd) != -1) {
-            cnet.close(tcp_socket_t.(fd));
-            tcp_socket_t.(fd) = -1;
-            tcp_socket_t.(connected) = false;
+        if (this.fd != -1) {
+            cnet.close(this.fd);
+            this.fd = -1;
+            this.connected = false;
         }
     }
-}
 
-ext fn tcp_socket_t.print(void): void {
-    print.('tcp_socket_t[fd={}, connected={}]\n',
-           tcp_socket_t.(fd), tcp_socket_t.(connected));
+    ext fn print(void): void {
+        print.('tcp_socket_t[fd={}, connected={}]\n',
+               this.fd, this.connected);
+    }
+
+    ext fn rem(void): void {
+        if (this.fd != -1) {
+            cnet.close(this.fd);
+            this.fd = -1;
+        }
+    }
 }
 
 ext fn tcp_socket_t.new(void): tcp_socket_t {
@@ -114,13 +121,6 @@ ext fn tcp_socket_t.new(void): tcp_socket_t {
     };
 }
 
-ext fn tcp_socket_t.rem(void): void {
-    if (tcp_socket_t.(fd) != -1) {
-        cnet.close(tcp_socket_t.(fd));
-        tcp_socket_t.(fd) = -1;
-    }
-}
-
 // ── TCP server ──────────────────────────────────────────────────────────────
 
 ext type tcp_server_t: struct {
@@ -129,18 +129,18 @@ ext type tcp_server_t: struct {
     ext fn bind_and_listen(u16 port, i32 backlog): error {
         i32 reuse = 1;
         stack i32 *rw rp = &reuse;
-        cnet.setsockopt(tcp_server_t.(listen_fd), 65535, 4, rp, 4);
+        cnet.setsockopt(this.listen_fd, 65535, 4, rp, 4);
 
         u8 sa_buf[16];
         // Bind to INADDR_ANY (0.0.0.0) in network order
         u16 net_port = net_htons(port);
         net_make_sockaddr_in(0, net_port, sa_buf);
 
-        i32 rc = cnet.bind(tcp_server_t.(listen_fd), sa_buf, 16);
+        i32 rc = cnet.bind(this.listen_fd, sa_buf, 16);
         if (rc != 0) {
             ret error.('bind failed');
         }
-        rc = cnet.listen(tcp_server_t.(listen_fd), backlog);
+        rc = cnet.listen(this.listen_fd, backlog);
         if (rc != 0) {
             ret error.('listen failed');
         }
@@ -151,7 +151,7 @@ ext type tcp_server_t: struct {
         u8 cli_buf[16];
         i32 cli_len = 16;
         stack i32 *rw clp = &cli_len;
-        i32 cfd = cnet.accept(tcp_server_t.(listen_fd), cli_buf, clp);
+        i32 cfd = cnet.accept(this.listen_fd, cli_buf, clp);
         if (cfd < 0) {
             ret -1, error.('accept failed');
         }
@@ -159,15 +159,22 @@ ext type tcp_server_t: struct {
     }
 
     ext fn close_server(void): void {
-        if (tcp_server_t.(listen_fd) != -1) {
-            cnet.close(tcp_server_t.(listen_fd));
-            tcp_server_t.(listen_fd) = -1;
+        if (this.listen_fd != -1) {
+            cnet.close(this.listen_fd);
+            this.listen_fd = -1;
         }
     }
-}
 
-ext fn tcp_server_t.print(void): void {
-    print.('tcp_server_t[listen_fd={}]\n', tcp_server_t.(listen_fd));
+    ext fn print(void): void {
+        print.('tcp_server_t[listen_fd={}]\n', this.listen_fd);
+    }
+
+    ext fn rem(void): void {
+        if (this.listen_fd != -1) {
+            cnet.close(this.listen_fd);
+            this.listen_fd = -1;
+        }
+    }
 }
 
 ext fn tcp_server_t.new(void): tcp_server_t {
@@ -175,13 +182,6 @@ ext fn tcp_server_t.new(void): tcp_server_t {
     ret tcp_server_t{
         .listen_fd = fd
     };
-}
-
-ext fn tcp_server_t.rem(void): void {
-    if (tcp_server_t.(listen_fd) != -1) {
-        cnet.close(tcp_server_t.(listen_fd));
-        tcp_server_t.(listen_fd) = -1;
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

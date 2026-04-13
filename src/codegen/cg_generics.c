@@ -171,11 +171,12 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     mangle_module_prefix(module_name ? module_name : "", cg->current_module_prefix,
                          sizeof(cg->current_module_prefix));
 
-    cg->current_fn           = fn;
-    cg->current_struct_name  = (char *)inst_struct_name;
-    cg->current_fn_linkage   = LinkageInternal;
-    cg->locals.count         = 0;
-    cg->dtor_depth           = 0;
+    cg->current_fn                  = fn;
+    cg->current_struct_name         = (char *)inst_struct_name;
+    cg->current_fn_is_inline_method = True; /* generic struct method — this allowed */
+    cg->current_fn_linkage          = LinkageInternal;
+    cg->locals.count                = 0;
+    cg->dtor_depth                  = 0;
 
     LLVMBasicBlockRef entry =
         LLVMAppendBasicBlockInContext(cg->ctx, fn, "entry");
@@ -519,9 +520,10 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
             mangle_module_prefix(tmpl->module_name, cg->current_module_prefix,
                                  sizeof(cg->current_module_prefix));
 
-        cg->current_fn          = fn;
-        cg->current_struct_name = Null;
-        cg->current_fn_linkage  = LinkageInternal;
+        cg->current_fn                  = fn;
+        cg->current_struct_name         = Null;
+        cg->current_fn_is_inline_method = False; /* standalone generic fn — no this */
+        cg->current_fn_linkage          = LinkageInternal;
 
         LLVMBasicBlockRef entry =
             LLVMAppendBasicBlockInContext(cg->ctx, fn, "entry");

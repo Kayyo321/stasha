@@ -210,7 +210,8 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             /* accept ident or built-in keywords used as method names (hash, equ, new, rem, ...) */
             token_t fn_name;
             if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
-                    || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
+                    || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
+                    || check(p, TokPrint)) {
                 fn_name = p->current; advance_parser(p);
             } else {
                 fn_name = consume(p, TokIdent, "method name");
@@ -221,7 +222,8 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                 iface_qual = copy_token_text(fn_name); /* save qualifier */
                 advance_parser(p); /* consume '.' */
                 if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
-                        || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
+                        || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
+                        || check(p, TokPrint)) {
                     fn_name = p->current; advance_parser(p);
                 } else {
                     fn_name = consume(p, TokIdent, "method name");
@@ -231,7 +233,8 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                     advance_parser(p); /* consume '.' */
                     iface_qual = copy_token_text(fn_name); /* now iface_qual is the middle name */
                     if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
-                            || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)) {
+                            || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
+                            || check(p, TokPrint)) {
                         fn_name = p->current; advance_parser(p);
                     } else {
                         fn_name = consume(p, TokIdent, "method name");

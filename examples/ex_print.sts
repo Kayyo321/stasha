@@ -19,16 +19,16 @@ fn simple_t.new(i32 x, y, z, priv): simple_t {
 type complex_t: struct {
     ext stack i8 *r chars;
     ext i32 len;
+
+    fn print(void): void {
+        for (i32 i = 0; i < this.len; i++) {
+            print.('{}', this.chars[i]);
+        }
+    }
 }
 
 // Override print for complex_t: fn Type.print(void): void
 // print.(...) calls this instead of the default field-by-field output.
-fn complex_t.print(void): void {
-    for (i32 i = 0; i < complex_t.(len); i++) {
-        print.('{}', complex_t.(chars)[i]);
-    }
-}
-
 fn main(void): i32 {
     // basic
     print.('Hello, World!\n');

@@ -57,6 +57,13 @@ fn Container.new(i32 tag, i32 buf_size): Container {
 type Tracked: struct {
     heap u8 *rw buf;
     ext i32 id;
+
+    fn rem(void): void {
+        /* Manually free buf and null it so the auto-cleanup is a no-op. */
+        rem.(this.buf);
+        this.buf = nil;
+        io.printf('Tracked[%d].rem() called\n', this.id);
+    }
 };
 
 fn Tracked.new(i32 id): Tracked {
@@ -64,13 +71,6 @@ fn Tracked.new(i32 id): Tracked {
     t.buf = new.(64);
     t.id  = id;
     ret t;
-}
-
-fn Tracked.rem(void): void {
-    /* Manually free buf and null it so the auto-cleanup is a no-op. */
-    rem.(Tracked.(buf));
-    Tracked.(buf) = nil;
-    io.printf('Tracked[%d].rem() called\n', Tracked.(id));
 }
 
 /* ── main ──────────────────────────────────────────────────────── */

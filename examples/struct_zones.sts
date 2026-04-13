@@ -9,16 +9,16 @@ type buf_t: struct {
 
     ext stack i8 *rw data;
     ext stack i8 *rw meta;
+
+    fn rem(void): void {
+        io.printf("[dtor] freeing zone 'data_zone' and 'meta_zone'\n");
+        rem.(this.data_zone);
+        rem.(this.meta_zone);
+    }
 }
 
 fn buf_t.new(void): buf_t {
     ret buf_t{.data = nil, .meta = nil};
-}
-
-fn buf_t.rem(void): void {
-    io.printf("[dtor] freeing zone 'data_zone' and 'meta_zone'\n");
-    rem.(this.data_zone);
-    rem.(this.meta_zone);
 }
 
 fn main(void): i32 {

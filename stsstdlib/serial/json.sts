@@ -30,48 +30,48 @@ ext type json_t: struct {
     // ── Type queries ─────────────────────────────────────────────────────
 
     ext fn type_id(void): i32 {
-        if (json_t.(handle) == nil) { ret 0; }
-        ret cj.stdjson_type(json_t.(handle));
+        if (this.handle == nil) { ret 0; }
+        ret cj.stdjson_type(this.handle);
     }
 
-    ext fn is_null(void): bool   { ret json_t.(type_id)() == 3;   }
+    ext fn is_null(void): bool   { ret this.type_id() == 3;   }
     ext fn is_bool(void): bool   {
-        i32 t = json_t.(type_id)();
+        i32 t = this.type_id();
         ret t == 1 || t == 2;
     }
-    ext fn is_number(void): bool { ret json_t.(type_id)() == 4;  }
-    ext fn is_string(void): bool { ret json_t.(type_id)() == 5;  }
-    ext fn is_array(void): bool  { ret json_t.(type_id)() == 6;   }
-    ext fn is_object(void): bool { ret json_t.(type_id)() == 7;  }
-    ext fn is_valid(void): bool  { ret json_t.(handle) != nil; }
+    ext fn is_number(void): bool { ret this.type_id() == 4;  }
+    ext fn is_string(void): bool { ret this.type_id() == 5;  }
+    ext fn is_array(void): bool  { ret this.type_id() == 6;   }
+    ext fn is_object(void): bool { ret this.type_id() == 7;  }
+    ext fn is_valid(void): bool  { ret this.handle != nil; }
 
     // ── Scalar value accessors ────────────────────────────────────────────
 
     ext fn as_string(void): i8 *r {
-        if (json_t.(handle) == nil) { ret nil; }
-        ret cj.stdjson_get_str_val(json_t.(handle));
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_get_str_val(this.handle);
     }
 
     ext fn as_number(void): f64 {
-        if (json_t.(handle) == nil) { ret 0.0; }
-        ret cj.stdjson_get_num_val(json_t.(handle));
+        if (this.handle == nil) { ret 0.0; }
+        ret cj.stdjson_get_num_val(this.handle);
     }
 
-    ext fn as_i64(void): i64 { ret (i64)json_t.(as_number)(); }
-    ext fn as_i32(void): i32 { ret (i32)json_t.(as_number)(); }
+    ext fn as_i64(void): i64 { ret (i64)this.as_number(); }
+    ext fn as_i32(void): i32 { ret (i32)this.as_number(); }
 
     ext fn as_bool(void): bool {
-        if (json_t.(handle) == nil) { ret false; }
-        ret cj.stdjson_get_bool_val(json_t.(handle)) != 0;
+        if (this.handle == nil) { ret false; }
+        ret cj.stdjson_get_bool_val(this.handle) != 0;
     }
 
     // ── Object field access ───────────────────────────────────────────────
 
     ext fn get(stack i8 *r+ key): [json_t, error] {
-        if (json_t.(handle) == nil) {
+        if (this.handle == nil) {
             ret json_t{ .handle = nil, .owned = false }, error.('json_t.get: null handle');
         }
-        stack i8 *rw child = cj.stdjson_obj_get(json_t.(handle), key);
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
         if (child == nil) {
             ret json_t{ .handle = nil, .owned = false }, error.('json_t.get: key not found');
         }
@@ -79,8 +79,8 @@ ext type json_t: struct {
     }
 
     ext fn get_string(stack i8 *r+ key): [i8 *r, error] {
-        if (json_t.(handle) == nil) { ret nil, error.('json_t.get_string: null handle'); }
-        stack i8 *rw child = cj.stdjson_obj_get(json_t.(handle), key);
+        if (this.handle == nil) { ret nil, error.('json_t.get_string: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
         if (child == nil) { ret nil, error.('json_t.get_string: key not found'); }
         if (cj.stdjson_type(child) != 5) {
             ret nil, error.('json_t.get_string: field is not a string');
@@ -89,8 +89,8 @@ ext type json_t: struct {
     }
 
     ext fn get_number(stack i8 *r+ key): [f64, error] {
-        if (json_t.(handle) == nil) { ret 0.0, error.('json_t.get_number: null handle'); }
-        stack i8 *rw child = cj.stdjson_obj_get(json_t.(handle), key);
+        if (this.handle == nil) { ret 0.0, error.('json_t.get_number: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
         if (child == nil) { ret 0.0, error.('json_t.get_number: key not found'); }
         if (cj.stdjson_type(child) != 4) {
             ret 0.0, error.('json_t.get_number: field is not a number');
@@ -99,8 +99,8 @@ ext type json_t: struct {
     }
 
     ext fn get_i64(stack i8 *r+ key): [i64, error] {
-        if (json_t.(handle) == nil) { ret 0, error.('json_t.get_i64: null handle'); }
-        stack i8 *rw child = cj.stdjson_obj_get(json_t.(handle), key);
+        if (this.handle == nil) { ret 0, error.('json_t.get_i64: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
         if (child == nil) { ret 0, error.('json_t.get_i64: key not found'); }
         if (cj.stdjson_type(child) != 4) {
             ret 0, error.('json_t.get_i64: field is not a number');
@@ -109,8 +109,8 @@ ext type json_t: struct {
     }
 
     ext fn get_bool(stack i8 *r+ key): [bool, error] {
-        if (json_t.(handle) == nil) { ret false, error.('json_t.get_bool: null handle'); }
-        stack i8 *rw child = cj.stdjson_obj_get(json_t.(handle), key);
+        if (this.handle == nil) { ret false, error.('json_t.get_bool: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
         if (child == nil) { ret false, error.('json_t.get_bool: key not found'); }
         i32 t = cj.stdjson_type(child);
         if (t != 1 && t != 2) {
@@ -120,79 +120,79 @@ ext type json_t: struct {
     }
 
     ext fn has(stack i8 *r+ key): bool {
-        if (json_t.(handle) == nil) { ret false; }
-        ret cj.stdjson_obj_has(json_t.(handle), key) != 0;
+        if (this.handle == nil) { ret false; }
+        ret cj.stdjson_obj_has(this.handle, key) != 0;
     }
 
     // ── Object mutation ───────────────────────────────────────────────────
 
     ext fn set_string(stack i8 *r+ key, stack i8 *r+ val): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_obj_set_str(json_t.(handle), key, val);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_str(this.handle, key, val);
     }
 
     ext fn set_number(stack i8 *r+ key, f64 val): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_obj_set_num(json_t.(handle), key, val);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_num(this.handle, key, val);
     }
 
     ext fn set_i64(stack i8 *r+ key, i64 val): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_obj_set_num(json_t.(handle), key, (f64)val);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_num(this.handle, key, (f64)val);
     }
 
     ext fn set_bool(stack i8 *r+ key, bool val): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_obj_set_bool(json_t.(handle), key, val ? 1 : 0);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_bool(this.handle, key, val ? 1 : 0);
     }
 
     ext fn set_null(stack i8 *r+ key): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_obj_set_null(json_t.(handle), key);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_null(this.handle, key);
     }
 
     ext fn set_item(stack i8 *r+ key, json_t item): void {
-        if (json_t.(handle) == nil || item.handle == nil) { ret; }
-        cj.stdjson_obj_set_item(json_t.(handle), key, item.handle);
+        if (this.handle == nil || item.handle == nil) { ret; }
+        cj.stdjson_obj_set_item(this.handle, key, item.handle);
     }
 
     ext fn remove_key(stack i8 *r+ key): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_obj_remove(json_t.(handle), key);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_remove(this.handle, key);
     }
 
     // ── Object iteration ──────────────────────────────────────────────────
 
     ext fn obj_size(void): i32 {
-        if (json_t.(handle) == nil) { ret 0; }
-        ret cj.stdjson_obj_size(json_t.(handle));
+        if (this.handle == nil) { ret 0; }
+        ret cj.stdjson_obj_size(this.handle);
     }
 
     ext fn obj_key_at(i32 idx): i8 *r {
-        if (json_t.(handle) == nil) { ret nil; }
-        ret cj.stdjson_obj_key_at(json_t.(handle), idx);
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_obj_key_at(this.handle, idx);
     }
 
     ext fn obj_val_at(i32 idx): json_t {
-        if (json_t.(handle) == nil) {
+        if (this.handle == nil) {
             ret json_t{ .handle = nil, .owned = false };
         }
-        stack i8 *rw v = cj.stdjson_obj_val_at(json_t.(handle), idx);
+        stack i8 *rw v = cj.stdjson_obj_val_at(this.handle, idx);
         ret json_t{ .handle = v, .owned = false };
     }
 
     // ── Array access ──────────────────────────────────────────────────────
 
     ext fn array_len(void): i32 {
-        if (json_t.(handle) == nil) { ret 0; }
-        ret cj.stdjson_array_len(json_t.(handle));
+        if (this.handle == nil) { ret 0; }
+        ret cj.stdjson_array_len(this.handle);
     }
 
     ext fn array_get(i32 idx): [json_t, error] {
-        if (json_t.(handle) == nil) {
+        if (this.handle == nil) {
             ret json_t{ .handle = nil, .owned = false }, error.('array_get: null handle');
         }
-        stack i8 *rw child = cj.stdjson_array_get(json_t.(handle), idx);
+        stack i8 *rw child = cj.stdjson_array_get(this.handle, idx);
         if (child == nil) {
             ret json_t{ .handle = nil, .owned = false }, error.('array_get: out of range');
         }
@@ -200,78 +200,78 @@ ext type json_t: struct {
     }
 
     ext fn array_push_string(stack i8 *r+ s): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_array_push_str(json_t.(handle), s);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_str(this.handle, s);
     }
 
     ext fn array_push_number(f64 n): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_array_push_num(json_t.(handle), n);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_num(this.handle, n);
     }
 
     ext fn array_push_bool(bool b): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_array_push_bool(json_t.(handle), b ? 1 : 0);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_bool(this.handle, b ? 1 : 0);
     }
 
     ext fn array_push_null(void): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_array_push_null(json_t.(handle));
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_null(this.handle);
     }
 
     ext fn array_push_item(json_t item): void {
-        if (json_t.(handle) == nil || item.handle == nil) { ret; }
-        cj.stdjson_array_push_item(json_t.(handle), item.handle);
+        if (this.handle == nil || item.handle == nil) { ret; }
+        cj.stdjson_array_push_item(this.handle, item.handle);
     }
 
     ext fn array_remove_at(i32 idx): void {
-        if (json_t.(handle) == nil) { ret; }
-        cj.stdjson_array_remove(json_t.(handle), idx);
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_remove(this.handle, idx);
     }
 
     // ── Serialization ─────────────────────────────────────────────────────
 
     ext fn stringify(void): i8 *rw {
-        if (json_t.(handle) == nil) { ret nil; }
-        ret cj.stdjson_stringify(json_t.(handle));
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_stringify(this.handle);
     }
 
     ext fn stringify_compact(void): i8 *rw {
-        if (json_t.(handle) == nil) { ret nil; }
-        ret cj.stdjson_stringify_compact(json_t.(handle));
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_stringify_compact(this.handle);
+    }
+
+    ext fn print(void): void {
+        if (this.handle == nil) {
+            print.('json_t[invalid]\n');
+            ret;
+        }
+        stack i8 *rw s = this.stringify_compact();
+        if (s != nil) {
+            print.('{}\n', s);
+            cj.stdjson_free_str(s);
+        } else {
+            print.('json_t[unstringifiable]\n');
+        }
+    }
+
+    ext fn free(void): void {
+        if (this.handle != nil && this.owned) {
+            cj.stdjson_free(this.handle);
+        }
+        this.handle = nil;
+        this.owned  = false;
+    }
+
+    ext fn clone(void): json_t {
+        if (this.handle == nil) {
+            ret json_t{ .handle = nil, .owned = false };
+        }
+        ret json_t{ .handle = cj.stdjson_clone(this.handle), .owned = true };
     }
 }
 
 // ── json_t standalone methods ─────────────────────────────────────────────────
-
-ext fn json_t.print(void): void {
-    if (json_t.(handle) == nil) {
-        print.('json_t[invalid]\n');
-        ret;
-    }
-    stack i8 *rw s = json_t.(stringify_compact)();
-    if (s != nil) {
-        print.('{}\n', s);
-        cj.stdjson_free_str(s);
-    } else {
-        print.('json_t[unstringifiable]\n');
-    }
-}
-
-ext fn json_t.free(void): void {
-    if (json_t.(handle) != nil && json_t.(owned)) {
-        cj.stdjson_free(json_t.(handle));
-    }
-    json_t.(handle) = nil;
-    json_t.(owned)  = false;
-}
-
-ext fn json_t.clone(void): json_t {
-    if (json_t.(handle) == nil) {
-        ret json_t{ .handle = nil, .owned = false };
-    }
-    ret json_t{ .handle = cj.stdjson_clone(json_t.(handle)), .owned = true };
-}
 
 // ── Free a stringify'd string ─────────────────────────────────────────────────
 
@@ -352,152 +352,169 @@ ext type json_builder_t: struct {
     ext bool pretty;
 
     int fn ensure(u32 n): void {
-        if (json_builder_t.(buf_len) + n + 1 < json_builder_t.(buf_cap)) { ret; }
-        u32 new_cap = json_builder_t.(buf_cap) * 2;
-        if (new_cap < json_builder_t.(buf_len) + n + 1) {
-            new_cap = json_builder_t.(buf_len) + n + 128;
+        if (this.buf_len + n + 1 < this.buf_cap) { ret; }
+        u32 new_cap = this.buf_cap * 2;
+        if (new_cap < this.buf_len + n + 1) {
+            new_cap = this.buf_len + n + 128;
         }
-        json_builder_t.(buf) = mov.(json_builder_t.(buf), new_cap);
-        json_builder_t.(buf_cap) = new_cap;
+        this.buf = mov.(this.buf, new_cap);
+        this.buf_cap = new_cap;
     }
 
     int fn append_ch(u8 c): void {
-        json_builder_t.(ensure)(1);
-        json_builder_t.(buf)[json_builder_t.(buf_len)] = c;
-        json_builder_t.(buf_len)++;
-        json_builder_t.(buf)[json_builder_t.(buf_len)] = 0;
+        this.ensure(1);
+        this.buf[this.buf_len] = c;
+        this.buf_len++;
+        this.buf[this.buf_len] = 0;
     }
 
     int fn append_str(stack i8 *r+ s): void {
         u32 slen = (u32)cstring.strlen(s);
-        json_builder_t.(ensure)(slen);
+        this.ensure(slen);
         for (u32 i = 0; i < slen; i++) {
-            json_builder_t.(buf)[json_builder_t.(buf_len) + i] = (u8)s[i];
+            this.buf[this.buf_len + i] = (u8)s[i];
         }
-        json_builder_t.(buf_len) += slen;
-        json_builder_t.(buf)[json_builder_t.(buf_len)] = 0;
+        this.buf_len += slen;
+        this.buf[this.buf_len] = 0;
     }
 
     int fn add_indent(void): void {
-        if (!json_builder_t.(pretty)) { ret; }
-        json_builder_t.(append_ch)(10);
-        for (u32 i = 0; i < json_builder_t.(depth); i++) {
-            json_builder_t.(append_ch)(32);
-            json_builder_t.(append_ch)(32);
+        if (!this.pretty) { ret; }
+        this.append_ch(10);
+        for (u32 i = 0; i < this.depth; i++) {
+            this.append_ch(32);
+            this.append_ch(32);
         }
     }
 
     int fn append_comma_if_needed(void): void {
-        if (json_builder_t.(needs_comma)) { json_builder_t.(append_ch)(44); }
-        json_builder_t.(needs_comma) = false;
+        if (this.needs_comma) { this.append_ch(44); }
+        this.needs_comma = false;
     }
 
     ext fn begin_object(void): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty) && json_builder_t.(buf_len) > 0) {
-            json_builder_t.(add_indent)();
+        this.append_comma_if_needed();
+        if (this.pretty && this.buf_len > 0) {
+            this.add_indent();
         }
-        json_builder_t.(append_ch)(123);
-        json_builder_t.(depth)++;
-        json_builder_t.(needs_comma) = false;
+        this.append_ch(123);
+        this.depth++;
+        this.needs_comma = false;
     }
 
     ext fn end_object(void): void {
-        if (json_builder_t.(depth) > 0) { json_builder_t.(depth)--; }
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
-        json_builder_t.(append_ch)(125);
-        json_builder_t.(needs_comma) = true;
+        if (this.depth > 0) { this.depth--; }
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(125);
+        this.needs_comma = true;
     }
 
     ext fn begin_array(void): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty) && json_builder_t.(buf_len) > 0) {
-            json_builder_t.(add_indent)();
+        this.append_comma_if_needed();
+        if (this.pretty && this.buf_len > 0) {
+            this.add_indent();
         }
-        json_builder_t.(append_ch)(91);
-        json_builder_t.(depth)++;
-        json_builder_t.(needs_comma) = false;
+        this.append_ch(91);
+        this.depth++;
+        this.needs_comma = false;
     }
 
     ext fn end_array(void): void {
-        if (json_builder_t.(depth) > 0) { json_builder_t.(depth)--; }
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
-        json_builder_t.(append_ch)(93);
-        json_builder_t.(needs_comma) = true;
+        if (this.depth > 0) { this.depth--; }
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(93);
+        this.needs_comma = true;
     }
 
     ext fn key(stack i8 *r+ k): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
-        json_builder_t.(append_ch)(34);
-        json_builder_t.(append_str)(k);
-        json_builder_t.(append_ch)(34);
-        json_builder_t.(append_ch)(58);
-        if (json_builder_t.(pretty)) { json_builder_t.(append_ch)(32); }
-        json_builder_t.(needs_comma) = false;
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(34);
+        this.append_str(k);
+        this.append_ch(34);
+        this.append_ch(58);
+        if (this.pretty) { this.append_ch(32); }
+        this.needs_comma = false;
     }
 
     ext fn value_str(stack i8 *r+ s): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
-        json_builder_t.(append_ch)(34);
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(34);
         i32 i = 0;
         while (s[i] != 0) {
             i8 ch = s[i];
             if (ch == 34) {
-                json_builder_t.(append_ch)(92);
-                json_builder_t.(append_ch)(34);
+                this.append_ch(92);
+                this.append_ch(34);
             } else if (ch == 92) {
-                json_builder_t.(append_ch)(92);
-                json_builder_t.(append_ch)(92);
+                this.append_ch(92);
+                this.append_ch(92);
             } else {
-                json_builder_t.(append_ch)((u8)ch);
+                this.append_ch((u8)ch);
             }
             i++;
         }
-        json_builder_t.(append_ch)(34);
-        json_builder_t.(needs_comma) = true;
+        this.append_ch(34);
+        this.needs_comma = true;
     }
 
     ext fn value_i64(i64 n): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
         i8 tmp[32];
         cio.snprintf(tmp, 32, "%lld", n);
-        json_builder_t.(append_str)(tmp);
-        json_builder_t.(needs_comma) = true;
+        this.append_str(tmp);
+        this.needs_comma = true;
     }
 
     ext fn value_f64(f64 v): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
         i8 tmp[64];
         cio.snprintf(tmp, 64, "%g", v);
-        json_builder_t.(append_str)(tmp);
-        json_builder_t.(needs_comma) = true;
+        this.append_str(tmp);
+        this.needs_comma = true;
     }
 
     ext fn value_bool(bool b): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
-        if (b) { json_builder_t.(append_str)("true"); }
-        else   { json_builder_t.(append_str)("false"); }
-        json_builder_t.(needs_comma) = true;
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        if (b) { this.append_str("true"); }
+        else   { this.append_str("false"); }
+        this.needs_comma = true;
     }
 
     ext fn value_null(void): void {
-        json_builder_t.(append_comma_if_needed)();
-        if (json_builder_t.(pretty)) { json_builder_t.(add_indent)(); }
-        json_builder_t.(append_str)("null");
-        json_builder_t.(needs_comma) = true;
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        this.append_str("null");
+        this.needs_comma = true;
     }
 
     ext fn get_string(void): i8 *r {
-        ret (i8 *r)json_builder_t.(buf);
+        ret (i8 *r)this.buf;
     }
 
     ext fn get_length(void): u32 {
-        ret json_builder_t.(buf_len);
+        ret this.buf_len;
+    }
+
+    ext fn print(void): void {
+        if (this.buf != nil && this.buf_len > 0) {
+            print.('{}\n', (i8 *r)this.buf);
+        } else {
+            print.('json_builder_t[empty]\n');
+        }
+    }
+
+    ext fn rem(void): void {
+        if (this.buf != nil) {
+            rem.(this.buf);
+            this.buf = nil;
+        }
+        this.buf_len = 0;
+        this.buf_cap = 0;
     }
 }
 
@@ -515,23 +532,6 @@ ext fn json_builder_t.new_pretty(void): json_builder_t {
     b[0] = 0;
     ret json_builder_t{ .buf = b, .buf_len = 0, .buf_cap = cap,
                         .depth = 0, .needs_comma = false, .pretty = true };
-}
-
-ext fn json_builder_t.print(void): void {
-    if (json_builder_t.(buf) != nil && json_builder_t.(buf_len) > 0) {
-        print.('{}\n', (i8 *r)json_builder_t.(buf));
-    } else {
-        print.('json_builder_t[empty]\n');
-    }
-}
-
-ext fn json_builder_t.rem(void): void {
-    if (json_builder_t.(buf) != nil) {
-        rem.(json_builder_t.(buf));
-        json_builder_t.(buf) = nil;
-    }
-    json_builder_t.(buf_len) = 0;
-    json_builder_t.(buf_cap) = 0;
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────

@@ -10,18 +10,18 @@ ext type str_view_t: struct {
     int i32  len;
 
     ext fn length(void): i32 {
-        ret str_view_t.(len);
+        ret this.len;
     }
 
     ext fn at(u32 idx): i8 {
-        ret str_view_t.(ptr)[idx];
+        ret this.ptr[idx];
     }
 
     // True if the view begins with the given null-terminated prefix.
     ext fn starts_with(stack i8 *r prefix): bool {
         i32 i = 0;
-        while (prefix[i] != 0 && i < str_view_t.(len)) {
-            if (str_view_t.(ptr)[i] != prefix[i]) { ret false; }
+        while (prefix[i] != 0 && i < this.len) {
+            if (this.ptr[i] != prefix[i]) { ret false; }
             ++i;
         }
         ret prefix[i] == 0;
@@ -30,36 +30,36 @@ ext type str_view_t: struct {
     // True if the view ends with the given null-terminated suffix.
     ext fn ends_with(stack i8 *r suffix): bool {
         final i32 suf_len = sv_byte_len(suffix);
-        if (suf_len > str_view_t.(len)) { ret false; }
-        final i32 offset = str_view_t.(len) - suf_len;
+        if (suf_len > this.len) { ret false; }
+        final i32 offset = this.len - suf_len;
         for (i32 i = 0; i < suf_len; ++i) {
-            if (str_view_t.(ptr)[offset + i] != suffix[i]) { ret false; }
+            if (this.ptr[offset + i] != suffix[i]) { ret false; }
         }
         ret true;
     }
 
     // Index of first occurrence of `ch`, or -1 if not found.
     ext fn find_ch(i8 ch): i32 {
-        for (i32 i = 0; i < str_view_t.(len); ++i) {
-            if (str_view_t.(ptr)[i] == ch) { ret i; }
+        for (i32 i = 0; i < this.len; ++i) {
+            if (this.ptr[i] == ch) { ret i; }
         }
         ret -1;
     }
 
     // Sub-view [from, to). Clamps to valid range.
     ext fn slice(u32 from, to): str_view_t {
-        final u32 end = (u32)str_view_t.(len);
+        final u32 end = (u32)this.len;
         if (from > end) { from = end; }
         if (to   > end) { to   = end; }
         if (to < from)  { to = from; }
-        ret str_view_t.from_parts(str_view_t.(ptr) + from, (i32)(to - from));
+        ret str_view_t.from_parts(this.ptr + from, (i32)(to - from));
     }
 
     // True if both views have the same length and contents.
     ext fn equals(stack str_view_t *r other): bool {
-        if (str_view_t.(len) != other.length()) { ret false; }
-        for (i32 i = 0; i < str_view_t.(len); ++i) {
-            if (str_view_t.(ptr)[i] != other.at(i)) { ret false; }
+        if (this.len != other.length()) { ret false; }
+        for (i32 i = 0; i < this.len; ++i) {
+            if (this.ptr[i] != other.at(i)) { ret false; }
         }
         ret true;
     }
@@ -67,19 +67,41 @@ ext type str_view_t: struct {
     // True if the view equals the null-terminated string `s`.
     ext fn equals_cstr(stack i8 *r s): bool {
         i32 i = 0;
-        while (i < str_view_t.(len) && s[i] != 0) {
-            if (str_view_t.(ptr)[i] != s[i]) { ret false; }
+        while (i < this.len && s[i] != 0) {
+            if (this.ptr[i] != s[i]) { ret false; }
             ++i;
         }
-        ret i == str_view_t.(len) && s[i] == 0;
+        ret i == this.len && s[i] == 0;
     }
 
     ext fn data(void): i8 *r {
-        ret str_view_t.(ptr);
+        ret this.ptr;
     }
 
     ext fn is_empty(void): bool {
-        ret str_view_t.(len) == 0;
+        ret this.len == 0;
+    }
+
+    ext fn print(void): void {
+        cio.printf("%.*s\n", (i32)this.len, this.ptr);
+    }
+
+    ext fn hash(void): u64 {
+        u64 h = 14695981039346656037;
+        final u64 p = 1099511628211;
+        for (i32 i = 0; i < this.len; i++) {
+            h = h ^ (u64)(u8)this.ptr[i];
+            h = h * p;
+        }
+        ret h;
+    }
+
+    ext fn equ(stack str_view_t *r other): bool {
+        if (this.len != other.length()) { ret false; }
+        for (i32 i = 0; i < this.len; i++) {
+            if (this.ptr[i] != other.at(i)) { ret false; }
+        }
+        ret true;
     }
 }
 
@@ -92,30 +114,8 @@ ext fn str_view_t.from_parts(stack i8 *r ptr, i32 len): str_view_t {
 }
 
 // Print the view contents (exactly len bytes, not null-terminated).
-ext fn str_view_t.print(void): void {
-    cio.printf("%.*s\n", (i32)str_view_t.(len), str_view_t.(ptr));
-}
-
 // FNV-1a hash over the view bytes — enables use as a map_t key.
-ext fn str_view_t.hash(void): u64 {
-    u64 h = 14695981039346656037;
-    final u64 p = 1099511628211;
-    for (i32 i = 0; i < str_view_t.(len); i++) {
-        h = h ^ (u64)(u8)str_view_t.(ptr)[i];
-        h = h * p;
-    }
-    ret h;
-}
-
 // Byte-by-byte equality — enables use as a map_t key.
-ext fn str_view_t.equ(stack str_view_t *r other): bool {
-    if (str_view_t.(len) != other.length()) { ret false; }
-    for (i32 i = 0; i < str_view_t.(len); i++) {
-        if (str_view_t.(ptr)[i] != other.at(i)) { ret false; }
-    }
-    ret true;
-}
-
 int fn sv_byte_len(stack i8 *r s): i32 {
     i32 i = 0;
     for (; s && s[i] != 0; ++i) {}

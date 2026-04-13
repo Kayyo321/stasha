@@ -18,16 +18,23 @@ ext type sha256_t: struct {
     ext heap u8 *rw ctx;
 
     ext fn update(stack u8 *r+ data, u64 len): void {
-        csha.CC_SHA256_Update(sha256_t.(ctx), data, len);
+        csha.CC_SHA256_Update(this.ctx, data, len);
     }
 
     ext fn finalize(stack u8 *w+ digest): void {
-        csha.CC_SHA256_Final(digest, sha256_t.(ctx));
+        csha.CC_SHA256_Final(digest, this.ctx);
     }
-}
 
-ext fn sha256_t.print(void): void {
-    print.('sha256_t[ctx_valid={}]\n', sha256_t.(ctx) != nil);
+    ext fn print(void): void {
+        print.('sha256_t[ctx_valid={}]\n', this.ctx != nil);
+    }
+
+    ext fn rem(void): void {
+        if (this.ctx != nil) {
+            rem.(this.ctx);
+            this.ctx = nil;
+        }
+    }
 }
 
 ext fn sha256_t.new(void): sha256_t {
@@ -37,13 +44,6 @@ ext fn sha256_t.new(void): sha256_t {
     ret sha256_t{
         .ctx = c
     };
-}
-
-ext fn sha256_t.rem(void): void {
-    if (sha256_t.(ctx) != nil) {
-        rem.(sha256_t.(ctx));
-        sha256_t.(ctx) = nil;
-    }
 }
 
 // One-shot SHA-256: writes 32 bytes into digest

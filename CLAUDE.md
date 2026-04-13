@@ -114,14 +114,24 @@ ext fn min_max(stack i32 a, stack i32 b): [i32, i32] { ... }
 stack i32 [lo, hi] = min_max(3, 7);
 fn foo(void): void
 
-// Struct methods / constructor / destructor
-fn Foo.new(stack i32 x): Foo { ... }
-fn Foo.method(stack i32 x): void { Foo.(x) = x; }
-fn Foo.rem(void): void { ... }  // auto-called at scope exit
+// Struct methods — instance methods are defined INSIDE the struct body and use `this`
+// Static methods (e.g. constructors) are defined outside with `fn Foo.name()`
+type Foo: struct {
+    ext i32 x;
+    ext fn method(stack i32 v): void { this.x = v; }  // instance method — this valid here
+    ext fn rem(void): void { ... }                      // destructor — auto-called at scope exit
+}
+fn Foo.new(stack i32 x): Foo { ... }  // static constructor — no `this`
+
+// `this` is ONLY valid inside functions defined within a struct body.
+// Using `this` in an external `fn Foo.method()` is a compile error.
 
 // Generics — @comptime[T] on structs and standalone functions
-type arr_t: @comptime[T] struct { heap ext T *rw buf; ext i32 len; }
-fn @comptime[T] arr_t.new(stack i32 cap): arr_t.[T] { ... }
+type arr_t: @comptime[T] struct {
+    heap ext T *rw buf; ext i32 len;
+    ext fn push(T val): void { ... }  // instance method uses this
+}
+fn @comptime[T] arr_t.new(stack i32 cap): arr_t.[T] { ... }  // static constructor
 arr_t.[i32] a = arr_t.[i32].new(8);  // instantiate with concrete type
 fn @comptime[T] identity(stack T val): T { ret val; }  // standalone generic fn
 stack i32 x = identity.[i32](42);    // instantiate at call site

@@ -19,6 +19,13 @@ ext fn Point.new(i32 x, y): Point {
 
 ext type Color: struct {
     ext u8 r, g, b;
+
+    ext fn hash(void): u64 {
+        u64 h = (u64) this.r;
+        h = h << 8 | (u64) this.g;
+        h = h << 8 | (u64) this.b;
+        ret h;
+    }
 };
 
 ext fn Color.new(u8 r, g, b): Color {
@@ -30,13 +37,6 @@ ext fn Color.new(u8 r, g, b): Color {
 }
 
 // Custom hash: pack RGB channels into a single u64
-ext fn Color.hash(void): u64 {
-    u64 h = (u64) Color.(r);
-    h = h << 8 | (u64) Color.(g);
-    h = h << 8 | (u64) Color.(b);
-    ret h;
-}
-
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main(void): i32 {

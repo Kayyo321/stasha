@@ -9,24 +9,32 @@ ext type resource_t: struct {
 
     // Get raw pointer without releasing ownership.
     ext fn get(void): u8 *r {
-        ret resource_t.(ptr);
+        ret this.ptr;
     }
 
     // Release ownership and return the pointer (caller is responsible for freeing).
     ext fn release(void): u8 *rw {
-        resource_t.(owned) = false;
-        ret resource_t.(ptr);
+        this.owned = false;
+        ret this.ptr;
     }
 
     // True if the pointer is non-nil.
     ext fn is_valid(void): bool {
-        ret resource_t.(ptr) != nil;
+        ret this.ptr != nil;
     }
-}
 
-ext fn resource_t.print(void): void {
-    print.('resource_t[valid={}, owned={}]\n',
-           resource_t.(is_valid)(), resource_t.(owned));
+    ext fn print(void): void {
+        print.('resource_t[valid={}, owned={}]\n',
+               this.is_valid(), this.owned);
+    }
+
+    ext fn rem(void): void {
+        if (this.owned && this.ptr != nil) {
+            rem.(this.ptr);
+        }
+        this.ptr   = nil;
+        this.owned = false;
+    }
 }
 
 // Take ownership of ptr (if owned=true, rem() will free it).
@@ -38,14 +46,6 @@ ext fn resource_t.new(heap u8 *rw ptr, bool owned): resource_t {
 }
 
 // Destructor: free the pointer if owned.
-ext fn resource_t.rem(void): void {
-    if (resource_t.(owned) && resource_t.(ptr) != nil) {
-        rem.(resource_t.(ptr));
-    }
-    resource_t.(ptr)   = nil;
-    resource_t.(owned) = false;
-}
-
 // Simple (non-thread-safe) reference-counted wrapper around a heap pointer.
 ext type counted_ref_t: struct {
     int heap u8 *rw data;
@@ -53,30 +53,43 @@ ext type counted_ref_t: struct {
 
     // Get raw read-only pointer.
     ext fn get(void): u8 *r {
-        ret counted_ref_t.(data);
+        ret this.data;
     }
 
     // Return current reference count.
     ext fn count(void): u32 {
-        if (counted_ref_t.(refcount) == nil) { ret 0; }
-        ret counted_ref_t.(refcount)[0];
+        if (this.refcount == nil) { ret 0; }
+        ret this.refcount[0];
     }
 
     // Increment refcount and return a copy of this handle.
     ext fn retain(void): counted_ref_t {
-        if (counted_ref_t.(refcount) != nil) {
-            counted_ref_t.(refcount)[0] = counted_ref_t.(refcount)[0] + 1;
+        if (this.refcount != nil) {
+            this.refcount[0] = this.refcount[0] + 1;
         }
         ret counted_ref_t{
-            .data     = counted_ref_t.(data),
-            .refcount = counted_ref_t.(refcount)
+            .data     = this.data,
+            .refcount = this.refcount
         };
     }
-}
 
-ext fn counted_ref_t.print(void): void {
-    print.('counted_ref_t[valid={}, count={}]\n',
-           counted_ref_t.(data) != nil, counted_ref_t.(count)());
+    ext fn print(void): void {
+        print.('counted_ref_t[valid={}, count={}]\n',
+               this.data != nil, this.count());
+    }
+
+    ext fn rem(void): void {
+        if (this.refcount == nil) { ret; }
+        this.refcount[0] = this.refcount[0] - 1;
+        if (this.refcount[0] == 0) {
+            if (this.data != nil) {
+                rem.(this.data);
+            }
+            rem.(this.refcount);
+        }
+        this.data     = nil;
+        this.refcount = nil;
+    }
 }
 
 // Take ownership of ptr; refcount starts at 1.
@@ -90,19 +103,6 @@ ext fn counted_ref_t.new(heap u8 *rw ptr): counted_ref_t {
 }
 
 // Decrement refcount; free data and refcount when it reaches 0.
-ext fn counted_ref_t.rem(void): void {
-    if (counted_ref_t.(refcount) == nil) { ret; }
-    counted_ref_t.(refcount)[0] = counted_ref_t.(refcount)[0] - 1;
-    if (counted_ref_t.(refcount)[0] == 0) {
-        if (counted_ref_t.(data) != nil) {
-            rem.(counted_ref_t.(data));
-        }
-        rem.(counted_ref_t.(refcount));
-    }
-    counted_ref_t.(data)     = nil;
-    counted_ref_t.(refcount) = nil;
-}
-
 test 'resource_t owns and frees' {
     heap u8 *rw buf = new.(8);
     buf[0] = 99;

@@ -40,26 +40,26 @@ ext type timer_t: struct {
     // Start the timer: set next_fire to now + interval.
     ext fn start(void): void {
         i64 now = ctime.clock();
-        timer_t.(next_fire_us) = now + timer_t.(interval_us);
+        this.next_fire_us = now + this.interval_us;
     }
 
     // Returns true if the interval has elapsed; advances next_fire by interval.
     ext fn check(void): bool {
         i64 now = ctime.clock();
-        if (now < timer_t.(next_fire_us)) { ret false; }
-        timer_t.(next_fire_us) = timer_t.(next_fire_us) + timer_t.(interval_us);
+        if (now < this.next_fire_us) { ret false; }
+        this.next_fire_us = this.next_fire_us + this.interval_us;
         ret true;
     }
 
     // Reset next_fire to now + interval.
     ext fn reset(void): void {
         i64 now = ctime.clock();
-        timer_t.(next_fire_us) = now + timer_t.(interval_us);
+        this.next_fire_us = now + this.interval_us;
     }
-}
 
-ext fn timer_t.print(void): void {
-    print.('timer_t[interval_us={}]\n', timer_t.(interval_us));
+    ext fn print(void): void {
+        print.('timer_t[interval_us={}]\n', this.interval_us);
+    }
 }
 
 // Create a timer with the given interval in microseconds.

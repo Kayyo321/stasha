@@ -14,46 +14,59 @@ ext type file_stream_t: struct {
 
     // Returns bytes read, or 0 on error/EOF.
     ext fn read(u32 no_bytes, stack i8 *w out_buf, u32 out_len): u32 {
-        final u32 n = cio.fread(out_buf, 1, no_bytes, file_stream_t.(fp));
-        if (cio.ferror(file_stream_t.(fp)) != 0) {
-            file_stream_t.(err_flag) = 1;
+        final u32 n = cio.fread(out_buf, 1, no_bytes, this.fp);
+        if (cio.ferror(this.fp) != 0) {
+            this.err_flag = 1;
         }
         ret n;
     }
 
     // Returns bytes written, or 0 on error.
     ext fn write(u32 no_bytes, stack i8 *r in_buf, u32 in_len): u32 {
-        final u32 n = cio.fwrite(in_buf, 1, no_bytes, file_stream_t.(fp));
-        if (cio.ferror(file_stream_t.(fp)) != 0) {
-            file_stream_t.(err_flag) = 1;
+        final u32 n = cio.fwrite(in_buf, 1, no_bytes, this.fp);
+        if (cio.ferror(this.fp) != 0) {
+            this.err_flag = 1;
         }
         ret n;
     }
 
     // Returns the next character as i32, or FsEndOfFile (-1) on EOF/error.
     ext fn get_ch(void): i32 {
-        ret cio.fgetc(file_stream_t.(fp));
+        ret cio.fgetc(this.fp);
     }
 
     // Push a character back into the stream so the next get_ch returns it.
     ext fn unget_ch(i32 ch): void {
-        cio.ungetc(ch, file_stream_t.(fp));
+        cio.ungetc(ch, this.fp);
     }
 
     ext fn at_eof(void): bool {
-        ret cio.feof(file_stream_t.(fp)) != 0;
+        ret cio.feof(this.fp) != 0;
     }
 
     ext fn had_err(void): bool {
-        ret file_stream_t.(err_flag) != 0;
+        ret this.err_flag != 0;
     }
 
     ext fn flush(void): void {
-        cio.fflush(file_stream_t.(fp));
+        cio.fflush(this.fp);
     }
 
     ext fn is_open(void): bool {
-        ret file_stream_t.(fp) != nil;
+        ret this.fp != nil;
+    }
+
+    ext fn print(void): void {
+        print.('file_stream_t[open={}, err={}]\n',
+               this.is_open(), this.had_err());
+    }
+
+    ext fn rem(void): void {
+        if (this.fp != nil) {
+            cio.fclose(this.fp);
+            this.fp = nil;
+        }
+        this.err_flag = 0;
     }
 }
 
@@ -76,11 +89,6 @@ int fn build_mode_str(i32 mode, stack i8 *w out): void {
     out[mi] = 0;
 }
 
-ext fn file_stream_t.print(void): void {
-    print.('file_stream_t[open={}, err={}]\n',
-           file_stream_t.(is_open)(), file_stream_t.(had_err)());
-}
-
 ext fn file_stream_t.new(stack i8 *r path, i32 mode): file_stream_t {
     i8 mode_str[4];
     build_mode_str(mode, mode_str);
@@ -90,14 +98,6 @@ ext fn file_stream_t.new(stack i8 *r path, i32 mode): file_stream_t {
         .fp       = fp,
         .err_flag = (fp != nil) ? 0 : 1
     };
-}
-
-ext fn file_stream_t.rem(void): void {
-    if (file_stream_t.(fp) != nil) {
-        cio.fclose(file_stream_t.(fp));
-        file_stream_t.(fp) = nil;
-    }
-    file_stream_t.(err_flag) = 0;
 }
 
 test 'file_stream open for write' {

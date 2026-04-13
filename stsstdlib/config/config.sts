@@ -19,18 +19,18 @@ ext type config_t: struct {
 
     // Internal: return pointer to key slot i.
     int fn key_ptr(u32 i): i8 *rw {
-        ret (i8 *rw)(config_t.(keys) + i * ConfigKeySlot);
+        ret (i8 *rw)(this.keys + i * ConfigKeySlot);
     }
 
     // Internal: return pointer to value slot i.
     int fn val_ptr(u32 i): i8 *rw {
-        ret (i8 *rw)(config_t.(vals) + i * ConfigValSlot);
+        ret (i8 *rw)(this.vals + i * ConfigValSlot);
     }
 
     // Find index of key, or -1 if not found.
     int fn find_key(stack i8 *r key): i32 {
-        for (u32 i = 0; i < config_t.(count); i++) {
-            if (cstring.strncmp(config_t.(key_ptr)(i), key, ConfigKeySlot) == 0) {
+        for (u32 i = 0; i < this.count; i++) {
+            if (cstring.strncmp(this.key_ptr(i), key, ConfigKeySlot) == 0) {
                 ret (i32)i;
             }
         }
@@ -77,20 +77,20 @@ ext type config_t: struct {
         cstring.strncpy(tmp_key, p, key_len);
         tmp_key[key_len] = 0;
 
-        i32 idx = config_t.(find_key)(tmp_key);
+        i32 idx = this.find_key(tmp_key);
         if (idx < 0) {
-            if (config_t.(count) >= ConfigMaxEntries) { ret; }
-            idx = (i32)config_t.(count);
-            config_t.(count)++;
+            if (this.count >= ConfigMaxEntries) { ret; }
+            idx = (i32)this.count;
+            this.count++;
         }
 
         // store key
-        stack i8 *rw kp = config_t.(key_ptr)((u32)idx);
+        stack i8 *rw kp = this.key_ptr((u32)idx);
         cstring.strncpy(kp, p, key_len);
         kp[key_len] = 0;
 
         // store value
-        stack i8 *rw vslot = config_t.(val_ptr)((u32)idx);
+        stack i8 *rw vslot = this.val_ptr((u32)idx);
         cstring.strncpy(vslot, vp, val_len);
         vslot[val_len] = 0;
     }
@@ -104,7 +104,7 @@ ext type config_t: struct {
         while (*p != 0) {
             if (*p == 10 || *p == 13) {
                 line[li] = 0;
-                config_t.(parse_line)(line);
+                this.parse_line(line);
                 li = 0;
                 // skip \r\n pair
                 if (*p == 13 && *(p + 1) == 10) { p++; }
@@ -116,7 +116,7 @@ ext type config_t: struct {
         // flush last line if no trailing newline
         if (li > 0) {
             line[li] = 0;
-            config_t.(parse_line)(line);
+            this.parse_line(line);
         }
         ret nil;
     }
@@ -128,7 +128,7 @@ ext type config_t: struct {
         i8 line[512];
         stack i8 *rw fgets_ret = cio.fgets(line, 512, f);
         while (fgets_ret != nil) {
-            config_t.(parse_line)(line);
+            this.parse_line(line);
             fgets_ret = cio.fgets(line, 512, f);
         }
         cio.fclose(f);
@@ -137,40 +137,40 @@ ext type config_t: struct {
 
     // Look up key, return pointer to value string or error.
     ext fn get(stack i8 *r key): [i8 *r, error] {
-        i32 idx = config_t.(find_key)(key);
+        i32 idx = this.find_key(key);
         if (idx < 0) { ret nil, error.('key not found'); }
-        ret (i8 *r)config_t.(val_ptr)((u32)idx), nil;
+        ret (i8 *r)this.val_ptr((u32)idx), nil;
     }
 
     // Look up key, parse value as integer.
     ext fn get_int(stack i8 *r key): [i32, error] {
-        i32 idx = config_t.(find_key)(key);
+        i32 idx = this.find_key(key);
         if (idx < 0) { ret 0, error.('key not found'); }
-        stack i8 *r v = (i8 *r)config_t.(val_ptr)((u32)idx);
+        stack i8 *r v = (i8 *r)this.val_ptr((u32)idx);
         ret cstdlib.atoi(v), nil;
     }
 
     // Add or overwrite a key=value entry.
     ext fn set(stack i8 *r key, stack i8 *r val): error {
         if (key == nil) { ret error.('null key'); }
-        i32 idx = config_t.(find_key)(key);
+        i32 idx = this.find_key(key);
         if (idx < 0) {
-            if (config_t.(count) >= ConfigMaxEntries) {
+            if (this.count >= ConfigMaxEntries) {
                 ret error.('config full');
             }
-            idx = (i32)config_t.(count);
-            config_t.(count)++;
+            idx = (i32)this.count;
+            this.count++;
         }
         u32 key_len = (u32)cstring.strlen(key);
         if (key_len >= ConfigKeySlot) { key_len = ConfigKeySlot - 1; }
         u32 val_len = (u32)cstring.strlen(val);
         if (val_len >= ConfigValSlot) { val_len = ConfigValSlot - 1; }
 
-        stack i8 *rw kp = config_t.(key_ptr)((u32)idx);
+        stack i8 *rw kp = this.key_ptr((u32)idx);
         cstring.strncpy(kp, key, key_len);
         kp[key_len] = 0;
 
-        stack i8 *rw vp2 = config_t.(val_ptr)((u32)idx);
+        stack i8 *rw vp2 = this.val_ptr((u32)idx);
         cstring.strncpy(vp2, val, val_len);
         vp2[val_len] = 0;
 
@@ -179,25 +179,33 @@ ext type config_t: struct {
 
     // Return number of stored entries.
     ext fn count(void): u32 {
-        ret config_t.(count);
+        ret this.count;
     }
 
     // Return true if key exists.
     ext fn has(stack i8 *r key): bool {
-        ret config_t.(find_key)(key) >= 0;
+        ret this.find_key(key) >= 0;
+    }
+
+    ext fn print(void): void {
+        print.('config_t[count={}]\n', this.count);
+        for (u32 i = 0; i < this.count; i++) {
+            stack i8 *r k = (i8 *r)this.key_ptr(i);
+            stack i8 *r v = (i8 *r)this.val_ptr(i);
+            print.('  {} = {}\n', k, v);
+        }
+    }
+
+    ext fn rem(void): void {
+        if (this.keys != nil) { rem.(this.keys); }
+        if (this.vals != nil) { rem.(this.vals); }
+        this.keys  = nil;
+        this.vals  = nil;
+        this.count = 0;
     }
 }
 
 // Print all stored key=value pairs to stdout.
-ext fn config_t.print(void): void {
-    print.('config_t[count={}]\n', config_t.(count));
-    for (u32 i = 0; i < config_t.(count); i++) {
-        stack i8 *r k = (i8 *r)config_t.(key_ptr)(i);
-        stack i8 *r v = (i8 *r)config_t.(val_ptr)(i);
-        print.('  {} = {}\n', k, v);
-    }
-}
-
 ext fn config_t.new(void): config_t {
     heap u8 *rw keys = new.(ConfigMaxEntries * ConfigKeySlot);
     heap u8 *rw vals = new.(ConfigMaxEntries * ConfigValSlot);
@@ -209,14 +217,6 @@ ext fn config_t.new(void): config_t {
         .vals  = vals,
         .count = 0
     };
-}
-
-ext fn config_t.rem(void): void {
-    if (config_t.(keys) != nil) { rem.(config_t.(keys)); }
-    if (config_t.(vals) != nil) { rem.(config_t.(vals)); }
-    config_t.(keys)  = nil;
-    config_t.(vals)  = nil;
-    config_t.(count) = 0;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

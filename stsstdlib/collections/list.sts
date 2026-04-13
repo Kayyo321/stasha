@@ -28,12 +28,12 @@ ext type slist_t: struct {
 
     // Internal: get head as node pointer.
     int fn get_head(void): slist_node_t *rw {
-        ret slist_t.(head_raw);
+        ret this.head_raw;
     }
 
     // Internal: set head from node pointer.
     int fn set_head(stack slist_node_t *rw node): void {
-        slist_t.(head_raw) = node;
+        this.head_raw = node;
     }
 
     // Internal: get next node from a node.
@@ -49,72 +49,85 @@ ext type slist_t: struct {
     // Internal: allocate and init a new node with data copied from src.
     int fn alloc_node(stack u8 *r src): slist_node_t *rw {
         heap slist_node_t *rw node = new.(sizeof.(slist_node_t));
-        node.data     = new.(slist_t.(item_size));
+        node.data     = new.(this.item_size);
         node.next_raw = nil;
-        slist_t.(copy_bytes)(node.data, src, slist_t.(item_size));
+        this.copy_bytes(node.data, src, this.item_size);
         ret node;
     }
 
     // Prepend item.
     ext fn push_front(stack u8 *r src): void {
-        heap slist_node_t *rw node = slist_t.(alloc_node)(src);
-        slist_t.(set_next)(node, slist_t.(get_head)());
-        slist_t.(set_head)(node);
-        slist_t.(length)++;
+        heap slist_node_t *rw node = this.alloc_node(src);
+        this.set_next(node, this.get_head());
+        this.set_head(node);
+        this.length++;
     }
 
     // Append item.
     ext fn push_back(stack u8 *r src): void {
-        heap slist_node_t *rw node = slist_t.(alloc_node)(src);
-        if (slist_t.(get_head)() == nil) {
-            slist_t.(set_head)(node);
+        heap slist_node_t *rw node = this.alloc_node(src);
+        if (this.get_head() == nil) {
+            this.set_head(node);
         } else {
-            heap slist_node_t *rw cur = slist_t.(get_head)();
-            while (slist_t.(get_next)(cur) != nil) {
-                cur = slist_t.(get_next)(cur);
+            heap slist_node_t *rw cur = this.get_head();
+            while (this.get_next(cur) != nil) {
+                cur = this.get_next(cur);
             }
-            slist_t.(set_next)(cur, node);
+            this.set_next(cur, node);
         }
-        slist_t.(length)++;
+        this.length++;
     }
 
     // Remove head node. Returns error if list is empty.
     ext fn pop_front(void): error {
-        if (slist_t.(get_head)() == nil) { ret error.('list is empty'); }
-        heap slist_node_t *rw old = slist_t.(get_head)();
-        slist_t.(set_head)(slist_t.(get_next)(old));
+        if (this.get_head() == nil) { ret error.('list is empty'); }
+        heap slist_node_t *rw old = this.get_head();
+        this.set_head(this.get_next(old));
         rem.(old.data);
         rem.(old);
-        slist_t.(length)--;
+        this.length--;
         ret nil;
     }
 
     // Peek at head data. Returns error if empty.
     ext fn peek_front(void): [heap u8 *r, error] {
-        heap slist_node_t *rw h = slist_t.(get_head)();
+        heap slist_node_t *rw h = this.get_head();
         if (h == nil) { ret nil, error.('list is empty'); }
         ret h.data, nil;
     }
 
-    ext fn length(void): u32 { ret slist_t.(length); }
-    ext fn is_empty(void): bool { ret slist_t.(length) == 0; }
+    ext fn length(void): u32 { ret this.length; }
+    ext fn is_empty(void): bool { ret this.length == 0; }
 
     // Free all nodes and reset to empty.
     ext fn clear(void): void {
-        heap slist_node_t *rw cur = slist_t.(get_head)();
+        heap slist_node_t *rw cur = this.get_head();
         while (cur != nil) {
-            heap slist_node_t *rw nxt = slist_t.(get_next)(cur);
+            heap slist_node_t *rw nxt = this.get_next(cur);
             rem.(cur.data);
             rem.(cur);
             cur = nxt;
         }
-        slist_t.(head_raw) = nil;
-        slist_t.(length)   = 0;
+        this.head_raw = nil;
+        this.length   = 0;
     }
-}
 
-ext fn slist_t.print(void): void {
-    print.('slist_t[len={}, item_size={}]\n', slist_t.(length), slist_t.(item_size));
+    ext fn print(void): void {
+        print.('slist_t[len={}, item_size={}]\n', this.length, this.item_size);
+    }
+
+    ext fn rem(void): void {
+        heap slist_node_t *rw cur = this.head_raw;
+        while (cur != nil) {
+            heap slist_node_t *rw nxt = cur.next_raw;
+            rem.(cur.data);
+            rem.(cur);
+            cur = nxt;
+        }
+        this.head_raw  = nil;
+        this.length    = 0;
+        this.item_size = 0;
+    }
 }
 
 ext fn slist_t.new(u32 item_size): slist_t {
@@ -123,19 +136,6 @@ ext fn slist_t.new(u32 item_size): slist_t {
         .length    = 0,
         .item_size = item_size
     };
-}
-
-ext fn slist_t.rem(void): void {
-    heap slist_node_t *rw cur = slist_t.(head_raw);
-    while (cur != nil) {
-        heap slist_node_t *rw nxt = cur.next_raw;
-        rem.(cur.data);
-        rem.(cur);
-        cur = nxt;
-    }
-    slist_t.(head_raw)  = nil;
-    slist_t.(length)    = 0;
-    slist_t.(item_size) = 0;
 }
 
 // ── stack_t — LIFO stack backed by a heap byte array ─────────────────────
@@ -149,44 +149,52 @@ ext type stack_t: struct {
     }
 
     int fn maybe_grow(void): void {
-        if (stack_t.(length) < stack_t.(capacity)) { ret; }
-        final u32 new_cap = stack_t.(capacity) == 0 ? 8 : stack_t.(capacity) * 2;
-        stack_t.(bytes)    = (u8 *rw)mov.(stack_t.(bytes), new_cap * stack_t.(item_size));
-        stack_t.(capacity) = new_cap;
+        if (this.length < this.capacity) { ret; }
+        final u32 new_cap = this.capacity == 0 ? 8 : this.capacity * 2;
+        this.bytes    = (u8 *rw)mov.(this.bytes, new_cap * this.item_size);
+        this.capacity = new_cap;
     }
 
     // Push item onto top.
     ext fn push(stack u8 *r src): void {
-        stack_t.(maybe_grow)();
-        final u32 offset = stack_t.(length) * stack_t.(item_size);
-        stack_t.(copy_bytes)(stack_t.(bytes) + offset, src, stack_t.(item_size));
-        stack_t.(length)++;
+        this.maybe_grow();
+        final u32 offset = this.length * this.item_size;
+        this.copy_bytes(this.bytes + offset, src, this.item_size);
+        this.length++;
     }
 
     // Pop top item into dst. Returns error if empty.
     ext fn pop(stack u8 *w dst): error {
-        if (stack_t.(length) == 0) { ret error.('stack is empty'); }
-        stack_t.(length)--;
-        final u32 offset = stack_t.(length) * stack_t.(item_size);
-        stack_t.(copy_bytes)(dst, stack_t.(bytes) + offset, stack_t.(item_size));
+        if (this.length == 0) { ret error.('stack is empty'); }
+        this.length--;
+        final u32 offset = this.length * this.item_size;
+        this.copy_bytes(dst, this.bytes + offset, this.item_size);
         ret nil;
     }
 
     // Peek at top without removing. Returns error if empty.
     ext fn peek(void): [heap u8 *r, error] {
-        if (stack_t.(length) == 0) { ret nil, error.('stack is empty'); }
-        final u32 offset = (stack_t.(length) - 1) * stack_t.(item_size);
-        ret stack_t.(bytes) + offset, nil;
+        if (this.length == 0) { ret nil, error.('stack is empty'); }
+        final u32 offset = (this.length - 1) * this.item_size;
+        ret this.bytes + offset, nil;
     }
 
-    ext fn length(void): u32 { ret stack_t.(length); }
-    ext fn is_empty(void): bool { ret stack_t.(length) == 0; }
+    ext fn length(void): u32 { ret this.length; }
+    ext fn is_empty(void): bool { ret this.length == 0; }
 
-    ext fn clear(void): void { stack_t.(length) = 0; }
-}
+    ext fn clear(void): void { this.length = 0; }
 
-ext fn stack_t.print(void): void {
-    print.('stack_t[len={}, item_size={}]\n', stack_t.(length), stack_t.(item_size));
+    ext fn print(void): void {
+        print.('stack_t[len={}, item_size={}]\n', this.length, this.item_size);
+    }
+
+    ext fn rem(void): void {
+        if (this.bytes != nil) { rem.(this.bytes); }
+        this.bytes     = nil;
+        this.length    = 0;
+        this.capacity  = 0;
+        this.item_size = 0;
+    }
 }
 
 ext fn stack_t.new(u32 item_size): stack_t {
@@ -196,14 +204,6 @@ ext fn stack_t.new(u32 item_size): stack_t {
         .capacity  = 0,
         .item_size = item_size
     };
-}
-
-ext fn stack_t.rem(void): void {
-    if (stack_t.(bytes) != nil) { rem.(stack_t.(bytes)); }
-    stack_t.(bytes)     = nil;
-    stack_t.(length)    = 0;
-    stack_t.(capacity)  = 0;
-    stack_t.(item_size) = 0;
 }
 
 // ── queue_t — FIFO queue backed by a ring buffer ──────────────────────────
@@ -218,61 +218,71 @@ ext type queue_t: struct {
 
     // Grow ring buffer when full.
     int fn maybe_grow(void): void {
-        if (queue_t.(length) < queue_t.(capacity)) { ret; }
-        final u32 old_cap = queue_t.(capacity);
+        if (this.length < this.capacity) { ret; }
+        final u32 old_cap = this.capacity;
         final u32 new_cap = old_cap == 0 ? 8 : old_cap * 2;
-        final u32 sz      = queue_t.(item_size);
+        final u32 sz      = this.item_size;
         heap u8 *rw+ new_data = new.(new_cap * sz);
         // copy items in order from head around ring
-        for (u32 i = 0; i < queue_t.(length); i++) {
-            final u32 src_idx = (queue_t.(head_idx) + i) % old_cap;
-            queue_t.(copy_bytes)(new_data + i * sz, queue_t.(data) + src_idx * sz, sz);
+        for (u32 i = 0; i < this.length; i++) {
+            final u32 src_idx = (this.head_idx + i) % old_cap;
+            this.copy_bytes(new_data + i * sz, this.data + src_idx * sz, sz);
         }
-        if (queue_t.(data) != nil) { rem.(queue_t.(data)); }
-        queue_t.(data)     = new_data;
-        queue_t.(head_idx) = 0;
-        queue_t.(tail_idx) = queue_t.(length);
-        queue_t.(capacity) = new_cap;
+        if (this.data != nil) { rem.(this.data); }
+        this.data     = new_data;
+        this.head_idx = 0;
+        this.tail_idx = this.length;
+        this.capacity = new_cap;
     }
 
     // Enqueue (append to tail).
     ext fn enqueue(stack u8 *r src): void {
-        queue_t.(maybe_grow)();
-        final u32 sz = queue_t.(item_size);
-        queue_t.(copy_bytes)(queue_t.(data) + queue_t.(tail_idx) * sz, src, sz);
-        queue_t.(tail_idx) = (queue_t.(tail_idx) + 1) % queue_t.(capacity);
-        queue_t.(length)++;
+        this.maybe_grow();
+        final u32 sz = this.item_size;
+        this.copy_bytes(this.data + this.tail_idx * sz, src, sz);
+        this.tail_idx = (this.tail_idx + 1) % this.capacity;
+        this.length++;
     }
 
     // Dequeue (remove from head) into dst. Returns error if empty.
     ext fn dequeue(stack u8 *w dst): error {
-        if (queue_t.(length) == 0) { ret error.('queue is empty'); }
-        final u32 sz = queue_t.(item_size);
-        queue_t.(copy_bytes)(dst, queue_t.(data) + queue_t.(head_idx) * sz, sz);
-        queue_t.(head_idx) = (queue_t.(head_idx) + 1) % queue_t.(capacity);
-        queue_t.(length)--;
+        if (this.length == 0) { ret error.('queue is empty'); }
+        final u32 sz = this.item_size;
+        this.copy_bytes(dst, this.data + this.head_idx * sz, sz);
+        this.head_idx = (this.head_idx + 1) % this.capacity;
+        this.length--;
         ret nil;
     }
 
     // Peek at front without removing. Returns error if empty.
     ext fn peek_front(void): [heap u8 *r, error] {
-        if (queue_t.(length) == 0) { ret nil, error.('queue is empty'); }
-        final u32 sz = queue_t.(item_size);
-        ret queue_t.(data) + queue_t.(head_idx) * sz, nil;
+        if (this.length == 0) { ret nil, error.('queue is empty'); }
+        final u32 sz = this.item_size;
+        ret this.data + this.head_idx * sz, nil;
     }
 
-    ext fn length(void): u32 { ret queue_t.(length); }
-    ext fn is_empty(void): bool { ret queue_t.(length) == 0; }
+    ext fn length(void): u32 { ret this.length; }
+    ext fn is_empty(void): bool { ret this.length == 0; }
 
     ext fn clear(void): void {
-        queue_t.(head_idx) = 0;
-        queue_t.(tail_idx) = 0;
-        queue_t.(length)   = 0;
+        this.head_idx = 0;
+        this.tail_idx = 0;
+        this.length   = 0;
     }
-}
 
-ext fn queue_t.print(void): void {
-    print.('queue_t[len={}, item_size={}]\n', queue_t.(length), queue_t.(item_size));
+    ext fn print(void): void {
+        print.('queue_t[len={}, item_size={}]\n', this.length, this.item_size);
+    }
+
+    ext fn rem(void): void {
+        if (this.data != nil) { rem.(this.data); }
+        this.data      = nil;
+        this.head_idx  = 0;
+        this.tail_idx  = 0;
+        this.length    = 0;
+        this.capacity  = 0;
+        this.item_size = 0;
+    }
 }
 
 ext fn queue_t.new(u32 item_size): queue_t {
@@ -284,16 +294,6 @@ ext fn queue_t.new(u32 item_size): queue_t {
         .capacity  = 0,
         .item_size = item_size
     };
-}
-
-ext fn queue_t.rem(void): void {
-    if (queue_t.(data) != nil) { rem.(queue_t.(data)); }
-    queue_t.(data)      = nil;
-    queue_t.(head_idx)  = 0;
-    queue_t.(tail_idx)  = 0;
-    queue_t.(length)    = 0;
-    queue_t.(capacity)  = 0;
-    queue_t.(item_size) = 0;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

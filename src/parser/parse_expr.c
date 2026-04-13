@@ -935,37 +935,8 @@ static node_t *parse_postfix(parser_t *p) {
                 continue;
             }
 
-            /* self-member: Type.(field)  vs  constructor call: Type.(args) */
+            /* constructor call: Type.(args) */
             if (check(p, TokLParen)) {
-                /* Speculate: self-member if exactly one ident inside parens */
-                parser_state_t snap = save_state(p);
-                boolean_t saved_err = p->had_error;
-                advance_parser(p); /* consume '(' */
-                boolean_t is_self_member = False;
-                token_t field_tok = p->current;
-                if (is_name_token(p)) {
-                    advance_parser(p);
-                    if (check(p, TokRParen)) {
-                        /* Exactly (ident) — self member access */
-                        advance_parser(p); /* consume ')' */
-                        is_self_member = True;
-                    }
-                }
-                if (is_self_member) {
-                    node_t *n = make_node(NodeSelfMemberExpr, line);
-                    n->col = field_tok.col;
-                    n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
-                    if (expr->kind == NodeIdentExpr)
-                        n->as.self_member.type_name = expr->as.ident.name;
-                    else
-                        n->as.self_member.type_name = ast_strdup("?", 1);
-                    n->as.self_member.field = copy_token_text(field_tok);
-                    expr = n;
-                    continue;
-                }
-                /* Not a self-member — constructor call: type_name.(args) */
-                restore_state(p, snap);
-                p->had_error = saved_err;
                 advance_parser(p); /* consume '(' */
                 char *type_name = Null;
                 if (expr->kind == NodeIdentExpr) type_name = expr->as.ident.name;

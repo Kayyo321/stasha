@@ -9,95 +9,95 @@ ext type array_t: @comptime[T] struct {
 
     // Internal: grow if needed so that length < capacity.
     int fn maybe_grow(void): void {
-        if (array_t.(length) < array_t.(capacity)) { ret; }
-        final u32 new_cap = array_t.(capacity) == 0 ? 8 : array_t.(capacity) * 2;
-        array_t.(buf)      = mov.(array_t.(buf), new_cap * sizeof.(T));
-        array_t.(capacity) = new_cap;
+        if (this.length < this.capacity) { ret; }
+        final u32 new_cap = this.capacity == 0 ? 8 : this.capacity * 2;
+        this.buf      = mov.(this.buf, new_cap * sizeof.(T));
+        this.capacity = new_cap;
     }
 
     // Pre-allocate so that capacity >= min_cap.
     ext fn ensure_capacity(u32 min_cap): void {
-        if (array_t.(capacity) >= min_cap) { ret; }
-        u32 new_cap = array_t.(capacity) == 0 ? 8 : array_t.(capacity);
+        if (this.capacity >= min_cap) { ret; }
+        u32 new_cap = this.capacity == 0 ? 8 : this.capacity;
         while (new_cap < min_cap) { new_cap = new_cap * 2; }
-        array_t.(buf)      = mov.(array_t.(buf), new_cap * sizeof.(T));
-        array_t.(capacity) = new_cap;
+        this.buf      = mov.(this.buf, new_cap * sizeof.(T));
+        this.capacity = new_cap;
     }
 
     // Append a value.
     ext fn push(T val): void {
-        array_t.(maybe_grow)();
-        array_t.(buf)[array_t.(length)] = val;
-        array_t.(length)++;
+        this.maybe_grow();
+        this.buf[this.length] = val;
+        this.length++;
     }
 
     // Remove last element. No-op if empty.
     ext fn pop(void): void {
-        if (array_t.(length) > 0) { array_t.(length)--; }
+        if (this.length > 0) { this.length--; }
     }
 
     // Get read-only pointer to element at idx, or error if out of bounds.
     ext fn at(u32 idx): [T *r, error] {
-        if (idx >= array_t.(length)) {
+        if (idx >= this.length) {
             ret nil, error.('index out of bounds');
         }
-        ret &array_t.(buf)[idx], nil;
+        ret &this.buf[idx], nil;
     }
 
     // Overwrite element at idx. Returns error if out of bounds.
     ext fn set(u32 idx, T val): error {
-        if (idx >= array_t.(length)) {
+        if (idx >= this.length) {
             ret error.('index out of bounds');
         }
-        array_t.(buf)[idx] = val;
+        this.buf[idx] = val;
         ret nil;
     }
 
     // Insert val at idx, shifting elements right.
     ext fn insert(u32 idx, T val): void {
-        if (idx > array_t.(length)) { idx = array_t.(length); }
-        array_t.(maybe_grow)();
-        u32 i = array_t.(length);
+        if (idx > this.length) { idx = this.length; }
+        this.maybe_grow();
+        u32 i = this.length;
         while (i > idx) {
-            array_t.(buf)[i] = array_t.(buf)[i - 1];
+            this.buf[i] = this.buf[i - 1];
             i--;
         }
-        array_t.(buf)[idx] = val;
-        array_t.(length)++;
+        this.buf[idx] = val;
+        this.length++;
     }
 
     // Remove element at idx, shifting elements left. No-op if out of bounds.
     ext fn remove(u32 idx): void {
-        if (idx >= array_t.(length)) { ret; }
+        if (idx >= this.length) { ret; }
         u32 i = idx;
-        while (i + 1 < array_t.(length)) {
-            array_t.(buf)[i] = array_t.(buf)[i + 1];
+        while (i + 1 < this.length) {
+            this.buf[i] = this.buf[i + 1];
             i++;
         }
-        array_t.(length)--;
+        this.length--;
     }
 
     // Swap elements at indices i and j. Returns error if either is out of bounds.
     ext fn swap(u32 i, u32 j): error {
-        if (i >= array_t.(length) || j >= array_t.(length)) {
+        if (i >= this.length || j >= this.length) {
             ret error.('index out of bounds');
         }
         if (i == j) { ret nil; }
-        T tmp = array_t.(buf)[i];
-        array_t.(buf)[i] = array_t.(buf)[j];
-        array_t.(buf)[j] = tmp;
+        T tmp = this.buf[i];
+        this.buf[i] = this.buf[j];
+        this.buf[j] = tmp;
         ret nil;
     }
 
     // Reverse the array in place.
     ext fn reverse(void): void {
-        if (array_t.(length) <= 1) { ret; }
+        if (this.length <= 1) { ret; }
         u32 lo = 0;
-        u32 hi = array_t.(length) - 1;
+        u32 hi = this.length - 1;
         while (lo < hi) {
-            T tmp = array_t.(buf)[lo];
-            array_t.(buf)[lo] = array_t.(buf)[hi];
-            array_t.(buf)[hi] = tmp;
+            T tmp = this.buf[lo];
+            this.buf[lo] = this.buf[hi];
+            this.buf[hi] = tmp;
             lo++;
             hi--;
         }
@@ -105,24 +105,31 @@ ext type array_t: @comptime[T] struct {
 
     // Reset length to zero without freeing memory.
     ext fn clear(void): void {
-        array_t.(length) = 0;
+        this.length = 0;
     }
 
     ext fn length(void): u32 {
-        ret array_t.(length);
+        ret this.length;
     }
 
     ext fn capacity(void): u32 {
-        ret array_t.(capacity);
+        ret this.capacity;
     }
 
     ext fn is_empty(void): bool {
-        ret array_t.(length) == 0;
+        ret this.length == 0;
     }
-}
 
-ext fn array_t.print(void): void {
-    print.('array_t[len={}, cap={}]\n', array_t.(length), array_t.(capacity));
+    ext fn print(void): void {
+        print.('array_t[len={}, cap={}]\n', this.length, this.capacity);
+    }
+
+    ext fn rem(void): void {
+        if (this.buf != nil) { rem.(this.buf); }
+        this.buf      = nil;
+        this.length   = 0;
+        this.capacity = 0;
+    }
 }
 
 ext fn @comptime[T] array_t.new(void): array_t.[T] {
@@ -131,13 +138,6 @@ ext fn @comptime[T] array_t.new(void): array_t.[T] {
         .length   = 0,
         .capacity = 0,
     };
-}
-
-ext fn array_t.rem(void): void {
-    if (array_t.(buf) != nil) { rem.(array_t.(buf)); }
-    array_t.(buf)      = nil;
-    array_t.(length)   = 0;
-    array_t.(capacity) = 0;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

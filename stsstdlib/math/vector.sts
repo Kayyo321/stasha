@@ -6,31 +6,31 @@ lib "math" = cmath;
 
 ext type vec2_t: struct {
     ext f32 x, y;
+
+    ext fn print(void): void {
+        print.('vec2({}, {})\n', this.x, this.y);
+    }
+
+    ext fn hash(void): u64 {
+        u64 h = 14695981039346656037;
+        final u64 p = 1099511628211;
+        stack u8 *r bx = (u8 *r)&this.x;
+        stack u8 *r by = (u8 *r)&this.y;
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bx[i]) * p; }
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)by[i]) * p; }
+        ret h;
+    }
+
+    ext fn equ(stack vec2_t *r other): bool {
+        ret this.x == other.x && this.y == other.y;
+    }
 }
 
 ext fn vec2_t.new(f32 x, f32 y): vec2_t {
     ret vec2_t{ .x = x, .y = y };
 }
 
-ext fn vec2_t.print(void): void {
-    print.('vec2({}, {})\n', vec2_t.(x), vec2_t.(y));
-}
-
 // FNV-1a over the 8 raw bytes of x and y.
-ext fn vec2_t.hash(void): u64 {
-    u64 h = 14695981039346656037;
-    final u64 p = 1099511628211;
-    stack u8 *r bx = (u8 *r)&vec2_t.(x);
-    stack u8 *r by = (u8 *r)&vec2_t.(y);
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bx[i]) * p; }
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)by[i]) * p; }
-    ret h;
-}
-
-ext fn vec2_t.equ(stack vec2_t *r other): bool {
-    ret vec2_t.(x) == other.x && vec2_t.(y) == other.y;
-}
-
 ext fn vec2_add(vec2_t a, vec2_t b): vec2_t {
     ret vec2_t{ .x = a.x + b.x, .y = a.y + b.y };
 }
@@ -76,30 +76,30 @@ ext fn vec2_eq(vec2_t a, vec2_t b): bool {
 
 ext type vec3_t: struct {
     ext f32 x, y, z;
+
+    ext fn print(void): void {
+        print.('vec3({}, {}, {})\n', this.x, this.y, this.z);
+    }
+
+    ext fn hash(void): u64 {
+        u64 h = 14695981039346656037;
+        final u64 p = 1099511628211;
+        stack u8 *r bx = (u8 *r)&this.x;
+        stack u8 *r by = (u8 *r)&this.y;
+        stack u8 *r bz = (u8 *r)&this.z;
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bx[i]) * p; }
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)by[i]) * p; }
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bz[i]) * p; }
+        ret h;
+    }
+
+    ext fn equ(stack vec3_t *r other): bool {
+        ret this.x == other.x && this.y == other.y && this.z == other.z;
+    }
 }
 
 ext fn vec3_t.new(f32 x, f32 y, f32 z): vec3_t {
     ret vec3_t{ .x = x, .y = y, .z = z };
-}
-
-ext fn vec3_t.print(void): void {
-    print.('vec3({}, {}, {})\n', vec3_t.(x), vec3_t.(y), vec3_t.(z));
-}
-
-ext fn vec3_t.hash(void): u64 {
-    u64 h = 14695981039346656037;
-    final u64 p = 1099511628211;
-    stack u8 *r bx = (u8 *r)&vec3_t.(x);
-    stack u8 *r by = (u8 *r)&vec3_t.(y);
-    stack u8 *r bz = (u8 *r)&vec3_t.(z);
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bx[i]) * p; }
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)by[i]) * p; }
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bz[i]) * p; }
-    ret h;
-}
-
-ext fn vec3_t.equ(stack vec3_t *r other): bool {
-    ret vec3_t.(x) == other.x && vec3_t.(y) == other.y && vec3_t.(z) == other.z;
 }
 
 ext fn vec3_add(vec3_t a, vec3_t b): vec3_t {
@@ -156,33 +156,33 @@ ext fn vec3_cross(vec3_t a, vec3_t b): vec3_t {
 
 ext type vec4_t: struct {
     ext f32 x, y, z, w;
+
+    ext fn print(void): void {
+        print.('vec4({}, {}, {}, {})\n', this.x, this.y, this.z, this.w);
+    }
+
+    ext fn hash(void): u64 {
+        u64 h = 14695981039346656037;
+        final u64 p = 1099511628211;
+        stack u8 *r bx = (u8 *r)&this.x;
+        stack u8 *r by = (u8 *r)&this.y;
+        stack u8 *r bz = (u8 *r)&this.z;
+        stack u8 *r bw = (u8 *r)&this.w;
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bx[i]) * p; }
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)by[i]) * p; }
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bz[i]) * p; }
+        for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bw[i]) * p; }
+        ret h;
+    }
+
+    ext fn equ(stack vec4_t *r other): bool {
+        ret this.x == other.x && this.y == other.y &&
+            this.z == other.z && this.w == other.w;
+    }
 }
 
 ext fn vec4_t.new(f32 x, f32 y, f32 z, f32 w): vec4_t {
     ret vec4_t{ .x = x, .y = y, .z = z, .w = w };
-}
-
-ext fn vec4_t.print(void): void {
-    print.('vec4({}, {}, {}, {})\n', vec4_t.(x), vec4_t.(y), vec4_t.(z), vec4_t.(w));
-}
-
-ext fn vec4_t.hash(void): u64 {
-    u64 h = 14695981039346656037;
-    final u64 p = 1099511628211;
-    stack u8 *r bx = (u8 *r)&vec4_t.(x);
-    stack u8 *r by = (u8 *r)&vec4_t.(y);
-    stack u8 *r bz = (u8 *r)&vec4_t.(z);
-    stack u8 *r bw = (u8 *r)&vec4_t.(w);
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bx[i]) * p; }
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)by[i]) * p; }
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bz[i]) * p; }
-    for (u32 i = 0; i < 4; i++) { h = (h ^ (u64)bw[i]) * p; }
-    ret h;
-}
-
-ext fn vec4_t.equ(stack vec4_t *r other): bool {
-    ret vec4_t.(x) == other.x && vec4_t.(y) == other.y &&
-        vec4_t.(z) == other.z && vec4_t.(w) == other.w;
 }
 
 ext fn vec4_add(vec4_t a, vec4_t b): vec4_t {

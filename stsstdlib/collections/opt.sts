@@ -3,8 +3,8 @@ mod opt;
 ext type opt_t: @comptime[T] struct {
     int heap ?T *rw holder;
 
-    ext fn is_some(void): bool => opt_t.(holder) != nil;
-    ext fn is_none(void): bool => opt_t.(holder) == nil;
+    ext fn is_some(void): bool => this.holder != nil;
+    ext fn is_none(void): bool => this.holder == nil;
 
     ext fn get(void): [?T *r, error] {
         if this.is_none() {
@@ -29,7 +29,7 @@ ext type opt_t: @comptime[T] struct {
 
     // Internal: read the inner value. Caller must ensure is_some().
     int fn get_val(void): T {
-        ret *.(opt_t.(holder));
+        ret *.(this.holder);
     }
 
     // Structural equality: None==None, Some==Some iff inner values equal.
@@ -41,6 +41,14 @@ ext type opt_t: @comptime[T] struct {
         if this.is_none() || o.is_none() { ret false; }
         ret this.get_val() .== o.get_val();
     }
+
+    ext fn print(void): void {
+        if this.is_some() {
+            print.('opt_t[Some].({})\n', this.get_val());
+        } else {
+            print.('opt_t[None]\n');
+        }
+    }
 }
 
 ext fn @comptime[T] opt_t.from_some(T val): opt_t.[T] {
@@ -51,22 +59,6 @@ ext fn @comptime[T] opt_t.from_some(T val): opt_t.[T] {
 
 ext fn @comptime[T] opt_t.from_none(void): opt_t.[T] {
     ret opt_t.[T]{.holder = nil};
-}
-
-ext fn opt_t.rem(void): void {
-    if this.is_some() {
-        rem.(this.holder);
-    }
-    this.holder = nil;
-}
-
-// `print` is a reserved keyword inside struct bodies so must be standalone.
-ext fn @comptime[T] opt_t.print(void): void {
-    if this.is_some() {
-        print.('opt_t[Some].({})\n', this.get_val());
-    } else {
-        print.('opt_t[None]\n');
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

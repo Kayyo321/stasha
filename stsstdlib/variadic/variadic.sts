@@ -6,22 +6,26 @@ ext type variadic_t: struct {
     /// Returns a pointer to the next argument of the given size, or error if out of bounds.
     ext fn next(u32 bytes): [stack i8 *r, error] {
         // Implementation is platform-specific; placeholder logic
-        if (variadic_t.(last_seen_arg) == nil) {
+        if (this.last_seen_arg == nil) {
             ret nil, error.('No more arguments');
         }
-        stack i8 *r arg_ptr = variadic_t.(last_seen_arg);
-        variadic_t.(last_seen_arg) = variadic_t.(last_seen_arg) + bytes;
+        stack i8 *r arg_ptr = this.last_seen_arg;
+        this.last_seen_arg = this.last_seen_arg + bytes;
         ret arg_ptr, nil;
     }
 
     /// Resets the variadic argument pointer to a new start
     ext fn reset(stack i8 *rw new_start): void {
-        variadic_t.(last_seen_arg) = new_start;
+        this.last_seen_arg = new_start;
     }
 
     /// Ends variadic argument processing (no-op for most ABIs)
     ext fn end(void): void {
-        variadic_t.(last_seen_arg) = nil;
+        this.last_seen_arg = nil;
+    }
+
+    ext fn print(void): void {
+        print.('variadic_t[ptr={}]\n', this.last_seen_arg != nil);
     }
 }
 
@@ -30,10 +34,6 @@ ext fn variadic_t.new(stack i8 *rw last_seen_arg): variadic_t {
     variadic_t v;
     v.last_seen_arg = last_seen_arg;
     ret v;
-}
-
-ext fn variadic_t.print(void): void {
-    print.('variadic_t[ptr={}]\n', variadic_t.(last_seen_arg) != nil);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

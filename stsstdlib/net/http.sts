@@ -25,56 +25,56 @@ ext type http_req_t: struct {
 
     // HTTP method string: "GET", "POST", "PUT", "DELETE", etc.
     ext fn method(void): i8 *r {
-        ret ch.stdhttp_req_method(http_req_t.(ctx));
+        ret ch.stdhttp_req_method(this.ctx);
     }
 
     // URL path without query string, e.g. "/users/42"
     ext fn path(void): i8 *r {
-        ret ch.stdhttp_req_path(http_req_t.(ctx));
+        ret ch.stdhttp_req_path(this.ctx);
     }
 
     // Raw query string after '?', e.g. "page=2&sort=asc"
     ext fn query_string(void): i8 *r {
-        ret ch.stdhttp_req_query_string(http_req_t.(ctx));
+        ret ch.stdhttp_req_query_string(this.ctx);
     }
 
     // Value for a specific query parameter key.
     // Returns pointer into a thread-local buffer — copy if you need it later.
     ext fn query(stack i8 *r+ key): i8 *r {
-        ret ch.stdhttp_req_query(http_req_t.(ctx), key);
+        ret ch.stdhttp_req_query(this.ctx, key);
     }
 
     // Value for a specific HTTP request header (case-insensitive).
     // Returns nil if the header is absent.
     ext fn header(stack i8 *r+ name): i8 *r {
-        ret ch.stdhttp_req_header(http_req_t.(ctx), name);
+        ret ch.stdhttp_req_header(this.ctx, name);
     }
 
     // Raw request body as a null-terminated string.
     ext fn body(void): i8 *r {
-        ret ch.stdhttp_req_body(http_req_t.(ctx));
+        ret ch.stdhttp_req_body(this.ctx);
     }
 
     ext fn body_len(void): i32 {
-        ret ch.stdhttp_req_body_len(http_req_t.(ctx));
+        ret ch.stdhttp_req_body_len(this.ctx);
     }
 
     // Value of a named route parameter (e.g. :id in /users/:id).
     // Returns nil if parameter not set.
     ext fn param(stack i8 *r+ name): i8 *r {
-        ret ch.stdhttp_req_param(http_req_t.(ctx), name);
+        ret ch.stdhttp_req_param(this.ctx, name);
     }
 
     // Check HTTP method without string compare in user code.
     ext fn method_is(stack i8 *r+ m): bool {
-        stack i8 *r meth = ch.stdhttp_req_method(http_req_t.(ctx));
+        stack i8 *r meth = ch.stdhttp_req_method(this.ctx);
         if (meth == nil) { ret false; }
         ret cstring.strcmp(meth, m) == 0;
     }
 
     // True if the Content-Type header contains "application/json".
     ext fn is_json(void): bool {
-        stack i8 *r ct = ch.stdhttp_req_header(http_req_t.(ctx), "Content-Type");
+        stack i8 *r ct = ch.stdhttp_req_header(this.ctx, "Content-Type");
         if (ct == nil) { ret false; }
         stack i8 *r found = cstring.strstr(ct, "application/json");
         ret found != nil;
@@ -92,59 +92,59 @@ ext type http_res_t: struct {
 
     // Set HTTP status code (default 200 if not called before send).
     ext fn status(i32 code): void {
-        ch.stdhttp_res_status(http_res_t.(ctx), code);
+        ch.stdhttp_res_status(this.ctx, code);
     }
 
     // Add an HTTP response header.
     ext fn header(stack i8 *r+ name, stack i8 *r+ val): void {
-        ch.stdhttp_res_header(http_res_t.(ctx), name, val);
+        ch.stdhttp_res_header(this.ctx, name, val);
     }
 
     // Send a text/plain response body (null-terminated string).
     ext fn send(stack i8 *r+ body): void {
-        ch.stdhttp_res_send_str(http_res_t.(ctx), body);
+        ch.stdhttp_res_send_str(this.ctx, body);
     }
 
     // Send with explicit length (for binary data or embedded NULs).
     ext fn send_bytes(stack i8 *r body, i32 len): void {
-        ch.stdhttp_res_send(http_res_t.(ctx), body, len);
+        ch.stdhttp_res_send(this.ctx, body, len);
     }
 
     // Send with Content-Type: application/json.
     ext fn json(stack i8 *r+ json_str): void {
-        ch.stdhttp_res_json(http_res_t.(ctx), json_str);
+        ch.stdhttp_res_json(this.ctx, json_str);
     }
 
     // Send with Content-Type: text/html.
     ext fn html(stack i8 *r+ html_str): void {
-        ch.stdhttp_res_html(http_res_t.(ctx), html_str);
+        ch.stdhttp_res_html(this.ctx, html_str);
     }
 
     // Serve a static file. Infers Content-Type from extension.
     ext fn file(stack i8 *r+ path): void {
-        ch.stdhttp_res_file(http_res_t.(ctx), path);
+        ch.stdhttp_res_file(this.ctx, path);
     }
 
     // Send an HTTP redirect (301 or 302).
     ext fn redirect(stack i8 *r+ url, i32 code): void {
-        ch.stdhttp_res_redirect(http_res_t.(ctx), url, code);
+        ch.stdhttp_res_redirect(this.ctx, url, code);
     }
 
     // True if a response has already been sent for this request.
     ext fn is_sent(void): bool {
-        ret ch.stdhttp_res_is_sent(http_res_t.(ctx)) != 0;
+        ret ch.stdhttp_res_is_sent(this.ctx) != 0;
     }
 
     // Convenience: 404 Not Found.
     ext fn not_found(void): void {
-        ch.stdhttp_res_status(http_res_t.(ctx), 404);
-        ch.stdhttp_res_send_str(http_res_t.(ctx), "Not Found");
+        ch.stdhttp_res_status(this.ctx, 404);
+        ch.stdhttp_res_send_str(this.ctx, "Not Found");
     }
 
     // Convenience: 500 Internal Server Error.
     ext fn server_error(stack i8 *r+ msg): void {
-        ch.stdhttp_res_status(http_res_t.(ctx), 500);
-        ch.stdhttp_res_send_str(http_res_t.(ctx), msg);
+        ch.stdhttp_res_status(this.ctx, 500);
+        ch.stdhttp_res_send_str(this.ctx, msg);
     }
 }
 
@@ -162,57 +162,57 @@ ext type http_server_t: struct {
     // handler must be: ext fn my_fn(stack i8 *rw req, stack i8 *rw res): void
     // Pass it as: server.get("/path", &my_fn)  or  server.get("/path", my_fn)
     ext fn get(stack i8 *r+ pattern, stack i8 *rw handler): void {
-        ch.stdhttp_route(http_server_t.(handle), "GET", pattern, handler);
+        ch.stdhttp_route(this.handle, "GET", pattern, handler);
     }
 
     ext fn post(stack i8 *r+ pattern, stack i8 *rw handler): void {
-        ch.stdhttp_route(http_server_t.(handle), "POST", pattern, handler);
+        ch.stdhttp_route(this.handle, "POST", pattern, handler);
     }
 
     ext fn put(stack i8 *r+ pattern, stack i8 *rw handler): void {
-        ch.stdhttp_route(http_server_t.(handle), "PUT", pattern, handler);
+        ch.stdhttp_route(this.handle, "PUT", pattern, handler);
     }
 
     ext fn delete(stack i8 *r+ pattern, stack i8 *rw handler): void {
-        ch.stdhttp_route(http_server_t.(handle), "DELETE", pattern, handler);
+        ch.stdhttp_route(this.handle, "DELETE", pattern, handler);
     }
 
     ext fn patch(stack i8 *r+ pattern, stack i8 *rw handler): void {
-        ch.stdhttp_route(http_server_t.(handle), "PATCH", pattern, handler);
+        ch.stdhttp_route(this.handle, "PATCH", pattern, handler);
     }
 
     // Register a handler for ALL methods on this pattern.
     ext fn route_any(stack i8 *r+ pattern, stack i8 *rw handler): void {
-        ch.stdhttp_route(http_server_t.(handle), "ANY", pattern, handler);
+        ch.stdhttp_route(this.handle, "ANY", pattern, handler);
     }
 
     // Register a middleware function run before every route handler.
     // middleware must be: ext fn my_mw(stack i8 *rw req, stack i8 *rw res): i32
     // Return 0 to continue, non-zero to stop (response already sent).
     ext fn use(stack i8 *rw middleware): void {
-        ch.stdhttp_use(http_server_t.(handle), middleware);
+        ch.stdhttp_use(this.handle, middleware);
     }
 
     // Block and start serving requests. Returns only on error or after stop().
     // Returns 0 on clean shutdown, -1 on error.
     ext fn listen(void): i32 {
-        ret ch.stdhttp_listen(http_server_t.(handle));
+        ret ch.stdhttp_listen(this.handle);
     }
 
     // Signal the server to stop (safe to call from a signal handler).
     ext fn stop(void): void {
-        ch.stdhttp_stop(http_server_t.(handle));
+        ch.stdhttp_stop(this.handle);
+    }
+
+    ext fn rem(void): void {
+        if (this.handle != nil) {
+            ch.stdhttp_free(this.handle);
+            this.handle = nil;
+        }
     }
 }
 
 // Free server resources. Calls stop() first if still running.
-ext fn http_server_t.rem(void): void {
-    if (http_server_t.(handle) != nil) {
-        ch.stdhttp_free(http_server_t.(handle));
-        http_server_t.(handle) = nil;
-    }
-}
-
 // Create an HTTP server on the given port (does not start listening).
 ext fn http_server_t.new(i32 port): http_server_t {
     ret http_server_t{

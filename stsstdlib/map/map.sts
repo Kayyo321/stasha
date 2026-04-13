@@ -21,7 +21,7 @@ ext type map_t: @comptime[K, V] struct {
 
     // Pointer to the start of bucket i.
     int fn bucket_ptr(u32 i): u8 *rw+ {
-        ret map_t.(buckets) + (i * map_t.(slot_size)());
+        ret this.buckets + (i * this.slot_size());
     }
 
     // Copy n bytes from src to dst.
@@ -32,17 +32,17 @@ ext type map_t: @comptime[K, V] struct {
     // Grow and rehash when load factor exceeds 0.7.
     int fn maybe_grow(void): void {
         // count / cap > 0.7  →  count * 10 > cap * 7
-        if (map_t.(cnt) * 10 <= map_t.(cap) * 7) { ret; }
+        if (this.cnt * 10 <= this.cap * 7) { ret; }
 
-        final u32 old_cap     = map_t.(cap);
-        heap u8 *rw+ old_bkts = map_t.(buckets);
-        final u32 ss          = map_t.(slot_size)();
+        final u32 old_cap     = this.cap;
+        heap u8 *rw+ old_bkts = this.buckets;
+        final u32 ss          = this.slot_size();
         final u32 new_cap     = old_cap * 2;
 
-        map_t.(buckets) = new.(new_cap * ss);
-        for (u32 i = 0; i < new_cap * ss; i++) { map_t.(buckets)[i] = 0; }
-        map_t.(cap)   = new_cap;
-        map_t.(cnt) = 0;
+        this.buckets = new.(new_cap * ss);
+        for (u32 i = 0; i < new_cap * ss; i++) { this.buckets[i] = 0; }
+        this.cap   = new_cap;
+        this.cnt = 0;
 
         for (u32 i = 0; i < old_cap; i++) {
             stack u8 *rw+ slot = old_bkts + (i * ss);
@@ -50,23 +50,23 @@ ext type map_t: @comptime[K, V] struct {
                 stack u8 *r rkey = slot + 1;
                 stack u8 *r rval = slot + 1 + sizeof.(K);
                 K rk = ((K *r)rkey)[0];
-                u32 idx  = (u32)(hash.(rk) % (u64)map_t.(cap));
-                u32 tomb = map_t.(cap);
+                u32 idx  = (u32)(hash.(rk) % (u64)this.cap);
+                u32 tomb = this.cap;
                 inf {
-                    stack u8 *rw dst = map_t.(bucket_ptr)(idx);
+                    stack u8 *rw dst = this.bucket_ptr(idx);
                     if (dst[0] == MAP_EMPTY) {
-                        final u32 w = (tomb < map_t.(cap)) ? tomb : idx;
-                        stack u8 *rw+ wdst = map_t.(bucket_ptr)(w);
+                        final u32 w = (tomb < this.cap) ? tomb : idx;
+                        stack u8 *rw+ wdst = this.bucket_ptr(w);
                         wdst[0] = MAP_OCCUPIED;
-                        map_t.(copy_bytes)(wdst + 1, rkey, sizeof.(K));
-                        map_t.(copy_bytes)(wdst + 1 + sizeof.(K), rval, sizeof.(V));
-                        map_t.(cnt)++;
+                        this.copy_bytes(wdst + 1, rkey, sizeof.(K));
+                        this.copy_bytes(wdst + 1 + sizeof.(K), rval, sizeof.(V));
+                        this.cnt++;
                         break;
                     }
                     if (dst[0] == MAP_TOMBSTONE) {
-                        if (tomb == map_t.(cap)) { tomb = idx; }
+                        if (tomb == this.cap) { tomb = idx; }
                     }
-                    idx = (idx + 1) % map_t.(cap);
+                    idx = (idx + 1) % this.cap;
                 }
             }
         }
@@ -75,44 +75,44 @@ ext type map_t: @comptime[K, V] struct {
 
     // Insert or update the value for key.
     ext fn insert(K key, V val): void {
-        map_t.(maybe_grow)();
-        u32 idx  = (u32)(hash.(key) % (u64)map_t.(cap));
-        u32 tomb = map_t.(cap);
+        this.maybe_grow();
+        u32 idx  = (u32)(hash.(key) % (u64)this.cap);
+        u32 tomb = this.cap;
 
         inf {
-            stack u8 *rw+ slot = map_t.(bucket_ptr)(idx);
+            stack u8 *rw+ slot = this.bucket_ptr(idx);
             if (slot[0] == MAP_EMPTY) {
-                final u32 write = (tomb < map_t.(cap)) ? tomb : idx;
-                stack u8 *rw+ dst = map_t.(bucket_ptr)(write);
+                final u32 write = (tomb < this.cap) ? tomb : idx;
+                stack u8 *rw+ dst = this.bucket_ptr(write);
                 dst[0] = MAP_OCCUPIED;
-                map_t.(copy_bytes)(dst + 1, (u8 *r)&key, sizeof.(K));
-                map_t.(copy_bytes)(dst + 1 + sizeof.(K), (u8 *r)&val, sizeof.(V));
-                map_t.(cnt)++;
+                this.copy_bytes(dst + 1, (u8 *r)&key, sizeof.(K));
+                this.copy_bytes(dst + 1 + sizeof.(K), (u8 *r)&val, sizeof.(V));
+                this.cnt++;
                 ret;
             }
             if (slot[0] == MAP_TOMBSTONE) {
-                if (tomb == map_t.(cap)) { tomb = idx; }
+                if (tomb == this.cap) { tomb = idx; }
             } else {
                 if (((K *r)(slot + 1))[0] .== key) {
-                    map_t.(copy_bytes)(slot + 1 + sizeof.(K), (u8 *r)&val, sizeof.(V));
+                    this.copy_bytes(slot + 1 + sizeof.(K), (u8 *r)&val, sizeof.(V));
                     ret;
                 }
             }
-            idx = (idx + 1) % map_t.(cap);
+            idx = (idx + 1) % this.cap;
         }
     }
 
     // Get a read-only pointer to the value for key, or nil if not found.
     ext fn get_or_nil(K key): V *r {
-        u32 idx    = (u32)(hash.(key) % (u64)map_t.(cap));
+        u32 idx    = (u32)(hash.(key) % (u64)this.cap);
         u32 probed = 0;
-        while (probed < map_t.(cap)) {
-            stack u8 *rw+ slot = map_t.(bucket_ptr)(idx);
+        while (probed < this.cap) {
+            stack u8 *rw+ slot = this.bucket_ptr(idx);
             if (slot[0] == MAP_EMPTY) { ret nil; }
             if (slot[0] == MAP_OCCUPIED && ((K *r)(slot + 1))[0] .== key) {
                 ret (V *r)(slot + 1 + sizeof.(K));
             }
-            idx = (idx + 1) % map_t.(cap);
+            idx = (idx + 1) % this.cap;
             probed++;
         }
         ret nil;
@@ -120,17 +120,17 @@ ext type map_t: @comptime[K, V] struct {
 
     // Get a read-only pointer to the value for key, or error if not found.
     ext fn get(K key): [V *r, error] {
-        u32 idx    = (u32)(hash.(key) % (u64)map_t.(cap));
+        u32 idx    = (u32)(hash.(key) % (u64)this.cap);
         u32 probed = 0;
-        while (probed < map_t.(cap)) {
-            stack u8 *rw+ slot = map_t.(bucket_ptr)(idx);
+        while (probed < this.cap) {
+            stack u8 *rw+ slot = this.bucket_ptr(idx);
             if (slot[0] == MAP_EMPTY) {
                 ret nil, error.('key not found');
             }
             if (slot[0] == MAP_OCCUPIED && ((K *r)(slot + 1))[0] .== key) {
                 ret (V *r)(slot + 1 + sizeof.(K)), nil;
             }
-            idx = (idx + 1) % map_t.(cap);
+            idx = (idx + 1) % this.cap;
             probed++;
         }
         ret nil, error.('key not found');
@@ -138,48 +138,57 @@ ext type map_t: @comptime[K, V] struct {
 
     // Remove key. No-op if not present.
     ext fn remove(K key): void {
-        u32 idx    = (u32)(hash.(key) % (u64)map_t.(cap));
+        u32 idx    = (u32)(hash.(key) % (u64)this.cap);
         u32 probed = 0;
-        while (probed < map_t.(cap)) {
-            stack u8 *rw+ slot = map_t.(bucket_ptr)(idx);
+        while (probed < this.cap) {
+            stack u8 *rw+ slot = this.bucket_ptr(idx);
             if (slot[0] == MAP_EMPTY) { ret; }
             if (slot[0] == MAP_OCCUPIED && ((K *r)(slot + 1))[0] .== key) {
                 slot[0] = MAP_TOMBSTONE;
-                map_t.(cnt)--;
+                this.cnt--;
                 ret;
             }
-            idx = (idx + 1) % map_t.(cap);
+            idx = (idx + 1) % this.cap;
             probed++;
         }
     }
 
     // True if key is present.
     ext fn contains(K key): bool {
-        u32 idx    = (u32)(hash.(key) % (u64)map_t.(cap));
+        u32 idx    = (u32)(hash.(key) % (u64)this.cap);
         u32 probed = 0;
-        while (probed < map_t.(cap)) {
-            stack u8 *rw+ slot = map_t.(bucket_ptr)(idx);
+        while (probed < this.cap) {
+            stack u8 *rw+ slot = this.bucket_ptr(idx);
             if (slot[0] == MAP_EMPTY) { ret false; }
             if (slot[0] == MAP_OCCUPIED && ((K *r)(slot + 1))[0] .== key) {
                 ret true;
             }
-            idx = (idx + 1) % map_t.(cap);
+            idx = (idx + 1) % this.cap;
             probed++;
         }
         ret false;
     }
 
     ext fn count(void): u32 {
-        ret map_t.(cnt);
+        ret this.cnt;
     }
 
     ext fn is_empty(void): bool {
-        ret map_t.(cnt) == 0;
+        ret this.cnt == 0;
     }
-}
 
-ext fn map_t.print(void): void {
-    print.('map_t[count={}, cap={}]\n', map_t.(cnt), map_t.(cap));
+    ext fn print(void): void {
+        print.('map_t[count={}, cap={}]\n', this.cnt, this.cap);
+    }
+
+    ext fn rem(void): void {
+        if (this.buckets != nil) {
+            rem.(this.buckets);
+        }
+        this.buckets = nil;
+        this.cnt   = 0;
+        this.cap     = 0;
+    }
 }
 
 // Initial capacity 16 gives decent breathing room before the first rehash.
@@ -193,15 +202,6 @@ ext fn @comptime[K, V] map_t.new(void): map_t.[K, V] {
         .cnt     = 0,
         .cap     = init_cap,
     };
-}
-
-ext fn map_t.rem(void): void {
-    if (map_t.(buckets) != nil) {
-        rem.(map_t.(buckets));
-    }
-    map_t.(buckets) = nil;
-    map_t.(cnt)   = 0;
-    map_t.(cap)     = 0;
 }
 
 test 'map new is empty' {

@@ -54,35 +54,35 @@ ext fn stats_max(stack f64 *r+ data, u32 n): f64 {
 
 ext type complex_t: struct {
     ext f64 re, im;
+
+    ext fn print(void): void {
+        if (this.im >= 0.0) {
+            print.('complex({}+{}i)\n', this.re, this.im);
+        } else {
+            print.('complex({}{}i)\n', this.re, this.im);
+        }
+    }
+
+    ext fn hash(void): u64 {
+        u64 h = 14695981039346656037;
+        final u64 p = 1099511628211;
+        stack u8 *r br = (u8 *r)&this.re;
+        stack u8 *r bi = (u8 *r)&this.im;
+        for (u32 i = 0; i < 8; i++) { h = (h ^ (u64)br[i]) * p; }
+        for (u32 i = 0; i < 8; i++) { h = (h ^ (u64)bi[i]) * p; }
+        ret h;
+    }
+
+    ext fn equ(stack complex_t *r other): bool {
+        ret this.re == other.re && this.im == other.im;
+    }
 }
 
 ext fn complex_t.new(f64 re, f64 im): complex_t {
     ret complex_t{ .re = re, .im = im };
 }
 
-ext fn complex_t.print(void): void {
-    if (complex_t.(im) >= 0.0) {
-        print.('complex({}+{}i)\n', complex_t.(re), complex_t.(im));
-    } else {
-        print.('complex({}{}i)\n', complex_t.(re), complex_t.(im));
-    }
-}
-
 // FNV-1a over the 16 raw bytes of re and im.
-ext fn complex_t.hash(void): u64 {
-    u64 h = 14695981039346656037;
-    final u64 p = 1099511628211;
-    stack u8 *r br = (u8 *r)&complex_t.(re);
-    stack u8 *r bi = (u8 *r)&complex_t.(im);
-    for (u32 i = 0; i < 8; i++) { h = (h ^ (u64)br[i]) * p; }
-    for (u32 i = 0; i < 8; i++) { h = (h ^ (u64)bi[i]) * p; }
-    ret h;
-}
-
-ext fn complex_t.equ(stack complex_t *r other): bool {
-    ret complex_t.(re) == other.re && complex_t.(im) == other.im;
-}
-
 ext fn complex_add(complex_t a, complex_t b): complex_t {
     ret complex_t{ .re = a.re + b.re, .im = a.im + b.im };
 }

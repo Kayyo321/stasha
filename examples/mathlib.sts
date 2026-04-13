@@ -37,6 +37,10 @@ ext fn clamp_i32(i32 v, lo, hi): i32 {
 ext type point_t: struct {
     ext i32 x;
     ext i32 y;
+
+    ext fn manhattan(point_t other): i32 {
+        ret abs(this.x - other.x) + abs(this.y - other.y);
+    }
 };
 
 // Constructor
@@ -48,6 +52,3 @@ ext fn point_t.new(i32 x, y): point_t {
 }
 
 // Manhattan distance from this point to other
-ext fn point_t.manhattan(point_t other): i32 {
-    ret abs(point_t.(x) - other.x) + abs(point_t.(y) - other.y);
-}

@@ -7,6 +7,25 @@ lib "math";
 ext type vec2_t: struct {
     ext f64 x;
     ext f64 y;
+
+    ext fn add(vec2_t other): vec2_t {
+        ret vec2_t.new(
+            this.x + other.x,
+            this.y + other.y
+        );
+    }
+
+    ext fn scale(f64 s): vec2_t {
+        ret vec2_t.new(this.x * s, this.y * s);
+    }
+
+    ext fn dot(vec2_t other): f64 {
+        ret this.x * other.x + this.y * other.y;
+    }
+
+    ext fn length(void): f64 {
+        ret math.sqrt(this.x * this.x + this.y * this.y);
+    }
 };
 
 ext fn vec2_t.new(f64 x, y): vec2_t {
@@ -17,24 +36,6 @@ ext fn vec2_t.new(f64 x, y): vec2_t {
 }
 
 // Vector addition
-ext fn vec2_t.add(vec2_t other): vec2_t {
-    ret vec2_t.new(
-        vec2_t.(x) + other.x,
-        vec2_t.(y) + other.y
-    );
-}
-
 // Scalar multiplication
-ext fn vec2_t.scale(f64 s): vec2_t {
-    ret vec2_t.new(vec2_t.(x) * s, vec2_t.(y) * s);
-}
-
 // Dot product
-ext fn vec2_t.dot(vec2_t other): f64 {
-    ret vec2_t.(x) * other.x + vec2_t.(y) * other.y;
-}
-
 // Euclidean length
-ext fn vec2_t.length(void): f64 {
-    ret math.sqrt(vec2_t.(x) * vec2_t.(x) + vec2_t.(y) * vec2_t.(y));
-}

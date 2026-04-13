@@ -31,30 +31,30 @@ ext type stopwatch_t: struct {
 
     // Elapsed CPU time in milliseconds since construction or last reset().
     ext fn elapsed_ms(void): f64 {
-        ret clock_ticks_to_ms(ctime.clock() - stopwatch_t.(t0));
+        ret clock_ticks_to_ms(ctime.clock() - this.t0);
     }
 
     // Elapsed CPU time in microseconds since construction or last reset().
     ext fn elapsed_us(void): f64 {
-        ret clock_ticks_to_us(ctime.clock() - stopwatch_t.(t0));
+        ret clock_ticks_to_us(ctime.clock() - this.t0);
     }
 
     // Return elapsed milliseconds and reset the timer.
     ext fn lap(void): f64 {
         final i64 now = ctime.clock();
-        final f64 ms  = clock_ticks_to_ms(now - stopwatch_t.(t0));
-        stopwatch_t.(t0) = now;
+        final f64 ms  = clock_ticks_to_ms(now - this.t0);
+        this.t0 = now;
         ret ms;
     }
 
     // Restart the timer.
     ext fn reset(void): void {
-        stopwatch_t.(t0) = ctime.clock();
+        this.t0 = ctime.clock();
     }
-}
 
-ext fn stopwatch_t.print(void): void {
-    print.('stopwatch_t[elapsed_ms={}]\n', stopwatch_t.(elapsed_ms)());
+    ext fn print(void): void {
+        print.('stopwatch_t[elapsed_ms={}]\n', this.elapsed_ms());
+    }
 }
 
 // Start a new stopwatch (captures the current tick count).

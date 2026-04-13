@@ -17,6 +17,75 @@ ext type tracked_allocator_t: struct {
     u64 allocations;
     u64 frees;
     u64 resizes;
+
+    ext fn alloc_bytes(u64 size): [heap u8 *rw, error] {
+        heap u8 *rw ptr = new.(size);
+        if ptr == nil {
+            ret nil, error.("tracked allocator: allocation failed for {} bytes", size);
+        }
+
+        this.allocations += 1;
+        this.live_bytes += size;
+        if this.live_bytes > this.peak_bytes {
+            this.peak_bytes = this.live_bytes;
+        }
+
+        ret ptr, nil;
+    }
+
+    ext fn resize_bytes(heap u8 *rw ptr, u64 old_size, u64 new_size): [heap u8 *rw, error] {
+        if ptr == nil {
+            ret nil, error.("tracked allocator: cannot resize nil");
+        }
+
+        heap u8 *rw moved = mov.(ptr, new_size);
+        if moved == nil {
+            ret nil, error.(
+                "tracked allocator: resize failed {} -> {} bytes",
+                old_size,
+                new_size
+            );
+        }
+
+        this.resizes += 1;
+        if new_size >= old_size {
+            this.live_bytes += (new_size - old_size);
+        } else {
+            this.live_bytes -= (old_size - new_size);
+        }
+
+        if this.live_bytes > this.peak_bytes {
+            this.peak_bytes = this.live_bytes;
+        }
+
+        ret moved, nil;
+    }
+
+    ext fn free_bytes(heap u8 *rw ptr, u64 size): void {
+        if ptr == nil {
+            ret;
+        }
+
+        rem.(ptr);
+        this.frees += 1;
+        if this.live_bytes >= size {
+            this.live_bytes -= size;
+        } else {
+            this.live_bytes = 0;
+        }
+
+        ret;
+    }
+
+    ext fn stats(void): alloc_stats_t {
+        ret alloc_stats_t {
+            .live_bytes = this.live_bytes,
+            .peak_bytes = this.peak_bytes,
+            .allocations = this.allocations,
+            .frees = this.frees,
+            .resizes = this.resizes,
+        };
+    }
 };
 
 ext fn tracked_allocator_t.new(void): tracked_allocator_t {
@@ -29,75 +98,6 @@ ext fn tracked_allocator_t.new(void): tracked_allocator_t {
     };
 }
 
-ext fn tracked_allocator_t.alloc_bytes(u64 size): [heap u8 *rw, error] {
-    heap u8 *rw ptr = new.(size);
-    if ptr == nil {
-        ret nil, error.("tracked allocator: allocation failed for {} bytes", size);
-    }
-
-    tracked_allocator_t.(allocations) += 1;
-    tracked_allocator_t.(live_bytes) += size;
-    if tracked_allocator_t.(live_bytes) > tracked_allocator_t.(peak_bytes) {
-        tracked_allocator_t.(peak_bytes) = tracked_allocator_t.(live_bytes);
-    }
-
-    ret ptr, nil;
-}
-
-ext fn tracked_allocator_t.resize_bytes(heap u8 *rw ptr, u64 old_size, u64 new_size): [heap u8 *rw, error] {
-    if ptr == nil {
-        ret nil, error.("tracked allocator: cannot resize nil");
-    }
-
-    heap u8 *rw moved = mov.(ptr, new_size);
-    if moved == nil {
-        ret nil, error.(
-            "tracked allocator: resize failed {} -> {} bytes",
-            old_size,
-            new_size
-        );
-    }
-
-    tracked_allocator_t.(resizes) += 1;
-    if new_size >= old_size {
-        tracked_allocator_t.(live_bytes) += (new_size - old_size);
-    } else {
-        tracked_allocator_t.(live_bytes) -= (old_size - new_size);
-    }
-
-    if tracked_allocator_t.(live_bytes) > tracked_allocator_t.(peak_bytes) {
-        tracked_allocator_t.(peak_bytes) = tracked_allocator_t.(live_bytes);
-    }
-
-    ret moved, nil;
-}
-
-ext fn tracked_allocator_t.free_bytes(heap u8 *rw ptr, u64 size): void {
-    if ptr == nil {
-        ret;
-    }
-
-    rem.(ptr);
-    tracked_allocator_t.(frees) += 1;
-    if tracked_allocator_t.(live_bytes) >= size {
-        tracked_allocator_t.(live_bytes) -= size;
-    } else {
-        tracked_allocator_t.(live_bytes) = 0;
-    }
-
-    ret;
-}
-
-ext fn tracked_allocator_t.stats(void): alloc_stats_t {
-    ret alloc_stats_t {
-        .live_bytes = tracked_allocator_t.(live_bytes),
-        .peak_bytes = tracked_allocator_t.(peak_bytes),
-        .allocations = tracked_allocator_t.(allocations),
-        .frees = tracked_allocator_t.(frees),
-        .resizes = tracked_allocator_t.(resizes),
-    };
-}
-
 ext type quota_allocator_t: struct {
     u64 limit_bytes;
     u64 live_bytes;
@@ -105,6 +105,93 @@ ext type quota_allocator_t: struct {
     u64 allocations;
     u64 frees;
     u64 resizes;
+
+    ext fn alloc_bytes(u64 size): [heap u8 *rw, error] {
+        if this.live_bytes + size > this.limit_bytes {
+            ret nil, error.(
+                "quota allocator: request of {} bytes exceeds remaining budget of {}",
+                size,
+                this.limit_bytes - this.live_bytes
+            );
+        }
+
+        heap u8 *rw ptr = new.(size);
+        if ptr == nil {
+            ret nil, error.("quota allocator: allocation failed for {} bytes", size);
+        }
+
+        this.allocations += 1;
+        this.live_bytes += size;
+        if this.live_bytes > this.peak_bytes {
+            this.peak_bytes = this.live_bytes;
+        }
+
+        ret ptr, nil;
+    }
+
+    ext fn resize_bytes(heap u8 *rw ptr, u64 old_size, u64 new_size): [heap u8 *rw, error] {
+        if ptr == nil {
+            ret nil, error.("quota allocator: cannot resize nil");
+        }
+
+        u64 next_live = this.live_bytes;
+        if new_size >= old_size {
+            next_live += (new_size - old_size);
+        } else {
+            next_live -= (old_size - new_size);
+        }
+
+        if next_live > this.limit_bytes {
+            ret nil, error.(
+                "quota allocator: resize to {} bytes exceeds limit of {}",
+                new_size,
+                this.limit_bytes
+            );
+        }
+
+        heap u8 *rw moved = mov.(ptr, new_size);
+        if moved == nil {
+            ret nil, error.(
+                "quota allocator: resize failed {} -> {} bytes",
+                old_size,
+                new_size
+            );
+        }
+
+        this.resizes += 1;
+        this.live_bytes = next_live;
+        if this.live_bytes > this.peak_bytes {
+            this.peak_bytes = this.live_bytes;
+        }
+
+        ret moved, nil;
+    }
+
+    ext fn free_bytes(heap u8 *rw ptr, u64 size): void {
+        if ptr == nil {
+            ret;
+        }
+
+        rem.(ptr);
+        this.frees += 1;
+        if this.live_bytes >= size {
+            this.live_bytes -= size;
+        } else {
+            this.live_bytes = 0;
+        }
+
+        ret;
+    }
+
+    ext fn stats(void): alloc_stats_t {
+        ret alloc_stats_t {
+            .live_bytes = this.live_bytes,
+            .peak_bytes = this.peak_bytes,
+            .allocations = this.allocations,
+            .frees = this.frees,
+            .resizes = this.resizes,
+        };
+    }
 };
 
 ext fn quota_allocator_t.new(u64 limit_bytes): quota_allocator_t {
@@ -118,89 +205,3 @@ ext fn quota_allocator_t.new(u64 limit_bytes): quota_allocator_t {
     };
 }
 
-ext fn quota_allocator_t.alloc_bytes(u64 size): [heap u8 *rw, error] {
-    if quota_allocator_t.(live_bytes) + size > quota_allocator_t.(limit_bytes) {
-        ret nil, error.(
-            "quota allocator: request of {} bytes exceeds remaining budget of {}",
-            size,
-            quota_allocator_t.(limit_bytes) - quota_allocator_t.(live_bytes)
-        );
-    }
-
-    heap u8 *rw ptr = new.(size);
-    if ptr == nil {
-        ret nil, error.("quota allocator: allocation failed for {} bytes", size);
-    }
-
-    quota_allocator_t.(allocations) += 1;
-    quota_allocator_t.(live_bytes) += size;
-    if quota_allocator_t.(live_bytes) > quota_allocator_t.(peak_bytes) {
-        quota_allocator_t.(peak_bytes) = quota_allocator_t.(live_bytes);
-    }
-
-    ret ptr, nil;
-}
-
-ext fn quota_allocator_t.resize_bytes(heap u8 *rw ptr, u64 old_size, u64 new_size): [heap u8 *rw, error] {
-    if ptr == nil {
-        ret nil, error.("quota allocator: cannot resize nil");
-    }
-
-    u64 next_live = quota_allocator_t.(live_bytes);
-    if new_size >= old_size {
-        next_live += (new_size - old_size);
-    } else {
-        next_live -= (old_size - new_size);
-    }
-
-    if next_live > quota_allocator_t.(limit_bytes) {
-        ret nil, error.(
-            "quota allocator: resize to {} bytes exceeds limit of {}",
-            new_size,
-            quota_allocator_t.(limit_bytes)
-        );
-    }
-
-    heap u8 *rw moved = mov.(ptr, new_size);
-    if moved == nil {
-        ret nil, error.(
-            "quota allocator: resize failed {} -> {} bytes",
-            old_size,
-            new_size
-        );
-    }
-
-    quota_allocator_t.(resizes) += 1;
-    quota_allocator_t.(live_bytes) = next_live;
-    if quota_allocator_t.(live_bytes) > quota_allocator_t.(peak_bytes) {
-        quota_allocator_t.(peak_bytes) = quota_allocator_t.(live_bytes);
-    }
-
-    ret moved, nil;
-}
-
-ext fn quota_allocator_t.free_bytes(heap u8 *rw ptr, u64 size): void {
-    if ptr == nil {
-        ret;
-    }
-
-    rem.(ptr);
-    quota_allocator_t.(frees) += 1;
-    if quota_allocator_t.(live_bytes) >= size {
-        quota_allocator_t.(live_bytes) -= size;
-    } else {
-        quota_allocator_t.(live_bytes) = 0;
-    }
-
-    ret;
-}
-
-ext fn quota_allocator_t.stats(void): alloc_stats_t {
-    ret alloc_stats_t {
-        .live_bytes = quota_allocator_t.(live_bytes),
-        .peak_bytes = quota_allocator_t.(peak_bytes),
-        .allocations = quota_allocator_t.(allocations),
-        .frees = quota_allocator_t.(frees),
-        .resizes = quota_allocator_t.(resizes),
-    };
-}

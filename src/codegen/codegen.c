@@ -234,6 +234,7 @@ typedef struct {
 
     linkage_t current_fn_linkage;   /* linkage of the function being compiled */
     boolean_t current_fn_is_entry_main; /* root main lowered to C entry point */
+    boolean_t current_fn_is_inline_method; /* True only for methods defined inside a struct body */
     char *current_struct_name;      /* non-null when inside a struct method body */
     char current_module_prefix[512]; /* mangled prefix of module being compiled, e.g. "net__socket";
                                         empty string for root module — used by gen_call for
@@ -406,6 +407,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.builder     = LLVMCreateBuilderInContext(cg.ctx);
     cg.current_fn  = Null;
     cg.current_struct_name = Null;
+    cg.current_fn_is_inline_method = False;
     symtab_init(&cg.globals);
     symtab_init(&cg.locals);
 
@@ -1250,6 +1252,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.current_fn_is_entry_main = (decl->module_name == Null)
                                    && strcmp(decl->as.fn_decl.name, "main") == 0;
         cg.current_struct_name = decl->as.fn_decl.is_method ? decl->as.fn_decl.struct_name : Null;
+        cg.current_fn_is_inline_method = False; /* external fn decl — this keyword is not allowed */
         cg.locals.count = 0;
         cg.dtor_depth = 0;
 
@@ -1436,6 +1439,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (!sym) continue;
             cg.current_fn = sym->value;
             cg.current_struct_name = decl->as.type_decl.name;
+            cg.current_fn_is_inline_method = True; /* inline struct method — this keyword allowed */
             mangle_module_prefix(decl->module_name ? decl->module_name : "",
                                  cg.current_module_prefix,
                                  sizeof(cg.current_module_prefix));

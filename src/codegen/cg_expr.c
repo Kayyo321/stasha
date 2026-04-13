@@ -2698,9 +2698,17 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
-    /* Type.(method)(args) / this.method(args) — call a method on the current struct instance */
+    /* this.method(args) — call a method on the current struct instance */
     char *type_name = node->as.self_method_call.type_name;
     char *method    = node->as.self_method_call.method;
+    /* Enforce: 'this' is only valid inside struct body methods */
+    if (!type_name && !cg->current_fn_is_inline_method) {
+        diag_begin_error("'this' used outside of a struct body method");
+        diag_span(DIAG_NODE(node), True, "only valid inside 'fn method()' defined within a struct body");
+        diag_note("move this function inside the struct body to make it an instance method");
+        diag_finish();
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
     /* NULL type_name means 'this' keyword was used — resolve from current struct context */
     if (!type_name) type_name = cg->current_struct_name;
     /* In a generic instantiation the AST still holds the template base name;
@@ -2776,8 +2784,16 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
-    /* Type.(field) / this.field — resolve to this->field */
+    /* this.field — resolve to this->field */
     char *field = node->as.self_member.field;
+    /* Enforce: 'this' is only valid inside struct body methods */
+    if (!node->as.self_member.type_name && !cg->current_fn_is_inline_method) {
+        diag_begin_error("'this' used outside of a struct body method");
+        diag_span(DIAG_NODE(node), True, "only valid inside 'fn method()' defined within a struct body");
+        diag_note("move this function inside the struct body to make it an instance method");
+        diag_finish();
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
     symbol_t *this_sym = cg_lookup(cg, "this");
     if (!this_sym) {
         diag_begin_error("self-member '%s' used outside of method", field);

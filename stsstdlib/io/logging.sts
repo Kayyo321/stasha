@@ -18,12 +18,12 @@ ext type logger_t: struct {
     int bool use_timestamps;
 
     ext fn set_level(i32 lvl): void {
-        logger_t.(level) = lvl;
+        this.level = lvl;
     }
 
     int fn log_if(i32 lvl, stack i8 *r prefix, stack i8 *r msg): void {
-        if (logger_t.(level) > lvl) { ret; }
-        if (logger_t.(use_timestamps)) {
+        if (this.level > lvl) { ret; }
+        if (this.use_timestamps) {
             i64 ts = ctime.time(0);
             cio.printf("[%lld] %s %s\n", ts, prefix, msg);
         } else {
@@ -32,8 +32,8 @@ ext type logger_t: struct {
     }
 
     int fn log_if_fmt(i32 lvl, stack i8 *r prefix, stack i8 *r fmt, i64 val): void {
-        if (logger_t.(level) > lvl) { ret; }
-        if (logger_t.(use_timestamps)) {
+        if (this.level > lvl) { ret; }
+        if (this.use_timestamps) {
             i64 ts = ctime.time(0);
             cio.printf("[%lld] %s ", ts, prefix);
             cio.printf(fmt, val);
@@ -46,33 +46,33 @@ ext type logger_t: struct {
     }
 
     ext fn log_debug(stack i8 *r msg): void {
-        logger_t.(log_if)(LogDebug, "[DEBUG]", msg);
+        this.log_if(LogDebug, "[DEBUG]", msg);
     }
 
     ext fn log_info(stack i8 *r msg): void {
-        logger_t.(log_if)(LogInfo, "[INFO]", msg);
+        this.log_if(LogInfo, "[INFO]", msg);
     }
 
     ext fn log_warn(stack i8 *r msg): void {
-        logger_t.(log_if)(LogWarn, "[WARN]", msg);
+        this.log_if(LogWarn, "[WARN]", msg);
     }
 
     ext fn log_error(stack i8 *r msg): void {
-        logger_t.(log_if)(LogError, "[ERROR]", msg);
+        this.log_if(LogError, "[ERROR]", msg);
     }
 
     ext fn log_debug_fmt(stack i8 *r fmt, i64 val): void {
-        logger_t.(log_if_fmt)(LogDebug, "[DEBUG]", fmt, val);
+        this.log_if_fmt(LogDebug, "[DEBUG]", fmt, val);
     }
 
     ext fn log_info_fmt(stack i8 *r fmt, i64 val): void {
-        logger_t.(log_if_fmt)(LogInfo, "[INFO]", fmt, val);
+        this.log_if_fmt(LogInfo, "[INFO]", fmt, val);
     }
-}
 
-ext fn logger_t.print(void): void {
-    print.('logger_t[level={}, timestamps={}]\n',
-           logger_t.(level), logger_t.(use_timestamps));
+    ext fn print(void): void {
+        print.('logger_t[level={}, timestamps={}]\n',
+               this.level, this.use_timestamps);
+    }
 }
 
 ext fn logger_t.new(i32 level, bool use_timestamps): logger_t {

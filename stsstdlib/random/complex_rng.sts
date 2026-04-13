@@ -14,8 +14,8 @@ ext type pcg32_t: struct {
 
     // Advance state and return the next uniform u32.
     ext fn next_u32(void): u32 {
-        final u64 old = pcg32_t.(state);
-        pcg32_t.(state) = old * 6364136223846793005 + pcg32_t.(inc);
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
         final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
         final u32 rot = (u32)(old >> 59);
         ret (xsh >> rot) | (xsh << ((-rot) & 31));
@@ -23,8 +23,8 @@ ext type pcg32_t: struct {
 
     // Uniform integer in [min, max] inclusive.
     ext fn next_range(i32 min, max): i32 {
-        final u64 old = pcg32_t.(state);
-        pcg32_t.(state) = old * 6364136223846793005 + pcg32_t.(inc);
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
         final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
         final u32 rot = (u32)(old >> 59);
         final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
@@ -34,8 +34,8 @@ ext type pcg32_t: struct {
 
     // Uniform float in [0.0, 1.0].
     ext fn next_f32(void): f32 {
-        final u64 old = pcg32_t.(state);
-        pcg32_t.(state) = old * 6364136223846793005 + pcg32_t.(inc);
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
         final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
         final u32 rot = (u32)(old >> 59);
         final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
@@ -44,8 +44,8 @@ ext type pcg32_t: struct {
 
     // Uniform float in [lo, hi].
     ext fn next_frange(f32 lo, hi): f32 {
-        final u64 old = pcg32_t.(state);
-        pcg32_t.(state) = old * 6364136223846793005 + pcg32_t.(inc);
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
         final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
         final u32 rot = (u32)(old >> 59);
         final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
@@ -55,8 +55,8 @@ ext type pcg32_t: struct {
 
     // Random bool with 50/50 probability.
     ext fn next_bool(void): bool {
-        final u64 old = pcg32_t.(state);
-        pcg32_t.(state) = old * 6364136223846793005 + pcg32_t.(inc);
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
         final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
         final u32 rot = (u32)(old >> 59);
         final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
@@ -66,18 +66,18 @@ ext type pcg32_t: struct {
     // Re-seed the generator in place.
     ext fn reseed(u64 seed): void {
         final u64 new_inc = (seed << 1) | 1;
-        pcg32_t.(inc)   = new_inc;
-        pcg32_t.(state) = new_inc;
+        this.inc   = new_inc;
+        this.state = new_inc;
         // advance once
-        pcg32_t.(state) = pcg32_t.(state) * 6364136223846793005 + pcg32_t.(inc);
-        pcg32_t.(state) = pcg32_t.(state) + seed;
+        this.state = this.state * 6364136223846793005 + this.inc;
+        this.state = this.state + seed;
         // advance again
-        pcg32_t.(state) = pcg32_t.(state) * 6364136223846793005 + pcg32_t.(inc);
+        this.state = this.state * 6364136223846793005 + this.inc;
     }
-}
 
-ext fn pcg32_t.print(void): void {
-    print.('pcg32_t[state={}, inc={}]\n', pcg32_t.(state), pcg32_t.(inc));
+    ext fn print(void): void {
+        print.('pcg32_t[state={}, inc={}]\n', this.state, this.inc);
+    }
 }
 
 // Create a PCG32 seeded with `seed`.
