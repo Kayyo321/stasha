@@ -14,15 +14,33 @@ static node_t *parse_block(parser_t *p) {
     return n;
 }
 
+/* parse_body — accepts either a brace block or a '=>' one-liner.
+   `=> stmt;` is sugar for `{ stmt; }`: wraps the single statement
+   in a synthetic NodeBlock so callers always receive a block node. */
+static node_t *parse_body(parser_t *p) {
+    if (match_tok(p, TokFatArrow)) {
+        usize_t line = p->current.line;
+        node_list_t stmts;
+        node_list_init(&stmts);
+        node_list_push(&stmts, parse_statement(p));
+        node_t *block = make_node(NodeBlock, line);
+        block->as.block.stmts = stmts;
+        return block;
+    }
+    return parse_block(p);
+}
+
 static node_t *parse_for_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
-    consume(p, TokLParen, "'('");
+
+    /* optional guard parens: for (init; cond; update) or for init; cond; update */
+    boolean_t guarded = match_tok(p, TokLParen);
 
     /* init — could be a var decl, expression statement, or empty */
     node_t *init = Null;
     if (check(p, TokSemicolon)) {
-        advance_parser(p); /* empty init: for (; ...) */
+        advance_parser(p); /* empty init: for (; ...) / for ; ... */
     } else if (can_start_var_decl(p)) {
         init = parse_var_decl(p, LinkageNone);
     } else {
@@ -33,8 +51,8 @@ static node_t *parse_for_stmt(parser_t *p) {
     node_t *cond = parse_expr(p);
     consume(p, TokSemicolon, "';'");
     node_t *update = parse_expr(p);
-    consume(p, TokRParen, "')'");
-    node_t *body = parse_block(p);
+    if (guarded) consume(p, TokRParen, "')'");
+    node_t *body = parse_body(p);
 
     node_t *n = make_node(NodeForStmt, line);
     n->as.for_stmt.init = init;
@@ -48,7 +66,7 @@ static node_t *parse_while_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
     node_t *cond = parse_expr(p);
-    node_t *body = parse_block(p);
+    node_t *body = parse_body(p);
 
     node_t *n = make_node(NodeWhileStmt, line);
     n->as.while_stmt.cond = cond;
@@ -66,7 +84,7 @@ static node_t *parse_foreach_stmt(parser_t *p) {
     consume(p, TokIn, "'in'");
 
     node_t *slice = parse_expr(p);
-    node_t *body  = parse_block(p);
+    node_t *body  = parse_body(p);
 
     node_t *n = make_node(NodeForeachStmt, line);
     n->as.foreach_stmt.iter_name = iter_name;
@@ -78,11 +96,12 @@ static node_t *parse_foreach_stmt(parser_t *p) {
 static node_t *parse_do_while_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'do' */
-    node_t *body = parse_block(p);
+    node_t *body = parse_body(p);
     consume(p, TokWhile, "'while'");
-    consume(p, TokLParen, "'('");
+    /* optional guard parens: do { } while (cond); or do { } while cond; */
+    boolean_t guarded = match_tok(p, TokLParen);
     node_t *cond = parse_expr(p);
-    consume(p, TokRParen, "')'");
+    if (guarded) consume(p, TokRParen, "')'");
     consume(p, TokSemicolon, "';'");
 
     node_t *n = make_node(NodeDoWhileStmt, line);
@@ -94,7 +113,7 @@ static node_t *parse_do_while_stmt(parser_t *p) {
 static node_t *parse_inf_loop(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
-    node_t *body = parse_block(p);
+    node_t *body = parse_body(p);
     node_t *n = make_node(NodeInfLoop, line);
     n->as.inf_loop.body = body;
     return n;
@@ -104,13 +123,13 @@ static node_t *parse_if_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
     node_t *cond = parse_expr(p);
-    node_t *then_block = parse_block(p);
+    node_t *then_block = parse_body(p);
     node_t *else_block = Null;
     if (match_tok(p, TokElse)) {
         if (check(p, TokIf))
             else_block = parse_if_stmt(p);
         else
-            else_block = parse_block(p);
+            else_block = parse_body(p);
     }
     node_t *n = make_node(NodeIfStmt, line);
     n->as.if_stmt.cond = cond;
