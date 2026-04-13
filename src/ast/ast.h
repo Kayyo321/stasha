@@ -24,6 +24,7 @@ typedef enum {
     TypeFnPtr,      /* function pointer with domain-tagged parameters */
     TypeFuture,     /* future handle — opaque ptr to __future_t (thread result) */
     TypeSlice,      /* []T — fat pointer (ptr, len, cap) */
+    TypeZone,       /* zone — opaque arena allocator handle (void* state pointer) */
 } type_kind_t;
 
 /* ── forward declaration for fn_ptr_desc_t and type_info_t ── */
@@ -439,8 +440,8 @@ struct node {
         /* NodeZoneMoveExpr: zone.move(ptr_expr) → fresh-provenance pointer */
         struct { node_t *ptr; char *zone_name; } zone_move;
 
-        /* NodeNewInZone: new.(T) in zone_name */
-        struct { node_t *size; char *zone_name; } new_in_zone;
+        /* NodeNewInZone: new.(T) in zone_expr — zone_expr is ident, member, or self-member */
+        struct { node_t *size; node_t *zone_expr; } new_in_zone;
 
         /* NodeFlaggedIndex: buf[unchecked: i] — skip bounds check */
         struct { node_t *object; node_t *index; } flagged_index;

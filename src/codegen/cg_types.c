@@ -174,6 +174,9 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         case TypeFuture:
             /* future is an opaque pointer to __future_t in the thread runtime */
             return LLVMPointerTypeInContext(cg->ctx, 0);
+        case TypeZone:
+            /* zone is an opaque void* to zone_state_t; stored as ptr in structs/params */
+            return LLVMPointerTypeInContext(cg->ctx, 0);
         case TypeSlice: {
             /* fat pointer: { ptr, i32, i32 } = (data, len, cap) */
             LLVMTypeRef fields[3] = {

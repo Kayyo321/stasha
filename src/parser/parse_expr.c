@@ -150,14 +150,15 @@ static node_t *parse_primary(parser_t *p) {
         consume(p, TokLParen, "'('");
         node_t *size = parse_expr(p);
         consume(p, TokRParen, "')'");
-        /* optional: in zone_name */
+        /* optional: in zone_expr  (bare ident, s.field, or this.field) */
         if (check(p, TokIdent) && p->current.length == 2
                 && memcmp(p->current.start, "in", 2) == 0) {
             advance_parser(p); /* consume 'in' */
-            token_t zone_tok = consume(p, TokIdent, "zone name after 'in'");
+            /* parse_postfix handles: ident, this.field, s.field, etc. */
+            node_t *zone_expr = parse_postfix(p);
             node_t *n = make_node(NodeNewInZone, line);
             n->as.new_in_zone.size      = size;
-            n->as.new_in_zone.zone_name = copy_token_text(zone_tok);
+            n->as.new_in_zone.zone_expr = zone_expr;
             return n;
         }
         node_t *n = make_node(NodeNewExpr, line);

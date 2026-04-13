@@ -2887,19 +2887,80 @@ static LLVMValueRef gen_new(cg_t *cg, node_t *node) {
     return result;
 }
 
-/* new.(T) in zone_name — allocate from zone arena */
+/* Return the void** address for a zone expression:
+ *   NodeIdentExpr  → alloca/global address of the zone variable (SymZone)
+ *   NodeSelfMemberExpr (this.xyz)  → GEP of the zone field
+ *   NodeMemberExpr (s.xyz)         → GEP of the zone field
+ * Returns NULL if the expression is not a recognizable zone. */
+static LLVMValueRef get_zone_field_addr(cg_t *cg, node_t *zone_expr) {
+    if (!zone_expr) return Null;
+
+    if (zone_expr->kind == NodeIdentExpr) {
+        symbol_t *zsym = cg_lookup(cg, zone_expr->as.ident.name);
+        if (zsym && (zsym->flags & SymZone))
+            return zsym->value; /* alloca or global = void** */
+        return Null;
+    }
+
+    if (zone_expr->kind == NodeSelfMemberExpr) {
+        const char *field = zone_expr->as.self_member.field;
+        char *type_name = zone_expr->as.self_member.type_name;
+        if (!type_name) type_name = cg->current_struct_name;
+        if (cg->generic_tmpl_name && cg->generic_inst_name && type_name
+                && strcmp(type_name, cg->generic_tmpl_name) == 0)
+            type_name = cg->generic_inst_name;
+        struct_reg_t *sr = type_name ? find_struct(cg, type_name) : Null;
+        if (!sr) return Null;
+        symbol_t *this_sym = cg_lookup(cg, "this");
+        if (!this_sym) return Null;
+        LLVMValueRef this_ptr = this_sym->value;
+        if (LLVMGetTypeKind(this_sym->type) == LLVMPointerTypeKind)
+            this_ptr = LLVMBuildLoad2(cg->builder, this_sym->type, this_sym->value, "this");
+        for (usize_t i = 0; i < sr->field_count; i++) {
+            if (strcmp(sr->fields[i].name, field) == 0
+                    && sr->fields[i].type.base == TypeZone) {
+                return LLVMBuildStructGEP2(cg->builder, sr->llvm_type, this_ptr,
+                                           (unsigned)sr->fields[i].index, field);
+            }
+        }
+        return Null;
+    }
+
+    if (zone_expr->kind == NodeMemberExpr) {
+        node_t *obj = zone_expr->as.member_expr.object;
+        const char *field = zone_expr->as.member_expr.field;
+        if (obj->kind != NodeIdentExpr) return Null;
+        symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+        if (!sym || sym->stype.base != TypeUser || !sym->stype.user_name) return Null;
+        struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
+        if (!sr) return Null;
+        for (usize_t i = 0; i < sr->field_count; i++) {
+            if (strcmp(sr->fields[i].name, field) == 0
+                    && sr->fields[i].type.base == TypeZone) {
+                return LLVMBuildStructGEP2(cg->builder, sr->llvm_type, sym->value,
+                                           (unsigned)sr->fields[i].index, field);
+            }
+        }
+        return Null;
+    }
+
+    return Null;
+}
+
+/* new.(T) in zone_expr — allocate from zone arena */
 static LLVMValueRef gen_new_in_zone(cg_t *cg, node_t *node) {
-    const char *zone_name = node->as.new_in_zone.zone_name;
-    symbol_t *zsym = cg_lookup(cg, zone_name);
-    if (!zsym) {
-        diag_begin_error("undefined zone '%s'", zone_name);
+    node_t *zone_expr = node->as.new_in_zone.zone_expr;
+    LLVMValueRef zone_ptr_addr = get_zone_field_addr(cg, zone_expr);
+    if (!zone_ptr_addr) {
+        const char *zname = (zone_expr && zone_expr->kind == NodeIdentExpr)
+                          ? zone_expr->as.ident.name : "?";
+        diag_begin_error("undefined zone '%s'", zname);
         diag_span(DIAG_NODE(node), True, "zone not declared in this scope");
-        diag_help("declare the zone first: zone %s; or zone %s { }", zone_name, zone_name);
+        diag_help("declare the zone first: zone %s; or zone %s { }", zname, zname);
         diag_finish();
         return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
-    /* Pass the alloca address (void**) so __zone_alloc can lazily initialize */
-    LLVMValueRef zone_ptr_addr = zsym->value; /* alloca = void** */
+    /* Pass the alloca/GEP address (void**) so __zone_alloc can lazily initialize */
     LLVMValueRef size = gen_expr(cg, node->as.new_in_zone.size);
     size = coerce_int(cg, size, LLVMInt64TypeInContext(cg->ctx));
     LLVMValueRef args[2] = { zone_ptr_addr, size };
@@ -4264,12 +4325,25 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         case NodeRemStmt: {
             node_t *ptr_node = node->as.rem_stmt.ptr;
+            /* zone member: rem.(this.xyz) or rem.(s.xyz) */
+            if (ptr_node->kind == NodeSelfMemberExpr || ptr_node->kind == NodeMemberExpr) {
+                LLVMValueRef zone_addr = get_zone_field_addr(cg, ptr_node);
+                if (zone_addr) {
+                    LLVMValueRef fa[1] = { zone_addr };
+                    LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+            }
             if (ptr_node->kind == NodeIdentExpr) {
                 symbol_t *hsym = cg_lookup(cg, ptr_node->as.ident.name);
                 /* zone variable: call __zone_free(&zone_ptr) so it nulls *zone_ptr */
                 if (hsym && (hsym->flags & SymZone)) {
                     LLVMValueRef fa[1] = { hsym->value }; /* alloca = void** */
                     LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+                /* zone-allocated pointer: rem.() is a no-op (zone owns the memory) */
+                if (hsym && (hsym->flags & SymZoneAlloc)) {
                     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
                 }
                 /* guard: cannot rem.() a stack-qualified pointer */

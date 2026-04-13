@@ -29,6 +29,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             int sym_flags = 0;
             if (node->as.var_decl.flags & VdeclAtomic)  sym_flags |= SymAtomic;
             if (node->as.var_decl.flags & VdeclVolatile) sym_flags |= SymVolatile;
+            /* zone-allocated: rem.() must be a no-op — zone owns the memory */
+            if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
+                sym_flags |= SymZoneAlloc;
             symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, inferred, ti, sym_flags);
         }
         symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -217,6 +220,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         int sym_flags = 0;
         if (node->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
         if (node->as.var_decl.flags & VdeclVolatile)  sym_flags |= SymVolatile;
+        /* zone-allocated: rem.() must be a no-op — zone owns the memory */
+        if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
+            sym_flags |= SymZoneAlloc;
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);

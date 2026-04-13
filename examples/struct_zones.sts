@@ -1,30 +1,45 @@
 mod struct_zones;
 
-type struct_t: struct {
-    ext zone xyz;
-    ext zone abc;
+lib "stdio"  = io;
+lib "string" = str;
 
-    ext stack i8 *x;
-    ext stack i8 *y;
+type buf_t: struct {
+    ext zone data_zone;
+    ext zone meta_zone;
+
+    ext stack i8 *rw data;
+    ext stack i8 *rw meta;
 }
 
-fn struct_t.new(void): struct_t {
-    ret struct_t{.x = nil, .y = nil};
+fn buf_t.new(void): buf_t {
+    ret buf_t{.data = nil, .meta = nil};
 }
 
-fn struct_t.rem(void): void {
-    rem.(this.xyz); // clean up zones.
-    rem.(this.abc); 
+fn buf_t.rem(void): void {
+    io.printf("[dtor] freeing zone 'data_zone' and 'meta_zone'\n");
+    rem.(this.data_zone);
+    rem.(this.meta_zone);
 }
 
 fn main(void): i32 {
+    io.printf("=== struct zone fields ===\n");
+
     {
-        let s = struct_t.();
+        let b = buf_t.();
 
-        s.x = new.(100) in s.xyz;
-        s.y = new.(200) in s.abc;
-    } // when destructor is called, zones are cleaned up.
-    
+        // allocate from struct-field zones
+        b.data = new.(64) in b.data_zone;
+        b.meta = new.(64) in b.meta_zone;
 
+        str.strcpy(b.data, "payload from data_zone");
+        str.strcpy(b.meta, "payload from meta_zone");
+
+        io.printf("b.data  = '%s'\n", b.data);
+        io.printf("b.meta  = '%s'\n", b.meta);
+
+        io.printf("[scope end] buf_t destructor runs next\n");
+    } // buf_t.rem() called here — both zones freed
+
+    io.printf("=== done (no leaks) ===\n");
     ret 0;
 }

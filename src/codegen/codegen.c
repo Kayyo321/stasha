@@ -48,6 +48,7 @@ enum {
     SymVolatile = (1 << 5),  /* volatile qualifier          */
     SymTls      = (1 << 6),  /* thread-local storage        */
     SymZone     = (1 << 7),  /* zone variable (freed by __zone_free) */
+    SymZoneAlloc = (1 << 8), /* zone-allocated pointer — rem.() is a no-op */
 };
 
 typedef struct {
@@ -969,6 +970,20 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
         }
 
+        /* global zone declaration: zone name; at module level */
+        if (decl->kind == NodeZoneStmt) {
+            const char *zname = decl->as.zone_stmt.name;
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg.ctx, 0);
+            LLVMValueRef gz = LLVMAddGlobal(cg.module, ptr_ty, zname);
+            LLVMSetInitializer(gz, LLVMConstNull(ptr_ty));
+            type_info_t zone_ti = NO_TYPE;
+            zone_ti.base = TypeZone;
+            symtab_add(&cg.globals, ast_strdup(zname, strlen(zname)), gz, ptr_ty, zone_ti, SymZone);
+            symtab_set_last_storage(&cg.globals, StorageStack, False);
+            symtab_set_last_extra(&cg.globals, False, False, LinkageNone, 0, -1);
+            continue;
+        }
+
         if (decl->kind == NodeFnDecl) {
             /* library-backed internal functions live in the .a — skip */
             if (decl->from_lib && decl->as.fn_decl.linkage == LinkageInternal)
@@ -1321,8 +1336,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                                        param->as.var_decl.name);
             LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + param_offset)),
                            alloca_val);
-            symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
-                       pti, False);
+            {
+                int param_flags = 0;
+                if (pti.base == TypeZone) param_flags |= SymZone;
+                symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
+                           pti, param_flags);
+            }
 
             /* ── DI: parameter variable ── */
             if (cg.debug_mode && cg.di_builder && cg.di_scope) {
@@ -1485,8 +1504,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                                            param->as.var_decl.name);
                 LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + 1)),
                                alloca_val);
-                symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
-                           pti, False);
+                {
+                    int param_flags = 0;
+                    if (pti.base == TypeZone) param_flags |= SymZone;
+                    symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
+                               pti, param_flags);
+                }
 
                 /* DI: parameter */
                 if (cg.debug_mode && cg.di_builder && cg.di_scope) {

@@ -1481,6 +1481,17 @@ static node_t *parse_top_decl(parser_t *p) {
         return n;
     }
 
+    /* global zone declaration: zone name; */
+    if (check(p, TokZone)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'zone' */
+        token_t name_tok = consume(p, TokIdent, "zone name");
+        consume(p, TokSemicolon, "';'");
+        node_t *n = make_node(NodeZoneStmt, line);
+        n->as.zone_stmt.name = copy_token_text(name_tok);
+        return n;
+    }
+
     /* @comptime if / @comptime assert at top level (new attribute syntax) */
     if (check(p, TokAt)) {
         parser_state_t snap = save_state(p);
