@@ -131,15 +131,15 @@ true false  // bool
 ## Variable Declaration
 
 ```stasha
-stack i32 x = 10;
-stack f64 y = 3.14;
+i32 x = 10;
+f64 y = 3.14;
 stack bool flag = true;
 ```
 
 For multiple variables of the same type:
 
 ```stasha
-stack i32 a = 1, b = 2, c = 3;
+stack i32 [a, b, c] = 1, 2, 3;
 ```
 
 ---
