@@ -5,156 +5,162 @@ imp lex.token;
 ext type lexer_t: struct {
     int i8 *start;
     int i8 *current;
-    int i8 *start_of_ln;
-    int u32 cur_ln;
-    int map_t.[dstring_t, token_type_t] keywords;
+    int i8 *ln_start;
+    int u32 ln;
 
-    ext fn extract_all(void): [[]token_t, ?[]error] {
-        []token_t tokens = make.(token_t, 0); // lol
-        ?[]error errs = nil;
+    // internal helpers
 
-        token_t tok;
-        do {
-            tok = this.next_tok();
+    int fn advance(void): i8 => *.(this.current++);
+    int fn peek(void): i8 => *.(this.current);
+    int fn peek_next(void): i8 {
+        if this.at_end() => ret `\0`;
 
-            match tok.kind {
-                token_type_t.TokError(e) => {
-                    if errs == nil {
-                        errs = make.(error, 1);
-                        errs[0] = e;
-                    } else {
-                        errs = append.(errs, e);
-                    }
-                }
-                _ => {
-                    tokens = append.(tokens, tok);
-                }
-            }
-        } while tok.kind != token_type_t.TokEof;
-
-        ret tokens, errs;
+        ret this.current[1];
     }
-
-    // lex 
-
-    int fn next_tok(void): token_t {
-
-    }
-
-    // member helpers
-
-    int fn is_at_end(void): bool => *this.current == `\0`;
-    int fn advance(void): i8 => *this.current++;
-    int fn peek(void): i8 => *this.current;
-    int fn peek_next(void): i8 => (this.is_at_end()) ? `\0` : this.current[1];
 
     int fn match_ch(i8 expected): bool {
-        if this.is_at_end() || this.peek() != expected {
-            ret false;
-        }
+        if this.at_end() || this.peek() != expected => ret false;
 
         this.advance();
         ret true;
     }
 
-    int fn extract_tok(token_type_t kind): token_t {
-        ret token_t.(
-            this.cur_ln,
-            (u32)(this.start - this.start_of_ln) + 1,
-            kind
+    int fn make_tok(token.token_kind_t kind): token.token_t {
+        ret token.token_t.(
+            kind,
+            this.start,
+            (u32)(this.current - this.start),
+            this.ln,
+            (u32)(this.start - this.ln_start) + 1,
+            nil, // caller fills this in after lexing
         );
+    }
+
+    int fn skip_whitespace(void): void {
+        inf {
+            final i8 c = this.peek();
+            switch c {
+                case ` `, `\r`, `\t`: {
+                    this.advance();
+                }
+
+                case `\n`: {
+                    ++this.ln;
+                    this.advance();
+                    this.ln_start = this.current;
+                }
+
+                case `/`: {
+                    if this.peek_next() == `/` {
+                        // line comment: skip to end of line
+                        this.advance(); this.advance();
+                        while !this.at_end() && this.peek() != `\n` 
+                            => this.advance();
+
+                        break;
+                    }
+
+                    if this.peek_next() == `*` {
+                        /* block comment: supports nesting */
+                        this.advance(); this.advance();
+                        i32 depth = 1;
+
+                        while !this.at_end() && depth > 0 {
+                            if this.peek() == `/` && this.peek_next() == `*` {
+                                this.advance(); this.advance();
+                                ++depth;
+                            } else if this.peek() == `*` && this.peek_next() == `/` {
+                                this.advance(); this.advance();
+                                --depth;
+                            } else {
+                                i8 ch = this.peek();
+                                this.advance();
+                                if ch == `\n` {
+                                    ++this.ln;
+                                    this.ln_start = this.current;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    ret;
+                }
+
+                default:
+                    ret;
+            }
+        }
+    }
+
+    int fn identifier_kind(u32 len): token.token_kind_t {
+        //TODO have a map_t with all keywords
+    }
+
+    int fn scan_identifier(void): token.token_t {
+        while is_alnum(this.peek()) => this.advance();
+        final u32 len = (u32)(this.current - this.start);
+        ret make_tok(identifier_kind(len));
+    }
+
+    int fn scan_number(void): token.token_t {
+        /* hex literal: 0x... */
+        if this.start[0] == `0` && (this.peek() == `x` or `X`) {
+            this.advance(); /* consume `x` */
+            while is_hex_digit(this.peek()) => this.advance();
+            return this.make_tok(token.token_kind_t.TokIntLit);
+        }
+
+        while is_digit(this.peek()) => this.advance();
+
+        /* check for float: digits followed by '.' and more digits */
+        if this.peek() == `.` && is_digit(this.peek_next()) {
+            this.advance(); // consume `.`
+            while is_digit(this.peek()) => this.advance();
+            ret this.make_tok(token.token_kind_t.TokFloatLit);
+        }
+
+        ret this.make_tok(token.token_kind_t.TokIntLit);
+    }
+
+    int fn scan_string(i8 quote): token.token_t {
+        while this.peek() != quote && !this.at_end() {
+            if this.peek() == `\\` {
+                this.advance(); // skip backslash
+                if !this.at_end() => this.advance(); // skip escaped char
+                continue;
+            }
+
+            if this.peek() == `\n` {
+                ++this.ln;
+                this.advance();
+                this.ln_start = this.current;
+                continue;
+            }
+
+            this.advance();
+        }
+
+        if this.at_end() 
+            => ret this.make_tok(token.token_kind_t.TokError(error.('unterminated string')));
+
+        this.advance();
+
+        ret this.make_tok(token.token_kind_t.TokStackStr);
     }
 }
 
-ext lexer_t.new(heap i8 *rw+ source): lexer_t { // TODO: what permissions do we not need
-    lexer_t l = .{
-        .start = source, 
-        .current = source, 
-        .start_of_ln = source, 
-        .cur_ln = 1, 
-        .keywords = map_t.[dstring_t, token_type_t].()
+ext fn lexer_t.new(i8 *src): lexer_t {
+    ret lexer_t {
+        .start = src,
+        .current = src,
+        .ln_start = src,
+        .ln = 1,
     };
-
-    l.keywords.insert(dstring_t.from_str("mod"), TokMod);
-    l.keywords.insert(dstring_t.from_str("imp"), TokImp);
-    l.keywords.insert(dstring_t.from_str("int"), TokInt);
-    l.keywords.insert(dstring_t.from_str("ext"), TokExt);
-    l.keywords.insert(dstring_t.from_str("fn"), TokFn);
-    l.keywords.insert(dstring_t.from_str("for"), TokFor);
-    l.keywords.insert(dstring_t.from_str("if"), TokIf);
-    l.keywords.insert(dstring_t.from_str("else"), TokElse);
-    l.keywords.insert(dstring_t.from_str("while"), TokWhile);
-    l.keywords.insert(dstring_t.from_str("do"), TokDo);
-    l.keywords.insert(dstring_t.from_str("inf"), TokInf);
-    l.keywords.insert(dstring_t.from_str("ret"), TokRet);
-    l.keywords.insert(dstring_t.from_str("break"), TokBreak);
-    l.keywords.insert(dstring_t.from_str("continue"), TokContinue);
-    l.keywords.insert(dstring_t.from_str("stack"), TokStack);
-    l.keywords.insert(dstring_t.from_str("heap"), TokHeap);
-    l.keywords.insert(dstring_t.from_str("atomic"), TokAtomic);
-    l.keywords.insert(dstring_t.from_str("const"), TokConst);
-    l.keywords.insert(dstring_t.from_str("final"), TokFinal);
-    l.keywords.insert(dstring_t.from_str("thread"), TokThread);
-    l.keywords.insert(dstring_t.from_str("future"), TokFuture);
-    l.keywords.insert(dstring_t.from_str("print"), TokPrint);
-    l.keywords.insert(dstring_t.from_str("void"), TokVoid);
-    l.keywords.insert(dstring_t.from_str("true"), TokTrue);
-    l.keywords.insert(dstring_t.from_str("false"), TokFalse);
-    l.keywords.insert(dstring_t.from_str("type"), TokType);
-    l.keywords.insert(dstring_t.from_str("struct"), TokStruct);
-    l.keywords.insert(dstring_t.from_str("enum"), TokEnum);
-    l.keywords.insert(dstring_t.from_str("lib"), TokLib);
-    l.keywords.insert(dstring_t.from_str("from"), TokFrom);
-    l.keywords.insert(dstring_t.from_str("new"), TokNew);
-    l.keywords.insert(dstring_t.from_str("sizeof"), TokSizeof);
-    l.keywords.insert(dstring_t.from_str("rem"), TokRem);
-    l.keywords.insert(dstring_t.from_str("match"), TokMatch);
-    l.keywords.insert(dstring_t.from_str("defer"), TokDefer);
-    l.keywords.insert(dstring_t.from_str("nil"), TokNil);
-    l.keywords.insert(dstring_t.from_str("mov"), TokMov);
-    l.keywords.insert(dstring_t.from_str("error"), TokErrorType);
-    l.keywords.insert(dstring_t.from_str("test"), TokTest);
-    l.keywords.insert(dstring_t.from_str("expect"), TokExpect);
-    l.keywords.insert(dstring_t.from_str("expect_eq"), TokExpectEq);
-    l.keywords.insert(dstring_t.from_str("expect_neq"), TokExpectNeq);
-    l.keywords.insert(dstring_t.from_str("test_fail"), TokTestFail);
-    l.keywords.insert(dstring_t.from_str("switch"), TokSwitch);
-    l.keywords.insert(dstring_t.from_str("case"), TokCase);
-    l.keywords.insert(dstring_t.from_str("default"), TokDefault);
-    l.keywords.insert(dstring_t.from_str("union"), TokUnion);
-    l.keywords.insert(dstring_t.from_str("volatile"), TokVolatile);
-    l.keywords.insert(dstring_t.from_str("asm"), TokAsm);
-    l.keywords.insert(dstring_t.from_str("tls"), TokTls);
-    l.keywords.insert(dstring_t.from_str("restrict"), TokRestrict);
-    l.keywords.insert(dstring_t.from_str("comptime_assert"), TokComptimeAssert);
-    l.keywords.insert(dstring_t.from_str("comptime_if"), TokComptimeIf);
-    l.keywords.insert(dstring_t.from_str("let"), TokLet);
-    l.keywords.insert(dstring_t.from_str("libimp"), TokLibImp);
-    l.keywords.insert(dstring_t.from_str("std"), TokStd);
-    l.keywords.insert(dstring_t.from_str("hash"), TokHash);
-    l.keywords.insert(dstring_t.from_str("equ"), TokEqu);
-    l.keywords.insert(dstring_t.from_str("this"), TokThis);
-    l.keywords.insert(dstring_t.from_str("with"), TokWith);
-    l.keywords.insert(dstring_t.from_str("any"), TokAny);
-    l.keywords.insert(dstring_t.from_str("interface"), TokInterface);
-    l.keywords.insert(dstring_t.from_str("i8"), TokI8);
-    l.keywords.insert(dstring_t.from_str("i16"), TokI16);
-    l.keywords.insert(dstring_t.from_str("i32"), TokI32);
-    l.keywords.insert(dstring_t.from_str("i64"), TokI64);
-    l.keywords.insert(dstring_t.from_str("u8"), TokU8);
-    l.keywords.insert(dstring_t.from_str("u16"), TokU16);
-    l.keywords.insert(dstring_t.from_str("u32"), TokU32);
-    l.keywords.insert(dstring_t.from_str("u64"), TokU64);
-    l.keywords.insert(dstring_t.from_str("f32"), TokF32);
-    l.keywords.insert(dstring_t.from_str("f64"), TokF64);
-    l.keywords.insert(dstring_t.from_str("bool"), TokBool);
-
-    ret l;
 }
 
-// some helpers
+// helpers
 
-int fn is_alpha(i8 c): bool => (c >= 'a' and <= 'z') || (c >= 'A' and <= 'Z') || c == '_';
-int fn is_digit(i8 c): bool => c >= '0' and <= '9';
+int fn is_alpha(i8 c): bool => (c >= `a` and <= `z`) || (c >= `A` and `Z`) || c == `_`;
+int fn is_digit(i8 c): bool => (c >= `0` and <= `9`);
 int fn is_alnum(i8 c): bool => is_alpha(c) || is_digit(c);
-int fn is_hex_digit(i8 c): bool => (c >= '0' and <= '9') || (c >= 'a' and <= 'f') || (c >= 'A' and <= 'F');
+int fn is_hex_digit(i8 c): bool => is_digit(c) || (c >= `a` and <= `f`) || (c >= `A` and <= `F`)

@@ -1,9 +1,6 @@
 mod lex.token;
 
-libimp "dstring" from std;
-libimp "map" from std;
-
-ext type token_type_t: enum {
+ext type token_kind_t: enum {
     /* literals */
     TokIntLit(i64),
     TokFloatLit(f64),
@@ -164,15 +161,59 @@ ext type token_type_t: enum {
     TokMinusBang,
     TokStarBang,
 
+    TokLibImp,      /* libimp */
+    TokCHeader,     /* cheader */
+    TokStd,         /* std (stdlib source specifier) */
+    TokHash,        /* hash */
+    TokEqu,         /* equ */
+    TokThis,        /* this — self-reference inside method bodies */
+    TokWith,        /* with — scoped binding statement */
+    TokAny,         /* any — inline tagged-union type */
+    TokInterface,   /* interface — interface declaration */
+    TokMacro,       /* macro — preprocessor macro keyword */
+
+    /* slice builtins — keep at end to avoid shifting existing values */
+    TokMake,        /* make   */
+    TokAppend,      /* append */
+    TokCopy,        /* copy   */
+    TokLen,         /* len    */
+    TokCap,         /* cap    */
+
+    /* memory-safety keywords — added for new safety redesign */
+    TokZone,        /* zone — lexical/manual memory zone                    */
+    TokUnsafe,      /* unsafe — suppresses safety checks inside the block   */
+    TokUnchecked,   /* unchecked — opt-out of bounds check in buf[unchecked: i] */
+    /* NOTE: @frees is intentionally NOT a keyword — it is parsed as an    */
+    /* identifier after '@' to avoid conflicts with struct field names.     */
+
+    TokDotEqEq,     /* .== — infix universal equality operator              */
+
+    /* comparison-chain keywords */
+    TokAnd,         /* and — chained comparison AND (x > 1 and < 10)        */
+    TokOr,          /* or  — chained comparison OR  (x == 1 or 2 or 3)      */
+
+    /* foreach slice iteration */
+    TokForeach,     /* foreach — iterate over a slice                        */
+    TokIn,          /* in  — separates iter var from slice in foreach        */
+
     TokEof,
     TokError(error),
 }
 
 ext type token_t: struct {
-    ext u32 line, col;
-    ext token_type_t kind;
+    token_kind_t kind;
+    i8 *r+ start;
+    u32 len, ln, col;
+    i8 *r file; // src file path... nil until set by caller after lexing 
 }
 
-ext token_t.new(u32 line, col, token_type_t token_type): token_t {
-    ret token_t{.line = line, .col = col, .kind = token_type};
+ext fn token_t.new(token_kind_t kind, i8 *r+ start, u32 len, ln, col, i8 *r file): token_t {
+    ret token_t{
+        .kind = kind,
+        .start = start,
+        .len = len,
+        .ln = ln,
+        .col = col,
+        .file = file,
+    };
 }
