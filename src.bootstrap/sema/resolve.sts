@@ -1,0 +1,141 @@
+mod sema.resolve;
+
+imp ast.node;
+imp diag;
+imp parse.parser;
+imp sema.scope;
+libimp "array" from std;
+libimp "filesystem" from std;
+
+int fn copy_cstr(stack i8 *w dst, u32 cap, stack i8 *r src): void {
+    u32 i = 0;
+    while (i + 1 < cap && src[i] != 0) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+int fn str_len(stack i8 *r s): u32 {
+    u32 i = 0;
+    while (s[i] != 0) { i++; }
+    ret i;
+}
+
+int fn copy_name_as_path(stack i8 *w dst, u32 cap, stack i8 *r mod_name): void {
+    u32 i = 0;
+    while (i + 1 < cap && mod_name[i] != 0) {
+        if (mod_name[i] == `.`) dst[i] = `/`;
+        else dst[i] = mod_name[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+int fn append_suffix(stack i8 *w dst, u32 cap, stack i8 *r suffix): void {
+    u32 off = str_len(dst);
+    u32 i = 0;
+    while (off + i + 1 < cap && suffix[i] != 0) {
+        dst[off + i] = suffix[i];
+        i++;
+    }
+    dst[off + i] = 0;
+}
+
+ext type resolve_result_t: struct {
+    int array_t.[ast.node.module_t] modules;
+    int array_t.[diag.diag_t] diags;
+
+    ext fn rem(void): void {
+        u32 i = 0;
+        while (i < this.modules.length) {
+            this.modules.buf[i].rem();
+            i++;
+        }
+        this.modules.rem();
+        this.diags.rem();
+    }
+}
+
+ext fn resolve_result_t.new(void): resolve_result_t {
+    ret resolve_result_t{
+        .modules = array_t.[ast.node.module_t].new(),
+        .diags = array_t.[diag.diag_t].new(),
+    };
+}
+
+ext type resolver_t: struct {
+    int resolve_result_t result;
+    int scope.scope_t seen;
+
+    int fn push_diag(diag.diag_t d): void {
+        this.result.diags.push(d);
+    }
+
+    int fn add_module(ast.node.module_t mod): void {
+        this.result.modules.push(mod);
+    }
+
+    int fn load_file(stack i8 *r path): void {
+        if (!this.seen.declare(path)) { ret; }
+
+        let [buf, _, read_err] = filesystem.fs_read_all(path);
+        if (read_err != nil) {
+            this.push_diag(diag.error_at(0, 0, 0, "unable to read '{}'", path));
+            ret;
+        }
+
+        let [mod, parse_diags] = parser.parse_source(path, (i8 *r)buf);
+
+        u32 i = 0;
+        while (i < parse_diags.length) {
+            this.result.diags.push(parse_diags.buf[i]);
+            i++;
+        }
+        parse_diags.rem();
+
+        i8 dirbuf[512];
+        filesystem.fs_path_dirname(path, dirbuf, 512);
+
+        i = 0;
+        while (i < mod.imports.length) {
+            i8 relbuf[512];
+            i8 fullbuf[512];
+            copy_name_as_path(relbuf, 512, mod.imports.buf[i].name());
+            append_suffix(relbuf, 512, ".sts");
+            filesystem.fs_path_join(dirbuf, relbuf, fullbuf, 512);
+            if (filesystem.fs_exists(fullbuf)) {
+                mod.imports.buf[i].set_resolved_path(fullbuf);
+            } else {
+                this.push_diag(diag.warning_at(0, 0, 0, "unresolved import '{}'", mod.imports.buf[i].name()));
+            }
+            i++;
+        }
+
+        this.add_module(mod);
+
+        i = 0;
+        while (i < mod.imports.length) {
+            if (mod.imports.buf[i].resolved()) {
+                this.load_file(mod.imports.buf[i].resolved_path());
+            }
+            i++;
+        }
+
+        rem.(buf);
+    }
+}
+
+ext fn resolver_t.new(void): resolver_t {
+    ret resolver_t{
+        .result = resolve_result_t.new(),
+        .seen = scope.scope_t.new(),
+    };
+}
+
+ext fn resolve_file(stack i8 *r path): resolve_result_t {
+    resolver_t r = resolver_t.new();
+    r.load_file(path);
+    r.seen.rem();
+    ret r.result;
+}

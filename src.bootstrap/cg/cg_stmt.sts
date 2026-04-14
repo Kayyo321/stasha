@@ -1,0 +1,7 @@
+mod cg.cg_stmt;
+
+imp ast.node;
+
+ext fn estimate_stmt_nodes(stack ast.node.module_t *r mod): u32 {
+    ret mod.stmt_count;
+}

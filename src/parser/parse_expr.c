@@ -151,8 +151,7 @@ static node_t *parse_primary(parser_t *p) {
         node_t *size = parse_expr(p);
         consume(p, TokRParen, "')'");
         /* optional: in zone_expr  (bare ident, s.field, or this.field) */
-        if (check(p, TokIdent) && p->current.length == 2
-                && memcmp(p->current.start, "in", 2) == 0) {
+        if (check(p, TokIn)) {
             advance_parser(p); /* consume 'in' */
             /* parse_postfix handles: ident, this.field, s.field, etc. */
             node_t *zone_expr = parse_postfix(p);

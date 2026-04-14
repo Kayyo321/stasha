@@ -1,0 +1,25 @@
+mod parse.parse_expr;
+
+imp lex.token;
+
+ext fn is_expr_token(token.token_kind_t kind): bool {
+    switch kind {
+        case token.token_kind_t.TokIdent,
+             token.token_kind_t.TokIntLit,
+             token.token_kind_t.TokFloatLit,
+             token.token_kind_t.TokStackStr,
+             token.token_kind_t.TokCharLit,
+             token.token_kind_t.TokTrue,
+             token.token_kind_t.TokFalse,
+             token.token_kind_t.TokNil,
+             token.token_kind_t.TokLParen,
+             token.token_kind_t.TokPlus,
+             token.token_kind_t.TokMinus,
+             token.token_kind_t.TokBang,
+             token.token_kind_t.TokStar,
+             token.token_kind_t.TokAmp: {
+            ret true;
+        }
+        default: ret false;
+    }
+}

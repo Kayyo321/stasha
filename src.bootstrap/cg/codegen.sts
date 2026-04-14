@@ -1,0 +1,35 @@
+mod cg.codegen;
+
+imp ast.node;
+imp cg.cg_decls;
+imp cg.cg_expr;
+imp cg.cg_stmt;
+imp cg.cg_types;
+lib "stdio" = cio;
+
+ext type codegen_t: struct {
+    i8 preamble[512];
+    u32 decls;
+    u32 stmts;
+    u32 exprs;
+}
+
+ext fn codegen_t.build(stack ast.node.module_t *r mod): codegen_t {
+    codegen_t cg = .{
+        .decls = cg_decls.estimate_decl_nodes(mod),
+        .stmts = cg_stmt.estimate_stmt_nodes(mod),
+        .exprs = cg_expr.estimate_expr_nodes(mod),
+    };
+
+    cio.snprintf(
+        cg.preamble,
+        512,
+        "/* bootstrap preview: module=%s abi=%s decls=%u stmts=%u exprs=%u */",
+        mod.name,
+        cg_types.module_abi_hint(mod),
+        cg.decls,
+        cg.stmts,
+        cg.exprs
+    );
+    ret cg;
+}

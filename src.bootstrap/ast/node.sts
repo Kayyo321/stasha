@@ -1,0 +1,212 @@
+mod ast.node;
+
+imp ast.types;
+libimp "array" from std;
+
+int fn copy_cstr(stack i8 *w dst, u32 cap, stack i8 *r src): void {
+    u32 i = 0;
+    while (i + 1 < cap && src[i] != 0) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+int fn copy_span(stack i8 *w dst, u32 cap, stack i8 *r src, u32 len): void {
+    u32 i = 0;
+    while (i + 1 < cap && i < len && src[i] != 0) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+int fn cstr_eq(stack i8 *r a, stack i8 *r b): bool {
+    u32 i = 0;
+    while (a[i] != 0 && b[i] != 0) {
+        if (a[i] != b[i]) { ret false; }
+        i++;
+    }
+    ret a[i] == b[i];
+}
+
+ext type node_kind_t: enum {
+    Module,
+    Import,
+    TypeDecl,
+    FunctionDecl,
+    VariableDecl,
+    Statement,
+    Expression,
+}
+
+ext type node_payload_t: enum {
+    Empty,
+    IntValue(i64),
+    TextValue(i8 *r),
+}
+
+type source_loc_t: struct {
+    u32 line;
+    u32 col;
+    u32 span;
+}
+
+type located_i: interface {
+    line(void): u32;
+    col(void): u32;
+    span_len(void): u32;
+}
+
+type named_i: interface {
+    name(void): stack i8 *r;
+}
+
+type ast_node_i: interface.[located_i] {
+    node_kind(void): node_kind_t;
+    summary(void): stack i8 *r;
+}
+
+type import_i: interface.[ast_node_i, named_i] {
+    resolved(void): bool;
+    resolved_path(void): stack i8 *r;
+}
+
+type module_i: interface.[ast_node_i, named_i] {
+    source_path(void): stack i8 *r;
+    import_count(void): u32;
+    has_import(stack i8 *r name): bool;
+}
+
+type import_t: struct.[import_i] {
+    i8 import_name[256];
+    i8 resolved_file[512];
+    i8 summary_text[64];
+    source_loc_t loc;
+    bool from_stdlib;
+    bool from_cheader;
+    bool is_resolved;
+
+    ext fn node_kind(void): node_kind_t => node_kind_t.Import;
+    ext fn line(void): u32 => this.loc.line;
+    ext fn col(void): u32 => this.loc.col;
+    ext fn span_len(void): u32 => this.loc.span;
+    ext fn name(void): stack i8 *r => this.import_name;
+    ext fn summary(void): stack i8 *r => this.summary_text;
+    ext fn resolved(void): bool => this.is_resolved;
+    ext fn resolved_path(void): stack i8 *r => this.resolved_file;
+
+    ext fn set_resolved_path(stack i8 *r path): void {
+        copy_cstr(this.resolved_file, 512, path);
+        this.is_resolved = true;
+    }
+}
+
+ext fn import_t.new(stack i8 *r name): import_t {
+    import_t entry = .{};
+    copy_cstr(entry.import_name, 256, name);
+    copy_cstr(entry.summary_text, 64, "import");
+    entry.from_stdlib = false;
+    entry.from_cheader = false;
+    entry.is_resolved = false;
+    ret entry;
+}
+
+ext fn import_t.from_span(i8 *r start, u32 len): import_t {
+    import_t entry = .{};
+    copy_span(entry.import_name, 256, start, len);
+    copy_cstr(entry.summary_text, 64, "import");
+    entry.loc.line = 0;
+    entry.loc.col = 0;
+    entry.loc.span = len;
+    entry.from_stdlib = false;
+    entry.from_cheader = false;
+    entry.is_resolved = false;
+    ret entry;
+}
+
+type node_t: struct.[ast_node_i] {
+    node_kind_t kind_value;
+    source_loc_t loc;
+    node_payload_t payload;
+    i8 summary_text[64];
+
+    ext fn node_kind(void): node_kind_t => this.kind_value;
+    ext fn line(void): u32 => this.loc.line;
+    ext fn col(void): u32 => this.loc.col;
+    ext fn span_len(void): u32 => this.loc.span;
+    ext fn summary(void): stack i8 *r => this.summary_text;
+}
+
+ext fn node_t.new(node_kind_t kind, source_loc_t loc): node_t {
+    node_t n = .{
+        .kind_value = kind,
+        .loc = loc,
+        .payload = node_payload_t.Empty,
+    };
+    copy_cstr(n.summary_text, 64, "node");
+    ret n;
+}
+
+type module_t: struct.[module_i] {
+    i8 module_name[256];
+    i8 file_path[512];
+    i8 summary_text[64];
+    array_t.[import_t] imports;
+    u32 token_count;
+    u32 decl_count;
+    u32 stmt_count;
+    u32 expr_count;
+    bool saw_cheader;
+    bool saw_libimp;
+
+    ext fn node_kind(void): node_kind_t => node_kind_t.Module;
+    ext fn line(void): u32 => 0;
+    ext fn col(void): u32 => 0;
+    ext fn span_len(void): u32 => 0;
+    ext fn summary(void): stack i8 *r => this.summary_text;
+    ext fn name(void): stack i8 *r => this.module_name;
+    ext fn source_path(void): stack i8 *r => this.file_path;
+    ext fn import_count(void): u32 => this.imports.length;
+
+    ext fn set_name(stack i8 *r name): void {
+        copy_cstr(this.module_name, 256, name);
+    }
+
+    ext fn set_name_span(i8 *r start, u32 len): void {
+        copy_span(this.module_name, 256, start, len);
+    }
+
+    ext fn add_import(import_t entry): void {
+        this.imports.push(entry);
+    }
+
+    ext fn has_import(stack i8 *r name): bool {
+        u32 i = 0;
+        while (i < this.imports.length) {
+            if (cstr_eq(this.imports.buf[i].name(), name)) { ret true; }
+            i++;
+        }
+        ret false;
+    }
+
+    ext fn rem(void): void {
+        this.imports.rem();
+    }
+}
+
+ext fn module_t.new(stack i8 *r path): module_t {
+    module_t module = .{
+        .imports = array_t.[import_t].new(),
+        .token_count = 0,
+        .decl_count = 0,
+        .stmt_count = 0,
+        .expr_count = 0,
+        .saw_cheader = false,
+        .saw_libimp = false,
+    };
+    copy_cstr(module.file_path, 512, path);
+    copy_cstr(module.module_name, 256, "<unknown>");
+    copy_cstr(module.summary_text, 64, "module");
+    ret module;
+}

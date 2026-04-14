@@ -1,0 +1,7 @@
+mod cg.cg_expr;
+
+imp ast.node;
+
+ext fn estimate_expr_nodes(stack ast.node.module_t *r mod): u32 {
+    ret mod.expr_count;
+}

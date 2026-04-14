@@ -1,9 +1,5 @@
-main = "src/main.sts"
+main = "main.sts"
 
-binary = "../bin/stasha"
-# this could also be:
-# library = "bin/lib.a"
+binary = "bin/stasha-bootstrap"
 
 ext_libs = []
-# for example:
-# ext_libs = [ ("libs/xyz.a" : "libs/xyz.sts"), ... ]

@@ -1,0 +1,28 @@
+mod parse.parse_type;
+
+imp lex.token;
+
+ext fn looks_like_type(token.token_kind_t kind): bool {
+    switch kind {
+        case token.token_kind_t.TokI8,
+             token.token_kind_t.TokI16,
+             token.token_kind_t.TokI32,
+             token.token_kind_t.TokI64,
+             token.token_kind_t.TokU8,
+             token.token_kind_t.TokU16,
+             token.token_kind_t.TokU32,
+             token.token_kind_t.TokU64,
+             token.token_kind_t.TokF32,
+             token.token_kind_t.TokF64,
+             token.token_kind_t.TokBool,
+             token.token_kind_t.TokVoid,
+             token.token_kind_t.TokErrorType,
+             token.token_kind_t.TokIdent,
+             token.token_kind_t.TokLBracket,
+             token.token_kind_t.TokStar,
+             token.token_kind_t.TokQuestion: {
+            ret true;
+        }
+        default: ret false;
+    }
+}

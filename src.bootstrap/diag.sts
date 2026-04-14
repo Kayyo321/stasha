@@ -1,0 +1,72 @@
+mod diag;
+
+ext type source_loc_t: struct {
+    u32 line;
+    u32 col;
+    u32 len;
+}
+
+ext type diag_level_t: enum {
+    Error,
+    Warning,
+    Note,
+}
+
+int fn copy_cstr(stack i8 *w dst, u32 cap, stack i8 *r src): void {
+    u32 i = 0;
+    while (i + 1 < cap && src[i] != 0) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+ext type diag_t: struct {
+    diag_level_t level;
+    source_loc_t loc;
+    i8 message[256];
+
+    ext fn is_error(void): bool => this.level == diag_level_t.Error;
+
+    ext fn print(void): void {
+        i8 *r label = "note";
+        switch this.level {
+            case diag_level_t.Error: label = "error";
+            case diag_level_t.Warning: label = "warning";
+            case diag_level_t.Note: label = "note";
+        }
+
+        if (this.loc.line > 0) {
+            print.error.("{}:{}:{}: {}\n", label, this.loc.line, this.loc.col, this.message);
+        } else {
+            print.error.("{}: {}\n", label, this.message);
+        }
+    }
+}
+
+ext fn diag_t.new(diag_level_t level, u32 line, col, len, stack i8 *r msg): diag_t {
+    diag_t d = .{
+        .level = level,
+        .loc = .{ .line = line, .col = col, .len = len },
+    };
+    copy_cstr(d.message, 256, msg);
+    ret d;
+}
+
+ext fn error_at(u32 line, col, len, stack i8 *r fmt, ...): diag_t {
+    i8 buf[256];
+    print.sprint.(buf, 256, fmt, ...);
+    ret diag_t.new(diag_level_t.Error, line, col, len, buf);
+}
+
+ext fn warning_at(u32 line, col, len, stack i8 *r fmt, ...): diag_t {
+    i8 buf[256];
+    print.sprint.(buf, 256, fmt, ...);
+    ret diag_t.new(diag_level_t.Warning, line, col, len, buf);
+}
+
+ext fn note(stack i8 *r fmt, ...): diag_t {
+    i8 buf[256];
+    print.sprint.(buf, 256, fmt, ...);
+    ret diag_t.new(diag_level_t.Note, 0, 0, 0, buf);
+}

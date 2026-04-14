@@ -1,0 +1,25 @@
+mod parse.parse_stmt;
+
+imp lex.token;
+
+ext fn is_stmt_start(token.token_kind_t kind): bool {
+    switch kind {
+        case token.token_kind_t.TokIf,
+             token.token_kind_t.TokFor,
+             token.token_kind_t.TokForeach,
+             token.token_kind_t.TokWhile,
+             token.token_kind_t.TokDo,
+             token.token_kind_t.TokInf,
+             token.token_kind_t.TokRet,
+             token.token_kind_t.TokBreak,
+             token.token_kind_t.TokContinue,
+             token.token_kind_t.TokSwitch,
+             token.token_kind_t.TokMatch,
+             token.token_kind_t.TokWith,
+             token.token_kind_t.TokLet,
+             token.token_kind_t.TokDefer: {
+            ret true;
+        }
+        default: ret false;
+    }
+}

@@ -1,0 +1,157 @@
+mod parse.parser;
+
+imp ast.node;
+imp diag;
+imp lex.lexer;
+imp lex.token;
+imp parse.parse_decls;
+imp parse.parse_expr;
+imp parse.parse_stmt;
+imp parse.parse_type;
+libimp "array" from std;
+
+ext type parser_t: struct {
+    int token.token_t *r toks;
+    int u32 count;
+    int u32 index;
+    int array_t.[diag.diag_t] diags;
+    int ast.node.module_t module;
+
+    int fn at_end(void): bool {
+        if (this.index >= this.count) { ret true; }
+        ret this.toks[this.index].kind == token.token_kind_t.TokEof;
+    }
+
+    int fn current(void): token.token_t {
+        if (this.index >= this.count) {
+            ret token.token_t.new(token.token_kind_t.TokEof, nil, 0, 0, 0, nil);
+        }
+        ret this.toks[this.index];
+    }
+
+    int fn advance(void): token.token_t {
+        token.token_t tok = this.current();
+        if (this.index < this.count) { this.index++; }
+        ret tok;
+    }
+
+    int fn parse_dotted_name(stack i8 *w out, u32 out_cap): void {
+        u32 written = 0;
+        while (!this.at_end()) {
+            token.token_t tok = this.current();
+            if (tok.kind != token.token_kind_t.TokIdent) { break; }
+
+            u32 i = 0;
+            while (written + 1 < out_cap && i < tok.len && tok.start[i] != 0) {
+                out[written] = tok.start[i];
+                written++;
+                i++;
+            }
+            this.advance();
+
+            if (!this.at_end() && this.current().kind == token.token_kind_t.TokDot) {
+                if (written + 1 < out_cap) {
+                    out[written] = `.`;
+                    written++;
+                }
+                this.advance();
+                continue;
+            }
+            break;
+        }
+        out[written] = 0;
+    }
+
+    int fn parse_module_decl(void): void {
+        this.advance();
+        i8 name[256];
+        this.parse_dotted_name(name, 256);
+        this.module.set_name(name);
+    }
+
+    int fn parse_import(void): void {
+        token.token_t imp_tok = this.advance();
+        i8 name[256];
+        this.parse_dotted_name(name, 256);
+        if (name[0] == 0) {
+            this.diags.push(diag.error_at(imp_tok.line, imp_tok.col, imp_tok.len, "expected module name after imp"));
+            ret;
+        }
+        this.module.add_import(ast.node.import_t.new(name));
+    }
+
+    ext fn parse(void): void {
+        while (!this.at_end()) {
+            token.token_t tok = this.current();
+            this.module.token_count++;
+
+            if (parse.parse_decls.is_decl_start(tok.kind)) { this.module.decl_count++; }
+            if (parse.parse_stmt.is_stmt_start(tok.kind)) { this.module.stmt_count++; }
+            if (parse.parse_expr.is_expr_token(tok.kind)) { this.module.expr_count++; }
+            if (parse.parse_type.looks_like_type(tok.kind)) { this.module.expr_count += 0; }
+
+            switch tok.kind {
+                case token.token_kind_t.TokMod: {
+                    this.parse_module_decl();
+                }
+
+                case token.token_kind_t.TokImp: {
+                    this.parse_import();
+                }
+
+                case token.token_kind_t.TokCHeader: {
+                    this.module.saw_cheader = true;
+                    this.advance();
+                }
+
+                case token.token_kind_t.TokLibImp: {
+                    this.module.saw_libimp = true;
+                    this.advance();
+                }
+
+                default: {
+                    this.advance();
+                }
+            }
+        }
+    }
+}
+
+ext fn parser_t.new(stack token.token_t *r toks, u32 count, stack i8 *r path): parser_t {
+    ret parser_t{
+        .toks = toks,
+        .count = count,
+        .index = 0,
+        .diags = array_t.[diag.diag_t].new(),
+        .module = ast.node.module_t.new(path),
+    };
+}
+
+ext fn parse_source(stack i8 *r path, stack i8 *r src): [ast.node.module_t, array_t.[diag.diag_t]] {
+    lexer.lexer_t lx = lexer.lexer_t.new(src, path);
+    let [tokens, lex_diags] = lx.extract_all();
+
+    parser_t parser = parser_t.new(tokens.buf, tokens.length, path);
+    parser.parse();
+
+    array_t.[diag.diag_t] all_diags = array_t.[diag.diag_t].new();
+    u32 i = 0;
+    while (i < lex_diags.length) {
+        all_diags.push(lex_diags.buf[i]);
+        i++;
+    }
+
+    i = 0;
+    while (i < parser.diags.length) {
+        all_diags.push(parser.diags.buf[i]);
+        i++;
+    }
+
+    ast.node.module_t module = parser.module;
+
+    tokens.rem();
+    lex_diags.rem();
+    parser.diags.rem();
+
+    ret module, all_diags;
+}

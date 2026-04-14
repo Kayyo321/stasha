@@ -1,121 +1,215 @@
 mod lex.lexer;
 
+imp diag;
 imp lex.token;
+libimp "array" from std;
+
+int fn is_alpha(i8 c): bool {
+    ret (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_`;
+}
+
+int fn is_digit(i8 c): bool {
+    ret c >= `0` && c <= `9`;
+}
+
+int fn is_alnum(i8 c): bool {
+    ret is_alpha(c) || is_digit(c);
+}
+
+int fn is_hex_digit(i8 c): bool {
+    ret is_digit(c) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`);
+}
+
+int fn span_eq(stack i8 *r a, u32 len, stack i8 *r b): bool {
+    u32 i = 0;
+    while (i < len && b[i] != 0) {
+        if (a[i] != b[i]) { ret false; }
+        i++;
+    }
+    ret i == len && b[i] == 0;
+}
 
 ext type lexer_t: struct {
-    int i8 *start;
-    int i8 *current;
-    int i8 *ln_start;
-    int u32 ln;
+    int i8 *r start;
+    int i8 *r current;
+    int i8 *r line_start;
+    int i8 *r file;
+    int u32 line;
 
-    // internal helpers
+    int fn at_end(void): bool => this.current[0] == 0;
 
-    int fn advance(void): i8 => *.(this.current++);
-    int fn peek(void): i8 => *.(this.current);
+    int fn advance(void): i8 {
+        i8 c = this.current[0];
+        this.current++;
+        ret c;
+    }
+
+    int fn peek(void): i8 {
+        if (this.at_end()) { ret 0; }
+        ret this.current[0];
+    }
+
     int fn peek_next(void): i8 {
-        if this.at_end() => ret `\0`;
-
+        if (this.at_end() || this.current[1] == 0) { ret 0; }
         ret this.current[1];
     }
 
     int fn match_ch(i8 expected): bool {
-        if this.at_end() || this.peek() != expected => ret false;
-
-        this.advance();
+        if (this.at_end() || this.current[0] != expected) { ret false; }
+        this.current++;
         ret true;
     }
 
     int fn make_tok(token.token_kind_t kind): token.token_t {
-        ret token.token_t.(
+        ret token.token_t.new(
             kind,
             this.start,
             (u32)(this.current - this.start),
-            this.ln,
-            (u32)(this.start - this.ln_start) + 1,
-            nil, // caller fills this in after lexing
+            this.line,
+            (u32)(this.start - this.line_start) + 1,
+            this.file
         );
     }
 
     int fn skip_whitespace(void): void {
         inf {
-            final i8 c = this.peek();
+            i8 c = this.peek();
             switch c {
                 case ` `, `\r`, `\t`: {
                     this.advance();
                 }
 
                 case `\n`: {
-                    ++this.ln;
                     this.advance();
-                    this.ln_start = this.current;
+                    this.line++;
+                    this.line_start = this.current;
                 }
 
                 case `/`: {
-                    if this.peek_next() == `/` {
-                        // line comment: skip to end of line
-                        this.advance(); this.advance();
-                        while !this.at_end() && this.peek() != `\n` 
-                            => this.advance();
-
-                        break;
+                    if (this.peek_next() == `/`) {
+                        this.advance();
+                        this.advance();
+                        while (!this.at_end() && this.peek() != `\n`) {
+                            this.advance();
+                        }
+                        continue;
                     }
 
-                    if this.peek_next() == `*` {
-                        /* block comment: supports nesting */
-                        this.advance(); this.advance();
+                    if (this.peek_next() == `*`) {
                         i32 depth = 1;
-
-                        while !this.at_end() && depth > 0 {
-                            if this.peek() == `/` && this.peek_next() == `*` {
-                                this.advance(); this.advance();
-                                ++depth;
-                            } else if this.peek() == `*` && this.peek_next() == `/` {
-                                this.advance(); this.advance();
-                                --depth;
-                            } else {
-                                i8 ch = this.peek();
+                        this.advance();
+                        this.advance();
+                        while (!this.at_end() && depth > 0) {
+                            if (this.peek() == `/` && this.peek_next() == `*`) {
                                 this.advance();
-                                if ch == `\n` {
-                                    ++this.ln;
-                                    this.ln_start = this.current;
+                                this.advance();
+                                depth++;
+                            } else if (this.peek() == `*` && this.peek_next() == `/`) {
+                                this.advance();
+                                this.advance();
+                                depth--;
+                            } else {
+                                i8 inner = this.advance();
+                                if (inner == `\n`) {
+                                    this.line++;
+                                    this.line_start = this.current;
                                 }
                             }
                         }
-                        break;
+                        continue;
                     }
+
                     ret;
                 }
 
-                default:
-                    ret;
+                default: ret;
             }
         }
     }
 
     int fn identifier_kind(u32 len): token.token_kind_t {
-        //TODO have a map_t with all keywords
+        if (span_eq(this.start, len, "mod")) ret token.token_kind_t.TokMod;
+        if (span_eq(this.start, len, "imp")) ret token.token_kind_t.TokImp;
+        if (span_eq(this.start, len, "int")) ret token.token_kind_t.TokInt;
+        if (span_eq(this.start, len, "ext")) ret token.token_kind_t.TokExt;
+        if (span_eq(this.start, len, "fn")) ret token.token_kind_t.TokFn;
+        if (span_eq(this.start, len, "type")) ret token.token_kind_t.TokType;
+        if (span_eq(this.start, len, "struct")) ret token.token_kind_t.TokStruct;
+        if (span_eq(this.start, len, "enum")) ret token.token_kind_t.TokEnum;
+        if (span_eq(this.start, len, "union")) ret token.token_kind_t.TokUnion;
+        if (span_eq(this.start, len, "interface")) ret token.token_kind_t.TokInterface;
+        if (span_eq(this.start, len, "lib")) ret token.token_kind_t.TokLib;
+        if (span_eq(this.start, len, "libimp")) ret token.token_kind_t.TokLibImp;
+        if (span_eq(this.start, len, "cheader")) ret token.token_kind_t.TokCHeader;
+        if (span_eq(this.start, len, "from")) ret token.token_kind_t.TokFrom;
+        if (span_eq(this.start, len, "if")) ret token.token_kind_t.TokIf;
+        if (span_eq(this.start, len, "else")) ret token.token_kind_t.TokElse;
+        if (span_eq(this.start, len, "for")) ret token.token_kind_t.TokFor;
+        if (span_eq(this.start, len, "foreach")) ret token.token_kind_t.TokForeach;
+        if (span_eq(this.start, len, "in")) ret token.token_kind_t.TokIn;
+        if (span_eq(this.start, len, "while")) ret token.token_kind_t.TokWhile;
+        if (span_eq(this.start, len, "do")) ret token.token_kind_t.TokDo;
+        if (span_eq(this.start, len, "inf")) ret token.token_kind_t.TokInf;
+        if (span_eq(this.start, len, "ret")) ret token.token_kind_t.TokRet;
+        if (span_eq(this.start, len, "break")) ret token.token_kind_t.TokBreak;
+        if (span_eq(this.start, len, "continue")) ret token.token_kind_t.TokContinue;
+        if (span_eq(this.start, len, "match")) ret token.token_kind_t.TokMatch;
+        if (span_eq(this.start, len, "switch")) ret token.token_kind_t.TokSwitch;
+        if (span_eq(this.start, len, "case")) ret token.token_kind_t.TokCase;
+        if (span_eq(this.start, len, "default")) ret token.token_kind_t.TokDefault;
+        if (span_eq(this.start, len, "let")) ret token.token_kind_t.TokLet;
+        if (span_eq(this.start, len, "with")) ret token.token_kind_t.TokWith;
+        if (span_eq(this.start, len, "new")) ret token.token_kind_t.TokNew;
+        if (span_eq(this.start, len, "rem")) ret token.token_kind_t.TokRem;
+        if (span_eq(this.start, len, "mov")) ret token.token_kind_t.TokMov;
+        if (span_eq(this.start, len, "sizeof")) ret token.token_kind_t.TokSizeof;
+        if (span_eq(this.start, len, "nil")) ret token.token_kind_t.TokNil;
+        if (span_eq(this.start, len, "true")) ret token.token_kind_t.TokTrue;
+        if (span_eq(this.start, len, "false")) ret token.token_kind_t.TokFalse;
+        if (span_eq(this.start, len, "test")) ret token.token_kind_t.TokTest;
+        if (span_eq(this.start, len, "expect")) ret token.token_kind_t.TokExpect;
+        if (span_eq(this.start, len, "expect_eq")) ret token.token_kind_t.TokExpectEq;
+        if (span_eq(this.start, len, "expect_neq")) ret token.token_kind_t.TokExpectNeq;
+        if (span_eq(this.start, len, "test_fail")) ret token.token_kind_t.TokTestFail;
+        if (span_eq(this.start, len, "macro")) ret token.token_kind_t.TokMacro;
+        if (span_eq(this.start, len, "and")) ret token.token_kind_t.TokAnd;
+        if (span_eq(this.start, len, "or")) ret token.token_kind_t.TokOr;
+        if (span_eq(this.start, len, "unsafe")) ret token.token_kind_t.TokUnsafe;
+        if (span_eq(this.start, len, "zone")) ret token.token_kind_t.TokZone;
+        if (span_eq(this.start, len, "comptime_if")) ret token.token_kind_t.TokComptimeIf;
+        if (span_eq(this.start, len, "comptime_assert")) ret token.token_kind_t.TokComptimeAssert;
+        if (span_eq(this.start, len, "i8")) ret token.token_kind_t.TokI8;
+        if (span_eq(this.start, len, "i16")) ret token.token_kind_t.TokI16;
+        if (span_eq(this.start, len, "i32")) ret token.token_kind_t.TokI32;
+        if (span_eq(this.start, len, "i64")) ret token.token_kind_t.TokI64;
+        if (span_eq(this.start, len, "u8")) ret token.token_kind_t.TokU8;
+        if (span_eq(this.start, len, "u16")) ret token.token_kind_t.TokU16;
+        if (span_eq(this.start, len, "u32")) ret token.token_kind_t.TokU32;
+        if (span_eq(this.start, len, "u64")) ret token.token_kind_t.TokU64;
+        if (span_eq(this.start, len, "f32")) ret token.token_kind_t.TokF32;
+        if (span_eq(this.start, len, "f64")) ret token.token_kind_t.TokF64;
+        if (span_eq(this.start, len, "bool")) ret token.token_kind_t.TokBool;
+        if (span_eq(this.start, len, "void")) ret token.token_kind_t.TokVoid;
+        if (span_eq(this.start, len, "error")) ret token.token_kind_t.TokErrorType;
+        ret token.token_kind_t.TokIdent;
     }
 
     int fn scan_identifier(void): token.token_t {
-        while is_alnum(this.peek()) => this.advance();
-        final u32 len = (u32)(this.current - this.start);
-        ret make_tok(identifier_kind(len));
+        while (is_alnum(this.peek())) { this.advance(); }
+        ret this.make_tok(this.identifier_kind((u32)(this.current - this.start)));
     }
 
     int fn scan_number(void): token.token_t {
-        /* hex literal: 0x... */
-        if this.start[0] == `0` && (this.peek() == `x` or `X`) {
-            this.advance(); /* consume `x` */
-            while is_hex_digit(this.peek()) => this.advance();
-            return this.make_tok(token.token_kind_t.TokIntLit);
+        if (this.start[0] == `0` && (this.peek() == `x` || this.peek() == `X`)) {
+            this.advance();
+            while (is_hex_digit(this.peek())) { this.advance(); }
+            ret this.make_tok(token.token_kind_t.TokIntLit);
         }
 
-        while is_digit(this.peek()) => this.advance();
-
-        /* check for float: digits followed by '.' and more digits */
-        if this.peek() == `.` && is_digit(this.peek_next()) {
-            this.advance(); // consume `.`
-            while is_digit(this.peek()) => this.advance();
+        while (is_digit(this.peek())) { this.advance(); }
+        if (this.peek() == `.` && is_digit(this.peek_next())) {
+            this.advance();
+            while (is_digit(this.peek())) { this.advance(); }
             ret this.make_tok(token.token_kind_t.TokFloatLit);
         }
 
@@ -123,44 +217,194 @@ ext type lexer_t: struct {
     }
 
     int fn scan_string(i8 quote): token.token_t {
-        while this.peek() != quote && !this.at_end() {
-            if this.peek() == `\\` {
-                this.advance(); // skip backslash
-                if !this.at_end() => this.advance(); // skip escaped char
-                continue;
-            }
-
-            if this.peek() == `\n` {
-                ++this.ln;
+        while (!this.at_end() && this.peek() != quote) {
+            if (this.peek() == `\\`) {
                 this.advance();
-                this.ln_start = this.current;
+                if (!this.at_end()) { this.advance(); }
                 continue;
             }
 
+            i8 c = this.advance();
+            if (c == `\n`) {
+                this.line++;
+                this.line_start = this.current;
+            }
+        }
+
+        if (this.at_end()) {
+            ret this.make_tok(token.token_kind_t.TokError);
+        }
+
+        this.advance();
+        ret this.make_tok(token.token_kind_t.TokStackStr);
+    }
+
+    int fn scan_char(void): token.token_t {
+        if (this.at_end()) { ret this.make_tok(token.token_kind_t.TokError); }
+        if (this.peek() == `\\`) {
+            this.advance();
+            if (!this.at_end()) { this.advance(); }
+        } else {
             this.advance();
         }
 
-        if this.at_end() 
-            => ret this.make_tok(token.token_kind_t.TokError(error.('unterminated string')));
+        if (!this.match_ch('`')) {
+            ret this.make_tok(token.token_kind_t.TokError);
+        }
 
-        this.advance();
+        ret this.make_tok(token.token_kind_t.TokCharLit);
+    }
 
-        ret this.make_tok(token.token_kind_t.TokStackStr);
+    ext fn next_token(void): token.token_t {
+        this.skip_whitespace();
+        this.start = this.current;
+
+        if (this.at_end()) {
+            ret this.make_tok(token.token_kind_t.TokEof);
+        }
+
+        i8 c = this.advance();
+
+        if (is_alpha(c)) { ret this.scan_identifier(); }
+        if (is_digit(c)) { ret this.scan_number(); }
+
+        switch c {
+            case `(`: ret this.make_tok(token.token_kind_t.TokLParen);
+            case `)`: ret this.make_tok(token.token_kind_t.TokRParen);
+            case `{`: ret this.make_tok(token.token_kind_t.TokLBrace);
+            case `}`: ret this.make_tok(token.token_kind_t.TokRBrace);
+            case `[`: ret this.make_tok(token.token_kind_t.TokLBracket);
+            case `]`: ret this.make_tok(token.token_kind_t.TokRBracket);
+            case `;`: ret this.make_tok(token.token_kind_t.TokSemicolon);
+            case `:`: ret this.make_tok(token.token_kind_t.TokColon);
+            case `,`: ret this.make_tok(token.token_kind_t.TokComma);
+            case `?`: ret this.make_tok(token.token_kind_t.TokQuestion);
+            case `@`: ret this.make_tok(token.token_kind_t.TokAt);
+            case `~`: ret this.make_tok(token.token_kind_t.TokTilde);
+            case `"`: ret this.scan_string(`"`);
+            case '\'': ret this.scan_string('\'');
+            case '`': ret this.scan_char();
+
+            case `.`: {
+                if (this.match_ch(`.`)) {
+                    if (this.match_ch(`.`)) ret this.make_tok(token.token_kind_t.TokDotDotDot);
+                    if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokDotDotEq);
+                    ret this.make_tok(token.token_kind_t.TokDotDot);
+                }
+                if (this.match_ch(`=`) && this.match_ch(`=`)) {
+                    ret this.make_tok(token.token_kind_t.TokDotEqEq);
+                }
+                ret this.make_tok(token.token_kind_t.TokDot);
+            }
+
+            case `+`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokPlusEq);
+                if (this.match_ch(`+`)) ret this.make_tok(token.token_kind_t.TokPlusPlus);
+                if (this.match_ch(`%`)) ret this.make_tok(token.token_kind_t.TokPlusPercent);
+                if (this.match_ch(`!`)) ret this.make_tok(token.token_kind_t.TokPlusBang);
+                ret this.make_tok(token.token_kind_t.TokPlus);
+            }
+
+            case `-`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokMinusEq);
+                if (this.match_ch(`-`)) ret this.make_tok(token.token_kind_t.TokMinusMinus);
+                if (this.match_ch(`%`)) ret this.make_tok(token.token_kind_t.TokMinusPercent);
+                if (this.match_ch(`!`)) ret this.make_tok(token.token_kind_t.TokMinusBang);
+                ret this.make_tok(token.token_kind_t.TokMinus);
+            }
+
+            case `*`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokStarEq);
+                if (this.match_ch(`%`)) ret this.make_tok(token.token_kind_t.TokStarPercent);
+                if (this.match_ch(`!`)) ret this.make_tok(token.token_kind_t.TokStarBang);
+                ret this.make_tok(token.token_kind_t.TokStar);
+            }
+
+            case `/`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokSlashEq);
+                ret this.make_tok(token.token_kind_t.TokSlash);
+            }
+
+            case `%`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokPercentEq);
+                ret this.make_tok(token.token_kind_t.TokPercent);
+            }
+
+            case `!`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokBangEq);
+                ret this.make_tok(token.token_kind_t.TokBang);
+            }
+
+            case `=`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokEqEq);
+                if (this.match_ch(`>`)) ret this.make_tok(token.token_kind_t.TokFatArrow);
+                ret this.make_tok(token.token_kind_t.TokEq);
+            }
+
+            case `&`: {
+                if (this.match_ch(`&`)) ret this.make_tok(token.token_kind_t.TokAmpAmp);
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokAmpEq);
+                ret this.make_tok(token.token_kind_t.TokAmp);
+            }
+
+            case `|`: {
+                if (this.match_ch(`|`)) ret this.make_tok(token.token_kind_t.TokPipePipe);
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokPipeEq);
+                ret this.make_tok(token.token_kind_t.TokPipe);
+            }
+
+            case `^`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokCaretEq);
+                ret this.make_tok(token.token_kind_t.TokCaret);
+            }
+
+            case `<`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokLtEq);
+                if (this.match_ch(`<`)) {
+                    if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokLtLtEq);
+                    ret this.make_tok(token.token_kind_t.TokLtLt);
+                }
+                ret this.make_tok(token.token_kind_t.TokLt);
+            }
+
+            case `>`: {
+                if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokGtEq);
+                if (this.match_ch(`>`)) {
+                    if (this.match_ch(`=`)) ret this.make_tok(token.token_kind_t.TokGtGtEq);
+                    ret this.make_tok(token.token_kind_t.TokGtGt);
+                }
+                ret this.make_tok(token.token_kind_t.TokGt);
+            }
+
+            default: ret this.make_tok(token.token_kind_t.TokError);
+        }
+    }
+
+    ext fn extract_all(void): [array_t.[token.token_t], array_t.[diag.diag_t]] {
+        array_t.[token.token_t] tokens = array_t.[token.token_t].new();
+        array_t.[diag.diag_t] diags = array_t.[diag.diag_t].new();
+
+        inf {
+            token.token_t tok = this.next_token();
+            if (tok.kind == token.token_kind_t.TokError) {
+                diags.push(diag.error_at(tok.line, tok.col, tok.len, "unexpected token '{}'", tok.start[0]));
+            } else {
+                tokens.push(tok);
+            }
+
+            if (tok.kind == token.token_kind_t.TokEof) { break; }
+        }
+
+        ret tokens, diags;
     }
 }
 
-ext fn lexer_t.new(i8 *src): lexer_t {
-    ret lexer_t {
+ext fn lexer_t.new(i8 *r src, i8 *r file): lexer_t {
+    ret lexer_t{
         .start = src,
         .current = src,
-        .ln_start = src,
-        .ln = 1,
+        .line_start = src,
+        .file = file,
+        .line = 1,
     };
 }
-
-// helpers
-
-int fn is_alpha(i8 c): bool => (c >= `a` and <= `z`) || (c >= `A` and `Z`) || c == `_`;
-int fn is_digit(i8 c): bool => (c >= `0` and <= `9`);
-int fn is_alnum(i8 c): bool => is_alpha(c) || is_digit(c);
-int fn is_hex_digit(i8 c): bool => is_digit(c) || (c >= `a` and <= `f`) || (c >= `A` and <= `F`)
