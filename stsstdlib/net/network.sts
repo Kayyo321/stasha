@@ -1,0 +1,230 @@
+mod network;
+
+lib "c" = cnet;
+
+ext const i32 NetAfInet     = 2;
+ext const i32 NetSockStream = 1;
+ext const i32 NetSockDgram  = 2;
+ext const i32 NetSolSocket  = 65535;
+ext const i32 NetSoReuseAddr = 4;
+ext const i32 NetInvalidFd  = -1;
+
+// Host-to-network byte order for u16 (little-endian arm64)
+ext fn net_htons(u16 port): u16 {
+    ret (port >> 8) | (port << 8);
+}
+
+// Host-to-network byte order for u32 (little-endian arm64)
+ext fn net_htonl(u32 addr): u32 {
+    ret ((addr & 0xFF) << 24) | (((addr >> 8) & 0xFF) << 16) | (((addr >> 16) & 0xFF) << 8) | ((addr >> 24) & 0xFF);
+}
+
+// Parse "a.b.c.d" into u32 in network byte order (little-endian store: o1 | o2<<8 | o3<<16 | o4<<24)
+ext fn net_inet_addr(stack i8 *r+ ip_str): u32 {
+    u32 octets[4];
+    octets[0] = 0;
+    octets[1] = 0;
+    octets[2] = 0;
+    octets[3] = 0;
+    u32 idx = 0;
+    i32 i = 0;
+    while (ip_str[i] != 0 && idx < 4) {
+        if (ip_str[i] == 46) {
+            idx++;
+            i++;
+        } else {
+            octets[idx] = octets[idx] * 10 + (u32)(ip_str[i] - 48);
+            i++;
+        }
+    }
+    // Return in network byte order (little-endian: first octet in lowest byte)
+    ret octets[0] | (octets[1] << 8) | (octets[2] << 16) | (octets[3] << 24);
+}
+
+// Build a sockaddr_in in a 16-byte buffer (macOS layout)
+// buf[0]=sin_len=16, buf[1]=AF_INET=2, buf[2..3]=port(network), buf[4..7]=addr, buf[8..15]=0
+ext fn net_make_sockaddr_in(u32 addr_ip, u16 port, stack u8 *w+ buf): void {
+    buf[0] = 16;
+    buf[1] = 2;
+    buf[2] = (u8)(port >> 8);
+    buf[3] = (u8)(port & 0xFF);
+    // addr_ip is already in network byte order (from net_inet_addr)
+    buf[4] = (u8)(addr_ip & 0xFF);
+    buf[5] = (u8)((addr_ip >> 8) & 0xFF);
+    buf[6] = (u8)((addr_ip >> 16) & 0xFF);
+    buf[7] = (u8)((addr_ip >> 24) & 0xFF);
+    buf[8]  = 0; buf[9]  = 0; buf[10] = 0; buf[11] = 0;
+    buf[12] = 0; buf[13] = 0; buf[14] = 0; buf[15] = 0;
+}
+
+// ── TCP socket (client) ─────────────────────────────────────────────────────
+
+ext type tcp_socket_t: struct {
+    ext i32 fd;
+    ext bool connected;
+
+    ext fn connect(stack i8 *r+ ip, u16 port): error {
+        u8 sa_buf[16];
+        u32 addr = net_inet_addr(ip);
+        u16 net_port = net_htons(port);
+        net_make_sockaddr_in(addr, net_port, sa_buf);
+        i32 rc = cnet.connect(this.fd, sa_buf, 16);
+        if (rc != 0) {
+            ret error.('connect failed');
+        }
+        this.connected = true;
+        ret nil;
+    }
+
+    ext fn send_data(stack u8 *r+ buf, u32 len): [i32, error] {
+        i32 n = cnet.send(this.fd, buf, len, 0);
+        if (n < 0) {
+            ret -1, error.('send failed');
+        }
+        ret n, nil;
+    }
+
+    ext fn recv_data(stack u8 *w+ buf, u32 len): [i32, error] {
+        i32 n = cnet.recv(this.fd, buf, len, 0);
+        if (n < 0) {
+            ret -1, error.('recv failed');
+        }
+        ret n, nil;
+    }
+
+    ext fn close_conn(void): void {
+        if (this.fd != -1) {
+            cnet.close(this.fd);
+            this.fd = -1;
+            this.connected = false;
+        }
+    }
+
+    ext fn print(void): void {
+        print.('tcp_socket_t[fd={}, connected={}]\n',
+               this.fd, this.connected);
+    }
+
+    ext fn rem(void): void {
+        if (this.fd != -1) {
+            cnet.close(this.fd);
+            this.fd = -1;
+        }
+    }
+}
+
+ext fn tcp_socket_t.new(void): tcp_socket_t {
+    i32 fd = cnet.socket(2, 1, 0);
+    ret tcp_socket_t{
+        .fd        = fd,
+        .connected = false
+    };
+}
+
+// ── TCP server ──────────────────────────────────────────────────────────────
+
+ext type tcp_server_t: struct {
+    ext i32 listen_fd;
+
+    ext fn bind_and_listen(u16 port, i32 backlog): error {
+        i32 reuse = 1;
+        stack i32 *rw rp = &reuse;
+        cnet.setsockopt(this.listen_fd, 65535, 4, rp, 4);
+
+        u8 sa_buf[16];
+        // Bind to INADDR_ANY (0.0.0.0) in network order
+        u16 net_port = net_htons(port);
+        net_make_sockaddr_in(0, net_port, sa_buf);
+
+        i32 rc = cnet.bind(this.listen_fd, sa_buf, 16);
+        if (rc != 0) {
+            ret error.('bind failed');
+        }
+        rc = cnet.listen(this.listen_fd, backlog);
+        if (rc != 0) {
+            ret error.('listen failed');
+        }
+        ret nil;
+    }
+
+    ext fn accept_client(void): [i32, error] {
+        u8 cli_buf[16];
+        i32 cli_len = 16;
+        stack i32 *rw clp = &cli_len;
+        i32 cfd = cnet.accept(this.listen_fd, cli_buf, clp);
+        if (cfd < 0) {
+            ret -1, error.('accept failed');
+        }
+        ret cfd, nil;
+    }
+
+    ext fn close_server(void): void {
+        if (this.listen_fd != -1) {
+            cnet.close(this.listen_fd);
+            this.listen_fd = -1;
+        }
+    }
+
+    ext fn print(void): void {
+        print.('tcp_server_t[listen_fd={}]\n', this.listen_fd);
+    }
+
+    ext fn rem(void): void {
+        if (this.listen_fd != -1) {
+            cnet.close(this.listen_fd);
+            this.listen_fd = -1;
+        }
+    }
+}
+
+ext fn tcp_server_t.new(void): tcp_server_t {
+    i32 fd = cnet.socket(2, 1, 0);
+    ret tcp_server_t{
+        .listen_fd = fd
+    };
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+test 'net_htons' {
+    // On little-endian arm64: htons(80) = 0x5000
+    expect_eq.(net_htons(80), 0x5000);
+    expect_eq.(net_htons(0x1234), 0x3412);
+}
+
+test 'net_htonl' {
+    expect_eq.(net_htonl(0x01020304), 0x04030201);
+    expect_eq.(net_htonl(0x7f000001), 0x0100007f);
+}
+
+test 'net_inet_addr' {
+    // "127.0.0.1" in network byte order on little-endian: 0x0100007f
+    u32 r = net_inet_addr("127.0.0.1");
+    expect_eq.(r, 0x0100007f);
+}
+
+test 'tcp_socket_t new and rem' {
+    tcp_socket_t s = tcp_socket_t.new();
+    expect.(s.fd != -1);
+    s.close_conn();
+}
+
+test 'tcp_server_t new and rem' {
+    tcp_server_t srv = tcp_server_t.new();
+    expect.(srv.listen_fd != -1);
+    srv.close_server();
+}
+
+test 'tcp_socket print does not crash' {
+    tcp_socket_t s = tcp_socket_t.new();
+    s.print();
+    s.close_conn();
+    expect.(true);
+}
+
+test 'tcp_server print does not crash' {
+    tcp_server_t srv = tcp_server_t.new();
+    srv.print();
+    srv.close_server();
+    expect.(true);
+}

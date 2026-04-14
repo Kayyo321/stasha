@@ -1,0 +1,210 @@
+{
+  "name": "Stasha Vibrant",
+  "type": "dark",
+  "colors": {
+    "editor.background": "#09131A",
+    "editor.foreground": "#E8F1F7",
+    "editorLineNumber.foreground": "#3F6074",
+    "editorLineNumber.activeForeground": "#A9D7FF",
+    "editorCursor.foreground": "#FFD166",
+    "editor.selectionBackground": "#16344A",
+    "editor.inactiveSelectionBackground": "#112837",
+    "editor.wordHighlightBackground": "#12344E66",
+    "editor.wordHighlightStrongBackground": "#1D5F7F66",
+    "editorIndentGuide.background1": "#123142",
+    "editorIndentGuide.activeBackground1": "#2C6D8C",
+    "editorBracketMatch.background": "#173244",
+    "editorBracketMatch.border": "#56CFE1",
+    "activityBar.background": "#071018",
+    "sideBar.background": "#0B1821",
+    "titleBar.activeBackground": "#071018",
+    "statusBar.background": "#0A1720"
+  },
+  "tokenColors": [
+    {
+      "scope": [
+        "comment.line.double-slash.stasha"
+      ],
+      "settings": {
+        "foreground": "#5F7D8D",
+        "fontStyle": "italic"
+      }
+    },
+    {
+      "scope": [
+        "keyword.control.stasha"
+      ],
+      "settings": {
+        "foreground": "#FF6B6B",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "keyword.declaration.stasha"
+      ],
+      "settings": {
+        "foreground": "#FF9F1C",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "storage.modifier.stasha"
+      ],
+      "settings": {
+        "foreground": "#FFD166",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "storage.modifier.annotation.stasha"
+      ],
+      "settings": {
+        "foreground": "#F15BB5",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "constant.language.stasha"
+      ],
+      "settings": {
+        "foreground": "#2EC4B6",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "storage.type.primitive.stasha",
+        "entity.name.type.stasha"
+      ],
+      "settings": {
+        "foreground": "#4CC9F0"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.namespace.stasha"
+      ],
+      "settings": {
+        "foreground": "#80ED99"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.function.stasha"
+      ],
+      "settings": {
+        "foreground": "#C77DFF"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.function.member.stasha"
+      ],
+      "settings": {
+        "foreground": "#9D4EDD",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "variable.other.property.stasha"
+      ],
+      "settings": {
+        "foreground": "#72EFDD"
+      }
+    },
+    {
+      "scope": [
+        "support.constant.library.stasha"
+      ],
+      "settings": {
+        "foreground": "#A7F432"
+      }
+    },
+    {
+      "scope": [
+        "string.quoted.double.stasha",
+        "string.quoted.single.stasha"
+      ],
+      "settings": {
+        "foreground": "#95E06C"
+      }
+    },
+    {
+      "scope": [
+        "constant.character.escape.stasha",
+        "constant.character.stasha"
+      ],
+      "settings": {
+        "foreground": "#FF85A1"
+      }
+    },
+    {
+      "scope": [
+        "constant.numeric.stasha"
+      ],
+      "settings": {
+        "foreground": "#FFB703"
+      }
+    },
+    {
+      "scope": [
+        "keyword.operator.stasha"
+      ],
+      "settings": {
+        "foreground": "#F28482"
+      }
+    },
+    {
+      "scope": [
+        "punctuation.accessor.dot.stasha"
+      ],
+      "settings": {
+        "foreground": "#7BDFF2"
+      }
+    },
+    {
+      "scope": [
+        "meta.dot-call.stasha"
+      ],
+      "settings": {
+        "foreground": "#FF4D8D",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "meta.dot-generic.stasha"
+      ],
+      "settings": {
+        "foreground": "#00BBF9",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "meta.dot-init.stasha"
+      ],
+      "settings": {
+        "foreground": "#00F5D4",
+        "fontStyle": "bold"
+      }
+    }
+  ],
+  "semanticTokenColors": {
+    "keyword": "#FF9F1C",
+    "string": "#95E06C",
+    "number": "#FFB703",
+    "type": "#4CC9F0",
+    "operator": "#F28482",
+    "variable": "#E8F1F7",
+    "property": "#72EFDD",
+    "function": "#C77DFF",
+    "method": "#9D4EDD",
+    "enumMember": "#FF70A6"
+  }
+}

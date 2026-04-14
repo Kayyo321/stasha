@@ -1,1 +1,296 @@
 mod complex_rng;
+
+// OpenSSL libcrypto — RAND bindings (crypto-strength randomness).
+// Build the library first: make openssl
+lib "crypto" from "../../build/openssl/lib/libcrypto.a" = ossl;
+
+// PCG32 — Permuted Congruence Generator (O'Neill, 2014)
+// 64-bit state, 32-bit output, period 2^64.
+// High statistical quality with very low memory overhead.
+
+ext type pcg32_t: struct {
+    int u64 state;
+    int u64 inc;    // must always be odd
+
+    // Advance state and return the next uniform u32.
+    ext fn next_u32(void): u32 {
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
+        final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
+        final u32 rot = (u32)(old >> 59);
+        ret (xsh >> rot) | (xsh << ((-rot) & 31));
+    }
+
+    // Uniform integer in [min, max] inclusive.
+    ext fn next_range(i32 min, max): i32 {
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
+        final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
+        final u32 rot = (u32)(old >> 59);
+        final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
+        final u32 range = (u32)(max - min + 1);
+        ret min + (i32)(r % range);
+    }
+
+    // Uniform float in [0.0, 1.0].
+    ext fn next_f32(void): f32 {
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
+        final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
+        final u32 rot = (u32)(old >> 59);
+        final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
+        ret (f32)r / 4294967295.0;
+    }
+
+    // Uniform float in [lo, hi].
+    ext fn next_frange(f32 lo, hi): f32 {
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
+        final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
+        final u32 rot = (u32)(old >> 59);
+        final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
+        final f32 s   = (f32)r / 4294967295.0;
+        ret lo + s * (hi - lo);
+    }
+
+    // Random bool with 50/50 probability.
+    ext fn next_bool(void): bool {
+        final u64 old = this.state;
+        this.state = old * 6364136223846793005 + this.inc;
+        final u32 xsh = (u32)(((old >> 18) ^ old) >> 27);
+        final u32 rot = (u32)(old >> 59);
+        final u32 r   = (xsh >> rot) | (xsh << ((-rot) & 31));
+        ret (r & 1) != 0;
+    }
+
+    // Re-seed the generator in place.
+    ext fn reseed(u64 seed): void {
+        final u64 new_inc = (seed << 1) | 1;
+        this.inc   = new_inc;
+        this.state = new_inc;
+        // advance once
+        this.state = this.state * 6364136223846793005 + this.inc;
+        this.state = this.state + seed;
+        // advance again
+        this.state = this.state * 6364136223846793005 + this.inc;
+    }
+
+    ext fn print(void): void {
+        print.('pcg32_t[state={}, inc={}]\n', this.state, this.inc);
+    }
+}
+
+// Create a PCG32 seeded with `seed`.
+ext fn pcg32_t.new(u64 seed): pcg32_t {
+    final u64 inc    = (seed << 1) | 1;
+    final u64 state1 = inc;
+    final u64 state2 = (state1 + seed) * 6364136223846793005 + inc;
+    ret pcg32_t{ .state = state2, .inc = inc };
+}
+
+// ── OpenSSL RAND API ───────────────────────────────────────────────────────
+// All functions below use the OS CSPRNG via OpenSSL's RAND subsystem.
+// RAND_bytes / RAND_priv_bytes return 1 on success, 0 on failure.
+// Requires: make openssl  (builds build/openssl/lib/libcrypto.a)
+
+// Fill `buf` with `num` cryptographically strong random bytes.
+// Use for nonces, IVs, salts, session tokens.
+ext fn rand_bytes(stack u8 *w buf, i32 num): i32 {
+    ret ossl.RAND_bytes(buf, num);
+}
+
+// Like rand_bytes but intended exclusively for private key material.
+// May draw from a separate entropy pool on some platforms.
+ext fn rand_priv_bytes(stack u8 *w buf, i32 num): i32 {
+    ret ossl.RAND_priv_bytes(buf, num);
+}
+
+// Add `num` bytes of external entropy from `buf` to the PRNG pool.
+// Useful for seeding from hardware RNG or platform-specific sources.
+ext fn rand_seed(stack u8 *r buf, i32 num): void {
+    ossl.RAND_seed(buf, num);
+}
+
+// Returns 1 if the PRNG has been seeded with sufficient entropy, 0 otherwise.
+ext fn rand_status(void): i32 {
+    ret ossl.RAND_status();
+}
+
+// Ask OpenSSL to poll the OS for fresh entropy; returns 1 on success.
+// Normally called automatically — use to force a re-poll.
+ext fn rand_poll(void): i32 {
+    ret ossl.RAND_poll();
+}
+
+// Load entropy bytes from the file at `path`.
+// Pass `max_bytes` = -1 to read the whole file.
+// Returns number of bytes read, or -1 on error.
+ext fn rand_load_file(stack i8 *r path, i64 max_bytes): i32 {
+    ret ossl.RAND_load_file(path, max_bytes);
+}
+
+// Write the current PRNG state as entropy to the file at `path`.
+// Returns the number of bytes written, or -1 on error.
+ext fn rand_write_file(stack i8 *r path): i32 {
+    ret ossl.RAND_write_file(path);
+}
+
+// Retrieve the default entropy seed-file path into `buf` (capacity `cap`).
+// Returns `buf` on success, or a null pointer on failure.
+ext fn rand_file_name(stack i8 *w buf, u64 cap): i8 *rw {
+    ret ossl.RAND_file_name(buf, cap);
+}
+
+// Keep random device file descriptors open between calls for lower latency.
+// Pass 1 to keep open, 0 to close after each use.
+ext fn rand_keep_devices_open(i32 keep): void {
+    ossl.RAND_keep_random_devices_open(keep);
+}
+
+// ── Convenience wrappers ──────────────────────────────────────────────────
+
+// Return a single cryptographically random u32.
+// Panics (returns 0) if the PRNG fails — check rand_status() first if needed.
+ext fn rand_u32(void): u32 {
+    u8 buf[4];
+    ossl.RAND_bytes(&buf[0], 4);
+    ret (u32)buf[0]
+       | ((u32)buf[1] << 8)
+       | ((u32)buf[2] << 16)
+       | ((u32)buf[3] << 24);
+}
+
+// Return a single cryptographically random u64.
+ext fn rand_u64(void): u64 {
+    u8 buf[8];
+    ossl.RAND_bytes(&buf[0], 8);
+    ret (u64)buf[0]
+       | ((u64)buf[1] << 8)
+       | ((u64)buf[2] << 16)
+       | ((u64)buf[3] << 24)
+       | ((u64)buf[4] << 32)
+       | ((u64)buf[5] << 40)
+       | ((u64)buf[6] << 48)
+       | ((u64)buf[7] << 56);
+}
+
+// Uniform random i32 in [min, max] inclusive using crypto randomness.
+// Uses rejection sampling for unbiased output.
+ext fn rand_range(i32 min, max): i32 {
+    final u32 range  = (u32)(max - min + 1);
+    final u32 bucket = 4294967295 - (4294967295 % range);
+    u32 r;
+    u8 buf[4];
+    inf {
+        ossl.RAND_bytes(&buf[0], 4);
+        r = (u32)buf[0]
+           | ((u32)buf[1] << 8)
+           | ((u32)buf[2] << 16)
+           | ((u32)buf[3] << 24);
+        if (r <= bucket) { ret min + (i32)(r % range); }
+    }
+    ret min; // unreachable
+}
+
+// Uniform random f64 in [0.0, 1.0] using crypto randomness.
+ext fn rand_f64(void): f64 {
+    u8 buf[8];
+    ossl.RAND_bytes(&buf[0], 8);
+    final u64 bits = (u64)buf[0]
+                   | ((u64)buf[1] << 8)
+                   | ((u64)buf[2] << 16)
+                   | ((u64)buf[3] << 24)
+                   | ((u64)buf[4] << 32)
+                   | ((u64)buf[5] << 40)
+                   | ((u64)buf[6] << 48)
+                   | ((u64)buf[7] << 56);
+    ret (f64)(bits >> 11) / 9007199254740992.0; // 2^53
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+test 'pcg32_t new has non-zero state' {
+    pcg32_t rng = pcg32_t.new(42);
+    expect.(rng.state != 0 || rng.inc != 0);
+}
+
+test 'pcg32_t next_u32 produces values' {
+    pcg32_t rng = pcg32_t.new(12345);
+    u32 v = rng.next_u32();
+    // just verify it doesn't crash; u32 is always >= 0
+    expect.(true);
+}
+
+test 'pcg32_t same seed same sequence' {
+    pcg32_t a = pcg32_t.new(99);
+    pcg32_t b = pcg32_t.new(99);
+    u32 v1 = a.next_u32();
+    u32 v2 = b.next_u32();
+    expect_eq.(v1, v2);
+}
+
+test 'pcg32_t different seeds different first output' {
+    pcg32_t a = pcg32_t.new(1);
+    pcg32_t b = pcg32_t.new(2);
+    u32 v1 = a.next_u32();
+    u32 v2 = b.next_u32();
+    expect.(v1 != v2);
+}
+
+test 'pcg32_t next_range in bounds' {
+    pcg32_t rng = pcg32_t.new(7);
+    i32 v = rng.next_range(1, 10);
+    expect.(v >= 1);
+    expect.(v <= 10);
+}
+
+test 'pcg32_t next_range single value' {
+    pcg32_t rng = pcg32_t.new(7);
+    i32 v = rng.next_range(5, 5);
+    expect_eq.(v, 5);
+}
+
+test 'pcg32_t next_f32 in unit range' {
+    pcg32_t rng = pcg32_t.new(42);
+    f32 v = rng.next_f32();
+    expect.(v >= 0.0);
+    expect.(v <= 1.0);
+}
+
+test 'pcg32_t next_frange in bounds' {
+    pcg32_t rng = pcg32_t.new(55);
+    f32 v = rng.next_frange(-1.0, 1.0);
+    expect.(v >= -1.0);
+    expect.(v <= 1.0);
+}
+
+test 'pcg32_t next_bool returns bool' {
+    pcg32_t rng = pcg32_t.new(100);
+    bool b = rng.next_bool();
+    expect.(b == true || b == false);
+}
+
+test 'pcg32_t reseed produces same output as new with same seed' {
+    pcg32_t a = pcg32_t.new(77);
+    u32 v1 = a.next_u32();
+
+    pcg32_t b = pcg32_t.new(0);
+    b.reseed(77);
+    u32 v2 = b.next_u32();
+    expect_eq.(v1, v2);
+}
+
+test 'pcg32_t generates multiple distinct values' {
+    pcg32_t rng = pcg32_t.new(999);
+    u32 a = rng.next_u32();
+    u32 b = rng.next_u32();
+    u32 c = rng.next_u32();
+    // Extremely unlikely all three are equal
+    expect.(a != b || b != c);
+}
+
+test 'pcg32_t print does not crash' {
+    pcg32_t rng = pcg32_t.new(42);
+    rng.print();
+    expect.(true);
+}

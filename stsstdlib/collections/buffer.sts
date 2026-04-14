@@ -1,0 +1,148 @@
+mod buffer;
+
+// A growable typed buffer — generic via comptime type parameter T.
+// Items are appended with push() and accessed by index with at().
+
+ext type buffer_t: @comptime[T] struct {
+    int heap T *rw buf;
+    int u32 length, capacity;
+
+    // Return a read-only pointer to element at idx, or error if out of bounds.
+    ext fn at(u32 idx): [T *r, error] {
+        if (idx >= this.length) {
+            ret nil, error.('index {} is out of bounds in buffer with length of: {}', idx, this.length);
+        }
+        ret &this.buf[idx], nil;
+    }
+
+    // Append a value, growing the buffer if needed.
+    ext fn push(T val): void {
+        if (this.length >= this.capacity) {
+            final u32 new_cap = this.capacity == 0 ? 8 : this.capacity * 2;
+            this.buf      = mov.(this.buf, new_cap * sizeof.(T));
+            this.capacity = new_cap;
+        }
+        this.buf[this.length] = val;
+        this.length++;
+    }
+
+    // Decrement length, discarding the last element. No-op if empty.
+    ext fn pop(void): void {
+        if (this.length > 0) {
+            this.length--;
+        }
+    }
+
+    // Reset length to zero without freeing memory.
+    ext fn clear(void): void {
+        this.length = 0;
+    }
+
+    ext fn length(void): u32 {
+        ret this.length;
+    }
+
+    ext fn capacity(void): u32 {
+        ret this.capacity;
+    }
+
+    ext fn is_empty(void): bool {
+        ret this.length == 0;
+    }
+
+    ext fn print(void): void {
+        print.('buffer_t[len={}, cap={}]\n', this.length, this.capacity);
+    }
+
+    ext fn rem(void): void {
+        if (this.buf != nil) {
+            rem.(this.buf);
+        }
+        this.buf      = nil;
+        this.length   = 0;
+        this.capacity = 0;
+    }
+}
+
+ext fn @comptime[T] buffer_t.new(void): buffer_t.[T] {
+    ret buffer_t.[T] {
+        .buf      = nil,
+        .length   = 0,
+        .capacity = 0,
+    };
+}
+
+test 'buffer is_empty after new' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    expect.(buf.is_empty());
+    expect_eq.(buf.length(), 0);
+}
+
+test 'buffer push and length' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(10);
+    buf.push(20);
+    expect_eq.(buf.length(), 2);
+    expect.(!buf.is_empty());
+}
+
+test 'buffer at reads correct value' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(42);
+    let [ptr, e] = buf.at(0);
+    expect.(e == nil);
+    expect_eq.(ptr[0], 42);
+}
+
+test 'buffer pop decrements length' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(7);
+    buf.push(7);
+    buf.pop();
+    expect_eq.(buf.length(), 1);
+}
+
+test 'buffer clear resets length' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(1);
+    buf.push(1);
+    buf.clear();
+    expect_eq.(buf.length(), 0);
+    expect.(buf.is_empty());
+}
+
+test 'buffer print does not crash' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(1);
+    buf.push(2);
+    buf.print();
+    expect.(true);
+}
+
+test 'buffer print empty does not crash' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.print();
+    expect.(true);
+}
+
+test 'buffer at out of bounds returns error' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    let [ptr, e] = buf.at(0);
+    expect.(e != nil);
+}
+
+test 'buffer multiple values' {
+    buffer_t.[i32] buf = buffer_t.[i32].new();
+    buf.push(11);
+    buf.push(22);
+    buf.push(33);
+    let [p0, e0] = buf.at(0);
+    let [p1, e1] = buf.at(1);
+    let [p2, e2] = buf.at(2);
+    expect.(e0 == nil);
+    expect.(e1 == nil);
+    expect.(e2 == nil);
+    expect_eq.(p0[0], 11);
+    expect_eq.(p1[0], 22);
+    expect_eq.(p2[0], 33);
+}

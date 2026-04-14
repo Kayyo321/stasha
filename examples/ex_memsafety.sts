@@ -1,0 +1,243 @@
+mod ex_memsafety;
+
+// ── Memory Safety Features ─────────────────────────────────────────────────
+//
+// This file demonstrates the memory safety additions to Stasha:
+//
+//   1. Zone allocation
+//        zone name { }          — lexical zone: auto-freed at closing brace
+//        zone name;             — manual zone: call rem.(name) yourself
+//        new.(bytes) in name    — allocate from a zone instead of the heap
+//        rem.(name)             — free the whole zone at once
+//        mov.(name, ptr, size)  — escape a pointer out of the zone to the heap
+//
+//   2. Slice bounds checking
+//        s[i]                   — runtime bounds check (0 ≤ i < len);
+//                                 aborts with llvm.trap on violation
+//        s[unchecked: i]        — skips the check (programmer's responsibility)
+//
+//   3. unsafe { } blocks
+//        suppress all safety checks inside the braces
+//
+//   4. @frees parameter attribute
+//        marks that this function takes ownership of the pointer and must
+//        call rem.() on it on every exit path
+//
+//   5. Nullable pointer types  ?T *perm
+//        signals that the pointer may be nil; checked against nil before use
+// ──────────────────────────────────────────────────────────────────────────
+
+// ── 1. Zone allocation ────────────────────────────────────────────────────
+//
+// A zone is a bump-allocating arena backed by 64 KiB blocks.  Every
+// allocation inside a zone is freed in one call — no individual rem.()
+// needed.  Ideal for request-scoped or temporary working storage.
+
+int fn zone_demo(void): void {
+    print.('--- zone: lexical block ---\n');
+
+    // zone scratch { } — the zone is created on entry and freed automatically
+    // when execution reaches the closing brace.  All new.() in scratch calls
+    // draw from the zone instead of the global heap.
+    zone scratch {
+        stack u8  *rw name  = new.(32)  in scratch;
+        stack i32 *rw nums  = new.(sizeof.(i32) * 8) in scratch;
+
+        // Write into zone-backed buffers.
+        name[0] = 65; name[1] = 114; name[2] = 101; name[3] = 110;
+        name[4] = 97; name[5] = 0;   // "Arena"
+
+        for (stack i32 i = 0; i < 8; i++) {
+            nums[i] = (i + 1) * 10;  // 10, 20, ..., 80
+        }
+
+        print.('  name  = {}\n', name);
+
+        stack i32 sum = 0;
+        for (stack i32 i = 0; i < 8; i++) { sum += nums[i]; }
+        print.('  sum   = {}\n', sum);
+
+        // name and nums are freed here — no rem.() calls needed.
+    }
+
+    print.('--- zone: manual ---\n');
+
+    // zone name; — declare the zone without a block.  You control when it
+    // is freed by calling rem.(name).
+    zone workspace;
+    stack i32 n = 6;
+    stack f64 *rw buf = new.(sizeof.(f64) * n) in workspace;
+
+    for (stack i32 i = 0; i < n; i++) {
+        buf[i] = (i + 1) * 1.5;   // 1.5, 3.0, 4.5, 6.0, 7.5, 9.0
+    }
+
+    stack f64 total = 0.0;
+    for (stack i32 i = 0; i < n; i++) { total += buf[i]; }
+    print.('  total = {:+.2}\n', total);   // 31.50
+
+    // Free the entire zone — every in-zone pointer is invalidated.
+    rem.(workspace);
+}
+
+// ── 2. Slice bounds checking ──────────────────────────────────────────────
+//
+// Indexing a slice with s[i] emits: assert(0 ≤ i < len(s)), llvm.trap.
+// The check is elided for compile-time-constant indices that fit in the
+// declared length, and inside unsafe{} or [unchecked: i] expressions.
+
+// Sum using safe (bounds-checked) indexing.
+int fn sum_safe(stack []i32 s): i32 {
+    stack i32 acc = 0;
+    for (stack i32 i = 0; i < len.(s); i++) {
+        acc += s[i];   // bounds check on each iteration
+    }
+    ret acc;
+}
+
+// Sum using unchecked indexing — faster in hot loops where the index is
+// already known to be valid.
+int fn sum_fast(stack []i32 s): i32 {
+    stack i32 acc = 0;
+    for (stack i32 i = 0; i < len.(s); i++) {
+        acc += s[unchecked: i];   // no runtime check emitted
+    }
+    ret acc;
+}
+
+int fn bounds_demo(void): void {
+    print.('--- slice bounds checking ---\n');
+
+    heap []i32 data = make.([]i32, 5);
+    defer rem.(data);
+    for (stack i32 i = 0; i < 5; i++) { data[i] = (i + 1) * 3; }
+    // data = [3, 6, 9, 12, 15]
+
+    print.('  sum_safe = {}\n', sum_safe(data));   // 45
+    print.('  sum_fast = {}\n', sum_fast(data));   // 45
+
+    // Demonstrating a valid in-bounds access:
+    print.('  data[2]  = {}\n', data[2]);   // 9
+
+    // Uncommenting the next line would abort at runtime via llvm.trap:
+    //   data[10] = 0;   // index 10 ≥ len 5  →  OOB trap
+}
+
+// ── 3. unsafe { } blocks ──────────────────────────────────────────────────
+//
+// Inside unsafe { }, all Stasha safety checks are disabled — bounds checks,
+// pointer permission checks, provenance checks, etc.  Use sparingly and only
+// when you can prove correctness manually.
+
+int fn memcpy_words(stack i32 *rw dst, stack i32 *r+ src, stack i32 n): void {
+    unsafe {
+        // Manually walk the source and destination with pointer arithmetic.
+        // Normally *rw lacks '+' (arithmetic) permission; inside unsafe that
+        // restriction is lifted.
+        for (stack i32 i = 0; i < n; i++) {
+            dst[i] = src[i];   // unchecked, no bounds enforcement
+        }
+    }
+}
+
+int fn unsafe_demo(void): void {
+    print.('--- unsafe block ---\n');
+
+    // Use raw heap pointers.  *rw+ grants read, write, and arithmetic perms
+    // so it can be narrowed to the *r+ the function requires.
+    heap i32 *rw+ src = new.(sizeof.(i32) * 4);
+    defer rem.(src);
+    heap i32 *rw+ dst = new.(sizeof.(i32) * 4);
+    defer rem.(dst);
+    src[0] = 1; src[1] = 2; src[2] = 3; src[3] = 4;
+
+    // Inside unsafe the compiler skips all remaining permission checks.
+    unsafe {
+        stack i32 *r+ sp = src;
+        memcpy_words(dst, sp, 4);
+    }
+
+    print.('  dst = ');
+    for (stack i32 i = 0; i < 4; i++) { print.('{} ', dst[i]); }
+    print.('\n');   // 1 2 3 4
+}
+
+// ── 4. @frees parameter attribute ────────────────────────────────────────
+//
+// Mark a pointer parameter with @frees to declare that this function takes
+// ownership and will call rem.() on it.  The compiler verifies that rem.()
+// is called on all exit paths.
+
+// process_and_free takes ownership of buf — the caller must not use buf after.
+ext fn process_and_free(@frees heap u8 *rw buf, stack i32 n): i32 {
+    stack i32 sum = 0;
+    for (stack i32 i = 0; i < n; i++) { sum += buf[i]; }
+    rem.(buf);   // required: @frees means we must free on every path
+    ret sum;
+}
+
+int fn frees_demo(void): void {
+    print.('--- @frees parameter ---\n');
+
+    heap u8 *rw data = new.(4);
+    data[0] = 10; data[1] = 20; data[2] = 30; data[3] = 40;
+
+    // Transfer ownership: data is freed inside process_and_free.
+    stack i32 result = process_and_free(data, 4);
+    print.('  result = {}\n', result);   // 100
+    // data is now dangling — do not use it.
+}
+
+// ── 5. Nullable pointer types ─────────────────────────────────────────────
+//
+// ?T *perm declares a pointer that may be nil.  A non-nullable pointer
+// T *perm must never be nil (the compiler will eventually enforce this).
+// Check against nil before dereferencing a ?T * pointer.
+
+// Returns a nullable heap pointer containing a copy of the found value,
+// or nil if not present.  Caller owns the returned allocation (rem. it).
+int fn find_copy(stack []i32 haystack, stack i32 needle): ?i32 *rw {
+    for (stack i32 i = 0; i < len.(haystack); i++) {
+        if haystack[i] == needle {
+            heap i32 *rw copy = new.(sizeof.(i32));
+            *.(copy) = needle;
+            ret copy;
+        }
+    }
+    ret nil;
+}
+
+int fn nullable_demo(void): void {
+    print.('--- nullable pointers ---\n');
+
+    heap []i32 nums = make.([]i32, 6);
+    defer rem.(nums);
+    nums[0] = 4; nums[1] = 8; nums[2] = 15; nums[3] = 16; nums[4] = 23; nums[5] = 42;
+
+    // find_copy returns ?i32 *rw — always check for nil before dereferencing.
+    heap ?i32 *rw found = find_copy(nums, 15);
+    if found != nil {
+        print.('  found 15: {}\n', *.(found));   // 15
+        rem.(found);
+    } else {
+        print.('  15 not found\n');
+    }
+
+    heap ?i32 *rw missing = find_copy(nums, 99);
+    if missing == nil {
+        print.('  99 not found (nil)\n');
+    }
+}
+
+fn main(void): i32 {
+    zone_demo();
+    print.('\n');
+    bounds_demo();
+    print.('\n');
+    unsafe_demo();
+    print.('\n');
+    frees_demo();
+    print.('\n');
+    nullable_demo();
+    ret 0;
+}

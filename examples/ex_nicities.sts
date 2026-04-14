@@ -1,0 +1,46 @@
+mod ex_nicities;
+
+fn foo(i32 x): [i32, error] {
+    if x < 0 {
+        return 0, error.('Error!, x is lower than zero!');
+    }
+
+    return x * x, nil;
+}
+
+// same proc, but doesn't return an i32
+fn bar(i32 x): error {
+    if x < 0 {
+        return error.('Error!, x is lower than zero!');
+    }
+
+    return nil;
+}
+
+fn use_bar(void): error {
+    bar.?(10);
+    bar.?(-10); // should force return error here
+    bar.?(-100);
+
+    ret nil; // should never be here
+}
+
+fn main(void): i32 {
+    with [xs, e] = foo(100); e == nil {
+        with x = xs; true {                   // pretty useless, but shows how you can just
+            print.('x = {}, e = {}\n', x, e); // | set one var using `with`
+        }
+    }
+
+    // now to goof things up
+    with [_, e] = foo(-1); e == nil { // this shows with creates it's own scope
+        // never here                  | so you can redef e without issue
+    } else {
+        print.('{}\n', e); // should print out the error from ln 5
+    }
+
+    let e = use_bar();
+    print.('e = {}\n', e);
+
+    ret 0;
+}

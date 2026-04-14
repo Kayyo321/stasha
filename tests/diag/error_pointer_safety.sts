@@ -1,0 +1,11 @@
+// Diagnostic test: pointer safety — stack address assigned to heap pointer
+// Expected: "cannot assign a stack address to a heap pointer" on line 10
+mod diag_pointer_safety;
+
+int fn main(void): i32 {
+    i32 x = 42;
+    // Taking the address of a stack variable and storing it in a heap pointer
+    // is a lifetime error: the heap pointer outlives the stack frame.
+    heap i32 *rw ptr = &x;
+    ret *ptr;
+}

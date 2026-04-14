@@ -1,3 +1,15 @@
 [submodule "extlib/llvm"]
 	path = extlib/llvm
 	url = https://github.com/llvm/llvm-project.git
+[submodule "extlib/sodium"]
+	path = extlib/sodium
+	url = https://github.com/jedisct1/libsodium.git
+[submodule "extlib/openssl"]
+	path = extlib/openssl
+	url = https://github.com/openssl/openssl.git
+[submodule "extlib/cjson"]
+	path = extlib/cjson
+	url = https://github.com/DaveGamble/cJSON.git
+[submodule "extlib/mongoose"]
+	path = extlib/mongoose
+	url = https://github.com/cesanta/mongoose.git

@@ -1,0 +1,159 @@
+mod logging;
+
+lib "stdio" = cio;
+lib "time"  = ctime;
+
+// ── Log levels ────────────────────────────────────────────────────────────
+
+ext const i32 LogDebug = 0;
+ext const i32 LogInfo  = 1;
+ext const i32 LogWarn  = 2;
+ext const i32 LogError = 3;
+ext const i32 LogOff   = 4;
+
+// ── logger_t ──────────────────────────────────────────────────────────────
+
+ext type logger_t: struct {
+    int i32  level;
+    int bool use_timestamps;
+
+    ext fn set_level(i32 lvl): void {
+        this.level = lvl;
+    }
+
+    int fn log_if(i32 lvl, stack i8 *r prefix, stack i8 *r msg): void {
+        if (this.level > lvl) { ret; }
+        if (this.use_timestamps) {
+            i64 ts = ctime.time(0);
+            cio.printf("[%lld] %s %s\n", ts, prefix, msg);
+        } else {
+            cio.printf("%s %s\n", prefix, msg);
+        }
+    }
+
+    int fn log_if_fmt(i32 lvl, stack i8 *r prefix, stack i8 *r fmt, i64 val): void {
+        if (this.level > lvl) { ret; }
+        if (this.use_timestamps) {
+            i64 ts = ctime.time(0);
+            cio.printf("[%lld] %s ", ts, prefix);
+            cio.printf(fmt, val);
+            cio.printf("\n");
+        } else {
+            cio.printf("%s ", prefix);
+            cio.printf(fmt, val);
+            cio.printf("\n");
+        }
+    }
+
+    ext fn log_debug(stack i8 *r msg): void {
+        this.log_if(LogDebug, "[DEBUG]", msg);
+    }
+
+    ext fn log_info(stack i8 *r msg): void {
+        this.log_if(LogInfo, "[INFO]", msg);
+    }
+
+    ext fn log_warn(stack i8 *r msg): void {
+        this.log_if(LogWarn, "[WARN]", msg);
+    }
+
+    ext fn log_error(stack i8 *r msg): void {
+        this.log_if(LogError, "[ERROR]", msg);
+    }
+
+    ext fn log_debug_fmt(stack i8 *r fmt, i64 val): void {
+        this.log_if_fmt(LogDebug, "[DEBUG]", fmt, val);
+    }
+
+    ext fn log_info_fmt(stack i8 *r fmt, i64 val): void {
+        this.log_if_fmt(LogInfo, "[INFO]", fmt, val);
+    }
+
+    ext fn print(void): void {
+        print.('logger_t[level={}, timestamps={}]\n',
+               this.level, this.use_timestamps);
+    }
+}
+
+ext fn logger_t.new(i32 level, bool use_timestamps): logger_t {
+    ret logger_t{
+        .level          = level,
+        .use_timestamps = use_timestamps
+    };
+}
+
+ext fn logger_t.rem(void): void {
+    // nothing to free
+}
+
+// ── Free functions (always print to stdout) ───────────────────────────────
+
+ext fn log_debug(stack i8 *r msg): void {
+    cio.printf("[DEBUG] %s\n", msg);
+}
+
+ext fn log_info(stack i8 *r msg): void {
+    cio.printf("[INFO] %s\n", msg);
+}
+
+ext fn log_warn(stack i8 *r msg): void {
+    cio.printf("[WARN] %s\n", msg);
+}
+
+ext fn log_error(stack i8 *r msg): void {
+    cio.printf("[ERROR] %s\n", msg);
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'logger level filtering' {
+    logger_t l = logger_t.new(LogInfo, false);
+    // LogInfo level: debug messages should be suppressed (no crash = pass)
+    l.log_debug("this should not print");
+    l.log_info("info message");
+    l.log_warn("warn message");
+    l.log_error("error message");
+    expect.(true);
+}
+
+test 'logger set_level' {
+    logger_t l = logger_t.new(LogWarn, false);
+    l.set_level(LogDebug);
+    l.log_debug("now visible");
+    expect.(true);
+}
+
+test 'logger with timestamps' {
+    logger_t l = logger_t.new(LogInfo, true);
+    l.log_info("timestamped message");
+    expect.(true);
+}
+
+test 'logger fmt' {
+    logger_t l = logger_t.new(LogDebug, false);
+    l.log_debug_fmt("value = %lld", (i64)42);
+    l.log_info_fmt("count = %lld", (i64)100);
+    expect.(true);
+}
+
+test 'free functions' {
+    log_debug("free debug");
+    log_info("free info");
+    log_warn("free warn");
+    log_error("free error");
+    expect.(true);
+}
+
+test 'logger print does not crash' {
+    logger_t l = logger_t.new(LogInfo, false);
+    l.print();
+    expect.(true);
+}
+
+test 'log constants' {
+    expect_eq.(LogDebug, 0);
+    expect_eq.(LogInfo, 1);
+    expect_eq.(LogWarn, 2);
+    expect_eq.(LogError, 3);
+    expect_eq.(LogOff, 4);
+}

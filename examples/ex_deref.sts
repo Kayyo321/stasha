@@ -1,0 +1,28 @@
+mod ex_deref;
+
+lib "stdio" = io;
+
+/* increment the value a pointer points to */
+fn bump(stack i32 *rw p): void {
+    *.(p) = *.(p) + 1;
+}
+
+ext fn main(void): i32 {
+    /* basic dereference */
+    stack i32 x = 10;
+    stack i32 *rw p = &x;
+    io.printf("before: x = %d\n", *.(p));
+
+    *.(p) = 42;
+    io.printf("after assign through pointer: x = %d\n", x);
+
+    /* pass pointer to function, mutate via *.(p) */
+    bump(p);
+    io.printf("after bump: x = %d\n", x);
+
+    /* double pointer */
+    stack i32 *rw *rw pp = &p;
+    io.printf("double deref **pp = %d\n", *.(*(pp)));
+
+    ret 0;
+}

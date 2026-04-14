@@ -1,0 +1,143 @@
+mod crypto;
+
+// On macOS, CC_SHA256 family is in libSystem (accessible via lib "c").
+// CC_SHA256_CTX is 96 bytes on macOS arm64.
+// CC_SHA256_Init / CC_SHA256_Update / CC_SHA256_Final are the POSIX-style API.
+// CC_SHA256(data, len, out) is the one-shot API.
+// SHA256_DIGEST_LENGTH = 32
+
+lib "c" = csha;
+lib "stdio" = cio;
+
+ext const u32 CryptoSha256Len = 32;
+
+// ── SHA-256 hasher (incremental) ─────────────────────────────────────────────
+// CC_SHA256_CTX is 96 bytes on macOS arm64.
+
+ext type sha256_t: struct {
+    ext heap u8 *rw ctx;
+
+    ext fn update(stack u8 *r+ data, u64 len): void {
+        csha.CC_SHA256_Update(this.ctx, data, len);
+    }
+
+    ext fn finalize(stack u8 *w+ digest): void {
+        csha.CC_SHA256_Final(digest, this.ctx);
+    }
+
+    ext fn print(void): void {
+        print.('sha256_t[ctx_valid={}]\n', this.ctx != nil);
+    }
+
+    ext fn rem(void): void {
+        if (this.ctx != nil) {
+            rem.(this.ctx);
+            this.ctx = nil;
+        }
+    }
+}
+
+ext fn sha256_t.new(void): sha256_t {
+    heap u8 *rw c = new.(96);
+    for (i32 i = 0; i < 96; i++) { c[i] = 0; }
+    csha.CC_SHA256_Init(c);
+    ret sha256_t{
+        .ctx = c
+    };
+}
+
+// One-shot SHA-256: writes 32 bytes into digest
+ext fn crypto_sha256(stack u8 *r+ data, u64 len, stack u8 *w+ digest): void {
+    csha.CC_SHA256(data, len, digest);
+}
+
+// One-shot SHA-256 as hex string: hex_out must be >= 65 bytes
+ext fn crypto_sha256_hex(stack u8 *r+ data, u64 len, stack i8 *w+ hex_out): void {
+    heap u8 *rw digest = new.(32);
+    csha.CC_SHA256(data, len, digest);
+    for (i32 i = 0; i < 32; i++) {
+        cio.sprintf(hex_out + i * 2, "%02x", (i32)digest[i]);
+    }
+    hex_out[64] = 0;
+    rem.(digest);
+}
+
+// Secure random bytes from /dev/urandom
+ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
+    stack i8 *rw fp = cio.fopen("/dev/urandom", "rb");
+    if (fp == nil) {
+        ret error.('failed to open /dev/urandom');
+    }
+    u32 n = cio.fread(buf, 1, len, fp);
+    cio.fclose(fp);
+    if (n != len) {
+        ret error.('short read from /dev/urandom');
+    }
+    ret nil;
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+test 'sha256_t incremental hash' {
+    // hash "hello" and check the known first byte: SHA256("hello")[0] = 0x2c = 44
+    sha256_t h = sha256_t.new();
+    heap u8 *rw data = new.(5);
+    data[0] = 104; // h
+    data[1] = 101; // e
+    data[2] = 108; // l
+    data[3] = 108; // l
+    data[4] = 111; // o
+    h.update(data, (u64)5);
+    heap u8 *rw digest = new.(32);
+    for (i32 i = 0; i < 32; i++) { digest[i] = 0; }
+    h.finalize(digest);
+    // SHA256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+    expect_eq.((i32)digest[0], 44);  // 0x2c
+    rem.(digest);
+    rem.(data);
+    h.rem();
+}
+
+test 'crypto_sha256 one-shot' {
+    heap u8 *rw data = new.(5);
+    data[0] = 104; data[1] = 101; data[2] = 108; data[3] = 108; data[4] = 111;
+    heap u8 *rw digest = new.(32);
+    crypto_sha256(data, (u64)5, digest);
+    expect_eq.((i32)digest[0], 44);  // 0x2c
+    rem.(digest);
+    rem.(data);
+}
+
+test 'crypto_sha256_hex empty string' {
+    // SHA256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    heap u8 *rw dummy = new.(1);
+    dummy[0] = 0;
+    heap i8 *rw hex_out = new.(65);
+    crypto_sha256_hex(dummy, (u64)0, hex_out);
+    // First two chars: 'e' = 101, '3' = 51
+    expect_eq.((i32)hex_out[0], 101);
+    expect_eq.((i32)hex_out[1], 51);
+    rem.(hex_out);
+    rem.(dummy);
+}
+
+test 'sha256_t print does not crash' {
+    sha256_t h = sha256_t.new();
+    h.print();
+    h.rem();
+    expect.(true);
+}
+
+test 'crypto_random_bytes' {
+    heap u8 *rw buf = new.(16);
+    for (i32 i = 0; i < 16; i++) { buf[i] = 0; }
+    error e = crypto_random_bytes(buf, 16);
+    expect.(e == nil);
+    // Probabilistic: at least one byte should be non-zero
+    bool any_nonzero = false;
+    for (i32 i = 0; i < 16; i++) {
+        if (buf[i] != 0) { any_nonzero = true; }
+    }
+    expect.(any_nonzero);
+    rem.(buf);
+}

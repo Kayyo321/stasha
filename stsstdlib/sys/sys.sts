@@ -1,0 +1,73 @@
+mod sys;
+
+lib "stdlib" = cstd;
+lib "unistd" = cunistd;
+
+// ── Process control ───────────────────────────────────────────────────────
+
+// Terminate the process with the given exit code.
+ext fn sys_exit(i32 code): void {
+    cstd.exit(code);
+}
+
+// Abort with a core dump (SIGABRT).
+ext fn sys_abort(void): void {
+    cstd.abort();
+}
+
+// ── Environment ───────────────────────────────────────────────────────────
+
+// Return the value of environment variable `name`, or nil if not set.
+ext fn sys_getenv(stack i8 *r name): i8 *r {
+    stack i8 *r result = cstd.getenv(name);
+    ret result;
+}
+
+// ── Process / user identity ───────────────────────────────────────────────
+
+// Current process ID.
+ext fn sys_getpid(void): i32 {
+    ret cunistd.getpid();
+}
+
+// Current user ID.
+ext fn sys_getuid(void): u32 {
+    ret cunistd.getuid();
+}
+
+// Parent process ID.
+ext fn sys_getppid(void): i32 {
+    ret cunistd.getppid();
+}
+
+// ── Sleep ─────────────────────────────────────────────────────────────────
+
+// Sleep for `secs` whole seconds.
+ext fn sys_sleep_s(u32 secs): void {
+    cunistd.sleep(secs);
+}
+
+// Sleep for `usecs` microseconds.
+ext fn sys_sleep_us(u32 usecs): void {
+    cunistd.usleep(usecs);
+}
+
+test 'sys_getpid positive' {
+    i32 pid = sys_getpid();
+    expect.(pid > 0);
+}
+
+test 'sys_getenv PATH not nil' {
+    stack i8 *r p = sys_getenv("PATH");
+    expect.(p != nil);
+}
+
+test 'sys_getuid non-negative' {
+    u32 uid = sys_getuid();
+    expect.(uid >= 0);
+}
+
+test 'sys_getppid positive' {
+    i32 ppid = sys_getppid();
+    expect.(ppid > 0);
+}

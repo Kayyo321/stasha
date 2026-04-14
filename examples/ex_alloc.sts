@@ -1,0 +1,87 @@
+mod ex_alloc;
+
+lib "stdio" = io;
+lib "allocator" from "liballocator.a";
+imp allocator;
+
+fn main(void): i32 {
+    tracked_allocator_t tracked = tracked_allocator_t.new();
+
+    let [tracked_buf0, tracked_err0] = tracked.alloc_bytes(6);
+    if tracked_err0 != nil {
+        print.("error: {}\n", tracked_err0);
+        ret 1;
+    }
+
+    let [tracked_buf1, tracked_err1] = tracked.resize_bytes(tracked_buf0, 6, 17);
+    if tracked_err1 != nil {
+        print.("error: {}\n", tracked_err1);
+        tracked.free_bytes(tracked_buf0, 6);
+        ret 1;
+    }
+
+    tracked_buf1[0] = 115; tracked_buf1[1] = 116; tracked_buf1[2] = 97;
+    tracked_buf1[3] = 115; tracked_buf1[4] = 104; tracked_buf1[5] = 97;
+    tracked_buf1[6] = 32;  tracked_buf1[7] = 97;  tracked_buf1[8] = 108;
+    tracked_buf1[9] = 108; tracked_buf1[10] = 111; tracked_buf1[11] = 99;
+    tracked_buf1[12] = 32; tracked_buf1[13] = 100; tracked_buf1[14] = 101;
+    tracked_buf1[15] = 109; tracked_buf1[16] = 111;
+
+    io.printf(
+        "tracked text: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",
+        tracked_buf1[0], tracked_buf1[1], tracked_buf1[2], tracked_buf1[3],
+        tracked_buf1[4], tracked_buf1[5], tracked_buf1[6], tracked_buf1[7],
+        tracked_buf1[8], tracked_buf1[9], tracked_buf1[10], tracked_buf1[11],
+        tracked_buf1[12], tracked_buf1[13], tracked_buf1[14], tracked_buf1[15],
+        tracked_buf1[16]
+    );
+
+    tracked.free_bytes(tracked_buf1, 17);
+
+    alloc_stats_t tracked_stats = tracked.stats();
+    io.printf(
+        "tracked stats: allocs=%llu frees=%llu resizes=%llu live=%llu peak=%llu\n",
+        tracked_stats.allocations,
+        tracked_stats.frees,
+        tracked_stats.resizes,
+        tracked_stats.live_bytes,
+        tracked_stats.peak_bytes
+    );
+
+    quota_allocator_t quota = quota_allocator_t.new(12);
+
+    let [quota_buf0, quota_err0] = quota.alloc_bytes(8);
+    if quota_err0 != nil {
+        print.("error: {}\n", quota_err0);
+        ret 1;
+    }
+    quota_buf0[0] = 113; quota_buf0[1] = 117; quota_buf0[2] = 111; quota_buf0[3] = 116;
+    quota_buf0[4] = 97;  quota_buf0[5] = 32;  quota_buf0[6] = 111; quota_buf0[7] = 107;
+
+    io.printf(
+        "quota text: %c%c%c%c%c%c%c%c\n",
+        quota_buf0[0], quota_buf0[1], quota_buf0[2], quota_buf0[3],
+        quota_buf0[4], quota_buf0[5], quota_buf0[6], quota_buf0[7]
+    );
+
+    let [quota_buf1, quota_err1] = quota.alloc_bytes(8);
+    if quota_err1 != nil {
+        print.("quota denied: {}\n", quota_err1);
+    } else {
+        quota.free_bytes(quota_buf1, 8);
+    }
+
+    quota.free_bytes(quota_buf0, 8);
+
+    alloc_stats_t quota_stats = quota.stats();
+    io.printf(
+        "quota stats: allocs=%llu frees=%llu resizes=%llu live=%llu peak=%llu\n",
+        quota_stats.allocations,
+        quota_stats.frees,
+        quota_stats.resizes,
+        quota_stats.live_bytes,
+        quota_stats.peak_bytes
+    );
+
+    ret 0;
+}

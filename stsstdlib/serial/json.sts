@@ -1,0 +1,735 @@
+mod json;
+
+lib "stdio"   = cio;
+lib "string"  = cstring;
+lib "stdlib"  = cstdlib;
+lib "stdjson" = cj;   // cJSON + wrapper, bundled into libjson.a at build time
+
+// ── JSON type constants ───────────────────────────────────────────────────────
+// Match stdjson_type() return values (0=invalid 1=false 2=true 3=null
+// 4=number 5=string 6=array 7=object)
+
+ext const i32 JsonTypeInvalid = 0;
+ext const i32 JsonTypeFalse   = 1;
+ext const i32 JsonTypeTrue    = 2;
+ext const i32 JsonTypeNull    = 3;
+ext const i32 JsonTypeNumber  = 4;
+ext const i32 JsonTypeString  = 5;
+ext const i32 JsonTypeArray   = 6;
+ext const i32 JsonTypeObject  = 7;
+
+// ── json_t ────────────────────────────────────────────────────────────────────
+//
+// Wraps an opaque cJSON node pointer.
+// `owned` controls whether json_t.free() deletes the underlying tree.
+
+ext type json_t: struct {
+    int stack i8 *rw handle;   // cJSON* — opaque (NOT heap: to avoid auto-free; managed by json_t.free)
+    int bool owned;             // true → free() calls stdjson_free
+
+    // ── Type queries ─────────────────────────────────────────────────────
+
+    ext fn type_id(void): i32 {
+        if (this.handle == nil) { ret 0; }
+        ret cj.stdjson_type(this.handle);
+    }
+
+    ext fn is_null(void): bool   { ret this.type_id() == 3;   }
+    ext fn is_bool(void): bool   {
+        i32 t = this.type_id();
+        ret t == 1 || t == 2;
+    }
+    ext fn is_number(void): bool { ret this.type_id() == 4;  }
+    ext fn is_string(void): bool { ret this.type_id() == 5;  }
+    ext fn is_array(void): bool  { ret this.type_id() == 6;   }
+    ext fn is_object(void): bool { ret this.type_id() == 7;  }
+    ext fn is_valid(void): bool  { ret this.handle != nil; }
+
+    // ── Scalar value accessors ────────────────────────────────────────────
+
+    ext fn as_string(void): i8 *r {
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_get_str_val(this.handle);
+    }
+
+    ext fn as_number(void): f64 {
+        if (this.handle == nil) { ret 0.0; }
+        ret cj.stdjson_get_num_val(this.handle);
+    }
+
+    ext fn as_i64(void): i64 { ret (i64)this.as_number(); }
+    ext fn as_i32(void): i32 { ret (i32)this.as_number(); }
+
+    ext fn as_bool(void): bool {
+        if (this.handle == nil) { ret false; }
+        ret cj.stdjson_get_bool_val(this.handle) != 0;
+    }
+
+    // ── Object field access ───────────────────────────────────────────────
+
+    ext fn get(stack i8 *r+ key): [json_t, error] {
+        if (this.handle == nil) {
+            ret json_t{ .handle = nil, .owned = false }, error.('json_t.get: null handle');
+        }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
+        if (child == nil) {
+            ret json_t{ .handle = nil, .owned = false }, error.('json_t.get: key not found');
+        }
+        ret json_t{ .handle = child, .owned = false }, nil;
+    }
+
+    ext fn get_string(stack i8 *r+ key): [i8 *r, error] {
+        if (this.handle == nil) { ret nil, error.('json_t.get_string: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
+        if (child == nil) { ret nil, error.('json_t.get_string: key not found'); }
+        if (cj.stdjson_type(child) != 5) {
+            ret nil, error.('json_t.get_string: field is not a string');
+        }
+        ret cj.stdjson_get_str_val(child), nil;
+    }
+
+    ext fn get_number(stack i8 *r+ key): [f64, error] {
+        if (this.handle == nil) { ret 0.0, error.('json_t.get_number: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
+        if (child == nil) { ret 0.0, error.('json_t.get_number: key not found'); }
+        if (cj.stdjson_type(child) != 4) {
+            ret 0.0, error.('json_t.get_number: field is not a number');
+        }
+        ret cj.stdjson_get_num_val(child), nil;
+    }
+
+    ext fn get_i64(stack i8 *r+ key): [i64, error] {
+        if (this.handle == nil) { ret 0, error.('json_t.get_i64: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
+        if (child == nil) { ret 0, error.('json_t.get_i64: key not found'); }
+        if (cj.stdjson_type(child) != 4) {
+            ret 0, error.('json_t.get_i64: field is not a number');
+        }
+        ret (i64)cj.stdjson_get_num_val(child), nil;
+    }
+
+    ext fn get_bool(stack i8 *r+ key): [bool, error] {
+        if (this.handle == nil) { ret false, error.('json_t.get_bool: null handle'); }
+        stack i8 *rw child = cj.stdjson_obj_get(this.handle, key);
+        if (child == nil) { ret false, error.('json_t.get_bool: key not found'); }
+        i32 t = cj.stdjson_type(child);
+        if (t != 1 && t != 2) {
+            ret false, error.('json_t.get_bool: field is not a bool');
+        }
+        ret cj.stdjson_get_bool_val(child) != 0, nil;
+    }
+
+    ext fn has(stack i8 *r+ key): bool {
+        if (this.handle == nil) { ret false; }
+        ret cj.stdjson_obj_has(this.handle, key) != 0;
+    }
+
+    // ── Object mutation ───────────────────────────────────────────────────
+
+    ext fn set_string(stack i8 *r+ key, stack i8 *r+ val): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_str(this.handle, key, val);
+    }
+
+    ext fn set_number(stack i8 *r+ key, f64 val): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_num(this.handle, key, val);
+    }
+
+    ext fn set_i64(stack i8 *r+ key, i64 val): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_num(this.handle, key, (f64)val);
+    }
+
+    ext fn set_bool(stack i8 *r+ key, bool val): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_bool(this.handle, key, val ? 1 : 0);
+    }
+
+    ext fn set_null(stack i8 *r+ key): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_set_null(this.handle, key);
+    }
+
+    ext fn set_item(stack i8 *r+ key, json_t item): void {
+        if (this.handle == nil || item.handle == nil) { ret; }
+        cj.stdjson_obj_set_item(this.handle, key, item.handle);
+    }
+
+    ext fn remove_key(stack i8 *r+ key): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_obj_remove(this.handle, key);
+    }
+
+    // ── Object iteration ──────────────────────────────────────────────────
+
+    ext fn obj_size(void): i32 {
+        if (this.handle == nil) { ret 0; }
+        ret cj.stdjson_obj_size(this.handle);
+    }
+
+    ext fn obj_key_at(i32 idx): i8 *r {
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_obj_key_at(this.handle, idx);
+    }
+
+    ext fn obj_val_at(i32 idx): json_t {
+        if (this.handle == nil) {
+            ret json_t{ .handle = nil, .owned = false };
+        }
+        stack i8 *rw v = cj.stdjson_obj_val_at(this.handle, idx);
+        ret json_t{ .handle = v, .owned = false };
+    }
+
+    // ── Array access ──────────────────────────────────────────────────────
+
+    ext fn array_len(void): i32 {
+        if (this.handle == nil) { ret 0; }
+        ret cj.stdjson_array_len(this.handle);
+    }
+
+    ext fn array_get(i32 idx): [json_t, error] {
+        if (this.handle == nil) {
+            ret json_t{ .handle = nil, .owned = false }, error.('array_get: null handle');
+        }
+        stack i8 *rw child = cj.stdjson_array_get(this.handle, idx);
+        if (child == nil) {
+            ret json_t{ .handle = nil, .owned = false }, error.('array_get: out of range');
+        }
+        ret json_t{ .handle = child, .owned = false }, nil;
+    }
+
+    ext fn array_push_string(stack i8 *r+ s): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_str(this.handle, s);
+    }
+
+    ext fn array_push_number(f64 n): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_num(this.handle, n);
+    }
+
+    ext fn array_push_bool(bool b): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_bool(this.handle, b ? 1 : 0);
+    }
+
+    ext fn array_push_null(void): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_push_null(this.handle);
+    }
+
+    ext fn array_push_item(json_t item): void {
+        if (this.handle == nil || item.handle == nil) { ret; }
+        cj.stdjson_array_push_item(this.handle, item.handle);
+    }
+
+    ext fn array_remove_at(i32 idx): void {
+        if (this.handle == nil) { ret; }
+        cj.stdjson_array_remove(this.handle, idx);
+    }
+
+    // ── Serialization ─────────────────────────────────────────────────────
+
+    ext fn stringify(void): i8 *rw {
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_stringify(this.handle);
+    }
+
+    ext fn stringify_compact(void): i8 *rw {
+        if (this.handle == nil) { ret nil; }
+        ret cj.stdjson_stringify_compact(this.handle);
+    }
+
+    ext fn print(void): void {
+        if (this.handle == nil) {
+            print.('json_t[invalid]\n');
+            ret;
+        }
+        stack i8 *rw s = this.stringify_compact();
+        if (s != nil) {
+            print.('{}\n', s);
+            cj.stdjson_free_str(s);
+        } else {
+            print.('json_t[unstringifiable]\n');
+        }
+    }
+
+    ext fn free(void): void {
+        if (this.handle != nil && this.owned) {
+            cj.stdjson_free(this.handle);
+        }
+        this.handle = nil;
+        this.owned  = false;
+    }
+
+    ext fn clone(void): json_t {
+        if (this.handle == nil) {
+            ret json_t{ .handle = nil, .owned = false };
+        }
+        ret json_t{ .handle = cj.stdjson_clone(this.handle), .owned = true };
+    }
+}
+
+// ── json_t standalone methods ─────────────────────────────────────────────────
+
+// ── Free a stringify'd string ─────────────────────────────────────────────────
+
+ext fn json_free_str(stack i8 *rw s): void {
+    if (s != nil) { cj.stdjson_free_str(s); }
+}
+
+// ── Module-level parse / file I/O ─────────────────────────────────────────────
+
+ext fn parse(stack i8 *r+ src): [json_t, error] {
+    stack i8 *rw h = cj.stdjson_parse(src);
+    if (h == nil) {
+        ret json_t{ .handle = nil, .owned = false }, error.('json parse failed');
+    }
+    ret json_t{ .handle = h, .owned = true }, nil;
+}
+
+ext fn open(stack i8 *r+ path): [json_t, error] {
+    stack i8 *rw h = cj.stdjson_parse_file(path);
+    if (h == nil) {
+        ret json_t{ .handle = nil, .owned = false }, error.('json file parse failed');
+    }
+    ret json_t{ .handle = h, .owned = true }, nil;
+}
+
+ext fn write_file(stack i8 *r+ path, json_t val): error {
+    if (val.handle == nil) { ret error.('json.write_file: null json value'); }
+    i32 rc = cj.stdjson_write_file(path, val.handle, 1);
+    if (rc != 0) { ret error.('json.write_file: write failed'); }
+    ret nil;
+}
+
+ext fn write_file_compact(stack i8 *r+ path, json_t val): error {
+    if (val.handle == nil) { ret error.('json.write_file_compact: null value'); }
+    i32 rc = cj.stdjson_write_file(path, val.handle, 0);
+    if (rc != 0) { ret error.('json.write_file_compact: write failed'); }
+    ret nil;
+}
+
+// ── Constructors ──────────────────────────────────────────────────────────────
+
+ext fn obj(void): json_t {
+    ret json_t{ .handle = cj.stdjson_obj_new(), .owned = true };
+}
+
+ext fn array(void): json_t {
+    ret json_t{ .handle = cj.stdjson_array_new(), .owned = true };
+}
+
+ext fn make_string(stack i8 *r+ s): json_t {
+    ret json_t{ .handle = cj.stdjson_make_string(s), .owned = true };
+}
+
+ext fn make_number(f64 n): json_t {
+    ret json_t{ .handle = cj.stdjson_make_number(n), .owned = true };
+}
+
+ext fn make_bool(bool b): json_t {
+    ret json_t{ .handle = cj.stdjson_make_bool(b ? 1 : 0), .owned = true };
+}
+
+ext fn make_null(void): json_t {
+    ret json_t{ .handle = cj.stdjson_make_null(), .owned = true };
+}
+
+ext fn last_error(void): i8 *r {
+    ret cj.stdjson_last_error();
+}
+
+// ── JSON builder ──────────────────────────────────────────────────────────────
+
+ext type json_builder_t: struct {
+    ext heap u8 *rw buf;
+    ext u32 buf_len;
+    ext u32 buf_cap;
+    ext u32 depth;
+    ext bool needs_comma;
+    ext bool pretty;
+
+    int fn ensure(u32 n): void {
+        if (this.buf_len + n + 1 < this.buf_cap) { ret; }
+        u32 new_cap = this.buf_cap * 2;
+        if (new_cap < this.buf_len + n + 1) {
+            new_cap = this.buf_len + n + 128;
+        }
+        this.buf = mov.(this.buf, new_cap);
+        this.buf_cap = new_cap;
+    }
+
+    int fn append_ch(u8 c): void {
+        this.ensure(1);
+        this.buf[this.buf_len] = c;
+        this.buf_len++;
+        this.buf[this.buf_len] = 0;
+    }
+
+    int fn append_str(stack i8 *r+ s): void {
+        u32 slen = (u32)cstring.strlen(s);
+        this.ensure(slen);
+        for (u32 i = 0; i < slen; i++) {
+            this.buf[this.buf_len + i] = (u8)s[i];
+        }
+        this.buf_len += slen;
+        this.buf[this.buf_len] = 0;
+    }
+
+    int fn add_indent(void): void {
+        if (!this.pretty) { ret; }
+        this.append_ch(10);
+        for (u32 i = 0; i < this.depth; i++) {
+            this.append_ch(32);
+            this.append_ch(32);
+        }
+    }
+
+    int fn append_comma_if_needed(void): void {
+        if (this.needs_comma) { this.append_ch(44); }
+        this.needs_comma = false;
+    }
+
+    ext fn begin_object(void): void {
+        this.append_comma_if_needed();
+        if (this.pretty && this.buf_len > 0) {
+            this.add_indent();
+        }
+        this.append_ch(123);
+        this.depth++;
+        this.needs_comma = false;
+    }
+
+    ext fn end_object(void): void {
+        if (this.depth > 0) { this.depth--; }
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(125);
+        this.needs_comma = true;
+    }
+
+    ext fn begin_array(void): void {
+        this.append_comma_if_needed();
+        if (this.pretty && this.buf_len > 0) {
+            this.add_indent();
+        }
+        this.append_ch(91);
+        this.depth++;
+        this.needs_comma = false;
+    }
+
+    ext fn end_array(void): void {
+        if (this.depth > 0) { this.depth--; }
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(93);
+        this.needs_comma = true;
+    }
+
+    ext fn key(stack i8 *r+ k): void {
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(34);
+        this.append_str(k);
+        this.append_ch(34);
+        this.append_ch(58);
+        if (this.pretty) { this.append_ch(32); }
+        this.needs_comma = false;
+    }
+
+    ext fn value_str(stack i8 *r+ s): void {
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        this.append_ch(34);
+        i32 i = 0;
+        while (s[i] != 0) {
+            i8 ch = s[i];
+            if (ch == 34) {
+                this.append_ch(92);
+                this.append_ch(34);
+            } else if (ch == 92) {
+                this.append_ch(92);
+                this.append_ch(92);
+            } else {
+                this.append_ch((u8)ch);
+            }
+            i++;
+        }
+        this.append_ch(34);
+        this.needs_comma = true;
+    }
+
+    ext fn value_i64(i64 n): void {
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        i8 tmp[32];
+        cio.snprintf(tmp, 32, "%lld", n);
+        this.append_str(tmp);
+        this.needs_comma = true;
+    }
+
+    ext fn value_f64(f64 v): void {
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        i8 tmp[64];
+        cio.snprintf(tmp, 64, "%g", v);
+        this.append_str(tmp);
+        this.needs_comma = true;
+    }
+
+    ext fn value_bool(bool b): void {
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        if (b) { this.append_str("true"); }
+        else   { this.append_str("false"); }
+        this.needs_comma = true;
+    }
+
+    ext fn value_null(void): void {
+        this.append_comma_if_needed();
+        if (this.pretty) { this.add_indent(); }
+        this.append_str("null");
+        this.needs_comma = true;
+    }
+
+    ext fn get_string(void): i8 *r {
+        ret (i8 *r)this.buf;
+    }
+
+    ext fn get_length(void): u32 {
+        ret this.buf_len;
+    }
+
+    ext fn print(void): void {
+        if (this.buf != nil && this.buf_len > 0) {
+            print.('{}\n', (i8 *r)this.buf);
+        } else {
+            print.('json_builder_t[empty]\n');
+        }
+    }
+
+    ext fn rem(void): void {
+        if (this.buf != nil) {
+            rem.(this.buf);
+            this.buf = nil;
+        }
+        this.buf_len = 0;
+        this.buf_cap = 0;
+    }
+}
+
+ext fn json_builder_t.new(void): json_builder_t {
+    u32 cap = 256;
+    heap u8 *rw b = new.(cap);
+    b[0] = 0;
+    ret json_builder_t{ .buf = b, .buf_len = 0, .buf_cap = cap,
+                        .depth = 0, .needs_comma = false, .pretty = false };
+}
+
+ext fn json_builder_t.new_pretty(void): json_builder_t {
+    u32 cap = 256;
+    heap u8 *rw b = new.(cap);
+    b[0] = 0;
+    ret json_builder_t{ .buf = b, .buf_len = 0, .buf_cap = cap,
+                        .depth = 0, .needs_comma = false, .pretty = true };
+}
+
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+ext fn json_is_valid_string(stack i8 *r+ s, u32 len): bool {
+    i32 brace_depth   = 0;
+    i32 bracket_depth = 0;
+    for (u32 i = 0; i < len; i++) {
+        i8 ch = s[i];
+        if (ch == 123) { brace_depth++;   }
+        if (ch == 125) { brace_depth--;   }
+        if (ch == 91)  { bracket_depth++; }
+        if (ch == 93)  { bracket_depth--; }
+        if (brace_depth < 0 || bracket_depth < 0) { ret false; }
+    }
+    ret brace_depth == 0 && bracket_depth == 0;
+}
+
+int fn cstr_eq(stack i8 *r+ a, stack i8 *r+ b): bool {
+    i32 i = 0;
+    while (a[i] != 0 && b[i] != 0) {
+        if (a[i] != b[i]) { ret false; }
+        i++;
+    }
+    ret a[i] == b[i];
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test 'parse simple object' {
+    let [j, e] = parse("{\"name\":\"Alice\",\"age\":30}");
+    expect.(e == nil);
+    expect.(j.is_valid());
+    expect.(j.is_object());
+    let [name, se] = j.get_string("name");
+    expect.(se == nil);
+    expect.(cstr_eq(name, "Alice"));
+    let [age, ne] = j.get_number("age");
+    expect.(ne == nil);
+    expect.(age == 30.0);
+    j.free();
+}
+
+test 'parse array' {
+    let [j, e] = parse("[1, 2, 3]");
+    expect.(e == nil);
+    expect.(j.is_array());
+    expect.(j.array_len() == 3);
+    let [first, ae] = j.array_get(0);
+    expect.(ae == nil);
+    expect.(first.as_i32() == 1);
+    j.free();
+}
+
+test 'parse bool and null' {
+    let [j, e] = parse("{\"active\":true,\"data\":null}");
+    expect.(e == nil);
+    let [active, be] = j.get_bool("active");
+    expect.(be == nil);
+    expect.(active == true);
+    let [data, de] = j.get("data");
+    expect.(de == nil);
+    expect.(data.is_null());
+    j.free();
+}
+
+test 'parse error on invalid json' {
+    let [j, e] = parse("{bad json}");
+    expect.(e != nil);
+    expect.(!j.is_valid());
+}
+
+test 'build and mutate object' {
+    json_t j = obj();
+    j.set_string("lang", "Stasha");
+    j.set_i64("version", (i64)1);
+    j.set_bool("fast", true);
+    expect.(j.has("lang"));
+    let [lang, e] = j.get_string("lang");
+    expect.(e == nil);
+    expect.(cstr_eq(lang, "Stasha"));
+    j.free();
+}
+
+test 'build array' {
+    json_t a = array();
+    a.array_push_string("hello");
+    a.array_push_number(3.14);
+    a.array_push_bool(true);
+    a.array_push_null();
+    expect.(a.array_len() == 4);
+    a.free();
+}
+
+test 'stringify round-trip' {
+    let [j, e] = parse("{\"x\":42}");
+    expect.(e == nil);
+    stack i8 *rw s = j.stringify_compact();
+    expect.(s != nil);
+    let [j2, e2] = parse(s);
+    expect.(e2 == nil);
+    let [x, xe] = j2.get_number("x");
+    expect.(xe == nil);
+    expect.(x == 42.0);
+    json_free_str(s);
+    j.free();
+    j2.free();
+}
+
+test 'nested objects' {
+    json_t inner = obj();
+    inner.set_string("city", "Paris");
+    json_t outer = obj();
+    outer.set_item("location", inner);
+    let [loc, e] = outer.get("location");
+    expect.(e == nil);
+    expect.(loc.is_object());
+    let [city, ce] = loc.get_string("city");
+    expect.(ce == nil);
+    expect.(cstr_eq(city, "Paris"));
+    outer.free();
+}
+
+test 'obj iteration' {
+    let [j, e] = parse("{\"a\":1,\"b\":2,\"c\":3}");
+    expect.(e == nil);
+    expect.(j.obj_size() == 3);
+    stack i8 *r k0 = j.obj_key_at(0);
+    expect.(k0 != nil);
+    j.free();
+}
+
+test 'json_builder basic object' {
+    json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("name"); jb.value_str("Alice");
+    jb.key("age");  jb.value_i64((i64)30);
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"name\":\"Alice\",\"age\":30}"));
+    jb.rem();
+}
+
+test 'json_builder array values' {
+    json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("scores");
+    jb.begin_array();
+    jb.value_i64((i64)1);
+    jb.value_i64((i64)2);
+    jb.value_i64((i64)3);
+    jb.end_array();
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"scores\":[1,2,3]}"));
+    jb.rem();
+}
+
+test 'json_builder bool and null' {
+    json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("active"); jb.value_bool(true);
+    jb.key("data");   jb.value_null();
+    jb.end_object();
+    stack i8 *r s = jb.get_string();
+    expect.(cstr_eq(s, "{\"active\":true,\"data\":null}"));
+    jb.rem();
+}
+
+test 'json_t print does not crash' {
+    let [j, e] = parse("{\"x\":1}");
+    expect.(e == nil);
+    j.print();
+    j.free();
+    expect.(true);
+}
+
+test 'json_t print invalid does not crash' {
+    json_t j = json_t{ .handle = nil, .owned = false };
+    j.print();
+    expect.(true);
+}
+
+test 'json_builder_t print does not crash' {
+    json_builder_t jb = json_builder_t.new();
+    jb.begin_object();
+    jb.key("k"); jb.value_str("v");
+    jb.end_object();
+    jb.print();
+    jb.rem();
+    expect.(true);
+}
+
+test 'json_is_valid_string' {
+    i8 valid[3];
+    valid[0] = 123; valid[1] = 125; valid[2] = 0;
+    expect.(json_is_valid_string(valid, 2));
+    i8 invalid[4];
+    invalid[0] = 123; invalid[1] = 91; invalid[2] = 125; invalid[3] = 0;
+    expect.(!json_is_valid_string(invalid, 3));
+}

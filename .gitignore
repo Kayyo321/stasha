@@ -2,6 +2,8 @@
 
 *.o
 *.out
+*.a
+*.test
 
 /bin/
 **/logs/

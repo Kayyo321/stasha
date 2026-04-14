@@ -1,0 +1,167 @@
+mod opt;
+
+ext type opt_t: @comptime[T] struct {
+    int heap ?T *rw holder;
+
+    ext fn is_some(void): bool => this.holder != nil;
+    ext fn is_none(void): bool => this.holder == nil;
+
+    ext fn get(void): [?T *r, error] {
+        if this.is_none() {
+            ret nil, error.('Optional is none');
+        }
+        ret this.holder, nil;
+    }
+
+    ext fn set(T val): error {
+        if this.is_none() {
+            ret error.('Optional is none');
+        }
+        *.(this.holder) = val;
+    }
+
+    ext fn set_none(void): void {
+        if this.is_some() {
+            rem.(this.holder);
+        }
+        this.holder = nil;
+    }
+
+    // Internal: read the inner value. Caller must ensure is_some().
+    int fn get_val(void): T {
+        ret *.(this.holder);
+    }
+
+    // Structural equality: None==None, Some==Some iff inner values equal.
+    // Dereferences `other` to a local copy to work around a codegen limitation
+    // where method calls on generic pointer parameters in standalone fns crash.
+    ext fn equ(opt_t.[T] *r other): bool {
+        opt_t.[T] o = other[0];
+        if this.is_none() && o.is_none() { ret true; }
+        if this.is_none() || o.is_none() { ret false; }
+        ret this.get_val() .== o.get_val();
+    }
+
+    ext fn print(void): void {
+        if this.is_some() {
+            print.('opt_t[Some].({})\n', this.get_val());
+        } else {
+            print.('opt_t[None]\n');
+        }
+    }
+}
+
+ext fn @comptime[T] opt_t.from_some(T val): opt_t.[T] {
+    final let o = opt_t.[T]{.holder = new.(sizeof.(T))};
+    o.set(val);
+    ret o;
+}
+
+ext fn @comptime[T] opt_t.from_none(void): opt_t.[T] {
+    ret opt_t.[T]{.holder = nil};
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'from_some creates Some' {
+    opt_t.[i32] o = opt_t.[i32].from_some(42);
+    expect.(o.is_some());
+    expect.(o.is_none() == false);
+}
+
+test 'from_none creates None' {
+    opt_t.[i32] o = opt_t.[i32].from_none();
+    expect.(o.is_none());
+    expect.(o.is_some() == false);
+}
+
+test 'get on Some returns value' {
+    opt_t.[i32] o = opt_t.[i32].from_some(99);
+    let [ptr, e] = o.get();
+    expect.(e == nil);
+    expect_eq.(ptr[0], 99);
+}
+
+test 'get on None returns error' {
+    opt_t.[i32] o = opt_t.[i32].from_none();
+    let [_, e] = o.get();
+    expect.(e != nil);
+}
+
+test 'set on Some updates value' {
+    opt_t.[i32] o = opt_t.[i32].from_some(10);
+    error se = o.set(20);
+    expect.(se == nil);
+    let [ptr, e] = o.get();
+    expect.(e == nil);
+    expect_eq.(ptr[0], 20);
+}
+
+test 'set on None returns error' {
+    opt_t.[i32] o = opt_t.[i32].from_none();
+    error se = o.set(5);
+    expect.(se != nil);
+}
+
+test 'set_none clears Some to None' {
+    opt_t.[i32] o = opt_t.[i32].from_some(7);
+    expect.(o.is_some());
+    o.set_none();
+    expect.(o.is_none());
+}
+
+test 'set_none on None is no-op' {
+    opt_t.[i32] o = opt_t.[i32].from_none();
+    o.set_none();
+    expect.(o.is_none());
+}
+
+test 'equ Some/Some same value' {
+    opt_t.[i32] a = opt_t.[i32].from_some(5);
+    opt_t.[i32] b = opt_t.[i32].from_some(5);
+    expect.(a.equ(&b));
+}
+
+test 'equ Some/Some different values' {
+    opt_t.[i32] a = opt_t.[i32].from_some(1);
+    opt_t.[i32] b = opt_t.[i32].from_some(2);
+    expect.(!a.equ(&b));
+}
+
+test 'equ None/None' {
+    opt_t.[i32] a = opt_t.[i32].from_none();
+    opt_t.[i32] b = opt_t.[i32].from_none();
+    expect.(a.equ(&b));
+}
+
+test 'equ Some/None' {
+    opt_t.[i32] a = opt_t.[i32].from_some(1);
+    opt_t.[i32] b = opt_t.[i32].from_none();
+    expect.(!a.equ(&b));
+}
+
+test 'equ None/Some' {
+    opt_t.[i32] a = opt_t.[i32].from_none();
+    opt_t.[i32] b = opt_t.[i32].from_some(1);
+    expect.(!a.equ(&b));
+}
+
+test 'equ works with f64' {
+    opt_t.[f64] a = opt_t.[f64].from_some(3.14);
+    opt_t.[f64] b = opt_t.[f64].from_some(3.14);
+    opt_t.[f64] c = opt_t.[f64].from_some(2.71);
+    expect.(a.equ(&b));
+    expect.(!a.equ(&c));
+}
+
+test 'print Some does not crash' {
+    opt_t.[i32] o = opt_t.[i32].from_some(1);
+    o.print();
+    expect.(true);
+}
+
+test 'print None does not crash' {
+    opt_t.[i32] o = opt_t.[i32].from_none();
+    o.print();
+    expect.(true);
+}

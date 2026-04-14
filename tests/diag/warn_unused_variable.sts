@@ -1,0 +1,11 @@
+// Diagnostic test: unused local variable warnings
+// Expected: warnings for 'unused' and 'tmp', but NOT for '_ignored' or 'used'
+mod diag_warn_unused;
+
+ext fn main(void): i32 {
+    i32 used = 5;
+    i32 unused = 10;      // never read — should warn
+    i32 _ignored = 99;    // _ prefix suppresses warning
+    i32 tmp = used + 1;   // tmp itself never read — should warn
+    ret used;
+}

@@ -1,0 +1,110 @@
+mod ex_patterns;
+
+lib "stdio" = io;
+
+/* ── enum definitions ── */
+
+type Status: enum { Ok, Warn, Err }
+
+type Shape: enum {
+    Circle(stack i32),   /* radius */
+    Rect(stack i32),     /* width  */
+    Triangle(stack i32), /* base   */
+    Point,               /* no payload */
+}
+
+/* ── integer literal pattern matching ── */
+
+int fn classify(stack i32 n): void {
+    match n {
+        0 => { io.printf("zero\n"); }
+        1 => { io.printf("one\n"); }
+        2 => { io.printf("two\n"); }
+        _ => { io.printf("other\n"); }
+    }
+}
+
+/* ── enum variant matching with payload binding ── */
+
+int fn describe_shape(stack Shape s): void {
+    match s {
+        Shape.Circle(r) => { io.printf("circle radius=%d\n", r); }
+        Shape.Rect(w)   => { io.printf("rect   width=%d\n",  w); }
+        Shape.Triangle(b) => { io.printf("tri    base=%d\n", b); }
+        Shape.Point     => { io.printf("point\n"); }
+    }
+}
+
+/* ── guard clauses ── */
+/* `Pattern if guard_expr => body` — the arm fires only when the
+   discriminant matches AND the guard is true.  Guard failure falls
+   through to the wildcard arm. */
+
+int fn area_class(stack Shape s): void {
+    match s {
+        Shape.Circle(r) if r > 50 => {
+            io.printf("large circle  r=%d  approx-area>7854\n", r);
+        }
+        Shape.Rect(w) if w > 100 => {
+            io.printf("wide rect     w=%d  area-row>100*h\n", w);
+        }
+        Shape.Triangle(b) if b > 80 => {
+            io.printf("big triangle  b=%d\n", b);
+        }
+        _ => {
+            io.printf("small shape\n");
+        }
+    }
+}
+
+/* ── wildcard binding ── */
+/* A plain identifier arm (not EnumName.Variant) acts as wildcard and
+   binds the integer discriminant of the subject to that name. */
+
+int fn status_fallback(stack Status st): void {
+    match st {
+        Status.Ok => { io.printf("ok\n"); }
+        other     => { io.printf("non-ok discriminant=%d\n", other); }
+    }
+}
+
+/* ── negative integer literals ── */
+
+int fn signed_class(stack i32 n): void {
+    match n {
+        -1 => { io.printf("minus one\n"); }
+        0  => { io.printf("zero\n");      }
+        1  => { io.printf("one\n");       }
+        _  => { io.printf("other=%d\n", n); }
+    }
+}
+
+ext fn main(void): i32 {
+    io.printf("--- integer literal match ---\n");
+    classify(0); classify(1); classify(2); classify(7);
+
+    io.printf("\n--- enum variant + payload binding ---\n");
+    describe_shape(Shape.Circle(30));
+    describe_shape(Shape.Rect(80));
+    describe_shape(Shape.Triangle(40));
+    describe_shape(Shape.Point);
+
+    io.printf("\n--- guard clauses ---\n");
+    area_class(Shape.Circle(10));
+    area_class(Shape.Circle(100));
+    area_class(Shape.Rect(50));
+    area_class(Shape.Rect(200));
+    area_class(Shape.Triangle(20));
+    area_class(Shape.Triangle(90));
+    area_class(Shape.Point);
+
+    io.printf("\n--- wildcard binding ---\n");
+    status_fallback(Status.Ok);
+    status_fallback(Status.Warn);
+    status_fallback(Status.Err);
+
+    io.printf("\n--- negative literal match ---\n");
+    signed_class(-1); signed_class(0); signed_class(1); signed_class(42);
+
+    ret 0;
+}

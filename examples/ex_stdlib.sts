@@ -1,0 +1,142 @@
+mod ex_stdlib;
+
+// ── Using the standard library ─────────────────────────────────────────────
+//
+// Build the stdlib first:
+//   make stdlib
+//
+// Then compile and run:
+//   stasha examples/ex_stdlib.sts
+
+libimp "console"    from std;
+libimp "dstring"    from std;
+libimp "str_view"   from std;
+libimp "byte_buf"   from std;
+libimp "simple_rng" from std;
+libimp "clock"      from std;
+
+fn main(void): i32 {
+
+    // ── console ───────────────────────────────────────────────────────────
+    writeln("=== console ===");
+
+    write("i32: ");
+    write_i32(42);
+    write("\n");
+
+    write("f64: ");
+    write_f64(3.14159);
+    write("\n");
+
+    write("bool: ");
+    write_bool(true);
+    write("\n");
+
+    // ── dstring ───────────────────────────────────────────────────────────
+    writeln("=== dstring ===");
+
+    heap dstring_t greeting = dstring_t.new();
+    greeting.append_cstr("Hello");
+    greeting.append_cstr(", world");
+    greeting.append_ch(`!`);
+
+    write("greeting : ");
+    writeln(greeting.characters());
+    write("length   : ");
+    write_i32(greeting.length());
+    write("\n");
+
+    // Build a string from mixed types
+    heap dstring_t msg = dstring_t.new();
+    msg.append_cstr("score=");
+    msg.append_i32(99);
+    msg.append_cstr("  pi~");
+    msg.append_f64(3.14);
+
+    write("msg      : ");
+    writeln(msg.characters());
+
+    // ── str_view ──────────────────────────────────────────────────────────
+    writeln("=== str_view ===");
+
+    str_view_t full = str_view_t.new("stasha-lang");
+
+    write("starts_with 'sta'  : ");
+    write_bool(full.starts_with("sta"));
+    write("\n");
+
+    write("ends_with   'lang' : ");
+    write_bool(full.ends_with("lang"));
+    write("\n");
+
+    i32 dash = full.find_ch(`-`);
+    write("'-' at index       : ");
+    write_i32(dash);
+    write("\n");
+
+    // Slice the part before the dash
+    str_view_t name_part = full.slice(0, (u32)dash);
+    write("name part          : ");
+    for (i32 i = 0; i < name_part.length(); ++i) {
+        write_char(name_part.at(i));
+    }
+    write("\n");
+
+    // ── byte_buf ──────────────────────────────────────────────────────────
+    writeln("=== byte_buf ===");
+
+    heap byte_buf_t buf = byte_buf_t.new();
+
+    // Store bytes 0..7
+    for (u32 i = 0; i < 8; ++i) { buf.push((u8)i); }
+
+    write("length : ");
+    write_u32(buf.length());
+    write("\n");
+
+    write("bytes  :");
+    for (u32 i = 0; i < buf.length(); ++i) {
+        write(" ");
+        write_u32((u32)buf.get(i));
+    }
+    write("\n");
+
+    // pop from the back
+    u8 last = buf.pop();
+    write("popped : ");
+    write_u32((u32)last);
+    write("\n");
+
+    // ── simple_rng ────────────────────────────────────────────────────────
+    writeln("=== simple_rng ===");
+
+    random_set_seed_to_time();
+
+    write("5 random ints [1,100] :");
+    for (i32 i = 0; i < 5; ++i) {
+        write(" ");
+        write_i32(random_range(1, 100));
+    }
+    write("\n");
+
+    f32 rf = random_frange(0.0, 1.0);
+    write("random f32 [0,1] : ");
+    write_f32(rf);
+    write("\n");
+
+    // ── clock ─────────────────────────────────────────────────────────────
+    writeln("=== clock ===");
+
+    heap stopwatch_t sw = stopwatch_t.new();
+
+    // Burn a little CPU so elapsed is non-zero
+    volatile i64 sink = 0;
+    for (i64 i = 0; i < 1000000; ++i) { sink = sink + i; }
+
+    f64 ms = sw.elapsed_ms();
+    write("1M iterations took : ");
+    write_f64(ms);
+    writeln(" ms");
+
+    ret 0;
+}

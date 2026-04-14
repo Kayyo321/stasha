@@ -1,0 +1,21 @@
+mod ex_any;
+
+fn acceptor(any.[i32, i64, f32, f64] num): f64 {
+    match any.(num) {
+        i32(i32 val) => { ret val * 2; }
+        i64(i64 val) => { ret val * 4; }
+        f32(f32 val) => { ret val * 6; }
+        f64(f64 val) => { ret val * 8; }
+    }
+}
+
+fn main(void): i32 {
+    let output0 = acceptor(10);
+    let output1 = acceptor((i64)10);
+    let output2 = acceptor(10.51);
+    let output3 = acceptor((f64)10.57859);
+
+    print.('{}, {}, {}, {}\n', output0, output1, output2, output3);
+
+    ret 0;
+}

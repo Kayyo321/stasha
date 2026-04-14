@@ -1,0 +1,169 @@
+mod resource;
+
+lib "stdlib" = cstdlib;
+
+// RAII-style resource wrapper. Optionally owns a heap pointer.
+ext type resource_t: struct {
+    int heap u8 *rw ptr;
+    int bool owned;
+
+    // Get raw pointer without releasing ownership.
+    ext fn get(void): u8 *r {
+        ret this.ptr;
+    }
+
+    // Release ownership and return the pointer (caller is responsible for freeing).
+    ext fn release(void): u8 *rw {
+        this.owned = false;
+        ret this.ptr;
+    }
+
+    // True if the pointer is non-nil.
+    ext fn is_valid(void): bool {
+        ret this.ptr != nil;
+    }
+
+    ext fn print(void): void {
+        print.('resource_t[valid={}, owned={}]\n',
+               this.is_valid(), this.owned);
+    }
+
+    ext fn rem(void): void {
+        if (this.owned && this.ptr != nil) {
+            rem.(this.ptr);
+        }
+        this.ptr   = nil;
+        this.owned = false;
+    }
+}
+
+// Take ownership of ptr (if owned=true, rem() will free it).
+ext fn resource_t.new(heap u8 *rw ptr, bool owned): resource_t {
+    ret resource_t{
+        .ptr   = ptr,
+        .owned = owned
+    };
+}
+
+// Destructor: free the pointer if owned.
+// Simple (non-thread-safe) reference-counted wrapper around a heap pointer.
+ext type counted_ref_t: struct {
+    int heap u8 *rw data;
+    int heap u32 *rw refcount;
+
+    // Get raw read-only pointer.
+    ext fn get(void): u8 *r {
+        ret this.data;
+    }
+
+    // Return current reference count.
+    ext fn count(void): u32 {
+        if (this.refcount == nil) { ret 0; }
+        ret this.refcount[0];
+    }
+
+    // Increment refcount and return a copy of this handle.
+    ext fn retain(void): counted_ref_t {
+        if (this.refcount != nil) {
+            this.refcount[0] = this.refcount[0] + 1;
+        }
+        ret counted_ref_t{
+            .data     = this.data,
+            .refcount = this.refcount
+        };
+    }
+
+    ext fn print(void): void {
+        print.('counted_ref_t[valid={}, count={}]\n',
+               this.data != nil, this.count());
+    }
+
+    ext fn rem(void): void {
+        if (this.refcount == nil) { ret; }
+        this.refcount[0] = this.refcount[0] - 1;
+        if (this.refcount[0] == 0) {
+            if (this.data != nil) {
+                rem.(this.data);
+            }
+            rem.(this.refcount);
+        }
+        this.data     = nil;
+        this.refcount = nil;
+    }
+}
+
+// Take ownership of ptr; refcount starts at 1.
+ext fn counted_ref_t.new(heap u8 *rw ptr): counted_ref_t {
+    heap u32 *rw rc = new.(4);
+    rc[0] = 1;
+    ret counted_ref_t{
+        .data     = ptr,
+        .refcount = rc
+    };
+}
+
+// Decrement refcount; free data and refcount when it reaches 0.
+test 'resource_t owns and frees' {
+    heap u8 *rw buf = new.(8);
+    buf[0] = 99;
+    resource_t r = resource_t.new(buf, true);
+    expect.(r.is_valid());
+    stack u8 *r rp = r.get();
+    expect_eq.(rp[0], 99);
+    // destructor called automatically at scope exit
+}
+
+test 'resource_t release gives up ownership' {
+    heap u8 *rw buf = new.(4);
+    buf[0] = 7;
+    resource_t r = resource_t.new(buf, true);
+    heap u8 *rw released = r.release();
+    expect_eq.(released[0], 7);
+    // r no longer owns it; we free manually
+    rem.(released);
+}
+
+test 'resource_t non-owned does not free' {
+    heap u8 *rw buf = new.(4);
+    buf[0] = 3;
+    resource_t r = resource_t.new(buf, false);
+    expect.(r.is_valid());
+    // scope exit does NOT free buf since owned=false
+    rem.(buf);
+}
+
+test 'counted_ref_t basic refcount' {
+    heap u8 *rw data = new.(8);
+    data[0] = 55;
+    counted_ref_t cr = counted_ref_t.new(data);
+    expect_eq.(cr.count(), 1);
+    stack u8 *r p = cr.get();
+    expect_eq.(p[0], 55);
+}
+
+test 'resource_t print does not crash' {
+    heap u8 *rw buf = new.(4);
+    resource_t r = resource_t.new(buf, true);
+    r.print();
+    expect.(true);
+}
+
+test 'counted_ref_t print does not crash' {
+    heap u8 *rw data = new.(4);
+    counted_ref_t cr = counted_ref_t.new(data);
+    cr.print();
+    cr.rem();
+    expect.(true);
+}
+
+test 'counted_ref_t retain increments count' {
+    heap u8 *rw data = new.(4);
+    data[0] = 11;
+    counted_ref_t cr = counted_ref_t.new(data);
+    counted_ref_t cr2 = cr.retain();
+    expect_eq.(cr.count(), 2);
+    expect_eq.(cr2.count(), 2);
+    // manually decrement cr2 (rem it); then cr should be at 1
+    cr2.rem();
+    expect_eq.(cr.count(), 1);
+}

@@ -1,0 +1,99 @@
+mod ex_control;
+
+lib "stdio" = io;
+
+// ── Control flow and expressions ────────────────────────────────────────────
+//
+// Covers: switch/case, multi-return + let destructuring, error type,
+//         overflow arithmetic (+%/-% wrapping, +!/! trapping),
+//         break/continue, inf loops, variadic functions.
+
+// ── switch ────────────────────────────────────────────────────────────────
+
+int fn classify(i32 n): void {
+    switch n {
+        case 0: { io.printf('zero\n'); }
+        case 1, 2, 3: { io.printf('small positive\n'); }
+        case 10: { io.printf('ten\n'); }
+        default: { io.printf('other: %d\n', n); }
+    }
+}
+
+// ── Multi-return + let destructuring ──────────────────────────────────────
+
+int fn divide(f32 x, y): [f32, error] {
+    if y == 0.0 { ret 0.0, error.('divide by zero'); }
+    ret x / y, nil;
+}
+
+int fn min_max(i32 a, i32 b): [i32, i32] {
+    if a < b { ret a, b; }
+    ret b, a;
+}
+
+// ── Error type ────────────────────────────────────────────────────────────
+
+int fn must_positive(i32 n): error {
+    if n <= 0 { ret error.('value must be positive'); }
+    ret nil;
+}
+
+// ── Variadic (primarily for C FFI pass-through) ───────────────────────────
+
+ext fn log_level(i32 level, ...): void {
+    io.printf('log(%d)\n', level);
+}
+
+fn main(void): i16 {
+    io.printf('--- switch ---\n');
+    classify(0); classify(2); classify(10); classify(99);
+
+    io.printf('\n--- multi-return + let ---\n');
+    let [res, err] = divide(20.0, 4.0);
+    if err == nil { io.printf('20/4 = %g\n', res); }         // 5
+
+    let [_, err2] = divide(5.0, 0.0);
+    if err2 != nil { io.printf('div by zero caught\n'); }
+
+    i32 [lo, hi] = min_max(7, 3);
+    io.printf('min=%d max=%d\n', lo, hi);                    // 3 7
+
+    io.printf('\n--- error type ---\n');
+    error e1 = must_positive(5);
+    error e2 = must_positive(-1);
+    io.printf('positive(5)=%d  positive(-1)=%d\n',
+              e1 == nil, e2 == nil);                         // 1 0
+
+    io.printf('\n--- overflow operators ---\n');
+    // Wrapping (+% -% *%): C-style overflow behavior
+    // Trapping (+! -! *!): aborts on overflow
+    i32 a = 100;
+    i32 b = 200;
+    io.printf('100 +%% 200 = %d  (wrapping)\n', a +% b);
+    io.printf('100 -%% 200 = %d  (wrapping)\n', a -% b);
+    io.printf('100 *%% 200 = %d  (wrapping)\n', a *% b);
+    io.printf('100 +! 200  = %d  (trapping)\n', a +! b);
+    io.printf('200 -! 100  = %d  (trapping)\n', b -! a);
+
+    io.printf('\n--- break / continue ---\n');
+    for (i32 i = 0; i < 10; ++i) {
+        if i == 3 { continue; }   // skip 3
+        if i == 6 { break; }      // stop before 6
+        io.printf('%d ', i);      // 0 1 2 4 5
+    }
+    io.printf('\n');
+
+    io.printf('\n--- inf loop ---\n');
+    i32 k = 0;
+    inf {
+        k = k + 1;
+        if k >= 3 { break; }
+    }
+    io.printf('k = %d\n', k);   // 3
+
+    io.printf('\n--- variadic ---\n');
+    io.printf('hello %s, age %d\n', 'world', 42);
+    log_level(2);
+
+    ret 0;
+}

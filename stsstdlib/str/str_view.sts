@@ -1,0 +1,238 @@
+mod str_view;
+
+lib "stdio" = cio;
+
+// A non-owning, read-only view into a C string or dstring buffer.
+// Does NOT manage memory — the underlying string must outlive the view.
+
+ext type str_view_t: struct {
+    int stack i8 *r ptr;
+    int i32  len;
+
+    ext fn length(void): i32 {
+        ret this.len;
+    }
+
+    ext fn at(u32 idx): i8 {
+        ret this.ptr[idx];
+    }
+
+    // True if the view begins with the given null-terminated prefix.
+    ext fn starts_with(stack i8 *r prefix): bool {
+        i32 i = 0;
+        while (prefix[i] != 0 && i < this.len) {
+            if (this.ptr[i] != prefix[i]) { ret false; }
+            ++i;
+        }
+        ret prefix[i] == 0;
+    }
+
+    // True if the view ends with the given null-terminated suffix.
+    ext fn ends_with(stack i8 *r suffix): bool {
+        final i32 suf_len = sv_byte_len(suffix);
+        if (suf_len > this.len) { ret false; }
+        final i32 offset = this.len - suf_len;
+        for (i32 i = 0; i < suf_len; ++i) {
+            if (this.ptr[offset + i] != suffix[i]) { ret false; }
+        }
+        ret true;
+    }
+
+    // Index of first occurrence of `ch`, or -1 if not found.
+    ext fn find_ch(i8 ch): i32 {
+        for (i32 i = 0; i < this.len; ++i) {
+            if (this.ptr[i] == ch) { ret i; }
+        }
+        ret -1;
+    }
+
+    // Sub-view [from, to). Clamps to valid range.
+    ext fn slice(u32 from, to): str_view_t {
+        final u32 end = (u32)this.len;
+        if (from > end) { from = end; }
+        if (to   > end) { to   = end; }
+        if (to < from)  { to = from; }
+        ret str_view_t.from_parts(this.ptr + from, (i32)(to - from));
+    }
+
+    // True if both views have the same length and contents.
+    ext fn equals(stack str_view_t *r other): bool {
+        if (this.len != other.length()) { ret false; }
+        for (i32 i = 0; i < this.len; ++i) {
+            if (this.ptr[i] != other.at(i)) { ret false; }
+        }
+        ret true;
+    }
+
+    // True if the view equals the null-terminated string `s`.
+    ext fn equals_cstr(stack i8 *r s): bool {
+        i32 i = 0;
+        while (i < this.len && s[i] != 0) {
+            if (this.ptr[i] != s[i]) { ret false; }
+            ++i;
+        }
+        ret i == this.len && s[i] == 0;
+    }
+
+    ext fn data(void): i8 *r {
+        ret this.ptr;
+    }
+
+    ext fn is_empty(void): bool {
+        ret this.len == 0;
+    }
+
+    ext fn print(void): void {
+        cio.printf("%.*s\n", (i32)this.len, this.ptr);
+    }
+
+    ext fn hash(void): u64 {
+        u64 h = 14695981039346656037;
+        final u64 p = 1099511628211;
+        for (i32 i = 0; i < this.len; i++) {
+            h = h ^ (u64)(u8)this.ptr[i];
+            h = h * p;
+        }
+        ret h;
+    }
+
+    ext fn equ(stack str_view_t *r other): bool {
+        if (this.len != other.length()) { ret false; }
+        for (i32 i = 0; i < this.len; i++) {
+            if (this.ptr[i] != other.at(i)) { ret false; }
+        }
+        ret true;
+    }
+}
+
+ext fn str_view_t.new(stack i8 *r cstr): str_view_t {
+    ret str_view_t{ .ptr = cstr, .len = sv_byte_len(cstr) };
+}
+
+ext fn str_view_t.from_parts(stack i8 *r ptr, i32 len): str_view_t {
+    ret str_view_t{ .ptr = ptr, .len = len };
+}
+
+// Print the view contents (exactly len bytes, not null-terminated).
+// FNV-1a hash over the view bytes — enables use as a map_t key.
+// Byte-by-byte equality — enables use as a map_t key.
+int fn sv_byte_len(stack i8 *r s): i32 {
+    i32 i = 0;
+    for (; s && s[i] != 0; ++i) {}
+    ret i;
+}
+
+test 'str_view new length' {
+    str_view_t v = str_view_t.new("hello");
+    expect_eq.(v.length(), 5);
+}
+
+test 'str_view at' {
+    str_view_t v = str_view_t.new("abc");
+    expect_eq.(v.at(0), (i8)97);
+    expect_eq.(v.at(1), (i8)98);
+    expect_eq.(v.at(2), (i8)99);
+}
+
+test 'str_view starts_with' {
+    str_view_t v = str_view_t.new("hello world");
+    expect.(v.starts_with("hello"));
+    expect.(!v.starts_with("world"));
+}
+
+test 'str_view ends_with' {
+    str_view_t v = str_view_t.new("hello world");
+    expect.(v.ends_with("world"));
+    expect.(!v.ends_with("hello"));
+}
+
+test 'str_view find_ch found' {
+    str_view_t v = str_view_t.new("hello");
+    i8 ch_l = (i8)108;
+    i32 idx = v.find_ch(ch_l);
+    expect_eq.(idx, 2);
+}
+
+test 'str_view find_ch not found' {
+    str_view_t v = str_view_t.new("hello");
+    i8 ch_z = (i8)122;
+    i32 idx = v.find_ch(ch_z);
+    expect_eq.(idx, -1);
+}
+
+test 'str_view slice' {
+    str_view_t v = str_view_t.new("hello");
+    str_view_t s = v.slice(1, 4);
+    expect_eq.(s.length(), 3);
+    expect_eq.(s.at(0), (i8)101);
+    expect_eq.(s.at(2), (i8)108);
+}
+
+test 'str_view equals_cstr' {
+    str_view_t v = str_view_t.new("hi");
+    expect.(v.equals_cstr("hi"));
+    expect.(!v.equals_cstr("bye"));
+}
+
+test 'str_view is_empty' {
+    str_view_t v = str_view_t.new("");
+    expect.(v.is_empty());
+    str_view_t v2 = str_view_t.new("x");
+    expect.(!v2.is_empty());
+}
+
+test 'str_view equals' {
+    str_view_t a = str_view_t.new("foo");
+    str_view_t b = str_view_t.new("foo");
+    str_view_t c = str_view_t.new("bar");
+    expect.(a.equals(&b));
+    expect.(!a.equals(&c));
+}
+
+test 'str_view print does not crash' {
+    str_view_t v = str_view_t.new("hello");
+    v.print();
+    expect.(true);
+}
+
+test 'str_view print empty does not crash' {
+    str_view_t v = str_view_t.new("");
+    v.print();
+    expect.(true);
+}
+
+test 'str_view hash same content same hash' {
+    str_view_t a = str_view_t.new("hello");
+    str_view_t b = str_view_t.new("hello");
+    expect_eq.(a.hash(), b.hash());
+}
+
+test 'str_view hash different content different hash' {
+    str_view_t a = str_view_t.new("hello");
+    str_view_t b = str_view_t.new("world");
+    expect.(a.hash() != b.hash());
+}
+
+test 'str_view hash empty is deterministic' {
+    str_view_t a = str_view_t.new("");
+    str_view_t b = str_view_t.new("");
+    expect_eq.(a.hash(), b.hash());
+}
+
+test 'str_view equ same content' {
+    str_view_t a = str_view_t.new("abc");
+    str_view_t b = str_view_t.new("abc");
+    expect.(a.equ(&b));
+}
+
+test 'str_view equ different content' {
+    str_view_t a = str_view_t.new("abc");
+    str_view_t b = str_view_t.new("xyz");
+    expect.(!a.equ(&b));
+}
+
+test 'str_view equ different lengths' {
+    str_view_t a = str_view_t.new("abc");
+    str_view_t b = str_view_t.new("ab");
+    expect.(!a.equ(&b));
+}

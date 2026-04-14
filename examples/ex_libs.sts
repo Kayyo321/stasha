@@ -1,0 +1,56 @@
+mod ex_libs;
+
+// ── Library and module system ──────────────────────────────────────────────
+//
+// C library syntax:
+//   lib "name";                          — link C lib; access as name.fn()
+//   lib "name" = alias;                  — same, access as alias.fn()
+//   lib "name" from "path/libfoo.a";     — custom .a; alias = lib name
+//   lib "name" from "path/libfoo.a" = a; — custom .a with explicit alias
+//
+// Stasha module import (pre-compile the .sts to a .a first):
+//   lib "mod" from "libmod.a";   — tell linker where the .a lives
+//   imp mod;                     — splice types/sigs into AST (no codegen)
+//
+// Combined shorthand:
+//   libimp "mod" from "libmod.a";    — lib + imp in one line
+//   libimp "mod" from std;           — loads from <bin_dir>/stdlib/libmod.a
+//
+// Build these examples:
+//   stasha lib mathlib.sts          → libmathlib.a
+//   stasha lib veclib.sts           → libveclib.a
+//   stasha build ex_libs.sts
+
+lib "stdio" = io;   // C stdlib; access as io.printf()
+
+lib "mathlib" from "libmathlib.a";
+imp mathlib;                          // makes abs(), pow(), clamp_i32(), point_t visible
+
+lib "veclib" from "libveclib.a";
+imp veclib;                           // makes vec2_t and its methods visible
+
+fn main(void): i16 {
+    io.printf('--- C stdlib via alias ---\n');
+    io.printf('hello from C stdio\n');
+
+    io.printf('\n--- mathlib: functions and struct ---\n');
+    io.printf('abs(-42)            = %d\n', abs(-42));           // 42
+    io.printf('pow(2, 10)          = %d\n', pow(2, 10));         // 1024
+    io.printf('clamp(150, 0, 100)  = %d\n', clamp_i32(150, 0, 100));  // 100
+
+    point_t origin = point_t.new(0, 0);
+    point_t target = point_t.new(3, 4);
+    io.printf('manhattan(origin, target) = %d\n', origin.manhattan(target));  // 7
+
+    io.printf('\n--- veclib: vec2_t methods ---\n');
+    vec2_t u = vec2_t.new(3.0, 4.0);
+    vec2_t v = vec2_t.new(1.0, 2.0);
+
+    vec2_t s = u.add(v);
+    io.printf('add   = (%.1f, %.1f)\n', s.x, s.y);   // (4.0, 6.0)
+    io.printf('dot   = %.1f\n', u.dot(v));             // 11.0
+    io.printf('scale = (%.1f, %.1f)\n', u.scale(2.0).x, u.scale(2.0).y);  // (6.0, 8.0)
+    io.printf('len   = %.1f\n', u.length());           // 5.0
+
+    ret 0;
+}

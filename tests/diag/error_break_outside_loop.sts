@@ -1,0 +1,10 @@
+// Diagnostic test: break used outside of a loop
+// Expected: "'break' used outside of a loop or switch" on line 8
+mod diag_break_outside_loop;
+
+int fn main(void): i32 {
+    i32 x = 5;
+    // break is not inside any loop or switch
+    break;
+    ret x;
+}

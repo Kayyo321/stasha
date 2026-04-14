@@ -42,19 +42,23 @@ static boolean_t match(lexer_t *lex, char expected) {
 
 static token_t make_token(lexer_t *lex, token_kind_t kind) {
     token_t tok;
-    tok.kind = kind;
-    tok.start = lex->start;
+    tok.kind   = kind;
+    tok.start  = lex->start;
     tok.length = (usize_t)(lex->current - lex->start);
-    tok.line = lex->line;
+    tok.line   = lex->line;
+    tok.col    = (usize_t)(lex->start - lex->line_start) + 1;
+    tok.file   = Null;  /* caller fills this in after lexing */
     return tok;
 }
 
 static token_t error_token(lexer_t *lex, const char *msg) {
     token_t tok;
-    tok.kind = TokError;
-    tok.start = msg;
+    tok.kind   = TokError;
+    tok.start  = msg;
     tok.length = (usize_t)strlen(msg);
-    tok.line = lex->line;
+    tok.line   = lex->line;
+    tok.col    = (usize_t)(lex->current - lex->line_start) + 1;
+    tok.file   = Null;
     return tok;
 }
 
@@ -70,6 +74,7 @@ static void skip_whitespace(lexer_t *lex) {
             case '\n':
                 lex->line++;
                 advance(lex);
+                lex->line_start = lex->current;
                 break;
             case '/':
                 if (peek_next(lex) == '/') {
@@ -91,8 +96,12 @@ static void skip_whitespace(lexer_t *lex) {
                             advance(lex); advance(lex);
                             depth--;
                         } else {
-                            if (peek(lex) == '\n') lex->line++;
+                            char ch = peek(lex);
                             advance(lex);
+                            if (ch == '\n') {
+                                lex->line++;
+                                lex->line_start = lex->current;
+                            }
                         }
                     }
                     break;
@@ -126,9 +135,9 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("atomic", TokAtomic);
     KW("const", TokConst);
     KW("final", TokFinal);
-    KW("gpu", TokGpu);
-    KW("cpu", TokCpu);
-    KW("debug", TokDebug);
+    KW("thread", TokThread);
+    KW("future", TokFuture);
+    KW("print", TokPrint);
     KW("void", TokVoid);
     KW("true", TokTrue);
     KW("false", TokFalse);
@@ -162,6 +171,29 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("comptime_if", TokComptimeIf);
     KW("let", TokLet);
     KW("return", TokRet);  /* alias for ret */
+    KW("libimp", TokLibImp);
+    KW("cheader", TokCHeader);
+    KW("std", TokStd);
+    KW("hash", TokHash);
+    KW("equ", TokEqu);
+    KW("this", TokThis);
+    KW("with", TokWith);
+    KW("any", TokAny);
+    KW("interface", TokInterface);
+    KW("macro", TokMacro);
+    KW("make",      TokMake);
+    KW("append",    TokAppend);
+    KW("copy",      TokCopy);
+    KW("len",       TokLen);
+    KW("cap",       TokCap);
+    KW("zone",      TokZone);
+    KW("unsafe",    TokUnsafe);
+    KW("unchecked", TokUnchecked);
+    KW("and",       TokAnd);
+    KW("or",        TokOr);
+    KW("foreach",   TokForeach);
+    KW("in",        TokIn);
+    /* "frees" is NOT a keyword — parsed contextually as TokIdent after '@' */
 
     KW("i8", TokI8);
     KW("i16", TokI16);
@@ -212,7 +244,12 @@ static token_t scan_string(lexer_t *lex, char quote) {
             if (!is_at_end(lex)) advance(lex); /* skip escaped char */
             continue;
         }
-        if (peek(lex) == '\n') lex->line++;
+        if (peek(lex) == '\n') {
+            lex->line++;
+            advance(lex);
+            lex->line_start = lex->current;
+            continue;
+        }
         advance(lex);
     }
     if (is_at_end(lex)) return error_token(lex, "unterminated string");
@@ -235,9 +272,10 @@ static token_t scan_char_lit(lexer_t *lex) {
 }
 
 void init_lexer(lexer_t *lex, const char *source) {
-    lex->start = source;
-    lex->current = source;
-    lex->line = 1;
+    lex->start      = source;
+    lex->current    = source;
+    lex->line_start = source;
+    lex->line       = 1;
 }
 
 token_t next_token(lexer_t *lex) {
@@ -265,6 +303,15 @@ token_t next_token(lexer_t *lex) {
             if (peek(lex) == '.' && peek_next(lex) == '.') {
                 advance(lex); advance(lex);
                 return make_token(lex, TokDotDotDot);
+            }
+            if (peek(lex) == '.') {
+                advance(lex);
+                if (match(lex, '=')) return make_token(lex, TokDotDotEq);
+                return make_token(lex, TokDotDot);
+            }
+            if (peek(lex) == '=' && peek_next(lex) == '=') {
+                advance(lex); advance(lex);
+                return make_token(lex, TokDotEqEq);
             }
             return make_token(lex, TokDot);
         case '@': return make_token(lex, TokAt);

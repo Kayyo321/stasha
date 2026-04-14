@@ -1,0 +1,28 @@
+main   = "src/main.sts"
+binary = "bin/typer"
+
+# Alternatively produce a library:
+# library = "bin/libtyper.a"
+
+# External precompiled archives linked into every build:
+ext_libs = []
+# ext_libs = [ ("libs/xyz.a" : "libs/xyz.sts"), ... ]
+
+# ── Named build modules ──────────────────────────────────────────────────────
+# Select a module with:  stasha build <name>
+# Run all test modules:  stasha test
+
+[debug]
+output   = "bin/typer_debug"
+debug    = true
+optimize = 0
+
+[release]
+output   = "bin/typer"
+optimize = 3
+
+[test]
+type   = "test"
+output = "bin/typer_test"
+# optimize = 1          # optional: override opt level for this module
+# ext_libs = [...]      # optional: additional archives for this module only

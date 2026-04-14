@@ -1,0 +1,10 @@
+mod main;
+
+imp printer.typewriter;
+
+fn main(void): i32 {
+    stack let ex = 'Hi Sully!';
+    typewriter.scribe(ex);
+
+    ret 0;
+}

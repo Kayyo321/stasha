@@ -1,308 +1,276 @@
-# Stasha Language Specification
+# Stasha — Compiler Reference
 
-## Overview
+Systems language: explicit memory (stack/heap), pointer safety, C interop, LLVM backend.
 
-**Stasha** is a systems programming language designed for:
-- Explicit memory control (stack vs heap)
-- Strong safety guarantees around pointer usage
-- Seamless C interoperability
-- Built-in CPU and GPU parallelism
-- LLVM-based compilation
-
-The language aims to combine low-level control (like C/C++) with safer abstractions and modern syntax.
-
----
-
-## Core Design Principles
-
-1. **Explicit Memory Ownership** — developers must consciously choose between stack and heap; pointer types enforce memory-region correctness.
-2. **Predictable Performance** — no hidden allocations, no implicit runtime overhead.
-3. **Interop-First** — C interop is a first-class feature, not an afterthought.
-4. **Structured Parallelism** — parallel execution (CPU/GPU) is explicit and integrated.
-5. **Minimal but Powerful Syntax** — Go-style declarations, consistent and uniform type system.
-
----
-
-## Type System
-
-All types follow a unified declaration pattern:
-
-    type <name>: <definition>;
-
-**Supported types:** `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `void`, `nil` (null pointer literal), `error` (built-in Go-style error), user-defined structs/enums/aliases.
-
----
-
-## Memory Model
-
-### Storage Qualifiers
-
-- `stack` — stack allocation
-- `heap` — heap allocation (primitives auto-`malloc`/`free`; pointers indicate the pointed-to domain)
-- `atomic` — concurrency-safe storage
-- `const` — immutable; no writable pointer may be derived
-- `final` — write-once; no writable pointer may be derived
-
-Storage qualifiers are required everywhere data is declared: local variables, function parameters, and tagged enum payloads.
-
-Both string literal forms are stack-allocated: `'...'` and `"..."` are identical.
-
-A `heap` primitive is automatically `malloc`'d on declaration and `free`'d when it leaves scope (unless `rem.()` is called first):
-
-    heap i32 x = 42;   // malloc'd; freed at scope exit
-
-Storage group blocks apply one qualifier to multiple declarations:
-
-    stack (
-        i32 x = 0;
-        i32 y = 1;
-    )
-
-### Pointer Safety Rules
-
-Pointers carry a memory-domain tag and a permission:
-- `*r` → read-only, `*w` → write-only, `*rw` → read-write (default; `*` is shorthand)
-- Cross-domain assignment is a compile error (`stack` addr → `heap` ptr forbidden)
-- No stack pointer escape — returning `&local` is a compile error
-- Permission widening forbidden — `*r` cannot be widened to `*rw`/`*w`
-- No writable pointer from `const`/`final`
-- Pointer lifetime rule — pointer must not outlive its pointee's scope
-- Pointer arithmetic bounds enforcement for statically-sized stack arrays
-- Null dereference detection for statically-known `nil` pointers
-- No `ext` pointer to `int` data — `ext` functions must not expose pointers to private globals/fields
-- Function pointer domain tags — `fn*(params): ret_type`; compiler rejects mismatched storage domains at call sites
-
----
-
-## Functions
-
-- `int fn` — internal (module-private), `ext fn` — exported/public
-- Every parameter requires a storage qualifier
-- Parameter grouping: `fn sum3(stack i32 x, y, z): i32`
-- Multiple return values: `fn min_max(stack i32 a, stack i32 b): [i32, i32]`
-- Multiple assignment: `stack i32 [lo, hi] = min_max(3, 7);`
-- Explicit no-parameter: `fn foo(void): void`
-- Return: `ret xyz;`
-
----
-
-## Struct System
-
-    type MyType: struct { ... };
-
-- Exported: `ext type MyType: struct { ... };`
-- Memory partitioning: `stack:` / `heap:` sections inside struct body
-- Field visibility: `int` = private, `ext` = public
-- Methods: `fn MyType.method(stack i32 x): void`
-- Constructor: `fn MyType.new(stack i32 x): MyType {}`
-- Destructor (auto-called on scope exit): `fn MyType.rem(void): void`
-- Self-reference: `MyType.(field)`
-- Heap pointer fields are auto-freed on destruction; nested struct destructors called recursively
-
----
-
-## Enums
-
-    type Direction: enum { North, South, East, West };
-
-Tagged enums with storage-qualified payloads:
-
-    type Shape: enum {
-        Circle(stack f64),
-        Rect(stack f64, stack f64),
-        Blob(heap u8 *rw),
-    };
-
-    match s {
-        Shape.Circle(r) => { debug r; }
-        _ => {}
-    }
-
----
-
-## Memory Management
-
-- `new.(byte_count)` — allocate heap memory
-- `rem.(ptr)` — free heap memory
-- `mov.(ptr, new_byte_count)` — resize (realloc)
-- `sizeof.(type)` — size of a type in bytes
-
----
-
-## Control Flow
-
-- `for`, `while`, `do`-`while`, `inf` (infinite loop)
-- `if` / `else` / else-if, `break`, `continue`
-- Ternary: `cond ? then : else`
-- `defer` — run a statement/block at scope exit (LIFO):
-
-      defer rem.(buf);
-
-**Operators:** arithmetic (`+`, `-`, `*`, `/`, `%`), bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`), logical (`&&`, `||`, `!`), comparison (`<`, `>`, `<=`, `>=`, `==`, `!=`), compound assign, increment/decrement, address-of (`&x`).
-
----
-
-## Parallelism
-
-- `cpu.(fn_name)()` — CPU parallel dispatch
-- `gpu.(fn_name)()` — GPU dispatch
-
----
-
-## C Interoperability
-
-The `lib` keyword is the single entry point for all external library access:
+## Build & Run
 
 ```
-lib "name";                               // C stdlib header, no alias
-lib "name" = alias;                       // C stdlib header with alias
-lib "name" from "path/to/lib.a";          // custom .a library
-lib "name" from "path/to/lib.a" = alias;  // custom .a library with alias
+make                                    # build bin/stasha
+stasha [build] <file.sts> [-o out]      # compile to executable
+stasha lib     <file.sts> [-o out.a]    # static library
+stasha dylib   <file.sts>               # dynamic library
+stasha test    <file.sts>               # run test blocks
+stasha build   <file.sts> -g            # debug info (DWARF + .dSYM on macOS)
+stasha build   <file.sts> --target triple
+stasha                                  # project-mode: reads sts.sproj in CWD
+stasha build                            # project-mode: reads sts.sproj in CWD
 ```
 
-    io.printf("Hello, %s!\n", "world");
-    stack f64 c = cmath.sin(3.14);
+Library workflow: `stasha lib veclib.sts -o examples/libveclib.a` then `lib "veclib" from "libveclib.a"; imp veclib;` — lib path resolved relative to source file directory.
+
+**Project file** (`sts.sproj` in project root):
+```
+main     = "src/main.sts"     # entry point
+binary   = "bin/myapp"        # output executable  (or: library = "bin/lib.a")
+ext_libs = []                 # precompiled libraries
+# ext_libs = [ ("libs/x.a" : "libs/x.sts"), ... ]
+```
 
 ---
 
-## Module System
+## Source Map
 
-    mod name;        // module declaration (top of every file)
-    imp other_mod;   // import
+Unity-build layout: sub-files are `#include`d into their parent, keeping all functions `static`.
 
-- `int` globals are module-private (LLVM `internal` linkage)
-- `ext` globals are exported (LLVM `external` linkage)
-- `atomic` globals use atomic load/store semantics
-- Global initialisers must be constant expressions
+### `src/main.c` (494 lines)
+CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module ASTs, tags `from_lib=True` for library-backed modules), calls `codegen()` + `link_object()`/`archive_object()`/`link_dynamic()`.
 
----
+### `src/common/`
+| File | Contents |
+|------|----------|
+| `common.c` (56) | includes, static vars, `quit()` — includes logger.c + heap.c |
+| `logger.c` (371) | log rotation, `open_logger`, `log_msg/warn/err`, `get_error_count` |
+| `heap.c` (142) | `allocate`, `reallocate`, `deallocate`, `scan_and_deallocate`, leak tracking |
+| `common.h` (55) | `heap_t`, `result_t`, `boolean_t`, `usize_t`, logging API, `NullHeap` |
 
-## Debugging & Comments
+### `src/lexer/`
+| File | Contents |
+|------|----------|
+| `lexer.c` (339) | `next_token()`, all token types, string/char/number scanning |
+| `lexer.h` (180) | `token_kind_t` enum, `token_t`, `lexer_t` |
 
-    debug expr;           // type-aware print
-    // line comment
-    /* block comment */   // supports nesting
+### `src/ast/`
+| File | Contents |
+|------|----------|
+| `ast.h` (336) | All AST node kinds (`node_kind_t`), `node_t` union, `type_info_t`, `storage_t`, `linkage_t`, `ptr_perm_t` |
+| `ast.c` (178) | `ast_alloc()`, `node_list_push()`, `ast_free_all()` |
 
----
+### `src/parser/`
+| File | Contents |
+|------|----------|
+| `parser.c` (260) | `parser_t`, helpers (`advance_parser`, `check`, `match_tok`, `consume`), `parse_type()`, forward decls, `parse()` entry point — includes sub-files |
+| `parse_expr.c` (729) | `parse_primary`, `parse_postfix`, all precedence levels through `parse_expr` |
+| `parse_stmt.c` (329) | `parse_block`, `parse_for/while/do_while/inf/if/ret/debug/var_decl/defer/storage_group/statement` |
+| `parse_decls.c` (674) | `parse_struct_body`, `parse_match_stmt`, `parse_enum_body`, `parse_type_decl`, `parse_lib`, `parse_imp`, `parse_fn_decl`, `parse_switch_stmt`, `parse_asm_stmt`, `parse_comptime_if`, `parse_test_block`, `parse_top_decl` |
+| `parser.h` (8) | `parse()` declaration |
 
-## Feature Roadmap
+### `src/codegen/`
+| File | Contents |
+|------|----------|
+| `codegen.c` (1205) | All data structs (`symbol_t`, `symtab_t`, `struct_reg_t`, `enum_reg_t`, `cg_t`, etc.), forward decls, includes sub-files, `codegen()` entry point (3 passes: register types → gen fn bodies → gen test blocks) |
+| `cg_symtab.c` (72) | `symtab_init/free/add/lookup`, `cg_lookup`, `symtab_set_last_*` |
+| `cg_safety.c` (105) | `check_const_addr_of`, `check_permission_widening`, `check_stack_escape`, `check_ext_returns_int_ptr`, `check_pointer_lifetime`, `check_null_deref`, `check_ptr_arith_bounds` |
+| `cg_lookup.c` (57) | `find_struct`, `find_enum`, `resolve_alias`, `find_lib_alias` (matches by alias or bare name), `find_fn_decl` |
+| `cg_dtors.c` (175) | `push/pop_dtor_scope`, `add_deferred_stmt/dtor_var/heap_var`, `emit_struct_field_cleanup`, `emit_struct_cleanup`, `emit_dtor_calls`, `emit_all_dtor_calls`, `remove_from_dtor_scopes` |
+| `cg_types.c` (143) | `get_llvm_base_type`, `get_llvm_type`, `build_fn_ptr_llvm_type`, `coerce_int`, `make_nil_error`, type-kind predicates, `payload_type_size`, `alloc_in_entry` |
+| `cg_expr.c` | `gen_int/float/bool/char/str_lit`, `gen_ident`, `gen_binary`, `gen_unary_prefix/postfix`, `gen_call`, `gen_method_call`, `get_or_create_thread_wrapper`, `gen_thread_call`, `gen_future_op`, `gen_compound_assign`, `gen_assign`, `gen_index`, `gen_member`, `gen_self_member`, `gen_ternary`, `gen_cast`, `gen_new/sizeof/nil/mov/addr_of`, `gen_expr` dispatcher |
+| `cg_stmt.c` (900) | `gen_local_var`, `gen_for/while/do_while/inf_loop/if/ret/debug/multi_assign/match/switch/asm_stmt/comptime_if/comptime_assert`, `gen_stmt` dispatcher, `gen_block` |
+| `cg_registry.c` (132) | `register_struct/enum/alias/lib`, `struct_add_field/field_ex` |
+| `cg_debug.c` (288) | `di_cache_lookup/set`, `get_di_named_type`, `get_di_type`, `di_make_location`, `di_set_location` |
+| `codegen.h` (10) | `codegen()` declaration |
 
-### Language Core
-- [x] Module declarations (`mod`), import system (`imp`)
-- [x] Comments (`//`, `/* */` nested)
-- [x] Debug statement, return statements (`ret`)
-- [x] `defer` statement
-- [x] Built-in testing framework (`test 'name' { }`, `expect.()`, `expect_eq.()`, `test_fail.()`)
+### `src/runtime/`
+| File | Contents |
+|------|----------|
+| `thread_runtime.h` | Public API: `__future_t`, `__thread_dispatch`, `__future_get/wait/ready/drop`, `__thread_runtime_init/shutdown` |
+| `thread_runtime.c` | Thread pool (POSIX pthreads), ring-buffer job queue, future implementation. Auto-init/shutdown via `__attribute__((constructor/destructor))`. Compiled to `bin/thread_runtime.a` and automatically linked into every executable. |
 
-### Types
-- [x] All numeric primitives (`i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `bool`, `void`)
-- [x] User-defined types (struct, enum, alias)
-- [x] `nil`, built-in `error` type
-
-### Memory & Storage
-- [x] All storage qualifiers (`stack`, `heap`, `atomic`, `const`, `final`)
-- [x] Storage group blocks, cross-domain pointer rejection
-- [x] `heap` primitives auto-malloc/free, global variable semantics
-
-### Functions
-- [x] `int fn` / `ext fn`, multiple return values, multiple assignment, parameter grouping
-
-### Structs & Enums
-- [x] Full struct system, methods, constructors, destructors, memory partitioning, field visibility
-- [x] Basic enums, tagged payloads, `match` statement
-
-### Pointers & Allocation
-- [x] Permissioned pointers (`*r`, `*w`, `*rw`), `new.()`, `rem.()`, `mov.()`, `sizeof.()`
-- [x] Arrays, no stack pointer escape, permission widening forbidden
-- [x] Pointer lifetime rule, no writable pointer from `const`/`final`
-- [x] Bounds enforcement, null dereference detection, no `ext` pointer to `int` data
-- [x] Function pointer domain tags
-
-### Control Flow
-- [x] `for`, `while`, `do`-`while`, `inf`, `if`/`else`, `break`, `continue`, ternary
-- [x] Full operator set
-
-### Parallelism
-- [x] CPU dispatch (`cpu.(fn)()`), GPU dispatch (`gpu.(fn)()`)
-
-### Expressions
-- [x] Casts, character literals, float/bool literals, index expressions
-- [x] Member access, self-member access, method calls, increment/decrement
-
-### Interop & Toolchain
-- [x] `lib` keyword — unified C stdlib + custom `.a` library declarations
-- [x] Internal LLVM LLD linker (no external linker required)
+### `src/linker/`
+| File | Contents |
+|------|----------|
+| `linker.cpp` (171) | LLD wrappers: `link_object`, `link_dynamic`, `archive_object` |
+| `linker.h` (27) | declarations + `archive_object` |
 
 ---
 
-## Design Notes & Future Work
+## Language Quick Reference
 
-### Error Type
-
-Built-in `error` type modelled on Go's error, adapted for non-GC systems context.
-- Zero value is `nil`; created with `error.('message')`; compared with `== nil` / `!= nil`
-- A function returning `error` that falls off the end implicitly returns `nil`
-
-**Open questions:**
-- Should `error` carry an integer code alongside the message (like `errno`)?
-- Should errors be propagatable with a `?` suffix operator like Rust/Zig?
-
-### Testing Framework
-
-Zig-style inline test blocks — compiled only in test mode, zero overhead in production:
+**Storage qualifiers** (required everywhere): `stack`, `heap`, `atomic`, `const`, `final`, `volatile`, `tls`
+**Pointer permissions**: `*r` (read-only), `*w` (write-only), `*+` (pointer allows pointer arithmatic), `*rw` / `*` (read-write), for example: `*w+`
+**Types**: `i8/i16/i32/i64`, `u8/u16/u32/u64`, `f32/f64`, `bool`, `void`, `nil`, `error`, `future`
 
 ```
-test 'division by zero' {
-    stack i32 [r, err] = divide(10, 0);
-    expect.(err != nil);
-    expect_eq.(r, 0);
+// Declarations
+stack i32 x = 0;          heap i32 y = 42;   // heap: auto malloc/free
+stack (i32 a = 0; i32 b;) // storage group block
+type Foo: struct { stack: ext i32 x; heap: int i32 *rw buf; };
+type Dir: enum { North, South };
+type Shape: enum { Circle(stack f64), Blob(heap u8 *rw) };
+type Alias: i32;
+
+// Functions
+int fn add(stack i32 a, b): i32 { ret a + b; }
+ext fn min_max(stack i32 a, stack i32 b): [i32, i32] { ... }
+stack i32 [lo, hi] = min_max(3, 7);
+fn foo(void): void
+
+// Struct methods — instance methods are defined INSIDE the struct body and use `this`
+// Static methods (e.g. constructors) are defined outside with `fn Foo.name()`
+type Foo: struct {
+    ext i32 x;
+    ext fn method(stack i32 v): void { this.x = v; }  // instance method — this valid here
+    ext fn rem(void): void { ... }                      // destructor — auto-called at scope exit
 }
+fn Foo.new(stack i32 x): Foo { ... }  // static constructor — no `this`
+
+// `this` is ONLY valid inside functions defined within a struct body.
+// Using `this` in an external `fn Foo.method()` is a compile error.
+
+// Generics — @comptime[T] on structs and standalone functions
+type arr_t: @comptime[T] struct {
+    heap ext T *rw buf; ext i32 len;
+    ext fn push(T val): void { ... }  // instance method uses this
+}
+fn @comptime[T] arr_t.new(stack i32 cap): arr_t.[T] { ... }  // static constructor
+arr_t.[i32] a = arr_t.[i32].new(8);  // instantiate with concrete type
+fn @comptime[T] identity(stack T val): T { ret val; }  // standalone generic fn
+stack i32 x = identity.[i32](42);    // instantiate at call site
+
+// Control flow
+for (stack i32 i = 0; i < n; i++) {}
+while (cond) {}    do {} while (cond);    inf {}
+if (x) {} else if (y) {} else {}
+match s { Shape.Circle(r) => { } _ => {} }
+match n { 0 => {} 1 => {} _ => {} }            // integer literal arms
+match s { Shape.Circle(r) if r > 10 => {} _ => {} }  // guard clauses
+match st { Status.Ok => {} other => {} }        // wildcard binding
+switch (x) { case 0: break; default: }
+defer rem.(buf);
+break;      // exit innermost for/while/do-while/inf/switch
+continue;   // next iteration of innermost loop (not valid in switch)
+
+// Operators: + - * / %  +% -% *% (wrap)  +! -! *! (trap)
+//            & | ^ ~ << >>  && || !  < > <= >= == !=
+//            &x (addr-of)   x[i] (index)
+
+// Built-in formatted output (no import required)
+// First arg must be a string literal; {} inserts the next argument.
+// Format specs after ':' inside {}: x/X (hex), b (binary), o (octal),
+//   .N (float precision), <N (left-align width N), N (right-align width N),
+//   0N (zero-padded width), + (force sign), # (alt prefix: 0x/0b/0).
+//   Flags compose: {:+#08x}  Literal brace: \{
+print.('hello\n');
+print.('x = {}, y = {:08x}\n', x, y);
+
+// C interop
+lib "stdio" = io;    lib "math";    lib "mylib" from "libmylib.a";
+io.printf("hello\n");    math.sqrt(x);
+
+// Memory
+new.(bytes)   rem.(ptr)   mov.(ptr, new_bytes)   sizeof.(Type)
+
+// Misc
+asm { "nop" }        // inline assembly
+comptime_assert.(sizeof.(Foo) == 8);
+#if os == "macos" && arch == "arm64" { ... }
+test 'name' { expect.(x); expect_eq.(a, b); test_fail.('msg'); }
+
+// Thread parallelism (thread pool, POSIX threads)
+stack future f = thread.(fn_name)(arg1, arg2);  // dispatch to thread pool
+future.wait(f);                    // block until done
+stack bool r = future.ready(f);    // non-blocking check
+stack i32 v = future.get.(i32)(f); // block and return typed result
+stack void *p = future.get(f);     // block and return raw void*
+future.drop(f);                    // wait + free future
+
+// Struct attributes: @packed  @align(N)  @c_layout
+// Fn/var attributes: @weak  @hidden  @restrict
+// Variadic: fn foo(stack i32 n, ...): void
+// Union: type U: union { i32 x; f32 y; }
+// Bitfield: i32 flags: 3;  (inside struct)
 ```
 
-Available builtins: `expect.(expr)`, `expect_eq.(a, b)`, `expect_neq.(a, b)`, `test_fail.('msg')`.
+**Module system**: every file starts with `mod name;` (root) or `mod dir.subdir.name;` (nested). The dotted name mirrors the directory path relative to the entry file: `mod printer.typewriter;` lives at `printer/typewriter.sts`. `imp other.mod;` splices that module's types/sigs into the current AST; dots in the name are converted to path separators for lookup. `int` = module-private, `ext` = exported. Library-backed imports: `lib "x" from "libx.a"; imp x;` — codegen skips bodies, linker resolves from `.a`.
 
-Running `stasha test file.sts` compiles and executes all test blocks, reporting pass/fail counts.
+**`libimp` — combined lib+imp shorthand**:
+```
+libimp "name" from "path/libname.a";   // load archive from explicit path
+libimp "name" from std;                // load from <bin_dir>/stdlib/libname.a
+```
+Equivalent to writing `lib "name" from <path>; imp name;` but in one declaration. The module name is always the same as the library name. `from std` resolves the archive to `<bin_dir>/stdlib/lib<name>.a` and looks up the interface source at `<bin_dir>/stdlib/<name>.sts`. Build stdlib modules with `make stdlib` before using `from std` imports.
+
+---
+
+## Pointer & Memory Safety Rules
+
+These rules are enforced by the compiler at every declaration and assignment.
+
+### Storage domain — `heap` vs `stack` on pointer variables
+
+The storage qualifier on a **pointer** variable describes where the *pointed-to data* lives:
+
+| Qualifier | Pointed-to data | `new.()` allowed? | `rem.()` required? |
+|-----------|----------------|-------------------|-------------------|
+| `heap T *perm p` | Heap-allocated | Yes (`new.(n)`) | Yes — programmer is responsible |
+| `stack T *perm p` | Stack variable (`&local`) or zone allocation | Only via `new.(n) in zone` | Never — zone or scope owns the memory |
+| Unqualified (`const`/`final`/bare) | Either | No check applied | No check applied |
+
+**Domain is permanent.** Once declared, every subsequent assignment to the pointer must respect the same domain. A heap pointer can never be made to point at stack memory, and vice versa.
+
+### What the compiler enforces
+
+1. **Non-pointer heap vars are rejected.** `heap i32 x = 5;` is a compile error. Use `heap i32 *rw p = new.(sizeof.(i32));`. Exception: `heap []T` slice types are allowed (they carry an internal heap-owned data pointer).
+
+2. **Wrong-domain pointer init/assign is rejected.**
+   - `stack T *rw p = new.(n);` → error: heap alloc into stack pointer
+   - `heap T *rw p = &some_local;` → error: stack address into heap pointer
+   - `heap T *rw p = new.(n); p = &some_local;` → same error on the assignment
+
+3. **Zone allocations are stack-like.** `new.(n) in zone_name` is zone-managed, not heap-owned. It may be stored in a `stack` pointer. Never call `rem.()` on it — call `rem.(zone_name)` to free the whole arena.
+
+4. **`rem.()` on a stack pointer is rejected.** Only `heap` pointers may be freed with `rem.()`.
+
+5. **All checks are suppressed inside `unsafe {}` blocks.**
+
+### Correct patterns
+
+```
+heap i32 *rw p = new.(sizeof.(i32));   // heap pointer — must call rem.(p)
+stack i32 x = 42;
+stack i32 *r  q = &x;                  // stack pointer — scope-owned
+zone z;
+stack u8 *rw buf = new.(64) in z;      // zone alloc — rem.(z) frees it
+rem.(z);                               // frees entire zone
+```
+
+### Common mistakes that produce compile errors
+
+```
+heap i32 x = 5;                        // non-pointer heap var — ERROR
+stack i32 *rw p = new.(sizeof.(i32));  // heap alloc → stack ptr — ERROR
+heap i32 *rw p = new.(4);
+p = &some_local;                       // stack addr → heap ptr on assign — ERROR
+stack i32 *rw q = new.(4) in z;
+rem.(q);                               // rem on stack pointer — ERROR
+```
+
+### Implementation
+
+- `src/codegen/cg_safety.c` — `rhs_addr_kind` (classifies RHS as heap/stack/unknown), `check_storage_domain` (emits domain mismatch errors)
+- `src/codegen/cg_stmt.c` — `gen_local_var`: calls `rhs_addr_kind` + `check_storage_domain` at declaration
+- `src/codegen/cg_expr.c` — `gen_assign`: same checks on every assignment; `NodeRemStmt` handler guards against `rem.()` on stack pointers
 
 ---
 
 ## TODO
 
-### Module System
+- [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
+- [x] Dotted module names + sts.sproj project file
+- [x] Thread parallelism: `thread.(fn)(args)` + `future` type (thread pool, POSIX pthreads)
+- [ ] Build system / package manager
+- [ ] Standard library (string, I/O, math, collections in Stasha)
+- [ ] Self-hosting compiler
 
-- [ ] Support building Stasha modules (that import other modules from other `.sts` files) into static libraries
-
----
-
-## C Competitor Requirements
-
-For Stasha to be a valid C competitor — replacing C in the domains where it dominates (OS kernels, embedded, drivers, system utilities, HPC, protocol implementations, libraries) — the following must be implemented:
-
-### Critical (C programs routinely rely on these)
-
-- [x] **Variadic functions** — `fn foo(stack i32 n, ...): void`; needed for printf-style APIs and FFI
-- [x] **Union types** — `type Foo: union { i32 x; f32 y; }`; essential for protocol parsing, type punning, hardware registers
-- [x] **Bitfields** — `i32 flags: 3;` inside structs; required for packed hardware/protocol structures
-- [x] **`volatile` qualifier** — for memory-mapped I/O and hardware registers where the compiler must not reorder or elide accesses
-- [x] **Inline assembly** — `asm { ... }` blocks; required for OS kernels, bootloaders, SIMD, and low-level hardware access
-- [x] **`switch` statement** — integer/enum dispatch with fall-through control; C's switch is distinct from `match` on tagged enums
-- [x] **Packed and aligned struct attributes** — `@packed`, `@align(N)`; required for wire formats, ABI compatibility, SIMD alignment
-- [x] **Compile-time conditional compilation** — platform/arch/OS detection; equivalent to `#ifdef` guards for portability
-
-### Important (limits adoption without these)
-
-- [x] **Designated initializers** — `MyStruct { .x = 1, .y = 2 }`; ubiquitous in C for readable struct/array init
-- [x] **`static_assert` / compile-time assertions** — `comptime_assert.(sizeof.(Foo) == 8)`; catch layout/ABI assumptions at compile time
-- [x] **Thread-local storage** — `tls` qualifier or `@thread_local`; needed for per-thread state in runtimes and OS code
-- [x] **Integer overflow semantics** — explicit wrapping (`+%`) vs trapping (`+!`) arithmetic; predictable behavior for crypto and embedded
-- [x] **C-compatible struct layout guarantee** — explicit opt-in (e.g. `@c_layout`) to guarantee ABI compatibility with C structs for FFI
-- [x] **Weak symbols / link-time visibility** — `@weak`, `@hidden`; needed for library authors overriding defaults and linker-level optimisation
-- [x] **`restrict` pointer hint** — aliasing hint to enable C-level auto-vectorization and optimizer performance
-
-### Toolchain & Ecosystem
-
-- [x] **Cross-compilation** — `--target triple` flag; required for embedded and OS dev where host ≠ target
-- [ ] **Build system / package manager** — distributing and consuming Stasha libraries without manual `.a` path management
-- [x] **Dynamic library output** — produce `.so`/`.dylib`/`.dll`; needed for plugin systems and shared runtimes
-- [x] **Debug info quality** — DWARF emission sufficient for `gdb`/`lldb` to show Stasha source, types, and variable names; `-g` flag emits full DWARF4 into the object file; on macOS a `.dSYM` bundle is generated automatically via `dsymutil`
-- [ ] **Standard library** — native string, I/O, math, and collection types so programs don't depend entirely on C interop
-- [ ] **Self-hosting compiler** — compiler written in Stasha; proves the language is production-ready for systems work
+**Open design questions:**
+- `error` type: carry integer code alongside message?
+- Error propagation `?` suffix operator (Rust/Zig style)?

@@ -48,6 +48,14 @@ node_t *make_node(node_kind_t kind, usize_t line) {
     return n;
 }
 
+void ast_set_loc(node_t *node, token_t tok) {
+    if (!node) return;
+    node->line = tok.line;
+    node->col = tok.col;
+    if (tok.file)
+        node->source_file = ast_strdup(tok.file, strlen(tok.file));
+}
+
 char *copy_token_text(token_t tok) {
     heap_t h = allocate(tok.length + 1, sizeof(char));
     arena_track(h);
