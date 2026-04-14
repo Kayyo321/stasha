@@ -20,6 +20,7 @@
 - [Enums](Enums)
 - [Interfaces](Interfaces)
 - [Generics](Generics)
+- [Compound Initializers](Compound-Initializers)
 
 ---
 
