@@ -2,24 +2,98 @@ mod parse.parse_expr;
 
 imp lex.token;
 
+// ── expression-start predicate ────────────────────────────────────────────────
+
 ext fn is_expr_token(token.token_kind_t kind): bool {
-    switch kind {
-        case token.token_kind_t.TokIdent,
-             token.token_kind_t.TokIntLit,
-             token.token_kind_t.TokFloatLit,
-             token.token_kind_t.TokStackStr,
-             token.token_kind_t.TokCharLit,
-             token.token_kind_t.TokTrue,
-             token.token_kind_t.TokFalse,
-             token.token_kind_t.TokNil,
-             token.token_kind_t.TokLParen,
-             token.token_kind_t.TokPlus,
-             token.token_kind_t.TokMinus,
-             token.token_kind_t.TokBang,
-             token.token_kind_t.TokStar,
-             token.token_kind_t.TokAmp: {
-            ret true;
-        }
-        default: ret false;
+    match kind {
+        token.token_kind_t.TokIdent,
+        token.token_kind_t.TokIntLit,
+        token.token_kind_t.TokFloatLit,
+        token.token_kind_t.TokStackStr,
+        token.token_kind_t.TokCharLit,
+        token.token_kind_t.TokTrue,
+        token.token_kind_t.TokFalse,
+        token.token_kind_t.TokNil,
+        token.token_kind_t.TokThis,
+        token.token_kind_t.TokLParen,
+        token.token_kind_t.TokPlus,
+        token.token_kind_t.TokMinus,
+        token.token_kind_t.TokBang,
+        token.token_kind_t.TokTilde,
+        token.token_kind_t.TokStar,
+        token.token_kind_t.TokAmp,
+        token.token_kind_t.TokPlusPlus,
+        token.token_kind_t.TokMinusMinus,
+        token.token_kind_t.TokNew,
+        token.token_kind_t.TokRem,
+        token.token_kind_t.TokSizeof,
+        token.token_kind_t.TokMov,
+        token.token_kind_t.TokDot,      // .{...} init
+        token.token_kind_t.TokPrint     => { ret true; }
+        _ => { ret false; }
+    }
+}
+
+// ── operator precedence (0 = not an infix op) ─────────────────────────────────
+
+ext fn infix_prec(token.token_kind_t k): u32 {
+    match k {
+        // assignment (right-assoc, lowest)
+        token.token_kind_t.TokEq,
+        token.token_kind_t.TokPlusEq,   token.token_kind_t.TokMinusEq,
+        token.token_kind_t.TokStarEq,   token.token_kind_t.TokSlashEq,
+        token.token_kind_t.TokPercentEq,
+        token.token_kind_t.TokAmpEq,    token.token_kind_t.TokPipeEq,
+        token.token_kind_t.TokCaretEq,  token.token_kind_t.TokLtLtEq,
+        token.token_kind_t.TokGtGtEq   => { ret 1;  }
+        // ternary
+        token.token_kind_t.TokQuestion => { ret 2;  }
+        // logical
+        token.token_kind_t.TokPipePipe => { ret 3;  }
+        token.token_kind_t.TokAmpAmp   => { ret 4;  }
+        // bitwise
+        token.token_kind_t.TokPipe     => { ret 5;  }
+        token.token_kind_t.TokCaret    => { ret 6;  }
+        token.token_kind_t.TokAmp      => { ret 7;  }
+        // equality
+        token.token_kind_t.TokEqEq,
+        token.token_kind_t.TokBangEq,
+        token.token_kind_t.TokDotEqEq  => { ret 8;  }
+        // relational
+        token.token_kind_t.TokLt, token.token_kind_t.TokGt,
+        token.token_kind_t.TokLtEq,
+        token.token_kind_t.TokGtEq     => { ret 9;  }
+        // shift
+        token.token_kind_t.TokLtLt,
+        token.token_kind_t.TokGtGt     => { ret 10; }
+        // additive
+        token.token_kind_t.TokPlus,
+        token.token_kind_t.TokMinus,
+        token.token_kind_t.TokPlusPercent,
+        token.token_kind_t.TokMinusPercent,
+        token.token_kind_t.TokPlusBang,
+        token.token_kind_t.TokMinusBang => { ret 11; }
+        // multiplicative
+        token.token_kind_t.TokStar,
+        token.token_kind_t.TokSlash,
+        token.token_kind_t.TokPercent,
+        token.token_kind_t.TokStarPercent,
+        token.token_kind_t.TokStarBang  => { ret 12; }
+        _ => { ret 0; }
+    }
+}
+
+// Right-associative: assignment and ternary
+ext fn is_right_assoc(token.token_kind_t k): bool {
+    match k {
+        token.token_kind_t.TokEq,
+        token.token_kind_t.TokPlusEq,   token.token_kind_t.TokMinusEq,
+        token.token_kind_t.TokStarEq,   token.token_kind_t.TokSlashEq,
+        token.token_kind_t.TokPercentEq,
+        token.token_kind_t.TokAmpEq,    token.token_kind_t.TokPipeEq,
+        token.token_kind_t.TokCaretEq,  token.token_kind_t.TokLtLtEq,
+        token.token_kind_t.TokGtGtEq,
+        token.token_kind_t.TokQuestion  => { ret true; }
+        _ => { ret false; }
     }
 }

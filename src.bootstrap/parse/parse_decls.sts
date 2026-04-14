@@ -2,16 +2,33 @@ mod parse.parse_decls;
 
 imp lex.token;
 
+// ── declaration-start predicate ───────────────────────────────────────────────
+
 ext fn is_decl_start(token.token_kind_t kind): bool {
-    switch kind {
-        case token.token_kind_t.TokFn,
-             token.token_kind_t.TokType,
-             token.token_kind_t.TokLib,
-             token.token_kind_t.TokLibImp,
-             token.token_kind_t.TokCHeader,
-             token.token_kind_t.TokTest: {
-            ret true;
-        }
-        default: ret false;
+    match kind {
+        token.token_kind_t.TokFn,
+        token.token_kind_t.TokType,
+        token.token_kind_t.TokLib,
+        token.token_kind_t.TokLibImp,
+        token.token_kind_t.TokCHeader,
+        token.token_kind_t.TokTest,
+        token.token_kind_t.TokInt,
+        token.token_kind_t.TokExt,
+        token.token_kind_t.TokAt      => { ret true; }
+        _ => { ret false; }
+    }
+}
+
+// Whether a token can start a top-level variable declaration.
+// A var decl at top level begins with a storage qualifier followed by a type.
+ext fn is_global_var_start(token.token_kind_t kind): bool {
+    match kind {
+        token.token_kind_t.TokStack,
+        token.token_kind_t.TokHeap,
+        token.token_kind_t.TokAtomic,
+        token.token_kind_t.TokConst,
+        token.token_kind_t.TokFinal,
+        token.token_kind_t.TokTls     => { ret true; }
+        _ => { ret false; }
     }
 }

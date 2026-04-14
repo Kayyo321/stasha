@@ -1,0 +1,88 @@
+mod ast.expr;
+
+// ── Expression AST ───────────────────────────────────────────────────────────
+// Flat data-oriented pool design.  All nodes stored by value; children
+// referenced by u32 index into the shared pool.  EXPR_NONE = absent node.
+
+ext const u32 EXPR_NONE = 0xFFFFFFFF;
+
+ext type expr_kind_t: enum {
+    // literals
+    IntLit, FloatLit, StrLit, CharLit, BoolLit, NilLit,
+    // names
+    Ident, SelfRef,
+    // operations
+    Binary, Unary, PostfixInc, PostfixDec,
+    // calls
+    Call, MethodCall,
+    // access
+    Member, Index,
+    // casts & misc
+    Cast, Ternary,
+    // memory builtins
+    AddrOf, New, Rem, Sizeof, Mov,
+    // compound initialiser  .{...}
+    Init,
+    // error.('msg', ...)
+    ErrorLit,
+    // print./sprint.
+    Print, Sprint,
+}
+
+ext type binop_t: enum {
+    Add, Sub, Mul, Div, Mod,
+    BitAnd, BitOr, BitXor, Shl, Shr,
+    Eq, Ne, Lt, Gt, Le, Ge,
+    LAnd, LOr,
+    Assign,
+    AddAsgn, SubAsgn, MulAsgn, DivAsgn, ModAsgn,
+    AndAsgn, OrAsgn,  XorAsgn, ShlAsgn, ShrAsgn,
+    WrapAdd, WrapSub, WrapMul,
+    TrapAdd, TrapSub, TrapMul,
+}
+
+ext type unop_t: enum {
+    Neg, BitNot, LNot, PreInc, PreDec,
+}
+
+// ─── node ────────────────────────────────────────────────────────────────────
+
+ext type expr_node_t: struct {
+    expr_kind_t kind;
+    u32 line;
+    u32 col;
+    // literal values
+    i64  ival;       // IntLit / CharLit
+    f64  fval;       // FloatLit
+    bool bval;       // BoolLit
+    // string-pool refs  (offset into ast_ctx_t.strings)
+    u32  str;        // Ident / StrLit / Member field name / Cast target type
+    u32  str_len;
+    u32  str2;       // MethodCall method name
+    u32  str2_len;
+    // child node indices (EXPR_NONE if absent)
+    u32  lhs;        // Binary lhs / Unary operand / Call callee-expr /
+                     // Member object / Index object / Cast operand
+    u32  rhs;        // Binary rhs / Index subscript
+    u32  xtra;       // Ternary: then-branch (cond is lhs, else is rhs)
+    // variadic children  (Call args, Init fields)  — stored in ctx.child_list
+    u32  args;       // start index in ctx.child_list
+    u32  nargs;
+    // operators
+    binop_t binop;
+    unop_t  unop;
+}
+
+// ─── factory ─────────────────────────────────────────────────────────────────
+
+ext fn expr_node_t.make(expr_kind_t k, u32 line, u32 col): expr_node_t {
+    ret expr_node_t{
+        .kind = k, .line = line, .col = col,
+        .ival = 0, .fval = 0.0, .bval = false,
+        .str  = EXPR_NONE, .str_len  = 0,
+        .str2 = EXPR_NONE, .str2_len = 0,
+        .lhs  = EXPR_NONE, .rhs = EXPR_NONE, .xtra = EXPR_NONE,
+        .args = EXPR_NONE, .nargs = 0,
+        .binop = binop_t.Add, .unop = unop_t.Neg,
+    };
+}

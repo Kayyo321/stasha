@@ -1,0 +1,77 @@
+mod ast.stmt;
+
+// ── Statement AST ────────────────────────────────────────────────────────────
+
+ext const u32 STMT_NONE = 0xFFFFFFFF;
+
+ext type stmt_kind_t: enum {
+    Block,
+    VarDecl, LetDecl, StorageGroup,
+    Return,
+    If,
+    For, ForEach, While, DoWhile, Inf,
+    Break, Continue,
+    Defer,
+    Match, MatchArm,
+    Switch,
+    With,
+    Assign, MultiAssign,
+    ExprStmt,
+    Asm,
+}
+
+// ─── node ────────────────────────────────────────────────────────────────────
+
+ext type stmt_node_t: struct {
+    stmt_kind_t kind;
+    u32 line;
+    u32 col;
+    // expression indices (STMT_NONE if absent)
+    u32  expr;       // ExprStmt / Return / Defer / While cond / Assign rhs
+    u32  cond;       // If / For condition / With guard / Match subject
+    u32  init_e;     // For init-expr / VarDecl initialiser
+    u32  step_e;     // For step-expr
+    u32  lhs_e;      // Assign lhs
+    // block children — stored as stmt indices in ctx.stmt_children
+    u32  body;       // start in ctx.stmt_children
+    u32  nbody;
+    u32  else_b;     // else/elif block start
+    u32  nelse;
+    // variable declaration fields
+    u32  name;       // string-pool offset
+    u32  name_len;
+    u32  type_s;     // type string pool offset
+    u32  type_len;
+    // let / multi-assign: list of name pool offsets in ctx.child_list
+    u32  names;
+    u32  nnames;
+    // flags
+    bool has_init;
+    bool is_let;     // let pattern
+    // for each: iterable expr
+    u32  iter_e;
+    // match arm data: pattern string + optional guard expr
+    u32  pat_str;
+    u32  pat_len;
+    u32  guard_e;
+    bool is_wildcard;
+}
+
+// ─── factory ─────────────────────────────────────────────────────────────────
+
+ext fn stmt_node_t.make(stmt_kind_t k, u32 line, u32 col): stmt_node_t {
+    ret stmt_node_t{
+        .kind = k, .line = line, .col = col,
+        .expr  = STMT_NONE, .cond   = STMT_NONE,
+        .init_e= STMT_NONE, .step_e = STMT_NONE, .lhs_e = STMT_NONE,
+        .body  = STMT_NONE, .nbody  = 0,
+        .else_b= STMT_NONE, .nelse  = 0,
+        .name  = STMT_NONE, .name_len = 0,
+        .type_s= STMT_NONE, .type_len = 0,
+        .names = STMT_NONE, .nnames = 0,
+        .has_init = false,  .is_let = false,
+        .iter_e = STMT_NONE,
+        .pat_str = STMT_NONE, .pat_len = 0,
+        .guard_e = STMT_NONE, .is_wildcard = false,
+    };
+}

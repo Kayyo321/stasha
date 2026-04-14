@@ -1,41 +1,35 @@
 mod ast.types;
 
+// ── storage, linkage, pointer-permission ─────────────────────────────────────
+
 ext type storage_t: enum {
     StorageNone,
-    Stack,
-    Heap,
-    Atomic,
-    Const,
-    Final,
-    Volatile,
-    Tls,
-    Zone,
+    Stack, Heap, Atomic, Const, Final, Volatile, Tls, Zone,
 }
 
-ext type linkage_t: enum {
-    Internal,
-    External,
-    CExternal,
+ext type linkage_t: enum { Internal, External, CExternal }
+
+ext type ptr_perm_t: enum {
+    Read,      // *r
+    Write,     // *w
+    ReadWrite, // *rw / *
+    ReadArith, // *r+
+    WriteArith,// *w+
+    RwArith,   // *rw+
 }
+
+// ── type-kind ─────────────────────────────────────────────────────────────────
 
 ext type type_kind_t: enum {
-    Unknown,
-    Void,
-    Bool,
-    Int,
-    UInt,
-    Float,
-    Pointer,
-    Slice,
-    Array,
+    Unknown, Void, Bool,
+    Int, UInt, Float,
+    Pointer, Slice, Array,
     Function,
-    Struct,
-    Enum,
-    Union,
-    Interface,
-    Any,
-    Error,
+    Struct, Enum, Union, Interface,
+    Any, Error, Future,
 }
+
+// ── type_like interface ───────────────────────────────────────────────────────
 
 type type_like_i: interface {
     kind(void): type_kind_t;
@@ -46,71 +40,64 @@ type type_like_i: interface {
 }
 
 type named_type_i: interface.[type_like_i] {
-    name(void): stack i8 *r;
+    name(void): i8 *r;
 }
+
+// ── type_info_t ───────────────────────────────────────────────────────────────
 
 ext type type_info_t: struct.[type_like_i] {
     type_kind_t type_kind_value;
-    storage_t storage_value;
-    linkage_t linkage_value;
-    u32 size_value;
-    bool nullable_value;
+    storage_t   storage_value;
+    linkage_t   linkage_value;
+    u32         size_value;
+    bool        nullable_value;
 
-    ext fn kind(void): type_kind_t => this.type_kind_value;
-    ext fn storage(void): storage_t => this.storage_value;
-    ext fn linkage(void): linkage_t => this.linkage_value;
-    ext fn byte_size(void): u32 => this.size_value;
-    ext fn is_nullable(void): bool => this.nullable_value;
+    ext fn kind(void):       type_kind_t => this.type_kind_value;
+    ext fn storage(void):    storage_t   => this.storage_value;
+    ext fn linkage(void):    linkage_t   => this.linkage_value;
+    ext fn byte_size(void):  u32         => this.size_value;
+    ext fn is_nullable(void): bool       => this.nullable_value;
 
-    ext fn set_storage(storage_t storage): void {
-        this.storage_value = storage;
-    }
+    ext fn is_int(void):   bool => this.type_kind_value == type_kind_t.Int
+                                || this.type_kind_value == type_kind_t.UInt;
+    ext fn is_float(void): bool => this.type_kind_value == type_kind_t.Float;
+    ext fn is_ptr(void):   bool => this.type_kind_value == type_kind_t.Pointer
+                                || this.type_kind_value == type_kind_t.Slice;
 
-    ext fn set_linkage(linkage_t linkage): void {
-        this.linkage_value = linkage;
-    }
-
-    ext fn set_size(u32 size): void {
-        this.size_value = size;
-    }
-
-    ext fn set_nullable(bool nullable): void {
-        this.nullable_value = nullable;
-    }
+    ext fn set_storage(storage_t s):  void { this.storage_value  = s; }
+    ext fn set_linkage(linkage_t l):  void { this.linkage_value  = l; }
+    ext fn set_size(u32 sz):          void { this.size_value     = sz; }
+    ext fn set_nullable(bool n):      void { this.nullable_value = n; }
 }
 
 ext fn type_info_t.new(type_kind_t kind): type_info_t {
     ret type_info_t{
         .type_kind_value = kind,
-        .storage_value = storage_t.StorageNone,
-        .linkage_value = linkage_t.Internal,
-        .size_value = 0,
-        .nullable_value = false,
+        .storage_value   = storage_t.StorageNone,
+        .linkage_value   = linkage_t.Internal,
+        .size_value      = 0,
+        .nullable_value  = false,
     };
 }
+
+// ── named_type_info_t ─────────────────────────────────────────────────────────
 
 ext type named_type_info_t: struct.[named_type_i] {
     type_info_t info;
     i8 display_name[128];
 
-    ext fn kind(void): type_kind_t => this.info.kind();
-    ext fn storage(void): storage_t => this.info.storage();
-    ext fn linkage(void): linkage_t => this.info.linkage();
-    ext fn byte_size(void): u32 => this.info.byte_size();
-    ext fn is_nullable(void): bool => this.info.is_nullable();
-    ext fn name(void): stack i8 *r => this.display_name;
+    ext fn kind(void):       type_kind_t => this.info.kind();
+    ext fn storage(void):    storage_t   => this.info.storage();
+    ext fn linkage(void):    linkage_t   => this.info.linkage();
+    ext fn byte_size(void):  u32         => this.info.byte_size();
+    ext fn is_nullable(void): bool       => this.info.is_nullable();
+    ext fn name(void):       i8 *r       => (i8 *r)this.display_name;
 }
 
-ext fn named_type_info_t.new(stack i8 *r name, type_kind_t kind): named_type_info_t {
-    named_type_info_t info = .{
-        .info = type_info_t.new(kind),
-    };
-
+ext fn named_type_info_t.new(i8 *r name, type_kind_t kind): named_type_info_t {
+    named_type_info_t info = .{ .info = type_info_t.new(kind) };
     u32 i = 0;
-    while (i + 1 < 128 && name[i] != 0) {
-        info.display_name[i] = name[i];
-        i++;
-    }
+    while (i + 1 < 128 && name[i] != 0) { info.display_name[i] = name[i]; i++; }
     info.display_name[i] = 0;
     ret info;
 }

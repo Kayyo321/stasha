@@ -1,27 +1,26 @@
 mod ast.node;
 
-imp ast.types;
+imp ast.decl;
+imp ast.expr;
+imp ast.stmt;
+imp diag;
 libimp "array" from std;
 
-int fn copy_cstr(stack i8 *w dst, u32 cap, stack i8 *r src): void {
+// ── shared string utilities ───────────────────────────────────────────────────
+
+int fn copy_cstr(stack i8 *w dst, u32 cap, i8 *r src): void {
     u32 i = 0;
-    while (i + 1 < cap && src[i] != 0) {
-        dst[i] = src[i];
-        i++;
-    }
+    while (i + 1 < cap && src[i] != 0) { dst[i] = src[i]; i++; }
     dst[i] = 0;
 }
 
-int fn copy_span(stack i8 *w dst, u32 cap, stack i8 *r src, u32 len): void {
+int fn copy_span(stack i8 *w dst, u32 cap, i8 *r src, u32 len): void {
     u32 i = 0;
-    while (i + 1 < cap && i < len && src[i] != 0) {
-        dst[i] = src[i];
-        i++;
-    }
+    while (i + 1 < cap && i < len) { dst[i] = src[i]; i++; }
     dst[i] = 0;
 }
 
-int fn cstr_eq(stack i8 *r a, stack i8 *r b): bool {
+int fn cstr_eq(i8 *r a, i8 *r b): bool {
     u32 i = 0;
     while (a[i] != 0 && b[i] != 0) {
         if (a[i] != b[i]) { ret false; }
@@ -30,27 +29,15 @@ int fn cstr_eq(stack i8 *r a, stack i8 *r b): bool {
     ret a[i] == b[i];
 }
 
-ext type node_kind_t: enum {
-    Module,
-    Import,
-    TypeDecl,
-    FunctionDecl,
-    VariableDecl,
-    Statement,
-    Expression,
-}
-
-ext type node_payload_t: enum {
-    Empty,
-    IntValue(i64),
-    TextValue(i8 *r),
-}
+// ── source location ───────────────────────────────────────────────────────────
 
 type source_loc_t: struct {
     u32 line;
     u32 col;
     u32 span;
 }
+
+// ── interfaces ────────────────────────────────────────────────────────────────
 
 type located_i: interface {
     line(void): u32;
@@ -59,26 +46,32 @@ type located_i: interface {
 }
 
 type named_i: interface {
-    name(void): stack i8 *r;
+    name(void): i8 *r;
+}
+
+type node_kind_t: enum {
+    Module, Import, TypeDecl, FunctionDecl, VariableDecl, Statement, Expression,
 }
 
 type ast_node_i: interface.[located_i] {
     node_kind(void): node_kind_t;
-    summary(void): stack i8 *r;
+    summary(void): i8 *r;
 }
 
 type import_i: interface.[ast_node_i, named_i] {
     resolved(void): bool;
-    resolved_path(void): stack i8 *r;
+    resolved_path(void): i8 *r;
 }
 
 type module_i: interface.[ast_node_i, named_i] {
-    source_path(void): stack i8 *r;
+    source_path(void): i8 *r;
     import_count(void): u32;
-    has_import(stack i8 *r name): bool;
+    has_import(i8 *r name): bool;
 }
 
-type import_t: struct.[import_i] {
+// ── import_t ─────────────────────────────────────────────────────────────────
+
+ext type import_t: struct.[import_i] {
     i8 import_name[256];
     i8 resolved_file[512];
     i8 summary_text[64];
@@ -87,68 +80,39 @@ type import_t: struct.[import_i] {
     bool from_cheader;
     bool is_resolved;
 
-    ext fn node_kind(void): node_kind_t => node_kind_t.Import;
-    ext fn line(void): u32 => this.loc.line;
-    ext fn col(void): u32 => this.loc.col;
-    ext fn span_len(void): u32 => this.loc.span;
-    ext fn name(void): stack i8 *r => this.import_name;
-    ext fn summary(void): stack i8 *r => this.summary_text;
-    ext fn resolved(void): bool => this.is_resolved;
-    ext fn resolved_path(void): stack i8 *r => this.resolved_file;
+    ext fn node_kind(void): node_kind_t  => node_kind_t.Import;
+    ext fn line(void):      u32          => this.loc.line;
+    ext fn col(void):       u32          => this.loc.col;
+    ext fn span_len(void):  u32          => this.loc.span;
+    ext fn name(void):      i8 *r        => (i8 *r)this.import_name;
+    ext fn summary(void):   i8 *r        => (i8 *r)this.summary_text;
+    ext fn resolved(void):  bool         => this.is_resolved;
+    ext fn resolved_path(void): i8 *r    => (i8 *r)this.resolved_file;
 
-    ext fn set_resolved_path(stack i8 *r path): void {
+    ext fn set_resolved_path(i8 *r path): void {
         copy_cstr(this.resolved_file, 512, path);
         this.is_resolved = true;
     }
 }
 
-ext fn import_t.new(stack i8 *r name): import_t {
-    import_t entry = .{};
-    copy_cstr(entry.import_name, 256, name);
-    copy_cstr(entry.summary_text, 64, "import");
-    entry.from_stdlib = false;
-    entry.from_cheader = false;
-    entry.is_resolved = false;
-    ret entry;
+ext fn import_t.new(i8 *r name): import_t {
+    import_t e = .{};
+    copy_cstr(e.import_name, 256, name);
+    copy_cstr(e.summary_text, 64, "import");
+    ret e;
 }
 
 ext fn import_t.from_span(i8 *r start, u32 len): import_t {
-    import_t entry = .{};
-    copy_span(entry.import_name, 256, start, len);
-    copy_cstr(entry.summary_text, 64, "import");
-    entry.loc.line = 0;
-    entry.loc.col = 0;
-    entry.loc.span = len;
-    entry.from_stdlib = false;
-    entry.from_cheader = false;
-    entry.is_resolved = false;
-    ret entry;
+    import_t e = .{};
+    copy_span(e.import_name, 256, start, len);
+    copy_cstr(e.summary_text, 64, "import");
+    e.loc.span = len;
+    ret e;
 }
 
-type node_t: struct.[ast_node_i] {
-    node_kind_t kind_value;
-    source_loc_t loc;
-    node_payload_t payload;
-    i8 summary_text[64];
+// ── module_t ──────────────────────────────────────────────────────────────────
 
-    ext fn node_kind(void): node_kind_t => this.kind_value;
-    ext fn line(void): u32 => this.loc.line;
-    ext fn col(void): u32 => this.loc.col;
-    ext fn span_len(void): u32 => this.loc.span;
-    ext fn summary(void): stack i8 *r => this.summary_text;
-}
-
-ext fn node_t.new(node_kind_t kind, source_loc_t loc): node_t {
-    node_t n = .{
-        .kind_value = kind,
-        .loc = loc,
-        .payload = node_payload_t.Empty,
-    };
-    copy_cstr(n.summary_text, 64, "node");
-    ret n;
-}
-
-type module_t: struct.[module_i] {
+ext type module_t: struct.[module_i] {
     i8 module_name[256];
     i8 file_path[512];
     i8 summary_text[64];
@@ -160,17 +124,17 @@ type module_t: struct.[module_i] {
     bool saw_cheader;
     bool saw_libimp;
 
-    ext fn node_kind(void): node_kind_t => node_kind_t.Module;
-    ext fn line(void): u32 => 0;
-    ext fn col(void): u32 => 0;
-    ext fn span_len(void): u32 => 0;
-    ext fn summary(void): stack i8 *r => this.summary_text;
-    ext fn name(void): stack i8 *r => this.module_name;
-    ext fn source_path(void): stack i8 *r => this.file_path;
-    ext fn import_count(void): u32 => this.imports.length;
+    ext fn node_kind(void): node_kind_t  => node_kind_t.Module;
+    ext fn line(void):      u32          => 0;
+    ext fn col(void):       u32          => 0;
+    ext fn span_len(void):  u32          => 0;
+    ext fn summary(void):   i8 *r        => (i8 *r)this.summary_text;
+    ext fn name(void):      i8 *r        => (i8 *r)this.module_name;
+    ext fn source_path(void): i8 *r      => (i8 *r)this.file_path;
+    ext fn import_count(void): u32       => this.imports.length;
 
-    ext fn set_name(stack i8 *r name): void {
-        copy_cstr(this.module_name, 256, name);
+    ext fn set_name(i8 *r n): void {
+        copy_cstr(this.module_name, 256, n);
     }
 
     ext fn set_name_span(i8 *r start, u32 len): void {
@@ -181,11 +145,9 @@ type module_t: struct.[module_i] {
         this.imports.push(entry);
     }
 
-    ext fn has_import(stack i8 *r name): bool {
-        u32 i = 0;
-        while (i < this.imports.length) {
-            if (cstr_eq(this.imports.buf[i].name(), name)) { ret true; }
-            i++;
+    ext fn has_import(i8 *r n): bool {
+        for (stack u32 i = 0; i < this.imports.length; i++) {
+            if (cstr_eq(this.imports.buf[i].name(), n)) { ret true; }
         }
         ret false;
     }
@@ -195,18 +157,131 @@ type module_t: struct.[module_i] {
     }
 }
 
-ext fn module_t.new(stack i8 *r path): module_t {
-    module_t module = .{
-        .imports = array_t.[import_t].new(),
-        .token_count = 0,
-        .decl_count = 0,
-        .stmt_count = 0,
-        .expr_count = 0,
-        .saw_cheader = false,
-        .saw_libimp = false,
+ext fn module_t.new(i8 *r path): module_t {
+    module_t m = .{
+        .imports     = array_t.[import_t].new(),
+        .token_count = 0, .decl_count = 0,
+        .stmt_count  = 0, .expr_count = 0,
+        .saw_cheader = false, .saw_libimp = false,
     };
-    copy_cstr(module.file_path, 512, path);
-    copy_cstr(module.module_name, 256, "<unknown>");
-    copy_cstr(module.summary_text, 64, "module");
-    ret module;
+    copy_cstr(m.file_path,    512, path);
+    copy_cstr(m.module_name,  256, "<unknown>");
+    copy_cstr(m.summary_text,  64, "module");
+    ret m;
+}
+
+// ── ast_ctx_t — shared compilation context ───────────────────────────────────
+// Holds all flat pools.  Parser writes into them; codegen reads from them.
+
+ext type ast_ctx_t: struct {
+    int array_t.[ast.expr.expr_node_t]    exprs;
+    int array_t.[ast.stmt.stmt_node_t]    stmts;
+    int array_t.[ast.decl.decl_node_t]    decls;
+    int array_t.[ast.decl.param_node_t]   params;
+    int array_t.[ast.decl.field_node_t]   fields;
+    int array_t.[ast.decl.variant_node_t] variants;
+    int array_t.[u32]                     child_list;   // flat child-id lists
+    int array_t.[u32]                     stmt_children;// flat stmt-id lists
+    int array_t.[i8]                      strings;      // string pool
+    int array_t.[diag.diag_t]             diags;
+    int module_t                          module;
+
+    // ── string pool ──────────────────────────────────────────────────────────
+
+    ext fn intern(i8 *r s, u32 len): u32 {
+        u32 off = this.strings.length;
+        for (stack u32 i = 0; i < len; i++) { this.strings.push(s[i]); }
+        this.strings.push(0);
+        ret off;
+    }
+
+    ext fn intern_cstr(i8 *r s): u32 {
+        u32 len = 0;
+        while (s[len] != 0) { len++; }
+        ret this.intern(s, len);
+    }
+
+    ext fn pool_str(u32 off): i8 *r {
+        if (off == 0xFFFFFFFF || off >= this.strings.length) { ret ""; }
+        ret (i8 *r)(&this.strings.buf[off]);
+    }
+
+    // ── node pushers (return new node ID) ─────────────────────────────────────
+
+    ext fn push_expr(ast.expr.expr_node_t e): u32 {
+        u32 id = this.exprs.length;
+        this.exprs.push(e);
+        ret id;
+    }
+
+    ext fn push_stmt(ast.stmt.stmt_node_t s): u32 {
+        u32 id = this.stmts.length;
+        this.stmts.push(s);
+        ret id;
+    }
+
+    ext fn push_decl(ast.decl.decl_node_t d): u32 {
+        u32 id = this.decls.length;
+        this.decls.push(d);
+        ret id;
+    }
+
+    ext fn push_param(ast.decl.param_node_t p): u32 {
+        u32 id = this.params.length;
+        this.params.push(p);
+        ret id;
+    }
+
+    ext fn push_field(ast.decl.field_node_t f): u32 {
+        u32 id = this.fields.length;
+        this.fields.push(f);
+        ret id;
+    }
+
+    ext fn push_variant(ast.decl.variant_node_t v): u32 {
+        u32 id = this.variants.length;
+        this.variants.push(v);
+        ret id;
+    }
+
+    // Append to child_list; return start offset before append.
+    ext fn child_start(void): u32 => this.child_list.length;
+    ext fn push_child(u32 id): void { this.child_list.push(id); }
+
+    ext fn stmt_start(void): u32 => this.stmt_children.length;
+    ext fn push_stmt_child(u32 id): void { this.stmt_children.push(id); }
+
+    ext fn push_diag(diag.diag_t d): void { this.diags.push(d); }
+
+    // ── cleanup ───────────────────────────────────────────────────────────────
+
+    ext fn rem(void): void {
+        this.exprs.rem();
+        this.stmts.rem();
+        this.decls.rem();
+        this.params.rem();
+        this.fields.rem();
+        this.variants.rem();
+        this.child_list.rem();
+        this.stmt_children.rem();
+        this.strings.rem();
+        this.diags.rem();
+        this.module.rem();
+    }
+}
+
+ext fn ast_ctx_t.new(i8 *r path): ast_ctx_t {
+    ret ast_ctx_t{
+        .exprs         = array_t.[ast.expr.expr_node_t].new(),
+        .stmts         = array_t.[ast.stmt.stmt_node_t].new(),
+        .decls         = array_t.[ast.decl.decl_node_t].new(),
+        .params        = array_t.[ast.decl.param_node_t].new(),
+        .fields        = array_t.[ast.decl.field_node_t].new(),
+        .variants      = array_t.[ast.decl.variant_node_t].new(),
+        .child_list    = array_t.[u32].new(),
+        .stmt_children = array_t.[u32].new(),
+        .strings       = array_t.[i8].new(),
+        .diags         = array_t.[diag.diag_t].new(),
+        .module        = module_t.new(path),
+    };
 }
