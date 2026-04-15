@@ -2,6 +2,7 @@
 
 /* Check: no writable pointer from const/final variable */
 static void check_const_addr_of(cg_t *cg, node_t *init, type_info_t target_type, usize_t line) {
+    if (cg->in_unsafe > 0) return;
     if (!init || init->kind != NodeAddrOf || !target_type.is_pointer) return;
     node_t *operand = init->as.addr_of.operand;
     if (operand->kind != NodeIdentExpr) return;
@@ -24,6 +25,7 @@ static void check_const_addr_of(cg_t *cg, node_t *init, type_info_t target_type,
 
 /* Check: permission widening forbidden (e.g. *r → *rw) */
 static void check_permission_widening(cg_t *cg, node_t *init, type_info_t target_type, usize_t line) {
+    if (cg->in_unsafe > 0) return;
     if (!init || !target_type.is_pointer) return;
     if (init->kind == NodeIdentExpr) {
         symbol_t *src = cg_lookup(cg, init->as.ident.name);
@@ -94,6 +96,7 @@ static void check_ext_returns_int_ptr(cg_t *cg, node_t *ret_val, linkage_t fn_li
 
 /* Check: pointer lifetime — pointee must outlive the pointer */
 static void check_pointer_lifetime(cg_t *cg, node_t *init, usize_t ptr_scope_depth, usize_t line) {
+    if (cg->in_unsafe > 0) return;
     if (!init || init->kind != NodeAddrOf) return;
     node_t *operand = init->as.addr_of.operand;
     if (operand->kind != NodeIdentExpr) return;
