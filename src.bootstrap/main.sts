@@ -1,7 +1,0 @@
-mod main;
-
-imp driver;
-
-ext fn main(void): i32 {
-    ret driver.run();
-}

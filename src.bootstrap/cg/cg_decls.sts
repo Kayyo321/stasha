@@ -1,7 +1,0 @@
-mod cg.cg_decls;
-
-imp ast.node;
-
-ext fn estimate_decl_nodes(stack ast.node.module_t *r mod): u32 {
-    ret mod.decl_count;
-}
