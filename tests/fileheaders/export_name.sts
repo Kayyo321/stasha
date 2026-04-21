@@ -1,0 +1,21 @@
+mod export_name;
+
+// Symbol-control examples. These are close to what freestanding suggests,
+// but usable on individual definitions inside an otherwise normal module.
+
+@[[export_name: "plugin_init"]]
+fn initialize_plugin(void): void {
+    print.("plugin init\n");
+}
+
+@[[export_name: "plugin_shutdown"]]
+fn shutdown_plugin(void): void {
+    print.("plugin shutdown\n");
+}
+
+// A declaration-scoped fileheader could also lock a single function to C ABI
+// without making the whole file freestanding.
+@[[abi: c, export_name: "plugin_tick"]]
+fn tick(i32 frame_no): void {
+    print.("frame {}\n", frame_no);
+}
