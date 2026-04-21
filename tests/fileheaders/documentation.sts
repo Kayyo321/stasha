@@ -1,0 +1,14 @@
+mod documentation;
+
+@[[
+    doc: div(i32, i32) -> i32 or error
+    returns: i32 or error (if dividing by zero)
+    params: two 32-bit integers, a, and b
+]];
+int fn div(i32 a, b): [i32, error] {
+    if b == 0 {
+        ret 0, error.('Divide by zero');
+    }
+
+    ret a / b, nil;
+}

@@ -1,0 +1,38 @@
+mod on_init;
+
+int heap i8 *data = nil;
+
+int macro let byte_cnt! = 32;
+
+@[[init]] {
+    print.('hi! this code actually runs before main!\n');
+};
+
+@[[init: before("title_of_this")]] {
+    for i32 i = 0; i < byte_cnt.!; ++i {
+        data[i] = '1' + i;
+    }   
+};
+
+@[[init]] "title_of_this" { // doesn't matter where these are, they all get run before main
+    data = new.(sizeof.(i8) * byte_cnt.!);
+};
+
+// titles aren't required--but if you want to reference them by
+// before and after's then you need to title them!
+@[[exit: after("this_other_thing")]] {
+    if data != nil {
+        print.error.('Data wasn't cleaned up!\n');
+    }
+}
+
+@[[exit]] "this_other_thing" {
+    print('bye! this code is going to run after main returns!\n');
+    rem.(data);
+    data = nil;
+};
+
+fn main(void): i32 {
+    print.('data = {}\n', data);
+    ret 0;
+}

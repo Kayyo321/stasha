@@ -1,0 +1,4 @@
+@[[freestanding]];
+@[[org: 0x7c00]];
+
+fn main(void): i32 => 0;

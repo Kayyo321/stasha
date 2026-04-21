@@ -1,4 +1,4 @@
-[[freestanding]];
+@[[freestanding]];
 
 // with the freestanding at the top, stasha will compile a non-module
 // / non-mangled object file. Freestanding files have no access to the stsstdlib,
