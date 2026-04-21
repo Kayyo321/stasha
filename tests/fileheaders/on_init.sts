@@ -32,6 +32,11 @@ int macro let byte_cnt! = 32;
     data = nil;
 };
 
+// before's and afters should be file-wide, meaning if you have a 
+// init decl in a different file and it declares that it should
+// be ran before an init statement on a different file, it should
+// do so
+
 fn main(void): i32 {
     print.('data = {}\n', data);
     ret 0;
