@@ -1,3 +1,328 @@
+/* ── fileheader (@[[...]]) parsing ── */
+
+/* Accept identifier-like tokens for fileheader keys.  Includes real keywords
+   that can reasonably name an attribute (e.g. `if`). */
+static boolean_t is_fh_key_token(parser_t *p) {
+    token_kind_t k = p->current.kind;
+    return k == TokIdent || k == TokIf || k == TokFrom
+        || k == TokNew || k == TokRem
+        || k == TokLen || k == TokCap || k == TokMake
+        || k == TokAppend || k == TokCopy
+        || k == TokHash || k == TokEqu
+        || k == TokDefault;
+}
+
+static boolean_t fh_key_is_doc(const char *k) {
+    return strcmp(k, "doc") == 0 || strcmp(k, "returns") == 0 || strcmp(k, "params") == 0;
+}
+
+static fh_entry_t *fh_find(fileheader_t *fh, const char *k) {
+    if (!fh) return Null;
+    for (usize_t i = 0; i < fh->count; i++)
+        if (strcmp(fh->items[i].key, k) == 0) return &fh->items[i];
+    return Null;
+}
+
+/* Capture free-form text for doc/returns/params until we see a closing ']' at
+   paren-depth 0, or an ident followed by ':' (next entry key).  Concatenates
+   token texts with single-space separators (formatting lost — content kept). */
+static char *fh_capture_freeform(parser_t *p) {
+    char buf[2048];
+    usize_t pos = 0;
+    int paren_depth = 0;
+
+    while (!check(p, TokEof)) {
+        if (paren_depth == 0) {
+            if (check(p, TokRBracket)) break;
+            /* A top-level ident-or-keyword followed by ':' starts the next
+               fileheader entry.  We deliberately don't terminate on a bare
+               comma here — doc/returns/params may contain commas as natural
+               prose. */
+            if (is_fh_key_token(p)) {
+                parser_state_t snap = save_state(p);
+                advance_parser(p);
+                boolean_t is_next_key = check(p, TokColon);
+                restore_state(p, snap);
+                if (is_next_key) break;
+            }
+        }
+        if (check(p, TokLParen)) paren_depth++;
+        else if (check(p, TokRParen) && paren_depth > 0) paren_depth--;
+
+        token_t t = p->current;
+        if (pos > 0 && pos + 1 < sizeof(buf) - 1) buf[pos++] = ' ';
+        usize_t avail = sizeof(buf) - 1 - pos;
+        usize_t clen = t.length < avail ? t.length : avail;
+        /* for quoted strings, strip the quotes */
+        if (t.kind == TokStackStr || t.kind == TokHeapStr) {
+            if (t.length >= 2) {
+                clen = t.length - 2;
+                if (clen > avail) clen = avail;
+                memcpy(buf + pos, t.start + 1, clen);
+            }
+        } else {
+            memcpy(buf + pos, t.start, clen);
+        }
+        pos += clen;
+        advance_parser(p);
+    }
+    buf[pos] = '\0';
+    return ast_strdup(buf, pos);
+}
+
+/* Parse a single fileheader entry starting at current token (expects ident key). */
+static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
+    if (!is_fh_key_token(p)) {
+        diag_begin_error("expected fileheader attribute name, found '%.*s'",
+                         (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected attribute name here");
+        diag_note("example: @[[export_name: \"foo\", weak]]");
+        diag_finish();
+        p->had_error = True;
+        advance_parser(p);
+        return;
+    }
+
+    fh_entry_t e;
+    memset(&e, 0, sizeof(e));
+    e.line = p->current.line;
+    e.col  = p->current.col;
+    e.key  = copy_token_text(p->current);
+    advance_parser(p);
+
+    if (!match_tok(p, TokColon)) {
+        e.vkind = FhFlag;
+        fileheader_push(fh, e);
+        return;
+    }
+
+    if (fh_key_is_doc(e.key)) {
+        e.vkind = FhText;
+        e.str_val = fh_capture_freeform(p);
+        fileheader_push(fh, e);
+        return;
+    }
+
+    if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+        token_t t = p->current;
+        advance_parser(p);
+        e.vkind = FhStr;
+        e.str_val = ast_strdup(t.start + 1, t.length - 2);
+        fileheader_push(fh, e);
+        return;
+    }
+
+    if (check(p, TokIntLit)) {
+        token_t t = p->current;
+        advance_parser(p);
+        char numbuf[64];
+        usize_t nlen = t.length < sizeof(numbuf) - 1 ? t.length : sizeof(numbuf) - 1;
+        memcpy(numbuf, t.start, nlen);
+        numbuf[nlen] = '\0';
+        long val = strtol(numbuf, Null, 0);
+        e.vkind = FhInt;
+        e.int_val = val;
+        fileheader_push(fh, e);
+        return;
+    }
+
+    if (is_name_token(p)) {
+        token_t first = p->current;
+        advance_parser(p);
+
+        /* call form: name(arg) — diagnostic: ignore("x"), init: before("x") */
+        if (check(p, TokLParen)) {
+            advance_parser(p);
+            e.vkind = FhCall;
+            e.str_val = copy_token_text(first);
+            if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                token_t t = p->current;
+                advance_parser(p);
+                e.call_arg = ast_strdup(t.start + 1, t.length - 2);
+            } else if (is_name_token(p)) {
+                e.call_arg = copy_token_text(p->current);
+                advance_parser(p);
+            }
+            consume(p, TokRParen, "')'");
+            fileheader_push(fh, e);
+            return;
+        }
+
+        /* dotted lhs: target.arch == "x86_64" */
+        if (check(p, TokDot)) {
+            advance_parser(p);
+            token_t second = p->current;
+            if (is_name_token(p)) advance_parser(p);
+            consume(p, TokEqEq, "'==' in condition");
+            token_t rhs_tok = p->current;
+            if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                advance_parser(p);
+                e.vkind = FhCond;
+                char *lhs1 = copy_token_text(first);
+                char *lhs2 = copy_token_text(second);
+                if (strcmp(lhs1, "target") == 0 && strcmp(lhs2, "arch") == 0) {
+                    e.cond.op = FhCondArchEq;
+                } else if (strcmp(lhs1, "target") == 0 && strcmp(lhs2, "os") == 0) {
+                    e.cond.op = FhCondOsEq;
+                } else {
+                    e.cond.op = FhCondAlwaysFalse;
+                }
+                e.cond.str_rhs = ast_strdup(rhs_tok.start + 1, rhs_tok.length - 2);
+            } else {
+                diag_begin_error("expected string literal on right-hand side of '=='");
+                diag_span(SRC_LOC(rhs_tok.line, rhs_tok.col, rhs_tok.length),
+                          True, "expected a string");
+                diag_finish();
+                p->had_error = True;
+                e.vkind = FhCond;
+                e.cond.op = FhCondAlwaysFalse;
+            }
+            fileheader_push(fh, e);
+            return;
+        }
+
+        /* simple lhs: os/arch/pointer_width == value */
+        if (check(p, TokEqEq)) {
+            advance_parser(p);
+            char *lhs = copy_token_text(first);
+            e.vkind = FhCond;
+            if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+                token_t t = p->current;
+                advance_parser(p);
+                if (strcmp(lhs, "os") == 0 || strcmp(lhs, "platform") == 0)
+                    e.cond.op = FhCondOsEq;
+                else if (strcmp(lhs, "arch") == 0)
+                    e.cond.op = FhCondArchEq;
+                else
+                    e.cond.op = FhCondAlwaysFalse;
+                e.cond.str_rhs = ast_strdup(t.start + 1, t.length - 2);
+            } else if (check(p, TokIntLit)) {
+                token_t t = p->current;
+                advance_parser(p);
+                char numbuf[32];
+                usize_t nlen = t.length < sizeof(numbuf) - 1 ? t.length : sizeof(numbuf) - 1;
+                memcpy(numbuf, t.start, nlen);
+                numbuf[nlen] = '\0';
+                if (strcmp(lhs, "pointer_width") == 0)
+                    e.cond.op = FhCondPtrWidthEq;
+                else
+                    e.cond.op = FhCondAlwaysFalse;
+                e.cond.int_rhs = (int)strtol(numbuf, Null, 0);
+            } else {
+                e.cond.op = FhCondAlwaysFalse;
+                diag_begin_error("expected string or integer after '=='");
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "expected condition value");
+                diag_finish();
+                p->had_error = True;
+            }
+            fileheader_push(fh, e);
+            return;
+        }
+
+        /* bare ident value: abi: c, diagnostic: push */
+        e.vkind = FhIdent;
+        e.str_val = copy_token_text(first);
+        fileheader_push(fh, e);
+        return;
+    }
+
+    diag_begin_error("unexpected token '%.*s' in fileheader value",
+                     (int)p->current.length, p->current.start);
+    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+              True, "expected a string, integer, identifier, or condition");
+    diag_finish();
+    p->had_error = True;
+    advance_parser(p);
+}
+
+/* Parse the body of @[[ ... ]] — current token should be the first entry key. */
+static void parse_fileheader_entries(parser_t *p, fileheader_t *fh) {
+    while (!check(p, TokRBracket) && !check(p, TokEof)) {
+        parse_fileheader_entry(p, fh);
+        if (check(p, TokComma)) { advance_parser(p); continue; }
+        if (check(p, TokRBracket)) break;
+        if (is_fh_key_token(p)) continue; /* implicit separator */
+        break;
+    }
+}
+
+/* Detect and consume a `@[[...]]` group.  On success, appends entries to `fh`
+   and returns True.  On no match, restores state and returns False. */
+static boolean_t parse_fileheader_group(parser_t *p, fileheader_t *fh) {
+    if (!check(p, TokAt)) return False;
+    parser_state_t snap = save_state(p);
+    advance_parser(p); /* '@' */
+    if (!check(p, TokLBracket)) { restore_state(p, snap); return False; }
+    advance_parser(p); /* first '[' */
+    if (!check(p, TokLBracket)) { restore_state(p, snap); return False; }
+    advance_parser(p); /* second '[' */
+
+    parse_fileheader_entries(p, fh);
+    consume(p, TokRBracket, "']'");
+    consume(p, TokRBracket, "']'");
+    return True;
+}
+
+/* Apply file-wide fileheader entries to a module node. */
+static void apply_module_headers(node_t *module, fileheader_t *src) {
+    if (!module || !src) return;
+    for (usize_t i = 0; i < src->count; i++) {
+        fh_entry_t *e = &src->items[i];
+        if (strcmp(e->key, "freestanding") == 0) {
+            module->as.module.freestanding = True;
+        } else if (strcmp(e->key, "org") == 0 && e->vkind == FhInt) {
+            module->as.module.has_org = True;
+            module->as.module.org_addr = e->int_val;
+        }
+    }
+}
+
+/* Build a NodeInitBlock / NodeExitBlock, given the trailing @[[init...]] /
+   @[[exit...]] entries and current stream position (`{` or string then `{`). */
+static node_t *parse_lifecycle_block(parser_t *p, fileheader_t *pending) {
+    boolean_t is_init = False;
+    boolean_t is_exit = False;
+    char *before_name = Null;
+    char *after_name  = Null;
+
+    for (usize_t i = 0; i < pending->count; i++) {
+        fh_entry_t *e = &pending->items[i];
+        if (strcmp(e->key, "init") == 0) is_init = True;
+        else if (strcmp(e->key, "exit") == 0) is_exit = True;
+        else if (strcmp(e->key, "before") == 0 && e->vkind == FhStr)
+            before_name = e->str_val;
+        else if (strcmp(e->key, "after") == 0 && e->vkind == FhStr)
+            after_name = e->str_val;
+        /* init: before("foo") comes as FhCall with key="init", str_val="before", call_arg="foo" */
+        if ((strcmp(e->key, "init") == 0 || strcmp(e->key, "exit") == 0)
+                && e->vkind == FhCall && e->str_val) {
+            if (strcmp(e->str_val, "before") == 0) before_name = e->call_arg;
+            else if (strcmp(e->str_val, "after") == 0) after_name = e->call_arg;
+        }
+    }
+
+    char *title = Null;
+    if (check(p, TokStackStr) || check(p, TokHeapStr)) {
+        token_t t = p->current;
+        advance_parser(p);
+        title = ast_strdup(t.start + 1, t.length - 2);
+    }
+
+    node_t *body = parse_block(p);
+    node_kind_t kind = is_exit ? NodeExitBlock : NodeInitBlock;
+    node_t *n = make_node(kind, body ? body->line : 0);
+    n->as.lifecycle_block.title = title;
+    n->as.lifecycle_block.before_name = before_name;
+    n->as.lifecycle_block.after_name = after_name;
+    n->as.lifecycle_block.body = body;
+    n->headers = fileheader_alloc();
+    *(n->headers) = *pending;
+    (void)is_init;
+    return n;
+}
+
 /* ── compile-time condition evaluator (used at parse time for @comptime if in structs) ── */
 
 static boolean_t eval_comptime_condition(const char *key, const char *value) {
@@ -1451,23 +1776,72 @@ static node_t *parse_test_block(parser_t *p) {
 }
 
 static node_t *parse_top_decl(parser_t *p) {
+    /* ── Collect leading @[[...]] fileheader groups ── */
+    fileheader_t pending;
+    fileheader_init(&pending);
+
+    for (;;) {
+        /* Only try fileheader path if current is `@` followed by `[[` */
+        if (!check(p, TokAt)) break;
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* '@' */
+        if (!check(p, TokLBracket)) { restore_state(p, snap); break; }
+        advance_parser(p);
+        if (!check(p, TokLBracket)) { restore_state(p, snap); break; }
+        advance_parser(p);
+
+        fileheader_t group;
+        fileheader_init(&group);
+        parse_fileheader_entries(p, &group);
+        consume(p, TokRBracket, "']'");
+        consume(p, TokRBracket, "']'");
+
+        /* File-wide: `@[[...]];` — merge into module and continue loop. */
+        if (match_tok(p, TokSemicolon)) {
+            if (p->current_module) {
+                if (p->current_module->headers == Null)
+                    p->current_module->headers = fileheader_alloc();
+                fileheader_merge(p->current_module->headers, &group);
+                apply_module_headers(p->current_module, &group);
+            }
+            continue;
+        }
+
+        /* Lifecycle block: @[[init ...]] { ... }  or  @[[init ...]] "title" { ... } */
+        {
+            boolean_t has_init = fh_find(&group, "init") != Null;
+            boolean_t has_exit = fh_find(&group, "exit") != Null;
+            if ((has_init || has_exit) &&
+                (check(p, TokLBrace) || check(p, TokStackStr) || check(p, TokHeapStr))) {
+                fileheader_merge(&pending, &group);
+                return parse_lifecycle_block(p, &pending);
+            }
+        }
+
+        /* Decl-scoped: accumulate and fall through to next iteration (more headers)
+           or to the actual declaration parser below. */
+        fileheader_merge(&pending, &group);
+    }
+
+    node_t *result = Null;
+
     /* lib */
-    if (check(p, TokLib)) return parse_lib(p);
+    if (check(p, TokLib)) { result = parse_lib(p); goto attach_headers; }
 
     /* cheader */
-    if (check(p, TokCHeader)) return parse_cheader(p);
+    if (check(p, TokCHeader)) { result = parse_cheader(p); goto attach_headers; }
 
     /* imp */
-    if (check(p, TokImp)) return parse_imp(p);
+    if (check(p, TokImp)) { result = parse_imp(p); goto attach_headers; }
 
     /* libimp */
-    if (check(p, TokLibImp)) return parse_libimp(p);
+    if (check(p, TokLibImp)) { result = parse_libimp(p); goto attach_headers; }
 
     /* test block */
-    if (check(p, TokTest)) return parse_test_block(p);
+    if (check(p, TokTest)) { result = parse_test_block(p); goto attach_headers; }
 
     /* comptime_if at top level (old keyword style) */
-    if (check(p, TokComptimeIf)) return parse_comptime_if(p);
+    if (check(p, TokComptimeIf)) { result = parse_comptime_if(p); goto attach_headers; }
 
     /* comptime_assert at top level (old keyword style) */
     if (check(p, TokComptimeAssert)) {
@@ -1490,7 +1864,8 @@ static node_t *parse_top_decl(parser_t *p) {
         node_t *n = make_node(NodeComptimeAssert, line);
         n->as.comptime_assert.expr = expr;
         n->as.comptime_assert.message = msg;
-        return n;
+        result = n;
+        goto attach_headers;
     }
 
     /* global zone declaration: zone name; */
@@ -1501,7 +1876,8 @@ static node_t *parse_top_decl(parser_t *p) {
         consume(p, TokSemicolon, "';'");
         node_t *n = make_node(NodeZoneStmt, line);
         n->as.zone_stmt.name = copy_token_text(name_tok);
-        return n;
+        result = n;
+        goto attach_headers;
     }
 
     /* @comptime if / @comptime assert at top level (new attribute syntax) */
@@ -1513,13 +1889,15 @@ static node_t *parse_top_decl(parser_t *p) {
             advance_parser(p); /* consume 'comptime' */
             if (check(p, TokIf)) {
                 advance_parser(p); /* consume 'if' */
-                return parse_comptime_if_body(p);
+                result = parse_comptime_if_body(p);
+                goto attach_headers;
             }
             if (check(p, TokIdent) && p->current.length == 6
                     && memcmp(p->current.start, "assert", 6) == 0) {
                 node_t *ca = parse_at_comptime_assert(p);
                 consume(p, TokSemicolon, "';'");
-                return ca;
+                result = ca;
+                goto attach_headers;
             }
         }
         restore_state(p, snap);
@@ -1557,13 +1935,14 @@ static node_t *parse_top_decl(parser_t *p) {
     }
 
     /* type declaration */
-    if (check(p, TokType)) return parse_type_decl(p, linkage);
+    if (check(p, TokType)) { result = parse_type_decl(p, linkage); goto attach_headers; }
 
     /* function declaration */
     if (check(p, TokFn)) {
         node_t *fn = parse_fn_decl(p, linkage);
         fn->as.fn_decl.attr_flags = attr_flags;
-        return fn;
+        result = fn;
+        goto attach_headers;
     }
 
     /* global variable */
@@ -1571,6 +1950,14 @@ static node_t *parse_top_decl(parser_t *p) {
         node_t *var = parse_var_decl(p, linkage);
         if (var->kind == NodeVarDecl)
             var->as.var_decl.attr_flags = attr_flags;
-        return var;
+        result = var;
     }
+
+attach_headers:
+    if (result && pending.count > 0) {
+        if (result->headers == Null)
+            result->headers = fileheader_alloc();
+        fileheader_merge(result->headers, &pending);
+    }
+    return result;
 }

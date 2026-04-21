@@ -184,3 +184,41 @@ void node_list_push(node_list_t *list, node_t *node) {
     }
     list->items[list->count++] = node;
 }
+
+/* ── fileheader helpers ── */
+
+void fileheader_init(fileheader_t *fh) {
+    fh->items = Null;
+    fh->count = 0;
+    fh->capacity = 0;
+    fh->heap = NullHeap;
+}
+
+void fileheader_push(fileheader_t *fh, fh_entry_t entry) {
+    if (fh->count >= fh->capacity) {
+        usize_t new_cap = fh->capacity < 4 ? 4 : fh->capacity * 2;
+        if (fh->heap.pointer == Null) {
+            fh->heap = allocate(new_cap, sizeof(fh_entry_t));
+            arena_track(fh->heap);
+        } else {
+            fh->heap = reallocate(fh->heap, new_cap * sizeof(fh_entry_t));
+        }
+        fh->items = fh->heap.pointer;
+        fh->capacity = new_cap;
+    }
+    fh->items[fh->count++] = entry;
+}
+
+fileheader_t *fileheader_alloc(void) {
+    heap_t h = allocate(1, sizeof(fileheader_t));
+    arena_track(h);
+    fileheader_t *fh = h.pointer;
+    fileheader_init(fh);
+    return fh;
+}
+
+void fileheader_merge(fileheader_t *dst, fileheader_t *src) {
+    if (!dst || !src) return;
+    for (usize_t i = 0; i < src->count; i++)
+        fileheader_push(dst, src->items[i]);
+}

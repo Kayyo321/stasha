@@ -351,6 +351,18 @@ typedef struct {
      * symbol/type/member across the compilation unit. */
     char *reported_errors[512];
     usize_t reported_error_count;
+
+    /* ── target & fileheader state ── */
+    const char *target_triple;
+
+    /* Lifecycle blocks collected from the module for @llvm.global_ctors/dtors. */
+    node_t *init_blocks[128];
+    usize_t init_block_count;
+    node_t *exit_blocks[128];
+    usize_t exit_block_count;
+
+    /* Module-level freestanding flag (blocks auto-stdlib/runtime linking hints). */
+    boolean_t freestanding;
 } cg_t;
 
 /* ── helpers ── */
@@ -404,6 +416,7 @@ static void             di_set_location(cg_t *cg, usize_t line);
 #include "cg_stmt.c"
 #include "cg_generics.c"
 #include "cg_debug.c"
+#include "cg_fileheaders.c"
 
 /* ── top-level codegen ── */
 
@@ -419,6 +432,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.test_mode   = test_mode;
     cg.debug_mode  = debug_mode;
     cg.source_file = source_file;
+    cg.target_triple = target_triple;
+    if (ast && ast->kind == NodeModule) {
+        cg.freestanding = ast->as.module.freestanding;
+    }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     cg.builder     = LLVMCreateBuilderInContext(cg.ctx);
@@ -898,6 +915,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->from_lib && decl->as.var_decl.linkage == LinkageInternal)
                 continue;
 
+            /* @[[if: ...]] / @[[require: ...]] gating */
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
+                continue;
+
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
             LLVMTypeRef type = get_llvm_type(&cg, ti);
             /* mangle the LLVM symbol name for imported-module globals */
@@ -905,6 +926,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             mangle_global(decl->is_c_extern ? Null : decl->module_name,
                           decl->as.var_decl.name,
                           var_llvm_name, sizeof(var_llvm_name));
+            /* fileheader: @[[export_name: "..."]] / @[[abi: c]] override */
+            char override_name[512];
+            boolean_t abi_c = False;
+            if (cg_fh_override_symbol(decl->headers, decl->as.var_decl.name,
+                                      override_name, sizeof(override_name), &abi_c)) {
+                strncpy(var_llvm_name, override_name, sizeof(var_llvm_name) - 1);
+                var_llvm_name[sizeof(var_llvm_name) - 1] = '\0';
+            }
             LLVMValueRef global = LLVMAddGlobal(cg.module, type, var_llvm_name);
 
             /* linkage: int → internal, ext → external (default) */
@@ -917,6 +946,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* @hidden attribute */
             if (decl->as.var_decl.attr_flags & AttrHidden)
                 LLVMSetVisibility(global, LLVMHiddenVisibility);
+
+            /* fileheader: section/align/weak/hidden */
+            cg_fh_apply_to_global(&cg, global, decl->headers);
 
             /* const/final globals are LLVM-constant */
             if (decl->as.var_decl.flags & (VdeclConst | VdeclFinal))

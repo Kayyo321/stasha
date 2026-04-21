@@ -112,6 +112,55 @@ enum {
     AttrHidden  = (1 << 3),
 };
 
+/* ── fileheader (@[[...]]) entries ── */
+
+typedef enum {
+    FhFlag,  /* @[[weak]] — key with no value */
+    FhStr,   /* @[[export_name: "x"]] */
+    FhInt,   /* @[[align: 64]] */
+    FhIdent, /* @[[abi: c]] / @[[diagnostic: push]] */
+    FhCond,  /* @[[if: os == "linux"]] / @[[require: pointer_width == 64]] */
+    FhCall,  /* @[[diagnostic: ignore("unused-param")]] / before("name") */
+    FhText,  /* free-form text value for doc/returns/params */
+} fh_value_kind_t;
+
+typedef enum {
+    FhCondNone,
+    FhCondOsEq,        /* os == "linux" */
+    FhCondArchEq,      /* target.arch == "x86_64" (or bare arch ==) */
+    FhCondPtrWidthEq,  /* pointer_width == 64 */
+    FhCondAlwaysFalse, /* unknown lhs — skip decl silently; error for require */
+} fh_cond_kind_t;
+
+typedef struct {
+    fh_cond_kind_t op;
+    char *str_rhs;
+    int int_rhs;
+} fh_cond_t;
+
+typedef struct {
+    char *key;
+    fh_value_kind_t vkind;
+    char *str_val;     /* FhStr / FhIdent / FhText / FhCall (call-fn name) */
+    long int_val;      /* FhInt */
+    char *call_arg;    /* FhCall: inner string argument */
+    fh_cond_t cond;    /* FhCond */
+    usize_t line;
+    usize_t col;
+} fh_entry_t;
+
+typedef struct {
+    fh_entry_t *items;
+    usize_t count;
+    usize_t capacity;
+    heap_t heap;
+} fileheader_t;
+
+void fileheader_init(fileheader_t *fh);
+void fileheader_push(fileheader_t *fh, fh_entry_t entry);
+fileheader_t *fileheader_alloc(void);
+void fileheader_merge(fileheader_t *dst, fileheader_t *src);
+
 /* ── bitfield width (0 = not a bitfield) ── */
 /* stored in var_decl.bitfield_width */
 
@@ -223,6 +272,10 @@ typedef enum {
 
     /* foreach slice iteration — keep at end to avoid shifting existing values */
     NodeForeachStmt,  /* foreach elem in slice { body } */
+
+    /* fileheader lifecycle blocks — @[[init]] { ... } / @[[exit]] { ... } */
+    NodeInitBlock,
+    NodeExitBlock,
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -259,9 +312,16 @@ struct node {
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */
     boolean_t is_c_extern; /* True if symbol must not be mangled (C library symbol) */
 
+    /* fileheader entries attached to the node (decls + module).
+       NULL if no @[[...]] attributes were applied to this node. */
+    fileheader_t *headers;
+
     union {
         /* ── top-level ── */
-        struct { char *name; node_list_t decls; } module;
+        struct { char *name; node_list_t decls; boolean_t freestanding; long org_addr; boolean_t has_org; } module;
+
+        /* @[[init]] / @[[exit]] blocks */
+        struct { char *title; char *before_name; char *after_name; node_t *body; int priority; } lifecycle_block;
 
         struct {
             char *name;

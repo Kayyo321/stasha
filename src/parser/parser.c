@@ -18,6 +18,10 @@ typedef struct {
     token_t   previous;
     boolean_t had_error;
     boolean_t panic_mode;  /* suppress cascading errors until sync point */
+
+    /* Current top-level module under construction — used by fileheader
+       parsing to attach file-wide @[[...]] metadata.  Null outside run_parse. */
+    node_t   *current_module;
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
@@ -629,13 +633,52 @@ static char *parse_dotted_name(parser_t *p) {
 /* ── internal parse body (shared by both entry points) ── */
 
 static node_t *run_parse(parser_t *p) {
-    consume(p, TokMod, "'mod'");
-    char *mod_name = parse_dotted_name(p);
-    consume(p, TokSemicolon, "';'");
-
     node_t *module = make_node(NodeModule, 1);
-    module->as.module.name = mod_name;
     node_list_init(&module->as.module.decls);
+    module->as.module.name = Null;
+    module->as.module.freestanding = False;
+    module->as.module.has_org = False;
+    p->current_module = module;
+
+    /* Accept any leading file-wide `@[[...]];` groups before `mod`. */
+    while (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* '@' */
+        if (!check(p, TokLBracket)) { restore_state(p, snap); break; }
+        advance_parser(p);
+        if (!check(p, TokLBracket)) { restore_state(p, snap); break; }
+        advance_parser(p);
+
+        fileheader_t group;
+        fileheader_init(&group);
+        parse_fileheader_entries(p, &group);
+        consume(p, TokRBracket, "']'");
+        consume(p, TokRBracket, "']'");
+
+        if (!match_tok(p, TokSemicolon)) {
+            /* Not file-wide — rewind so parse_top_decl handles it. */
+            restore_state(p, snap);
+            break;
+        }
+
+        if (module->headers == Null) module->headers = fileheader_alloc();
+        fileheader_merge(module->headers, &group);
+        apply_module_headers(module, &group);
+    }
+
+    /* `mod name;` is mandatory unless the module is freestanding. */
+    if (check(p, TokMod)) {
+        advance_parser(p);
+        module->as.module.name = parse_dotted_name(p);
+        consume(p, TokSemicolon, "';'");
+    } else if (!module->as.module.freestanding) {
+        /* Emit the same diagnostic as before. */
+        consume(p, TokMod, "'mod'");
+    } else {
+        /* Freestanding modules default to an empty name — codegen skips
+           anything that needs a module identifier. */
+        module->as.module.name = ast_strdup("", 0);
+    }
 
     while (!check(p, TokEof)) {
         node_t *decl = parse_top_decl(p);
