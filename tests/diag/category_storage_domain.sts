@@ -1,0 +1,10 @@
+// Diagnostic test: error category for storage domain violations
+// Expected: "error[storage-domain]:" prefix
+// Feature: Phase 4 error categories on cg_safety.c
+mod diag_category_storage;
+
+ext fn main(void): i32 {
+    stack i32 local = 42;
+    heap i32 *rw p = &local;
+    ret 0;
+}

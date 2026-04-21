@@ -1,0 +1,10 @@
+// Diagnostic test: Levenshtein suggestion for mistyped variable
+// Expected: "did you mean 'counter'?" in help note
+// Feature: Phase 5A Levenshtein in gen_ident
+mod diag_leven_var;
+
+ext fn main(void): i32 {
+    stack i32 counter = 42;
+    stack i32 x = conter;
+    ret x;
+}

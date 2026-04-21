@@ -1,0 +1,9 @@
+// Diagnostic test: unreachable code warning (--wall)
+// Expected: warning "unreachable code after return/break/continue"
+// Feature: Phase 5D unreachable code detection in gen_block
+mod diag_warn_unreachable;
+
+ext fn main(void): i32 {
+    ret 0;
+    stack i32 x = 42;
+}
