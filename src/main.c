@@ -1730,6 +1730,14 @@ int main(int argc, char **argv) {
             debug_mode = True;
         } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 32) {
             cli_extra_libs[cli_extra_lib_count++] = argv[++i];
+        } else if (strcmp(argv[i], "--strict") == 0) {
+            diag_config_t cfg = diag_get_config();
+            cfg.strict = True;
+            diag_set_config(cfg);
+        } else if (strcmp(argv[i], "--wall") == 0) {
+            diag_config_t cfg = diag_get_config();
+            cfg.enabled = WarnAll;
+            diag_set_config(cfg);
         }
     }
 

@@ -278,13 +278,16 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     }
 
     if (!can_start_type(p)) {
-        diag_begin_error("expected a type in variable declaration");
-        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                  True, "expected a type here");
-        diag_note("non-pointer variables need only a type: i32 x = 0;  pointer variables need stack/heap: stack i32 *rw p;");
-        diag_finish();
-        p->had_error = True;
-        advance_parser(p); /* skip bad token to avoid infinite loop */
+        if (!p->panic_mode) {
+            diag_begin_error("expected a type in variable declaration");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a type here");
+            diag_note("non-pointer variables need only a type: i32 x = 0;  pointer variables need stack/heap: stack i32 *rw p;");
+            diag_finish();
+        }
+        p->had_error  = True;
+        p->panic_mode = True;
+        skip_to_recovery_point(p);
         return make_node(NodeVarDecl, line);
     }
     type_info_t type = parse_type(p);
@@ -646,9 +649,7 @@ static node_t *parse_statement(parser_t *p) {
             diag_help("mov.(zone_name, ptr, size) escapes a pointer out of a zone");
             diag_finish();
             p->had_error = True;
-            /* skip to end of statement to keep parsing */
-            while (!check(p, TokSemicolon) && !check(p, TokEof)) advance_parser(p);
-            if (check(p, TokSemicolon)) advance_parser(p);
+            skip_to_recovery_point(p);
             return make_node(NodeExprStmt, line);
         }
 

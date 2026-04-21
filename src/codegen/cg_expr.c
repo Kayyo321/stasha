@@ -408,22 +408,27 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         sym = cg_lookup(cg, mangled);
     }
     if (!sym) {
-        diag_begin_error("undefined variable '%s'", node->as.ident.name);
-        diag_span(DIAG_NODE(node), True, "not found in this scope");
-        diag_note("variables must be declared before use");
-        /* Levenshtein suggestion: scan symbol table for close name */
-        usize_t best_dist = 3; /* max edit distance to suggest */
-        const char *best = Null;
-        for (usize_t i = 0; i < cg->locals.count; i++) {
-            usize_t d = levenshtein(node->as.ident.name, cg->locals.entries[i].name);
-            if (d < best_dist) { best_dist = d; best = cg->locals.entries[i].name; }
+        char dedup_key[600];
+        snprintf(dedup_key, sizeof(dedup_key), "undef_var:%s", node->as.ident.name);
+        if (!cg_error_already_reported(cg, dedup_key)) {
+            diag_begin_error("undefined variable '%s'", node->as.ident.name);
+            diag_set_category(ErrCatUndefined);
+            diag_span(DIAG_NODE(node), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            /* Levenshtein suggestion: scan symbol table for close name */
+            usize_t best_dist = 3; /* max edit distance to suggest */
+            const char *best = Null;
+            for (usize_t i = 0; i < cg->locals.count; i++) {
+                usize_t d = levenshtein(node->as.ident.name, cg->locals.entries[i].name);
+                if (d < best_dist) { best_dist = d; best = cg->locals.entries[i].name; }
+            }
+            for (usize_t i = 0; i < cg->globals.count; i++) {
+                usize_t d = levenshtein(node->as.ident.name, cg->globals.entries[i].name);
+                if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+            }
+            if (best) diag_help("did you mean '%s'?", best);
+            diag_finish();
         }
-        for (usize_t i = 0; i < cg->globals.count; i++) {
-            usize_t d = levenshtein(node->as.ident.name, cg->globals.entries[i].name);
-            if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
-        }
-        if (best) diag_help("did you mean '%s'?", best);
-        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     if (sym->flags & SymHeapVar) {
@@ -1008,17 +1013,22 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         sym = try_instantiate_generic_fn(cg, node->as.call.callee);
     }
     if (!sym) {
-        diag_begin_error("undefined function or function pointer '%s'", node->as.call.callee);
-        diag_span(DIAG_NODE(node), True, "not defined in this module");
-        /* Suggest close names */
-        usize_t best_dist = 3;
-        const char *best = Null;
-        for (usize_t i = 0; i < cg->globals.count; i++) {
-            usize_t d = levenshtein(node->as.call.callee, cg->globals.entries[i].name);
-            if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+        char dedup_key[600];
+        snprintf(dedup_key, sizeof(dedup_key), "undef_fn:%s", node->as.call.callee);
+        if (!cg_error_already_reported(cg, dedup_key)) {
+            diag_begin_error("undefined function or function pointer '%s'", node->as.call.callee);
+            diag_set_category(ErrCatUndefined);
+            diag_span(DIAG_NODE(node), True, "not defined in this module");
+            /* Suggest close names */
+            usize_t best_dist = 3;
+            const char *best = Null;
+            for (usize_t i = 0; i < cg->globals.count; i++) {
+                usize_t d = levenshtein(node->as.call.callee, cg->globals.entries[i].name);
+                if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+            }
+            if (best) diag_help("did you mean '%s'?", best);
+            diag_finish();
         }
-        if (best) diag_help("did you mean '%s'?", best);
-        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     usize_t user_argc = node->as.call.args.count;
@@ -2691,9 +2701,34 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
         }
     }
 
-    diag_begin_error("cannot resolve member '%s'", field);
-    diag_span(DIAG_NODE(node), True, "member not found");
-    diag_finish();
+    {
+        char dedup_key[600];
+        /* Include object name in dedup key when available */
+        const char *obj_name = (obj->kind == NodeIdentExpr) ? obj->as.ident.name : "";
+        snprintf(dedup_key, sizeof(dedup_key), "undef_member:%s.%s", obj_name, field);
+        if (!cg_error_already_reported(cg, dedup_key)) {
+            diag_begin_error("cannot resolve member '%s'", field);
+            diag_set_category(ErrCatUndefined);
+            diag_span(DIAG_NODE(node), True, "member not found");
+            /* Levenshtein suggestion: scan struct fields for close name */
+            if (obj->kind == NodeIdentExpr) {
+                symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+                if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
+                    struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
+                    if (sr) {
+                        usize_t best_dist = 3;
+                        const char *best = Null;
+                        for (usize_t i = 0; i < sr->field_count; i++) {
+                            usize_t d = levenshtein(field, sr->fields[i].name);
+                            if (d < best_dist) { best_dist = d; best = sr->fields[i].name; }
+                        }
+                        if (best) diag_help("did you mean '%s'?", best);
+                    }
+                }
+            }
+            diag_finish();
+        }
+    }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 

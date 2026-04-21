@@ -345,9 +345,25 @@ typedef struct {
     LLVMTypeRef  zone_free_type;
     LLVMValueRef zone_move_fn;
     LLVMTypeRef  zone_move_type;
+
+    /* ── error deduplication ── */
+    /* Keys like "undefined:varname" suppress repeat diagnostics for the same
+     * symbol/type/member across the compilation unit. */
+    char *reported_errors[512];
+    usize_t reported_error_count;
 } cg_t;
 
 /* ── helpers ── */
+
+/* Returns True if this error key was already reported (and should be skipped).
+ * On first occurrence, records the key and returns False. */
+static boolean_t cg_error_already_reported(cg_t *cg, const char *key) {
+    for (usize_t i = 0; i < cg->reported_error_count; i++)
+        if (strcmp(cg->reported_errors[i], key) == 0) return True;
+    if (cg->reported_error_count < 512)
+        cg->reported_errors[cg->reported_error_count++] = strdup(key);
+    return False;
+}
 
 /* check whether a struct name is a registered generic template */
 static boolean_t is_generic_template(cg_t *cg, const char *name) {
@@ -395,6 +411,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                  const char *target_triple, const char *source_file,
                  boolean_t debug_mode, int optimization_level) {
     usize_t errors_before = get_error_count();
+    result_t emit_result = Ok;
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
     cg.ast         = ast;
@@ -858,6 +875,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    /* early abort: type registration errors make function codegen unreliable */
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     /* pass 1: forward-declare all globals and functions */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
@@ -1213,6 +1233,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    /* early abort: declaration errors make body generation unreliable */
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     /* pass 2: generate function bodies */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
@@ -1379,9 +1402,19 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 LLVMBuildRet(cg.builder, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
             else if (rti.base == TypeVoid && !rti.is_pointer)
                 LLVMBuildRetVoid(cg.builder);
-            else
+            else {
+                /* Missing return: function may not return a value on all paths */
+                diag_begin_optional_warning(WarnMissingReturn,
+                    "function '%s' may not return a value on all paths",
+                    decl->as.fn_decl.name);
+                diag_set_category(ErrCatOther);
+                diag_span(DIAG_NODE(decl), True,
+                          "declared to return a non-void type");
+                diag_help("add explicit 'ret' statements on all code paths");
+                diag_finish();
                 LLVMBuildRet(cg.builder,
                     LLVMConstNull(get_llvm_type(&cg, rti)));
+            }
         }
 
         /* Restore scope to compile unit after leaving the function. */
@@ -1681,6 +1714,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
 
     /* verify */
+    /* ── LLVM verification and emission (skipped when earlier passes had errors) ── */
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     char *error = Null;
     if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
         diag_begin_error("LLVM IR verification failed: %s", error);
@@ -1700,7 +1736,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     /* emit object file — reuse the machine created during early target init */
     error = Null;
-    result_t emit_result = Ok;
+    emit_result = Ok;
     if (LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
                                      LLVMObjectFile, &error)) {
         diag_begin_error("object file emission failed: %s", error);
@@ -1709,6 +1745,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         emit_result = Err;
     }
 
+cg_cleanup:
     LLVMDisposeTargetMachine(machine);
     LLVMDisposeMessage(triple);
     if (cg.di_data_layout) LLVMDisposeTargetData(cg.di_data_layout);
@@ -1719,6 +1756,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     symtab_free(&cg.globals);
     symtab_free(&cg.locals);
+
+    /* error dedup strings (strdup'd) are intentionally not freed here;
+     * they are small and the process is about to exit. */
 
     /* free registries */
     for (usize_t i = 0; i < cg.struct_count; i++)

@@ -17,6 +17,7 @@ typedef struct {
     token_t   current;
     token_t   previous;
     boolean_t had_error;
+    boolean_t panic_mode;  /* suppress cascading errors until sync point */
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
@@ -122,18 +123,22 @@ static token_t consume(parser_t *p, token_kind_t kind, const char *msg) {
         advance_parser(p);
         return p->previous;
     }
-    if (p->current.kind == TokEof) {
-        diag_begin_error("unexpected end of file, expected %s", msg);
-        diag_span(SRC_LOC(p->current.line, p->current.col, 1), True,
-                  "expected %s here", msg);
-    } else {
-        diag_begin_error("expected %s, found '%.*s'",
-                         msg, (int)p->current.length, p->current.start);
-        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                  True, "expected %s", msg);
+    /* Only emit diagnostic if not already in panic mode (suppress cascades) */
+    if (!p->panic_mode) {
+        if (p->current.kind == TokEof) {
+            diag_begin_error("unexpected end of file, expected %s", msg);
+            diag_span(SRC_LOC(p->current.line, p->current.col, 1), True,
+                      "expected %s here", msg);
+        } else {
+            diag_begin_error("expected %s, found '%.*s'",
+                             msg, (int)p->current.length, p->current.start);
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected %s", msg);
+        }
+        diag_finish();
     }
-    diag_finish();
-    p->had_error = True;
+    p->had_error  = True;
+    p->panic_mode = True;
     return p->current;
 }
 
@@ -498,6 +503,47 @@ static token_t consume_name(parser_t *p, const char *msg) {
     return consume(p, TokIdent, msg);
 }
 
+/* ── error recovery ── */
+
+/* Synchronize to the next top-level declaration boundary.
+ * Clears panic_mode so the parser can report the next real error. */
+static void synchronize(parser_t *p) {
+    p->panic_mode = False;
+    while (!check(p, TokEof)) {
+        /* A semicolon ends the previous construct — next token starts fresh. */
+        if (p->previous.kind == TokSemicolon) return;
+        /* Tokens that typically begin a new declaration or block. */
+        switch (p->current.kind) {
+            case TokFn: case TokType: case TokLib: case TokImp:
+            case TokExt: case TokInt: case TokMod: case TokTest:
+                return;
+            default:
+                advance_parser(p);
+        }
+    }
+}
+
+/* Skip to the next statement/field boundary, respecting brace nesting.
+ * Stops after consuming a ';' at depth 0, or when hitting '}' at depth 0. */
+static void skip_to_recovery_point(parser_t *p) {
+    p->panic_mode = False;
+    int depth = 0;
+    while (!check(p, TokEof)) {
+        if (check(p, TokLBrace)) { depth++; advance_parser(p); continue; }
+        if (check(p, TokRBrace)) {
+            if (depth == 0) return;   /* don't consume — caller owns the '}' */
+            depth--;
+            advance_parser(p);
+            continue;
+        }
+        if (depth == 0 && check(p, TokSemicolon)) {
+            advance_parser(p);        /* consume the ';' */
+            return;
+        }
+        advance_parser(p);
+    }
+}
+
 static boolean_t can_start_var_decl(parser_t *p) {
     /* nullable pointer type: ?T *name */
     if (check(p, TokQuestion)) return True;
@@ -592,9 +638,17 @@ static node_t *run_parse(parser_t *p) {
     node_list_init(&module->as.module.decls);
 
     while (!check(p, TokEof)) {
-        node_list_push(&module->as.module.decls, parse_top_decl(p));
+        node_t *decl = parse_top_decl(p);
+        if (decl) {
+            node_list_push(&module->as.module.decls, decl);
+        } else {
+            /* Recovery: skip to the next top-level declaration boundary. */
+            synchronize(p);
+        }
     }
 
+    /* Return partial AST even on error so codegen can report additional
+     * diagnostics.  Callers check get_error_count() for the final verdict. */
     if (p->had_error) return Null;
     return module;
 }

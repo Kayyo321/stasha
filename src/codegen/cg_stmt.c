@@ -32,6 +32,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             /* zone-allocated: rem.() must be a no-op — zone owns the memory */
             if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
                 sym_flags |= SymZoneAlloc;
+            check_shadow(cg, node->as.var_decl.name, node->line);
             symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, inferred, ti, sym_flags);
         }
         symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -78,10 +79,27 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             else if (strstr(ti.user_name, "_G_"))
                 try_instantiate_generic(cg, ti.user_name);
             if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
-                diag_begin_error("unknown type '%s'", ti.user_name);
-                diag_span(DIAG_NODE(node), True, "type used here");
-                diag_note("did you forget to define or import the type?");
-                diag_finish();
+                char dedup_key[600];
+                snprintf(dedup_key, sizeof(dedup_key), "undef_type:%s", ti.user_name);
+                if (!cg_error_already_reported(cg, dedup_key)) {
+                    diag_begin_error("unknown type '%s'", ti.user_name);
+                    diag_set_category(ErrCatUndefined);
+                    diag_span(DIAG_NODE(node), True, "type used here");
+                    diag_note("did you forget to define or import the type?");
+                    /* Levenshtein suggestion: scan registered structs and enums */
+                    usize_t best_dist = 3;
+                    const char *best = Null;
+                    for (usize_t i = 0; i < cg->struct_count; i++) {
+                        usize_t d = levenshtein(ti.user_name, cg->structs[i].name);
+                        if (d < best_dist) { best_dist = d; best = cg->structs[i].name; }
+                    }
+                    for (usize_t i = 0; i < cg->enum_count; i++) {
+                        usize_t d = levenshtein(ti.user_name, cg->enums[i].name);
+                        if (d < best_dist) { best_dist = d; best = cg->enums[i].name; }
+                    }
+                    if (best) diag_help("did you mean '%s'?", best);
+                    diag_finish();
+                }
             }
         }
     }
@@ -223,6 +241,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* zone-allocated: rem.() must be a no-op — zone owns the memory */
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
             sym_flags |= SymZoneAlloc;
+        check_shadow(cg, node->as.var_decl.name, node->line);
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -1980,13 +1999,29 @@ static void gen_stmt(cg_t *cg, node_t *node) {
 static void gen_block(cg_t *cg, node_t *node) {
     usize_t old_count = cg->locals.count;
     push_dtor_scope(cg);
-    for (usize_t i = 0; i < node->as.block.stmts.count; i++)
+    boolean_t block_terminated = False;
+    for (usize_t i = 0; i < node->as.block.stmts.count; i++) {
+        if (block_terminated) {
+            /* Warn on first unreachable statement only */
+            node_t *unreachable = node->as.block.stmts.items[i];
+            diag_begin_optional_warning(WarnUnreachableCode,
+                "unreachable code after return/break/continue");
+            diag_set_category(ErrCatOther);
+            diag_span(DIAG_NODE(unreachable), True, "this code will never execute");
+            diag_finish();
+            break;  /* stop generating unreachable stmts */
+        }
         gen_stmt(cg, node->as.block.stmts.items[i]);
+        /* Check if the current basic block now has a terminator */
+        LLVMBasicBlockRef cur = LLVMGetInsertBlock(cg->builder);
+        if (cur && LLVMGetBasicBlockTerminator(cur))
+            block_terminated = True;
+    }
     /* emit unused variable warnings for locals added in this block */
     for (usize_t i = old_count; i < cg->locals.count; i++) {
         symbol_t *entry = &cg->locals.entries[i];
         if (!entry->used && entry->name && entry->name[0] != '_') {
-            diag_begin_warning("unused variable '%s'", entry->name);
+            diag_begin_optional_warning(WarnUnusedVar, "unused variable '%s'", entry->name);
             if (entry->line > 0)
                 diag_span(SRC_LOC(entry->line, 0, strlen(entry->name)), True,
                           "variable declared here");

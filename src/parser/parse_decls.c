@@ -330,12 +330,15 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
 
         /* field declaration: [int|ext] type name [, name, ...] ; */
         if (!can_start_type(p)) {
-            diag_begin_error("expected a field type or method declaration in struct");
-            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                      True, "expected a type or 'fn' here");
-            diag_finish();
-            p->had_error = True;
-            advance_parser(p);
+            if (!p->panic_mode) {
+                diag_begin_error("expected a field type or method declaration in struct");
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "expected a type or 'fn' here");
+                diag_finish();
+            }
+            p->had_error  = True;
+            p->panic_mode = True;
+            skip_to_recovery_point(p);
             continue;
         }
         type_info_t ftype = parse_type(p);
@@ -515,12 +518,15 @@ static node_t *parse_match_stmt(parser_t *p) {
             }
             (void)snap; /* snap used implicitly; save_state for restore if needed */
         } else {
-            diag_begin_error("expected match arm pattern");
-            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                      True, "expected '_', integer literal, or EnumName.Variant");
-            diag_finish();
-            p->had_error = True;
-            advance_parser(p);
+            if (!p->panic_mode) {
+                diag_begin_error("expected match arm pattern");
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "expected '_', integer literal, or EnumName.Variant");
+                diag_finish();
+            }
+            p->had_error  = True;
+            p->panic_mode = True;
+            skip_to_recovery_point(p);
             arm->as.match_arm.is_wildcard = True;
             arm->as.match_arm.enum_name   = Null;
             arm->as.match_arm.variant_name = Null;
@@ -1242,13 +1248,16 @@ static node_t *parse_switch_stmt(parser_t *p) {
             c->as.switch_case.is_default = True;
             consume(p, TokColon, "':'");
         } else {
-            diag_begin_error("expected 'case' or 'default' inside switch block");
-            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                      True, "unexpected token");
-            diag_help("switch blocks may only contain 'case <value>:' or 'default:' clauses");
-            diag_finish();
-            p->had_error = True;
-            advance_parser(p);
+            if (!p->panic_mode) {
+                diag_begin_error("expected 'case' or 'default' inside switch block");
+                diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                          True, "unexpected token");
+                diag_help("switch blocks may only contain 'case <value>:' or 'default:' clauses");
+                diag_finish();
+            }
+            p->had_error  = True;
+            p->panic_mode = True;
+            skip_to_recovery_point(p);
             continue;
         }
         c->as.switch_case.body = parse_block(p);

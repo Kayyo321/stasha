@@ -698,12 +698,15 @@ static node_t *parse_primary(parser_t *p) {
         return expr;
     }
 
-    diag_begin_error("expected an expression, found '%.*s'",
-                     (int)p->current.length, p->current.start);
-    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-              True, "not a valid expression start");
-    diag_finish();
-    p->had_error = True;
+    if (!p->panic_mode) {
+        diag_begin_error("expected an expression, found '%.*s'",
+                         (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "not a valid expression start");
+        diag_finish();
+    }
+    p->had_error  = True;
+    p->panic_mode = True;
     advance_parser(p); /* skip the bad token so we don't loop forever */
     return make_node(NodeIntLitExpr, p->previous.line);
 }

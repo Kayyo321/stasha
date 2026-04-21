@@ -43,6 +43,25 @@ static symbol_t *cg_lookup(cg_t *cg, const char *name) {
     return symtab_lookup(&cg->globals, name);
 }
 
+/* Check if adding a local with `name` shadows an existing local at an outer
+ * scope depth.  Called before symtab_add for --wall shadow warnings. */
+static void check_shadow(cg_t *cg, const char *name, usize_t line) {
+    if (!name || name[0] == '_') return; /* _ prefix = intentional shadow */
+    symbol_t *existing = symtab_lookup(&cg->locals, name);
+    if (!existing) existing = symtab_lookup(&cg->globals, name);
+    if (existing && existing->name) {
+        diag_begin_optional_warning(WarnShadowedVar,
+            "variable '%s' shadows previous declaration", name);
+        diag_set_category(ErrCatOther);
+        if (line > 0)
+            diag_span(SRC_LOC(line, 0, strlen(name)), True, "new declaration here");
+        if (existing->line > 0)
+            diag_span(SRC_LOC(existing->line, 0, strlen(existing->name)), False,
+                      "previously declared here");
+        diag_finish();
+    }
+}
+
 static void symtab_set_last_line(symtab_t *st, usize_t line) {
     if (st->count > 0)
         st->entries[st->count - 1].line = line;

@@ -13,6 +13,7 @@ static void check_const_addr_of(cg_t *cg, node_t *init, type_info_t target_type,
     if ((src_const || src_final) && (target_type.ptr_perm & PtrWrite)) {
         diag_begin_error("cannot derive a writable pointer from %s variable '%s'",
                          src_const ? "const" : "final", src->name);
+        diag_set_category(ErrCatPointerSafety);
         diag_span(SRC_LOC(line, 0, 0), True,
                   "'%s' is declared %s here", src->name,
                   src_const ? "const" : "final");
@@ -44,6 +45,7 @@ static void check_permission_widening(cg_t *cg, node_t *init, type_info_t target
             diag_begin_error("cannot widen pointer permissions from *%s to *%s",
                              src_perm[0] ? src_perm : "none",
                              tgt_perm[0] ? tgt_perm : "none");
+            diag_set_category(ErrCatPointerSafety);
             diag_span(SRC_LOC(line, 0, 0), True, "permission widening here");
             diag_note("a pointer may only be used with the permissions it was declared with");
             diag_help("declare the source pointer with the required permissions");
@@ -63,6 +65,7 @@ static void check_stack_escape(cg_t *cg, node_t *ret_val, usize_t line) {
                 && symtab_lookup(&cg->locals, operand->as.ident.name)) {
                 diag_begin_error("cannot return a pointer to local stack variable '%s'",
                                  operand->as.ident.name);
+                diag_set_category(ErrCatPointerSafety);
                 diag_span(SRC_LOC(line, 0, 0), True,
                           "'%s' is a stack variable — it is freed when the function returns",
                           operand->as.ident.name);
@@ -117,6 +120,7 @@ static void check_null_deref(cg_t *cg, const char *name, usize_t line) {
     symbol_t *sym = cg_lookup(cg, name);
     if (sym && (sym->flags & SymNil)) {
         diag_begin_error("dereference of nil pointer '%s'", name);
+        diag_set_category(ErrCatPointerSafety);
         diag_span(SRC_LOC(line, 0, 0), True,
                   "'%s' is statically known to be nil here", name);
         diag_note("dereferencing a nil pointer is undefined behaviour");
@@ -160,6 +164,7 @@ static void prov_check_use(cg_t *cg, const char *var_name, usize_t line) {
                 && cg->provenance[i].closed) {
             diag_begin_error("use-after-free: pointer '%s' was freed on line %zu",
                              var_name, cg->provenance[i].close_line);
+            diag_set_category(ErrCatPointerSafety);
             diag_span(SRC_LOC(line, 0, 0), True,
                       "use of freed pointer '%s' here", var_name);
             diag_note("the memory pointed to by '%s' was released via rem.()", var_name);
@@ -287,12 +292,14 @@ static void check_storage_domain(cg_t *cg, storage_t ptr_qual, boolean_t rhs_is_
     if (cg->in_unsafe > 0) return;
     if (ptr_qual == StorageHeap && rhs_is_stack) {
         diag_begin_error("cannot assign a stack address to a heap pointer");
+        diag_set_category(ErrCatStorageDomain);
         diag_span(SRC_LOC(line, 0, 0), True, "assignment here");
         diag_note("heap-qualified pointers can only point at heap-allocated memory");
         diag_help("use a heap pointer pointing to heap memory via new.()");
         diag_finish();
     } else if (ptr_qual == StorageStack && rhs_is_heap) {
         diag_begin_error("cannot assign a heap address to a stack pointer");
+        diag_set_category(ErrCatStorageDomain);
         diag_span(SRC_LOC(line, 0, 0), True, "assignment here");
         diag_note("stack-qualified pointers can only point at stack variables");
         diag_help("declare the pointer without a storage qualifier: T *p = new.(...)");
