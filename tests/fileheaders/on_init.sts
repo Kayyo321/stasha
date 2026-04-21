@@ -6,17 +6,17 @@ int macro let byte_cnt! = 32;
 
 @[[init]] {
     print.('hi! this code actually runs before main!\n');
-};
+}
 
 @[[init: before("title_of_this")]] {
     for i32 i = 0; i < byte_cnt.!; ++i {
         data[i] = '1' + i;
     }   
-};
+}
 
 @[[init]] "title_of_this" { // doesn't matter where these are, they all get run before main
     data = new.(sizeof.(i8) * byte_cnt.!);
-};
+}
 
 // titles aren't required--but if you want to reference them by
 // before and after's then you need to title them!
@@ -30,7 +30,7 @@ int macro let byte_cnt! = 32;
     print('bye! this code is going to run after main returns!\n');
     rem.(data);
     data = nil;
-};
+}
 
 // before's and afters should be file-wide, meaning if you have a 
 // init decl in a different file and it declares that it should
