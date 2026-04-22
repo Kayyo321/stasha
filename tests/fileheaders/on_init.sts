@@ -1,43 +1,49 @@
 mod on_init;
 
-int heap i8 *data = nil;
+int i8 *rw data = nil;
 
 int macro let byte_cnt! = 32;
 
 @[[init]] {
-    print.('hi! this code actually runs before main!\n');
+    print.("hi! this code actually runs before main!\n");
 }
 
-@[[init: before("title_of_this")]] {
-    for i32 i = 0; i < byte_cnt.!; ++i {
-        data[i] = '1' + i;
-    }   
+@[[init]] "title_of_this" {
+    unsafe {
+        for (stack i32 i = 0; i < byte_cnt.!; i++) {
+            data[i] = `1` + i;
+        }
+    }
 }
 
-@[[init]] "title_of_this" { // doesn't matter where these are, they all get run before main
-    data = new.(sizeof.(i8) * byte_cnt.!);
+@[[init: before("title_of_this")]] { // doesn't matter where these are, they all get run before main
+    unsafe {
+        data = new.(sizeof.(i8) * byte_cnt.!);
+    }
 }
 
-// titles aren't required--but if you want to reference them by
-// before and after's then you need to title them!
+// titles are not required--but if you want to reference them by
+// before and after then you need to title them!
 @[[exit: after("this_other_thing")]] {
-    if data != nil {
-        print.error.('Data was not cleaned up!\n');
+    if (data != nil) {
+        print.("Data was not cleaned up!\n");
     }
 }
 
 @[[exit]] "this_other_thing" {
-    print.('bye! this code is going to run after main returns!\n');
-    rem.(data);
-    data = nil;
+    print.("bye! this code is going to run after main returns!\n");
+    unsafe {
+        rem.(data);
+        data = nil;
+    }
 }
 
-// before's and afters should be file-wide, meaning if you have a 
+// before and after should be file-wide, meaning if you have a
 // init decl in a different file and it declares that it should
 // be ran before an init statement on a different file, it should
 // do so
 
 fn main(void): i32 {
-    print.('data = {}\n', data);
+    print.("data = {}\n", data);
     ret 0;
 }

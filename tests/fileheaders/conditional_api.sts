@@ -4,14 +4,25 @@ mod conditional_api;
 // This is broader than @comptime[T] because it is about declaration presence,
 // symbol emission, and diagnostics.
 
-@[[require: os == "linux"]]
-ext fn epoll_create1(i32 flags): i32;
+// `@[[if: ...]]` silently elides the decl when the condition is false.
+// (Use `@[[require: ...]]` instead — shown below — to hard-fail the build
+// when the condition is not met on the current target.)
 
-@[[require: os == "windows"]]
-ext fn CreateEventA(void *attrs, i32 manual_reset, i32 initial_state, i8 *name): void *;
+@[[if: os == "linux"]]
+ext fn epoll_create1(stack i32 flags): i32;
+
+@[[if: os == "windows"]]
+ext fn CreateEventA(stack void *r attrs, stack i32 manual_reset,
+                    stack i32 initial_state, stack i8 *r name): void *;
 
 @[[if: pointer_width == 64]]
 type Handle: u64;
 
 @[[if: pointer_width == 32]]
 type Handle: u32;
+
+// Example of the strict form: if this file were linux-only, a hard
+// requirement would make the intent explicit and fail cleanly on other
+// targets.  Uncomment to see the diagnostic:
+// @[[require: os == "linux"]]
+// ext fn inotify_init1(stack i32 flags): i32;
