@@ -1,6 +1,6 @@
 mod on_init;
 
-int i8 *rw data = nil;
+int heap i8 *rw data = nil;
 
 int macro let byte_cnt! = 32;
 
@@ -9,17 +9,13 @@ int macro let byte_cnt! = 32;
 }
 
 @[[init]] "title_of_this" {
-    unsafe {
-        for (stack i32 i = 0; i < byte_cnt.!; i++) {
-            data[i] = `1` + i;
-        }
+    for (stack i32 i = 0; i < byte_cnt.!; i++) {
+        data[i] = `1` + i;
     }
 }
 
 @[[init: before("title_of_this")]] { // doesn't matter where these are, they all get run before main
-    unsafe {
-        data = new.(sizeof.(i8) * byte_cnt.!);
-    }
+    data = new.(sizeof.(i8) * byte_cnt.!);
 }
 
 // titles are not required--but if you want to reference them by
@@ -32,10 +28,8 @@ int macro let byte_cnt! = 32;
 
 @[[exit]] "this_other_thing" {
     print.("bye! this code is going to run after main returns!\n");
-    unsafe {
-        rem.(data);
-        data = nil;
-    }
+    rem.(data);
+    data = nil;
 }
 
 // before and after should be file-wide, meaning if you have a

@@ -996,7 +996,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                would point to the same address (containing only the last name). */
             symtab_add(&cg.globals, ast_strdup(var_llvm_name, strlen(var_llvm_name)),
                        global, type, ti, sym_flags);
-            symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
+            symtab_set_last_storage(&cg.globals, decl->as.var_decl.storage, False);
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
                                   0, -1); /* scope_depth 0 = global lifetime */
