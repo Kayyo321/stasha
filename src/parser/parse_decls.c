@@ -1518,6 +1518,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         body = make_node(NodeBlock, body_line);
         node_list_init(&body->as.block.stmts);
         node_list_push(&body->as.block.stmts, ret_node);
+    } else if (linkage == LinkageExternal && match_tok(p, TokSemicolon)) {
+        /* body-less extern declaration: ext fn foo(...): T; */
+        body = Null;
     } else {
         body = parse_block(p);
     }

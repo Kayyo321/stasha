@@ -94,6 +94,59 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
     return Ok;
 }
 
+extern "C" result_t link_object_freestanding(const char *obj_path,
+                                              const char *output_path,
+                                              const char **extra_libs) {
+    std::vector<const char *> args;
+
+#ifdef __APPLE__
+    args.push_back("ld64.lld");
+    args.push_back("-arch");
+#if defined(__aarch64__) || defined(__arm64__)
+    args.push_back("arm64");
+#else
+    args.push_back("x86_64");
+#endif
+    args.push_back("-platform_version");
+    args.push_back("macos");
+    args.push_back("13.0");
+    args.push_back("13.0");
+    args.push_back("-syslibroot");
+    args.push_back(get_sdk_path());
+    /* Freestanding: no -lSystem; allow undefined symbols so the caller can
+       provide them later via another link step. */
+    args.push_back("-undefined");
+    args.push_back("dynamic_lookup");
+    args.push_back(obj_path);
+    if (extra_libs) {
+        for (const char **p = extra_libs; *p; p++)
+            args.push_back(*p);
+    }
+    args.push_back("-o");
+    args.push_back(output_path);
+#else
+    args.push_back("ld.lld");
+    args.push_back("--no-dynamic-linker");
+    args.push_back(obj_path);
+    if (extra_libs) {
+        for (const char **p = extra_libs; *p; p++)
+            args.push_back(*p);
+    }
+    args.push_back("-o");
+    args.push_back(output_path);
+#endif
+
+    llvm::raw_null_ostream null_os;
+    lld::Result res = lld::lldMain(args, null_os, llvm::errs(),
+                                    {{lld::Gnu,    &lld::elf::link},
+                                     {lld::Darwin, &lld::macho::link}});
+    if (res.retCode != 0) {
+        log_err("linker: LLD failed (freestanding) with code %d", res.retCode);
+        return Err;
+    }
+    return Ok;
+}
+
 extern "C" result_t archive_object(const char *obj_path, const char *output_path) {
     using namespace llvm;
     using namespace llvm::object;

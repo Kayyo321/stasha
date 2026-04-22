@@ -22,12 +22,12 @@ int macro let byte_cnt! = 32;
 // before and after's then you need to title them!
 @[[exit: after("this_other_thing")]] {
     if data != nil {
-        print.error.('Data wasn't cleaned up!\n');
+        print.error.('Data was not cleaned up!\n');
     }
 }
 
 @[[exit]] "this_other_thing" {
-    print('bye! this code is going to run after main returns!\n');
+    print.('bye! this code is going to run after main returns!\n');
     rem.(data);
     data = nil;
 }

@@ -701,6 +701,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
 
         if (decl->kind == NodeTypeDecl) {
+            /* @[[if: ...]] / @[[require: ...]] gating */
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
+                continue;
             if (decl->as.type_decl.decl_kind == TypeDeclInterface) {
                 /* Register interface as a fat-pointer struct { ptr, ptr } */
                 char llvm_type_name[512];
@@ -1038,9 +1041,25 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         }
 
+        /* Collect @[[init]] / @[[exit]] blocks for global_ctors/global_dtors. */
+        if (decl->kind == NodeInitBlock) {
+            if (cg.init_block_count < 128)
+                cg.init_blocks[cg.init_block_count++] = decl;
+            continue;
+        }
+        if (decl->kind == NodeExitBlock) {
+            if (cg.exit_block_count < 128)
+                cg.exit_blocks[cg.exit_block_count++] = decl;
+            continue;
+        }
+
         if (decl->kind == NodeFnDecl) {
             /* library-backed internal functions live in the .a — skip */
             if (decl->from_lib && decl->as.fn_decl.linkage == LinkageInternal)
+                continue;
+
+            /* @[[if: ...]] / @[[require: ...]] gating */
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
                 continue;
 
             /* skip generic template functions (methods of generic structs) */
@@ -1069,6 +1088,16 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                               decl->as.fn_decl.name, fn_name, sizeof(fn_name));
             } else {
                 mangle_fn(fn_module, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
+            }
+            /* fileheader: @[[export_name: "..."]] / @[[abi: c]] override */
+            {
+                char override_name[512];
+                boolean_t abi_c = False;
+                if (cg_fh_override_symbol(decl->headers, decl->as.fn_decl.name,
+                                          override_name, sizeof(override_name), &abi_c)) {
+                    strncpy(fn_name, override_name, sizeof(fn_name) - 1);
+                    fn_name[sizeof(fn_name) - 1] = '\0';
+                }
             }
 
             /* in test mode, skip the user's main — we generate our own */
@@ -1138,6 +1167,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 LLVMSetLinkage(fn, LLVMWeakAnyLinkage);
             if (decl->as.fn_decl.attr_flags & AttrHidden)
                 LLVMSetVisibility(fn, LLVMHiddenVisibility);
+
+            /* fileheader-based fn attributes: section/align/weak/target/features */
+            cg_fh_apply_to_fn(&cg, fn, decl->headers);
 
             /* restrict pointer params → noalias attribute */
             for (usize_t j = 0; j < pc; j++) {
@@ -1282,6 +1314,13 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         if (decl->as.fn_decl.type_param_count > 0) continue;
 
+        /* @[[if: ...]] / @[[require: ...]] gating — skip body if decl elided */
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
+            continue;
+
+        /* body-less extern declaration — forward decl only, nothing to emit */
+        if (decl->as.fn_decl.body == Null) continue;
+
         /* rebuild the mangled name the same way pass 1 did */
         char fn_name[512];
         const char *fn_module2 = decl->is_c_extern ? Null : decl->module_name;
@@ -1290,6 +1329,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                           decl->as.fn_decl.name, fn_name, sizeof(fn_name));
         else
             mangle_fn(fn_module2, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
+        {
+            char override_name[512];
+            boolean_t abi_c = False;
+            if (cg_fh_override_symbol(decl->headers, decl->as.fn_decl.name,
+                                      override_name, sizeof(override_name), &abi_c)) {
+                strncpy(fn_name, override_name, sizeof(fn_name) - 1);
+                fn_name[sizeof(fn_name) - 1] = '\0';
+            }
+        }
 
         /* in test mode, skip the user's main — we generate our own */
         if (cg.test_mode && strcmp(decl->as.fn_decl.name, "main") == 0
@@ -1735,6 +1783,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             deallocate(tn_heap);
         }
     }
+
+    /* ── @[[init]] / @[[exit]] lifecycle blocks → global_ctors/global_dtors ── */
+    cg_emit_lifecycle_blocks(&cg,
+                             cg.init_blocks, cg.init_block_count,
+                             cg.exit_blocks, cg.exit_block_count);
 
     /* ── DI: finalize before verification ──
      * Must happen after all IR is emitted and before the module is verified,

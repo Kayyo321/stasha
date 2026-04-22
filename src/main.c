@@ -1445,18 +1445,26 @@ static result_t compile_file(const cfile_params_t *p) {
 #endif
 
     } else {
-        /* EmitExe / EmitTest: always link the thread and zone runtimes. */
-        char rt_path[512];
-        snprintf(rt_path, sizeof(rt_path), "%s/thread_runtime.a", bin_dir);
-        if (all_lib_count < 127) all_libs[all_lib_count++] = rt_path;
-        static char zone_rt_path[512];
-        snprintf(zone_rt_path, sizeof(zone_rt_path), "%s/zone_runtime.a", bin_dir);
-        if (all_lib_count < 127) all_libs[all_lib_count++] = zone_rt_path;
+        boolean_t freestanding = ast->as.module.freestanding;
+
+        if (!freestanding) {
+            /* EmitExe / EmitTest: link the thread and zone runtimes. */
+            char rt_path[512];
+            snprintf(rt_path, sizeof(rt_path), "%s/thread_runtime.a", bin_dir);
+            if (all_lib_count < 127) all_libs[all_lib_count++] = rt_path;
+            static char zone_rt_path[512];
+            snprintf(zone_rt_path, sizeof(zone_rt_path), "%s/zone_runtime.a", bin_dir);
+            if (all_lib_count < 127) all_libs[all_lib_count++] = zone_rt_path;
+        }
         all_libs[all_lib_count] = Null;
 
-        log_msg("linking");
-        link_result = link_object(obj_path, p->output_path,
-                                  all_lib_count > 0 ? all_libs : Null);
+        log_msg(freestanding ? "linking (freestanding)" : "linking");
+        if (freestanding)
+            link_result = link_object_freestanding(obj_path, p->output_path,
+                                                   all_lib_count > 0 ? all_libs : Null);
+        else
+            link_result = link_object(obj_path, p->output_path,
+                                      all_lib_count > 0 ? all_libs : Null);
         if (link_result != Ok) log_err("linking failed");
 #if defined(__APPLE__)
         if (link_result == Ok && p->debug_mode) {
