@@ -1,0 +1,18 @@
+mod fmt_str;
+
+fn ret_it(i32 it): i8 * {
+    ret @'it = {it}';
+}
+
+fn main(void): i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+
+    let abc = @'{a} + {b} * {c} = {a + b * c}';
+    print.('{}\n', abc);
+
+    print.('{}\n', ret_it(123));
+
+    ret 0;
+}
