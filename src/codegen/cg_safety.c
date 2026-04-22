@@ -57,6 +57,16 @@ static void check_permission_widening(cg_t *cg, node_t *init, type_info_t target
 /* Check: no stack pointer escape via ret */
 static void check_stack_escape(cg_t *cg, node_t *ret_val, usize_t line) {
     if (!ret_val) return;
+    if (ret_val->kind == NodeComptimeFmt && !ret_val->as.comptime_fmt.on_heap) {
+        diag_begin_error("cannot return a stack comptime format string");
+        diag_set_category(ErrCatPointerSafety);
+        diag_span(SRC_LOC(line, 0, 0), True,
+                  "points into a stack frame that is about to be destroyed");
+        diag_note("plain @'...' allocates into the current frame; the buffer dies on return");
+        diag_help("use 'heap @'...'' to allocate on the heap (caller must rem.())");
+        diag_finish();
+        return;
+    }
     if (ret_val->kind == NodeAddrOf) {
         node_t *operand = ret_val->as.addr_of.operand;
         if (operand->kind == NodeIdentExpr) {
@@ -313,6 +323,8 @@ static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
     if (!rhs) return 0;
     if (rhs->kind == NodeNewExpr)   return  1;   /* heap — needs rem.() */
     if (rhs->kind == NodeNewInZone) return -1;   /* zone-managed, stack-like */
+    if (rhs->kind == NodeComptimeFmt)
+        return rhs->as.comptime_fmt.on_heap ? 1 : -1;
     if (rhs->kind == NodeAddrOf) {
         node_t *op = rhs->as.addr_of.operand;
         if (op->kind == NodeIdentExpr) {

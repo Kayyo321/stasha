@@ -1,18 +1,19 @@
 mod fmt_str;
 
-fn ret_it(i32 it): i8 * {
-    ret @'it = {it}';
+fn ret_it(stack i32 it): heap i8 *rw {
+    ret heap @'it = {it}';
 }
 
 fn main(void): i32 {
-    let a = 1;
-    let b = 2;
-    let c = 3;
+    stack i32 a = 1;
+    stack i32 b = 2;
+    stack i32 c = 3;
 
-    let abc = @'{a} + {b} * {c} = {a + b * c}';
-    print.('{}\n', abc);
+    print.(@'{a} + {b} * {c} = {a + b * c}');
 
-    print.('{}\n', ret_it(123));
+    heap i8 *rw s = ret_it(123);
+    defer rem.(s);
+    print.('{}\n', s);
 
     ret 0;
 }

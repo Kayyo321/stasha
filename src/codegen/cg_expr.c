@@ -3560,6 +3560,236 @@ static LLVMValueRef gen_error_expr(cg_t *cg, node_t *node) {
     return err;
 }
 
+/* ── comptime format string: @'...' / heap @'...' ──
+ * Produces an i8 * pointing to a freshly-formatted string.
+ *   on_heap=False: buffer is alloca'd in the current frame (no cleanup).
+ *   on_heap=True:  buffer is malloc'd; caller must rem.(). */
+static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
+    const char  *fmt     = node->as.comptime_fmt.fmt;
+    usize_t      flen    = node->as.comptime_fmt.fmt_len;
+    node_list_t *args    = &node->as.comptime_fmt.args;
+    boolean_t    on_heap = node->as.comptime_fmt.on_heap;
+
+    /* Fast path: no args + stack → global string pointer, zero runtime cost. */
+    if (args->count == 0 && !on_heap) {
+        heap_t bh = allocate(flen + 1, 1);
+        char *buf = bh.pointer;
+        usize_t blen = 0;
+        for (usize_t i = 0; i < flen; ) {
+            if (fmt[i] == '\\' && i + 1 < flen) {
+                char d = error_decode_esc(fmt[i + 1]);
+                if (d != '\0') buf[blen++] = d;
+                i += 2;
+            } else {
+                buf[blen++] = fmt[i++];
+            }
+        }
+        buf[blen] = '\0';
+        LLVMValueRef ptr = LLVMBuildGlobalStringPtr(cg->builder, buf, "cfmt.lit");
+        deallocate(bh);
+        return ptr;
+    }
+
+    usize_t argc = args->count;
+
+    /* Evaluate all arg expressions up front. */
+    heap_t vh = argc ? allocate(argc, sizeof(LLVMValueRef)) : NullHeap;
+    LLVMValueRef *vals = argc ? vh.pointer : Null;
+    for (usize_t i = 0; i < argc; i++)
+        vals[i] = gen_expr(cg, args->items[i]);
+
+    /* Walk the raw fmt once to: (a) build the C printf format,
+     * (b) accumulate the compile-time buffer bound. */
+    heap_t fh = allocate(flen * 4 + 64, 1);
+    char *cfmt = fh.pointer;
+    usize_t cfmt_len = 0;
+    usize_t arg_idx = 0;
+    usize_t buf_bound = 1; /* null terminator */
+
+    for (usize_t i = 0; i < flen; ) {
+        if (fmt[i] == '\\' && i + 1 < flen) {
+            char ec = fmt[i + 1];
+            if (ec == '{' || ec == '}') { cfmt[cfmt_len++] = ec; buf_bound++; }
+            else if (ec == '%')         { cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%'; buf_bound++; }
+            else {
+                char d = error_decode_esc(ec);
+                if (d != '\0') { cfmt[cfmt_len++] = d; buf_bound++; }
+            }
+            i += 2; continue;
+        }
+        if (fmt[i] == '%') {
+            cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%';
+            buf_bound++;
+            i++; continue;
+        }
+        if (fmt[i] == '{' && arg_idx < argc) {
+            /* scan to matching '}' respecting ()/[] nesting */
+            usize_t j = i + 1;
+            int depth = 0;
+            usize_t colon_pos = 0;
+            boolean_t has_colon = False;
+            while (j < flen) {
+                char c = fmt[j];
+                if (c == '\\' && j + 1 < flen) { j += 2; continue; }
+                if (c == '(' || c == '[') { depth++; j++; continue; }
+                if (c == ')' || c == ']') { if (depth > 0) depth--; j++; continue; }
+                if (c == '}' && depth == 0) break;
+                if (c == ':' && depth == 0 && !has_colon) { colon_pos = j; has_colon = True; }
+                j++;
+            }
+            if (j >= flen) { cfmt[cfmt_len++] = fmt[i++]; buf_bound++; continue; }
+
+            const char *spec = Null; usize_t slen = 0;
+            if (has_colon) {
+                spec = fmt + colon_pos + 1;
+                slen = j - (colon_pos + 1);
+            }
+
+            /* Extract numeric width from spec (for buffer sizing). */
+            usize_t width = 0;
+            if (slen > 0) {
+                usize_t k = 0;
+                while (k < slen && (spec[k] == '+' || spec[k] == '-'
+                        || spec[k] == '#' || spec[k] == ' ')) k++;
+                if (k < slen && spec[k] == '0'
+                        && k + 1 < slen && spec[k + 1] >= '0' && spec[k + 1] <= '9') k++;
+                while (k < slen && spec[k] >= '0' && spec[k] <= '9') {
+                    width = width * 10 + (spec[k] - '0'); k++;
+                }
+                if (k < slen && spec[k] == '.') {
+                    k++;
+                    usize_t prec = 0;
+                    while (k < slen && spec[k] >= '0' && spec[k] <= '9') {
+                        prec = prec * 10 + (spec[k] - '0'); k++;
+                    }
+                    if (prec + 20 > width) width = prec + 20;
+                }
+            }
+
+            LLVMTypeRef ty = LLVMTypeOf(vals[arg_idx]);
+            usize_t arg_bound;
+            if (llvm_is_ptr(ty)) {
+                if (width == 0 && !on_heap) {
+                    diag_begin_error("comptime format of pointer requires an explicit width, e.g. {p:64}");
+                    diag_set_category(ErrCatPointerSafety);
+                    diag_span(SRC_LOC(node->line, node->col, 0), True,
+                              "pointer argument here has no '{:N}' width spec");
+                    diag_note("stack-allocated comptime formats need each pointer's max length at compile time");
+                    diag_help("either add a width like '{p:64}' or use 'heap @'...'' to malloc a larger buffer");
+                    diag_finish();
+                    arg_bound = 64;
+                } else {
+                    arg_bound = width > 0 ? width : 512;
+                }
+            } else if (llvm_is_float(ty)) {
+                arg_bound = width > 32 ? width : 32;
+            } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+                arg_bound = width > 20 ? width : 20;
+            } else if (ty == LLVMInt32TypeInContext(cg->ctx)) {
+                arg_bound = width > 11 ? width : 11;
+            } else if (ty == LLVMInt16TypeInContext(cg->ctx)) {
+                arg_bound = width > 6 ? width : 6;
+            } else if (ty == LLVMInt8TypeInContext(cg->ctx)
+                    || ty == LLVMInt1TypeInContext(cg->ctx)) {
+                arg_bound = width > 4 ? width : 4;
+            } else {
+                arg_bound = width > 32 ? width : 32;
+            }
+            buf_bound += arg_bound;
+
+            /* Emit %spec or type-default (mirrors gen_error_expr mapping). */
+            cfmt[cfmt_len++] = '%';
+            if (slen > 0) {
+                for (usize_t k = 0; k < slen; k++) cfmt[cfmt_len++] = spec[k];
+                /* widen scalars as printf ABI requires */
+                if (llvm_is_float(ty) && ty == LLVMFloatTypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
+                                                    LLVMDoubleTypeInContext(cg->ctx), "fpext");
+                else if (ty == LLVMInt8TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "cext");
+                else if (ty == LLVMInt1TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildZExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "bext");
+                else if (ty == LLVMInt16TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "iext");
+            } else if (llvm_is_ptr(ty)) {
+                cfmt[cfmt_len++] = 's';
+            } else if (llvm_is_float(ty)) {
+                cfmt[cfmt_len++] = 'g';
+                if (ty == LLVMFloatTypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
+                                                    LLVMDoubleTypeInContext(cg->ctx), "fpext");
+            } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+                cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'd';
+            } else if (ty == LLVMInt8TypeInContext(cg->ctx)) {
+                cfmt[cfmt_len++] = 'c';
+                vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                               LLVMInt32TypeInContext(cg->ctx), "cext");
+            } else if (ty == LLVMInt1TypeInContext(cg->ctx)) {
+                cfmt[cfmt_len++] = 'd';
+                vals[arg_idx] = LLVMBuildZExt(cg->builder, vals[arg_idx],
+                                               LLVMInt32TypeInContext(cg->ctx), "bext");
+            } else {
+                cfmt[cfmt_len++] = 'd';
+                if (ty != LLVMInt32TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "iext");
+            }
+            arg_idx++;
+            i = j + 1;
+            continue;
+        }
+        cfmt[cfmt_len++] = fmt[i++]; buf_bound++;
+    }
+    cfmt[cfmt_len] = '\0';
+
+    /* Declare snprintf once per module. */
+    LLVMValueRef snprintf_fn = LLVMGetNamedFunction(cg->module, "snprintf");
+    if (!snprintf_fn) {
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+        LLVMTypeRef fixed[3] = { ptr_ty, i64_ty, ptr_ty };
+        LLVMTypeRef snfty = LLVMFunctionType(
+            LLVMInt32TypeInContext(cg->ctx), fixed, 3, /*varargs=*/True);
+        snprintf_fn = LLVMAddFunction(cg->module, "snprintf", snfty);
+    }
+    LLVMTypeRef snprintf_type = LLVMGlobalGetValueType(snprintf_fn);
+
+    /* Allocate buffer — alloca for stack, malloc for heap. */
+    usize_t final_size = on_heap ? (buf_bound > 512 ? buf_bound : 512) : buf_bound;
+    if (final_size < 16) final_size = 16;
+    LLVMValueRef buf_size_v = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), final_size, 0);
+    LLVMValueRef buf;
+    if (on_heap) {
+        buf = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
+                             &buf_size_v, 1, "cfmt.buf");
+    } else {
+        LLVMTypeRef arr_ty = LLVMArrayType(
+            LLVMInt8TypeInContext(cg->ctx), (unsigned)final_size);
+        buf = alloc_in_entry(cg, arr_ty, "cfmt.buf");
+    }
+
+    /* snprintf(buf, size, cfmt, args...) */
+    usize_t sn_argc = 3 + arg_idx;
+    heap_t sah = allocate(sn_argc, sizeof(LLVMValueRef));
+    LLVMValueRef *sn_args = sah.pointer;
+    sn_args[0] = buf;
+    sn_args[1] = buf_size_v;
+    sn_args[2] = LLVMBuildGlobalStringPtr(cg->builder, cfmt, "cfmt.str");
+    for (usize_t i = 0; i < arg_idx; i++)
+        sn_args[3 + i] = vals[i];
+    LLVMBuildCall2(cg->builder, snprintf_type, snprintf_fn,
+                   sn_args, (unsigned)sn_argc, "");
+
+    deallocate(sah);
+    deallocate(fh);
+    if (argc) deallocate(vh);
+
+    return buf;
+}
+
 /* ── any type helpers ── */
 
 /* Map a short type name to type_info_t (for any_G_... mangled names). */
@@ -4209,6 +4439,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);
         case NodeErrorExpr:        return gen_error_expr(cg, node);
+        case NodeComptimeFmt:      return gen_comptime_fmt(cg, node);
         case NodeExpectExpr: {
             /* expect.(expr) — if !expr, print failure and increment fail count */
             LLVMValueRef val = gen_expr(cg, node->as.expect_expr.expr);

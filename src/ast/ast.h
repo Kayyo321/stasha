@@ -276,6 +276,9 @@ typedef enum {
     /* fileheader lifecycle blocks — @[[init]] { ... } / @[[exit]] { ... } */
     NodeInitBlock,
     NodeExitBlock,
+
+    /* comptime format string: @'...' / heap @'...' */
+    NodeComptimeFmt,
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -541,6 +544,10 @@ struct node {
 
         /* NodeLenExpr / NodeCapExpr — reuse len_expr for both */
         struct { node_t *operand; } len_expr;
+
+        /* NodeComptimeFmt: @'...' / heap @'...' — raw fmt stored with
+           unexpanded escapes; each {expr}/{expr:spec} span pre-parsed into args */
+        struct { char *fmt; usize_t fmt_len; node_list_t args; boolean_t on_heap; } comptime_fmt;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

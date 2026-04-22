@@ -80,7 +80,111 @@ static node_t *parse_compound_init(parser_t *p, usize_t line) {
     return n;
 }
 
+/* ── comptime format string: @'...' / heap @'...' ──
+ * Called with `@` already consumed. Current token must be TokStackStr/TokHeapStr.
+ * Each {expr} / {expr:spec} span in the format is sub-parsed as a Stasha
+ * expression using a fresh legacy-mode parser over the substring. */
+static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usize_t line) {
+    token_t fmt_tok = p->current;
+    advance_parser(p); /* consume the string literal */
+
+    usize_t fmt_len = fmt_tok.length - 2;
+    char *fmt = ast_strdup(fmt_tok.start + 1, fmt_len);
+
+    node_t *n = make_node(NodeComptimeFmt, line);
+    n->as.comptime_fmt.fmt     = fmt;
+    n->as.comptime_fmt.fmt_len = fmt_len;
+    n->as.comptime_fmt.on_heap = on_heap;
+    node_list_init(&n->as.comptime_fmt.args);
+
+    for (usize_t i = 0; i < fmt_len; ) {
+        if (fmt[i] == '\\' && i + 1 < fmt_len) { i += 2; continue; }
+        if (fmt[i] != '{') { i++; continue; }
+
+        usize_t expr_start = i + 1;
+        usize_t j = expr_start;
+        int depth = 0;
+        usize_t colon_pos = 0;
+        boolean_t has_colon = False;
+        boolean_t found_end = False;
+
+        while (j < fmt_len) {
+            char c = fmt[j];
+            if (c == '\\' && j + 1 < fmt_len) { j += 2; continue; }
+            if (c == '(' || c == '[') { depth++; j++; continue; }
+            if (c == ')' || c == ']') { if (depth > 0) depth--; j++; continue; }
+            if (c == '{' && depth == 0) {
+                diag_begin_error("nested '{' inside comptime format placeholder");
+                diag_span(SRC_LOC(line, 0, 0), True,
+                          "comptime format does not support nested braces — use '\\{' for a literal");
+                diag_finish();
+                p->had_error = True;
+                return n;
+            }
+            if (c == '}' && depth == 0) { found_end = True; break; }
+            if (c == ':' && depth == 0 && !has_colon) { colon_pos = j; has_colon = True; }
+            j++;
+        }
+        if (!found_end) {
+            diag_begin_error("unterminated '{' in comptime format string");
+            diag_span(SRC_LOC(line, 0, 0), True, "missing '}' here");
+            diag_finish();
+            p->had_error = True;
+            return n;
+        }
+
+        usize_t expr_end = has_colon ? colon_pos : j;
+        usize_t expr_len = expr_end - expr_start;
+        if (expr_len == 0) {
+            diag_begin_error("empty expression in comptime format placeholder");
+            diag_span(SRC_LOC(line, 0, 0), True, "expected an expression inside '{...}'");
+            diag_finish();
+            p->had_error = True;
+            return n;
+        }
+
+        char *expr_src = ast_strdup(fmt + expr_start, expr_len);
+        parser_t sub;
+        memset(&sub, 0, sizeof(sub));
+        sub.stream    = Null;
+        sub.had_error = False;
+        init_lexer(&sub.lexer, expr_src);
+        advance_parser(&sub);
+        node_t *expr_node = parse_expr(&sub);
+        if (sub.had_error) p->had_error = True;
+
+        node_list_push(&n->as.comptime_fmt.args, expr_node);
+
+        i = j + 1;
+    }
+
+    return n;
+}
+
 static node_t *parse_primary(parser_t *p) {
+    /* heap @'...' — heap-allocated comptime format string */
+    if (check(p, TokHeap)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'heap' */
+        if (check(p, TokAt)) {
+            advance_parser(p); /* consume '@' */
+            if (check(p, TokStackStr) || check(p, TokHeapStr))
+                return parse_comptime_fmt_at_string(p, True, line);
+        }
+        restore_state(p, snap);
+    }
+
+    /* @'...' — stack-allocated comptime format string */
+    if (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume '@' */
+        if (check(p, TokStackStr) || check(p, TokHeapStr))
+            return parse_comptime_fmt_at_string(p, False, line);
+        restore_state(p, snap);
+    }
+
     if (check(p, TokDot)) {
         usize_t line = p->current.line;
         advance_parser(p);
