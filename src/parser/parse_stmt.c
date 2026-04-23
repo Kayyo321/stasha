@@ -320,6 +320,53 @@ static node_t *parse_expr_stmt(parser_t *p) {
     return n;
 }
 
+/* watch.(T name) => { body }  — register typed handler.
+   Body is parsed via parse_body so `=> stmt;` and `{ block }` both work. */
+static node_t *parse_watch_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p);                       /* consume 'watch' */
+    consume(p, TokDot,    "'.'");
+    consume(p, TokLParen, "'('");
+    type_info_t type = parse_type(p);
+    token_t name_tok = consume(p, TokIdent, "handler parameter name");
+    char *param_name = copy_token_text(name_tok);
+    consume(p, TokRParen, "')'");
+    node_t *body = parse_body(p);
+    node_t *n = make_node(NodeWatchStmt, line);
+    n->as.watch_stmt.type       = type;
+    n->as.watch_stmt.param_name = param_name;
+    n->as.watch_stmt.body       = body;
+    return n;
+}
+
+/* send.(value); — synchronous dispatch to handlers of value's static type. */
+static node_t *parse_send_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p);                       /* consume 'send' */
+    consume(p, TokDot,    "'.'");
+    consume(p, TokLParen, "'('");
+    node_t *value = parse_expr(p);
+    consume(p, TokRParen, "')'");
+    consume(p, TokSemicolon, "';'");
+    node_t *n = make_node(NodeSendStmt, line);
+    n->as.send_stmt.value = value;
+    return n;
+}
+
+/* quit.(code); — exit(code) guarded against reentry from @[[exit]] blocks. */
+static node_t *parse_quit_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p);                       /* consume 'quit' */
+    consume(p, TokDot,    "'.'");
+    consume(p, TokLParen, "'('");
+    node_t *code = parse_expr(p);
+    consume(p, TokRParen, "')'");
+    consume(p, TokSemicolon, "';'");
+    node_t *n = make_node(NodeQuitStmt, line);
+    n->as.quit_stmt.code = code;
+    return n;
+}
+
 /* ── variable declaration ── */
 
 static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
@@ -735,6 +782,9 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokSwitch))       return parse_switch_stmt(p);
     if (check(p, TokAsm))          return parse_asm_stmt(p);
     if (check(p, TokComptimeIf))   return parse_comptime_if(p);
+    if (check(p, TokWatch))        return parse_watch_stmt(p);
+    if (check(p, TokSend))         return parse_send_stmt(p);
+    if (check(p, TokQuit))         return parse_quit_stmt(p);
 
     /* unsafe { body } */
     if (check(p, TokUnsafe)) {

@@ -193,6 +193,9 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("or",        TokOr);
     KW("foreach",   TokForeach);
     KW("in",        TokIn);
+    KW("watch",     TokWatch);
+    KW("send",      TokSend);
+    KW("quit",      TokQuit);
     /* "frees" is NOT a keyword — parsed contextually as TokIdent after '@' */
 
     KW("i8", TokI8);

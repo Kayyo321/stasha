@@ -279,6 +279,11 @@ typedef enum {
 
     /* comptime format string: @'...' / heap @'...' */
     NodeComptimeFmt,
+
+    /* signals: type-routed synchronous dispatch */
+    NodeWatchStmt,   /* watch.(T name) => { body } */
+    NodeSendStmt,    /* send.(expr) */
+    NodeQuitStmt,    /* quit.(code) */
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -548,6 +553,15 @@ struct node {
         /* NodeComptimeFmt: @'...' / heap @'...' — raw fmt stored with
            unexpanded escapes; each {expr}/{expr:spec} span pre-parsed into args */
         struct { char *fmt; usize_t fmt_len; node_list_t args; boolean_t on_heap; } comptime_fmt;
+
+        /* NodeWatchStmt: watch.(T name) => { body } */
+        struct { type_info_t type; char *param_name; node_t *body; } watch_stmt;
+
+        /* NodeSendStmt: send.(value) */
+        struct { node_t *value; } send_stmt;
+
+        /* NodeQuitStmt: quit.(code) */
+        struct { node_t *code; } quit_stmt;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

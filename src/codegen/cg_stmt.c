@@ -1891,12 +1891,15 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);
             else {
-                diag_begin_error("'break' used outside of a loop or switch");
+                diag_begin_error("'break' used outside of a loop, switch, or watch handler");
                 diag_span(DIAG_NODE(node), True, "break here");
-                diag_note("'break' can only appear inside for, while, do-while, inf, or switch");
+                diag_note("'break' can only appear inside for, while, do-while, inf, switch, or watch handlers");
                 diag_finish();
             }
             break;
+        case NodeWatchStmt:    gen_watch_stmt(cg, node); break;
+        case NodeSendStmt:     gen_send_stmt(cg, node); break;
+        case NodeQuitStmt:     gen_quit_stmt(cg, node); break;
         case NodeContinueStmt:
             if (cg->continue_target)
                 LLVMBuildBr(cg->builder, cg->continue_target);

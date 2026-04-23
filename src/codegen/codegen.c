@@ -181,6 +181,17 @@ typedef struct {
     type_info_t actual;
 } type_alias_t;
 
+/* ── signal dispatch (watch/send/quit) ──
+ * Per-type storage for registered handlers.  Four globals per type,
+ * all linkonce_odr so cross-TU storage merges. */
+typedef struct {
+    char *mt;                /* signal type key (e.g. "i32" or "ex_signals__sig_t") */
+    LLVMValueRef data_gv;    /* ptr: heap array of fn pointers     */
+    LLVMValueRef len_gv;     /* i64: current number of registered  */
+    LLVMValueRef cap_gv;     /* i64: current allocated capacity    */
+    LLVMValueRef lock_gv;    /* i32: atomic spinlock state         */
+} signal_storage_t;
+
 /* ── code generator state ── */
 
 typedef struct {
@@ -363,6 +374,21 @@ typedef struct {
 
     /* Module-level freestanding flag (blocks auto-stdlib/runtime linking hints). */
     boolean_t freestanding;
+
+    /* ── signal dispatch (watch/send/quit) ── */
+    signal_storage_t *signal_storages;
+    usize_t           signal_storage_count;
+    usize_t           signal_storage_cap;
+    heap_t            signal_storage_heap;
+    usize_t           signal_watcher_counter; /* unique id for synthesized handler fns */
+    LLVMValueRef      watch_register_fn;      LLVMTypeRef watch_register_type;
+    LLVMValueRef      watch_dereg_fn;         LLVMTypeRef watch_dereg_type;
+    LLVMValueRef      watch_dispatch_fn;      LLVMTypeRef watch_dispatch_type;
+    LLVMValueRef      quit_fn;                LLVMTypeRef quit_type;
+    LLVMValueRef      quitting_gv;            /* i32 atomic re-entry flag */
+    LLVMValueRef      exit_fn;                LLVMTypeRef exit_type;
+    LLVMValueRef      underscore_exit_fn;     LLVMTypeRef underscore_exit_type;
+    LLVMValueRef      fflush_fn;              LLVMTypeRef fflush_type;
 } cg_t;
 
 /* ── helpers ── */
@@ -404,6 +430,12 @@ static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti);
 static LLVMMetadataRef di_make_location(cg_t *cg, usize_t line);
 static void             di_set_location(cg_t *cg, usize_t line);
 
+/* Signal-dispatch entry points (defined in cg_signals.c, which is included
+   later).  Forward-declared so cg_stmt.c can dispatch NodeWatch/Send/Quit. */
+static void gen_watch_stmt(cg_t *cg, node_t *node);
+static void gen_send_stmt(cg_t *cg, node_t *node);
+static void gen_quit_stmt(cg_t *cg, node_t *node);
+
 #include "name_mangle.c"
 #include "cg_symtab.c"
 #include "cg_safety.c"
@@ -417,6 +449,7 @@ static void             di_set_location(cg_t *cg, usize_t line);
 #include "cg_generics.c"
 #include "cg_debug.c"
 #include "cg_fileheaders.c"
+#include "cg_signals.c"
 
 /* ── top-level codegen ── */
 
@@ -1857,6 +1890,7 @@ cg_cleanup:
     if (cg.dtor_stack_heap.pointer) deallocate(cg.dtor_stack_heap);
     if (cg.di_types_heap.pointer) deallocate(cg.di_types_heap);
     if (cg.thr_wrap_heap.pointer) deallocate(cg.thr_wrap_heap);
+    if (cg.signal_storage_heap.pointer) deallocate(cg.signal_storage_heap);
 
     if (emit_result != Ok) return Err;
     return get_error_count() > errors_before ? Err : Ok;

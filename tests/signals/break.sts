@@ -1,0 +1,18 @@
+mod break_sig;
+
+type sig_t: struct {
+    i32 code;
+}
+
+fn main(void): i32 {
+    watch.(sig_t s) => {
+        print.('X:{}\n', s.code);
+        break;
+    }
+    watch.(sig_t s) => {
+        print.('Y:{}\n', s.code);
+    }
+    send.(sig_t{.code = 1});
+    send.(sig_t{.code = 2});
+    ret 0;
+}

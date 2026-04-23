@@ -197,6 +197,11 @@ typedef enum {
     /* foreach slice iteration */
     TokForeach,     /* foreach — iterate over a slice                        */
     TokIn,          /* in  — separates iter var from slice in foreach        */
+
+    /* signals: type-routed handlers + exit-safe termination */
+    TokWatch,       /* watch.(T name) => { body } — register typed handler  */
+    TokSend,        /* send.(value) — dispatch to handlers of value's type  */
+    TokQuit,        /* quit.(code)  — exit such that @[[exit]] blocks run   */
 } token_kind_t;
 
 typedef struct {

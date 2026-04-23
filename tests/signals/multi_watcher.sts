@@ -1,0 +1,16 @@
+mod multi_watcher;
+
+type sig_t: struct {
+    i32 code;
+}
+
+fn main(void): i32 {
+    watch.(sig_t s) => {
+        print.('A:{}\n', s.code);
+    }
+    watch.(sig_t s) => {
+        print.('B:{}\n', s.code);
+    }
+    send.(sig_t{.code = 7});
+    ret 0;
+}

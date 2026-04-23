@@ -1,0 +1,32 @@
+mod ex_signals;
+
+@[[init]] {
+    watch.(i32 exit_code) => {
+        quit.(exit_code);
+    }
+}
+
+type sig_t: struct {
+    i32 code;
+}
+
+fn setup_rec(void): void {
+    watch.(sig_t signal) => {
+        print.(@'Got a signal! code is {signal.code}!\n');
+
+        send.(0); // should go to line 4
+
+        break; // this specific watch can't be called again after break
+    }
+}
+
+fn send_signal(void): void {
+    send.(sig_t{.code = 404});
+}
+
+fn main(void): i32 {
+    setup_rec();
+    send_signal();
+
+    ret 0;
+}

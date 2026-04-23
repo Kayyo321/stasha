@@ -1,0 +1,11 @@
+mod quit_from_exit;
+
+@[[exit]] {
+    print.('exit_block_ran\n');
+    quit.(1); /* nested quit — must demote to _Exit, not recurse */
+}
+
+fn main(void): i32 {
+    quit.(0);
+    ret 0;
+}
