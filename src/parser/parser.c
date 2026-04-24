@@ -326,8 +326,25 @@ static type_info_t parse_type(parser_t *p) {
     }
 
     if (is_builtin_type_token(p->current.kind)) {
-        info.base = token_to_type(p->current.kind);
+        token_kind_t tk = p->current.kind;
+        info.base = token_to_type(tk);
         advance_parser(p);
+
+        /* future.[T] — typed future handle. ABI-identical to opaque `future`;
+           T is recorded in elem_type only for typed await/get lowerings. */
+        if (tk == TokFuture && check(p, TokDot)) {
+            parser_state_t snap = save_state(p);
+            advance_parser(p); /* consume '.' */
+            if (check(p, TokLBracket)) {
+                advance_parser(p); /* consume '[' */
+                type_info_t elem = parse_type(p);
+                consume(p, TokRBracket, "']'");
+                info.elem_type = alloc_type_array(1);
+                info.elem_type[0] = elem;
+            } else {
+                restore_state(p, snap);
+            }
+        }
     } else if (check(p, TokIdent)) {
         info.base = TypeUser;
         info.user_name = copy_token_text(p->current);

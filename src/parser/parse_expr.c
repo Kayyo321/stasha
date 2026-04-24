@@ -567,6 +567,110 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* async.(fn)(args) — typed dispatch to thread pool; callee must be `async fn`.
+       Structurally identical to thread.() but carries typed return info via
+       NodeAsyncCall (vs opaque NodeThreadCall). */
+    if (check(p, TokAsync)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        token_t name_tok = consume(p, TokIdent, "function name");
+        char *name = copy_token_text(name_tok);
+        consume(p, TokRParen, "')'");
+        consume(p, TokLParen, "'('");
+        node_list_t args;
+        node_list_init(&args);
+        if (!check(p, TokRParen)) {
+            do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+        }
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeAsyncCall, line);
+        n->as.async_call.callee = name;
+        n->as.async_call.args   = args;
+        return n;
+    }
+
+    /* await(f) / await.(fn)(args) / await.all(...) / await.any(...) */
+    if (check(p, TokAwait)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+
+        /* await(f) — extract value from future, auto-drop. */
+        if (check(p, TokLParen)) {
+            advance_parser(p); /* consume '(' */
+            node_t *handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeAwaitExpr, line);
+            n->as.await_expr.handle   = handle;
+            n->as.await_expr.get_type = NO_TYPE; /* inferred at codegen */
+            return n;
+        }
+
+        consume(p, TokDot, "'.' or '(' after 'await'");
+
+        /* await.(fn)(args) — one-shot: dispatch + block + drop, return typed value */
+        if (check(p, TokLParen)) {
+            advance_parser(p); /* consume '(' */
+            token_t name_tok = consume(p, TokIdent, "function name");
+            char *name = copy_token_text(name_tok);
+            consume(p, TokRParen, "')'");
+            consume(p, TokLParen, "'('");
+            node_list_t args;
+            node_list_init(&args);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+            node_t *ac = make_node(NodeAsyncCall, line);
+            ac->as.async_call.callee = name;
+            ac->as.async_call.args   = args;
+            node_t *n = make_node(NodeAwaitExpr, line);
+            n->as.await_expr.handle   = ac;
+            n->as.await_expr.get_type = NO_TYPE;
+            return n;
+        }
+
+        /* await.all(f1, ...) / await.any(f1, ...).
+           Note: `any` is a lexer keyword (TokAny), `all` is an ident — accept both. */
+        if (check(p, TokIdent) || check(p, TokAny)) {
+            token_t op_tok = p->current;
+            boolean_t is_any;
+            if (check(p, TokAny)) {
+                is_any = True;
+            } else if (op_tok.length == 3 && memcmp(op_tok.start, "all", 3) == 0) {
+                is_any = False;
+            } else {
+                diag_begin_error("unknown await combinator '%.*s'",
+                                 (int)op_tok.length, op_tok.start);
+                diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
+                          "expected 'all' or 'any'");
+                diag_finish();
+                p->had_error = True;
+                return make_node(NodeNilExpr, line);
+            }
+            advance_parser(p); /* consume 'all' / 'any' */
+            consume(p, TokLParen, "'('");
+            node_list_t handles;
+            node_list_init(&handles);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&handles, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeAwaitCombinator, line);
+            n->as.await_combinator.is_any  = is_any;
+            n->as.await_combinator.handles = handles;
+            return n;
+        }
+
+        diag_begin_error("expected '(', '.(', '.all' or '.any' after 'await'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "unexpected token here");
+        diag_finish();
+        p->had_error = True;
+        return make_node(NodeNilExpr, line);
+    }
+
     /* any.(expr) — extract runtime type tag from an any.[...] value */
     if (check(p, TokAny)) {
         usize_t line = p->current.line;

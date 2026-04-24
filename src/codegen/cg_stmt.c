@@ -23,6 +23,25 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         LLVMValueRef init_val = gen_expr(cg, node->as.var_decl.init);
         LLVMTypeRef  inferred = LLVMTypeOf(init_val);
         type_info_t  ti       = llvm_type_to_ti(inferred);
+        /* Infer future.[T] when the RHS is a thread/async dispatch, so that
+           `await(f)` can later resolve T from the symbol's stype. */
+        node_t *init_n = node->as.var_decl.init;
+        if (init_n && (init_n->kind == NodeAsyncCall || init_n->kind == NodeThreadCall)) {
+            const char *callee = (init_n->kind == NodeAsyncCall)
+                ? init_n->as.async_call.callee : init_n->as.thread_call.callee;
+            node_t *fn = find_fn_decl(cg, callee);
+            ti.base       = TypeFuture;
+            ti.is_pointer = False;
+            ti.ptr_perm   = PtrNone;
+            ti.ptr_depth  = 0;
+            if (fn && fn->as.fn_decl.return_count > 0) {
+                type_info_t rt = fn->as.fn_decl.return_types[0];
+                if (!(rt.base == TypeVoid && !rt.is_pointer)) {
+                    ti.elem_type = alloc_type_array(1);
+                    ti.elem_type[0] = rt;
+                }
+            }
+        }
         LLVMValueRef alloca_val = alloc_in_entry(cg, inferred, node->as.var_decl.name);
         LLVMBuildStore(cg->builder, init_val, alloca_val);
         {
@@ -1114,37 +1133,54 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         && (targets->items[0]->as.var_decl.flags & VdeclLet);
 
     if (is_let && values->count == 1) {
-        /* Extract the callee name from the single RHS expression.
-           Supports plain calls, instance method calls, and self-method calls. */
         node_t *rhs = values->items[0];
-        const char *callee = Null;
-        if (rhs->kind == NodeCallExpr)
-            callee = rhs->as.call.callee;
-        else if (rhs->kind == NodeMethodCall)
-            callee = rhs->as.method_call.method;
-        else if (rhs->kind == NodeSelfMethodCall)
-            callee = rhs->as.self_method_call.method;
 
-        node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
+        /* await.all(f1, ..., fN) destructuring: each target takes the
+           corresponding future's element type (same T across all in v1). */
+        if (rhs->kind == NodeAwaitCombinator
+                && !rhs->as.await_combinator.is_any) {
+            node_list_t *hs = &rhs->as.await_combinator.handles;
+            for (usize_t i = 0; i < targets->count; i++) {
+                node_t *tgt = targets->items[i];
+                if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
+                    continue;
+                if (i < hs->count)
+                    tgt->as.var_decl.type = resolve_future_elem_type(cg, hs->items[i]);
+                else
+                    tgt->as.var_decl.type = NO_TYPE;
+            }
+        } else {
+            /* Extract the callee name from the single RHS expression.
+               Supports plain calls, instance method calls, and self-method calls. */
+            const char *callee = Null;
+            if (rhs->kind == NodeCallExpr)
+                callee = rhs->as.call.callee;
+            else if (rhs->kind == NodeMethodCall)
+                callee = rhs->as.method_call.method;
+            else if (rhs->kind == NodeSelfMethodCall)
+                callee = rhs->as.self_method_call.method;
 
-        if (!fn_decl || fn_decl->as.fn_decl.return_count < 1) {
-            diag_begin_error("'let' binding requires a multi-return function call");
-            diag_span(DIAG_NODE(node), True, "not a multi-return call");
-            diag_note("'let' binds the results of a function that returns multiple values");
-            diag_help("example: stack i32 [lo, hi] = min_max(a, b);");
-            diag_finish();
-            return;
-        }
+            node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
 
-        /* Assign inferred types to each non-blank target */
-        for (usize_t i = 0; i < targets->count; i++) {
-            node_t *tgt = targets->items[i];
-            if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
-                continue;
-            if (i < fn_decl->as.fn_decl.return_count)
-                tgt->as.var_decl.type = fn_decl->as.fn_decl.return_types[i];
-            else
-                tgt->as.var_decl.type = NO_TYPE;
+            if (!fn_decl || fn_decl->as.fn_decl.return_count < 1) {
+                diag_begin_error("'let' binding requires a multi-return function call");
+                diag_span(DIAG_NODE(node), True, "not a multi-return call");
+                diag_note("'let' binds the results of a function that returns multiple values");
+                diag_help("example: stack i32 [lo, hi] = min_max(a, b);");
+                diag_finish();
+                return;
+            }
+
+            /* Assign inferred types to each non-blank target */
+            for (usize_t i = 0; i < targets->count; i++) {
+                node_t *tgt = targets->items[i];
+                if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
+                    continue;
+                if (i < fn_decl->as.fn_decl.return_count)
+                    tgt->as.var_decl.type = fn_decl->as.fn_decl.return_types[i];
+                else
+                    tgt->as.var_decl.type = NO_TYPE;
+            }
         }
     }
 

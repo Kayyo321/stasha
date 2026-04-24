@@ -1937,6 +1937,21 @@ static node_t *parse_top_decl(parser_t *p) {
         advance_parser(p);
     }
 
+    /* async fn ... — marker enabling async.()/await.() shorthand + typed future */
+    boolean_t is_async = False;
+    if (check(p, TokAsync)) {
+        advance_parser(p);
+        is_async = True;
+        if (!check(p, TokFn)) {
+            diag_begin_error("'async' must be followed by 'fn'");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected 'fn' here");
+            diag_help("declare an async function: async fn name(...): T { ... }");
+            diag_finish();
+            p->had_error = True;
+        }
+    }
+
     /* type declaration */
     if (check(p, TokType)) { result = parse_type_decl(p, linkage); goto attach_headers; }
 
@@ -1944,6 +1959,7 @@ static node_t *parse_top_decl(parser_t *p) {
     if (check(p, TokFn)) {
         node_t *fn = parse_fn_decl(p, linkage);
         fn->as.fn_decl.attr_flags = attr_flags;
+        fn->as.fn_decl.is_async   = is_async;
         result = fn;
         goto attach_headers;
     }

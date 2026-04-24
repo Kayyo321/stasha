@@ -1,0 +1,34 @@
+mod ex_submods;
+
+// if this file was imported, they wouldn't have access to this
+// sub mod since it's marked internal
+int mod greeter {
+    ext fn greet(i8 *r name) {
+        print.('Nice to meet you, {}!', name);
+    }
+
+    ext type Builder: struct {
+        i8 *name;
+        i32 age;
+    }
+
+    ext fn Builder.new(i8 *_name, i32 _age): Builder {
+        ret Builder{.name = _name, .age = _age};
+    }
+
+    ext fn Builder.company(void): i8 * {
+        ret 'Lumber Sons';
+    }
+}
+
+fn main(void): i32 {
+    greeter.greet('Sully');
+    greeter:greet('Brian');
+
+    // while . can be used for both static and member fields/funcs
+    // : can ONLY be used on static's
+
+    print(@'{greeter:Builder:company();}\n');
+
+    ret 0;
+}

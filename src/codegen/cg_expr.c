@@ -1731,35 +1731,32 @@ static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
     return w;
 }
 
-static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
-    const char *callee = node->as.thread_call.callee;
-
-    /* look up the function in the symbol table */
+/* Shared lowering for thread.() and async.(): pack args on the heap, call
+   __thread_dispatch, return the __future_t*. */
+static LLVMValueRef gen_dispatch_to_pool(cg_t *cg, node_t *diag_node,
+        const char *callee, node_list_t *args) {
     symbol_t *sym = cg_lookup(cg, callee);
     if (!sym) {
         diag_begin_error("undefined function '%s'", callee);
-        diag_span(DIAG_NODE(node), True, "not defined in this module");
+        diag_span(DIAG_NODE(diag_node), True, "not defined in this module");
         diag_note("thread dispatch requires the function to be visible in this module");
         diag_finish();
         return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
-    /* find AST declaration for param / return type info */
     node_t *fn_decl = find_fn_decl(cg, callee);
     if (!fn_decl) {
         diag_begin_error("cannot find declaration of '%s' for thread dispatch", callee);
-        diag_span(DIAG_NODE(node), True, "dispatched here");
+        diag_span(DIAG_NODE(diag_node), True, "dispatched here");
         diag_note("function must be declared in the same compilation unit");
         diag_finish();
         return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
-    /* get / lazily create the wrapper function */
     thr_wrapper_t *w = get_or_create_thread_wrapper(cg, callee, sym, fn_decl);
 
-    /* ── pack arguments into a heap-allocated struct ── */
     LLVMValueRef args_ptr;
-    usize_t argc = node->as.thread_call.args.count;
+    usize_t argc = args ? args->count : 0;
 
     if (argc > 0 && w->args_struct_type) {
         LLVMValueRef sz = LLVMSizeOf(w->args_struct_type);
@@ -1768,7 +1765,7 @@ static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
         args_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
                                    cg->malloc_fn, malloc_args, 1, "thr_args");
         for (usize_t i = 0; i < argc; i++) {
-            LLVMValueRef val = gen_expr(cg, node->as.thread_call.args.items[i]);
+            LLVMValueRef val = gen_expr(cg, args->items[i]);
             LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, w->args_struct_type,
                                                     args_ptr, (unsigned)i, "af");
             LLVMBuildStore(cg->builder, val, gep);
@@ -1777,15 +1774,267 @@ static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
         args_ptr = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
-    /* ── call __thread_dispatch(wrapper_fn, args_ptr, result_size) ── */
     LLVMValueRef result_sz = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
                                            (unsigned long long)w->result_size, 0);
     LLVMValueRef dispatch_args[3] = { w->wrapper_fn, args_ptr, result_sz };
-    LLVMValueRef future = LLVMBuildCall2(cg->builder,
-                                          cg->thread_dispatch_type,
-                                          cg->thread_dispatch_fn,
-                                          dispatch_args, 3, "future");
-    return future;
+    return LLVMBuildCall2(cg->builder,
+                          cg->thread_dispatch_type,
+                          cg->thread_dispatch_fn,
+                          dispatch_args, 3, "future");
+}
+
+static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
+    return gen_dispatch_to_pool(cg, node,
+        node->as.thread_call.callee, &node->as.thread_call.args);
+}
+
+static LLVMValueRef gen_async_call(cg_t *cg, node_t *node) {
+    const char *callee = node->as.async_call.callee;
+    node_t *fn_decl = find_fn_decl(cg, callee);
+    if (fn_decl && !fn_decl->as.fn_decl.is_async) {
+        diag_begin_warning("'async.()' used on non-async function '%s'", callee);
+        diag_span(DIAG_NODE(node), True, "dispatched here");
+        diag_help("declare '%s' as 'async fn' or use 'thread.(%s)(…)' for opaque dispatch",
+                  callee, callee);
+        diag_finish();
+    }
+    return gen_dispatch_to_pool(cg, node, callee, &node->as.async_call.args);
+}
+
+/* Resolve the element type `T` of a `future.[T]` handle expression. Returns
+   NO_TYPE when the type cannot be determined statically (void future or
+   unresolved handle); caller falls back to the wait-and-drop lowering. */
+static type_info_t resolve_future_elem_type(cg_t *cg, node_t *handle) {
+    if (!handle) return NO_TYPE;
+    if (handle->kind == NodeAsyncCall || handle->kind == NodeThreadCall) {
+        const char *callee = (handle->kind == NodeAsyncCall)
+            ? handle->as.async_call.callee
+            : handle->as.thread_call.callee;
+        node_t *fn = find_fn_decl(cg, callee);
+        if (fn && fn->as.fn_decl.return_count > 0) {
+            type_info_t rt = fn->as.fn_decl.return_types[0];
+            if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
+            return resolve_alias(cg, rt);
+        }
+        return NO_TYPE;
+    }
+    if (handle->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, handle->as.ident.name);
+        if (sym && sym->stype.base == TypeFuture && sym->stype.elem_type)
+            return resolve_alias(cg, sym->stype.elem_type[0]);
+        return NO_TYPE;
+    }
+    return NO_TYPE;
+}
+
+/* await(f) / await.(fn)(args) — block on handle, load typed result, drop. */
+static LLVMValueRef gen_await(cg_t *cg, node_t *node) {
+    node_t *handle = node->as.await_expr.handle;
+    type_info_t et = node->as.await_expr.get_type;
+    if (et.base == TypeVoid && !et.is_pointer)
+        et = resolve_future_elem_type(cg, handle);
+
+    LLVMValueRef h = gen_expr(cg, handle);
+    LLVMValueRef call_args[1] = { h };
+
+    if (et.base == TypeVoid && !et.is_pointer) {
+        /* void future: wait + drop, no typed result */
+        LLVMBuildCall2(cg->builder, cg->future_wait_type,
+                       cg->future_wait_fn, call_args, 1, "");
+        LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                       cg->future_drop_fn, call_args, 1, "");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    /* typed: __future_get → raw ptr, load T, __future_drop (frees buffer) */
+    LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                       cg->future_get_fn, call_args, 1, "await_raw");
+    LLVMTypeRef lt = get_llvm_type(cg, et);
+    LLVMValueRef val = LLVMBuildLoad2(cg->builder, lt, raw, "await_val");
+    LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                   cg->future_drop_fn, call_args, 1, "");
+    return val;
+}
+
+/* await.all(f1, ..., fN) / await.any(f1, ..., fN).
+   v1: require all handles to resolve to the same element type T.
+   all: sequential get+load+drop into a homogeneous struct { T, T, ..., T }.
+   any: poll __future_ready, get+load+drop the winner, drop the rest, return T. */
+static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
+    node_list_t *hs = &node->as.await_combinator.handles;
+    boolean_t    is_any = node->as.await_combinator.is_any;
+    usize_t      n = hs->count;
+
+    if (n == 0) {
+        diag_begin_error("await.%s() requires at least one future",
+                         is_any ? "any" : "all");
+        diag_span(DIAG_NODE(node), True, "empty argument list");
+        diag_finish();
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    /* Resolve element types up front and verify homogeneity. */
+    type_info_t et0 = resolve_future_elem_type(cg, hs->items[0]);
+    boolean_t et0_void = (et0.base == TypeVoid && !et0.is_pointer);
+    for (usize_t i = 1; i < n; i++) {
+        type_info_t eti = resolve_future_elem_type(cg, hs->items[i]);
+        boolean_t eti_void = (eti.base == TypeVoid && !eti.is_pointer);
+        if (eti_void != et0_void
+                || eti.base != et0.base
+                || eti.is_pointer != et0.is_pointer) {
+            diag_begin_error("await.%s() futures must share one element type",
+                             is_any ? "any" : "all");
+            diag_span(DIAG_NODE(node), True, "handles differ in T");
+            diag_note("v1 requires all futures passed to await.all/await.any to be future.[T] for the same T");
+            diag_finish();
+            break;
+        }
+    }
+
+    LLVMTypeRef  ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef  i32_t = LLVMInt32TypeInContext(cg->ctx);
+
+    /* Evaluate each handle once into a local slot so we can get/drop without
+       re-evaluating the source expression (which may have side effects). */
+    heap_t slots_h = allocate(n, sizeof(LLVMValueRef));
+    LLVMValueRef *slots = slots_h.pointer;
+    for (usize_t i = 0; i < n; i++) {
+        slots[i] = alloc_in_entry(cg, ptr_t, "awaitc_h");
+        LLVMValueRef hv = gen_expr(cg, hs->items[i]);
+        LLVMBuildStore(cg->builder, hv, slots[i]);
+    }
+
+    LLVMTypeRef elem_lt = et0_void ? i32_t : get_llvm_type(cg, et0);
+
+    if (!is_any) {
+        /* await.all — sequential get+load+drop into aggregate { T, T, ..., T } */
+        if (et0_void) {
+            for (usize_t i = 0; i < n; i++) {
+                LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
+                LLVMValueRef ca[1] = { hv };
+                LLVMBuildCall2(cg->builder, cg->future_wait_type,
+                               cg->future_wait_fn, ca, 1, "");
+                LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                               cg->future_drop_fn, ca, 1, "");
+            }
+            deallocate(slots_h);
+            return LLVMConstInt(i32_t, 0, 0);
+        }
+
+        heap_t tys_h = allocate(n, sizeof(LLVMTypeRef));
+        LLVMTypeRef *tys = tys_h.pointer;
+        for (usize_t i = 0; i < n; i++) tys[i] = elem_lt;
+        LLVMTypeRef agg_t = LLVMStructTypeInContext(cg->ctx, tys, (unsigned)n, 0);
+
+        LLVMValueRef agg = LLVMGetUndef(agg_t);
+        for (usize_t i = 0; i < n; i++) {
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
+            LLVMValueRef ca[1] = { hv };
+            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                               cg->future_get_fn, ca, 1, "awall_raw");
+            LLVMValueRef v = LLVMBuildLoad2(cg->builder, elem_lt, raw, "awall_v");
+            agg = LLVMBuildInsertValue(cg->builder, agg, v, (unsigned)i, "awall");
+            LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                           cg->future_drop_fn, ca, 1, "");
+        }
+        deallocate(tys_h);
+        deallocate(slots_h);
+        return agg;
+    }
+
+    /* await.any — poll ready on each handle, round-robin with brief sleep.
+       Once a winner is chosen: get+load+drop winner; drop the rest. */
+    LLVMValueRef winner_idx = alloc_in_entry(cg, i32_t, "awany_i");
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, (unsigned long long)-1, 1), winner_idx);
+
+    LLVMBasicBlockRef poll_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.poll");
+    LLVMBasicBlockRef found_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.found");
+    LLVMBuildBr(cg->builder, poll_bb);
+
+    LLVMPositionBuilderAtEnd(cg->builder, poll_bb);
+    /* Chain of ready checks: for i in 0..N if ready(slots[i]) → store i, goto found. */
+    LLVMBasicBlockRef next_check = Null;
+    for (usize_t i = 0; i < n; i++) {
+        LLVMBasicBlockRef hit = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.hit");
+        next_check = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.nxt");
+        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
+        LLVMValueRef ca[1] = { hv };
+        LLVMValueRef rdy = LLVMBuildCall2(cg->builder, cg->future_ready_type,
+                                           cg->future_ready_fn, ca, 1, "rdy");
+        LLVMValueRef zero = LLVMConstInt(i32_t, 0, 0);
+        LLVMValueRef is_rdy = LLVMBuildICmp(cg->builder, LLVMIntNE, rdy, zero, "is_rdy");
+        LLVMBuildCondBr(cg->builder, is_rdy, hit, next_check);
+
+        LLVMPositionBuilderAtEnd(cg->builder, hit);
+        LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, i, 0), winner_idx);
+        LLVMBuildBr(cg->builder, found_bb);
+
+        LLVMPositionBuilderAtEnd(cg->builder, next_check);
+    }
+    /* None ready: briefly back off by yielding on future.wait of slot 0's handle.
+       Simpler than timed sleeps — blocks on one until it completes, then retry. */
+    {
+        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[0], "ah");
+        LLVMValueRef ca[1] = { hv };
+        LLVMBuildCall2(cg->builder, cg->future_wait_type,
+                       cg->future_wait_fn, ca, 1, "");
+        LLVMBuildBr(cg->builder, poll_bb);
+    }
+
+    LLVMPositionBuilderAtEnd(cg->builder, found_bb);
+    LLVMValueRef win_i = LLVMBuildLoad2(cg->builder, i32_t, winner_idx, "wi");
+
+    /* Drop losers: for i in 0..N if i != win_i → drop(slots[i]). Winner:
+       get+load+drop, stash value in a slot reused as return. */
+    LLVMValueRef result_slot = et0_void ? Null : alloc_in_entry(cg, elem_lt, "awany_v");
+
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.done");
+    for (usize_t i = 0; i < n; i++) {
+        LLVMBasicBlockRef is_win = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.win");
+        LLVMBasicBlockRef is_lose = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.lose");
+        LLVMBasicBlockRef after_i = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.aft");
+
+        LLVMValueRef ii = LLVMConstInt(i32_t, i, 0);
+        LLVMValueRef eq = LLVMBuildICmp(cg->builder, LLVMIntEQ, win_i, ii, "is_win");
+        LLVMBuildCondBr(cg->builder, eq, is_win, is_lose);
+
+        LLVMPositionBuilderAtEnd(cg->builder, is_win);
+        {
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
+            LLVMValueRef ca[1] = { hv };
+            if (et0_void) {
+                LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                               cg->future_drop_fn, ca, 1, "");
+            } else {
+                LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                                   cg->future_get_fn, ca, 1, "awany_raw");
+                LLVMValueRef v = LLVMBuildLoad2(cg->builder, elem_lt, raw, "awany_vload");
+                LLVMBuildStore(cg->builder, v, result_slot);
+                LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                               cg->future_drop_fn, ca, 1, "");
+            }
+            LLVMBuildBr(cg->builder, after_i);
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, is_lose);
+        {
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
+            LLVMValueRef ca[1] = { hv };
+            LLVMBuildCall2(cg->builder, cg->future_drop_type,
+                           cg->future_drop_fn, ca, 1, "");
+            LLVMBuildBr(cg->builder, after_i);
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, after_i);
+    }
+    LLVMBuildBr(cg->builder, done_bb);
+
+    LLVMPositionBuilderAtEnd(cg->builder, done_bb);
+    LLVMValueRef result = et0_void
+        ? LLVMConstInt(i32_t, 0, 0)
+        : LLVMBuildLoad2(cg->builder, elem_lt, result_slot, "awany_ret");
+    deallocate(slots_h);
+    return result;
 }
 
 static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
@@ -4422,6 +4671,9 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeCallExpr:         return gen_call(cg, node);
         case NodeMethodCall:       return gen_method_call(cg, node);
         case NodeThreadCall:       return gen_thread_call(cg, node);
+        case NodeAsyncCall:        return gen_async_call(cg, node);
+        case NodeAwaitExpr:        return gen_await(cg, node);
+        case NodeAwaitCombinator:  return gen_await_combinator(cg, node);
         case NodeFutureOp:         return gen_future_op(cg, node);
         case NodeCompoundAssign:   return gen_compound_assign(cg, node);
         case NodeAssignExpr:       return gen_assign(cg, node);

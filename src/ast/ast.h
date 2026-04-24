@@ -284,6 +284,11 @@ typedef enum {
     NodeWatchStmt,   /* watch.(T name) => { body } */
     NodeSendStmt,    /* send.(expr) */
     NodeQuitStmt,    /* quit.(code) */
+
+    /* async/await — ergonomic surface over thread pool + future */
+    NodeAsyncCall,       /* async.(fn)(args) — dispatch, returns future.[T] */
+    NodeAwaitExpr,       /* await(f) / await.(fn)(args) — block, drop, return value */
+    NodeAwaitCombinator, /* await.all(...) / await.any(...) */
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -345,6 +350,7 @@ struct node {
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
             char *iface_qualifier;      /* non-null for "fn flyable_i.move()" inside struct body */
+            boolean_t is_async;         /* `async fn ...` marker — enables async.()/await.() shorthand */
         } fn_decl;
 
         struct {
@@ -562,6 +568,19 @@ struct node {
 
         /* NodeQuitStmt: quit.(code) */
         struct { node_t *code; } quit_stmt;
+
+        /* NodeAsyncCall: async.(fn)(args) — typed variant of thread.() */
+        struct { char *callee; node_list_t args; } async_call;
+
+        /* NodeAwaitExpr: await(f) / await.(fn)(args) — handle is either
+           a plain expression (future handle) or a NodeAsyncCall produced by
+           await.(fn)(args) desugaring. Codegen blocks, loads typed value,
+           then drops the future. `get_type.base == TypeVoid` means "infer
+           from handle" at codegen (the usual case). */
+        struct { node_t *handle; type_info_t get_type; } await_expr;
+
+        /* NodeAwaitCombinator: await.all(...) / await.any(...) */
+        struct { boolean_t is_any; node_list_t handles; } await_combinator;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

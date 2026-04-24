@@ -202,6 +202,10 @@ typedef enum {
     TokWatch,       /* watch.(T name) => { body } — register typed handler  */
     TokSend,        /* send.(value) — dispatch to handlers of value's type  */
     TokQuit,        /* quit.(code)  — exit such that @[[exit]] blocks run   */
+
+    /* async/await — thin surface layer over thread pool + future              */
+    TokAsync,       /* async fn ... / async.(fn)(args)                        */
+    TokAwait,       /* await(f) / await.(fn)(args) / await.all(..) / await.any(..) */
 } token_kind_t;
 
 typedef struct {
