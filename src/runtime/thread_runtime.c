@@ -49,6 +49,11 @@ static pthread_t __workers[MAX_WORKERS];
 static int       __nworkers = 0;
 static pthread_mutex_t __init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Global completion notifier — workers broadcast after every job so that
+   __future_wait_any can block without polling. */
+static pthread_mutex_t __any_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  __any_cv    = PTHREAD_COND_INITIALIZER;
+
 /* ── worker thread ── */
 static void *worker_thread_fn(void *arg) {
     (void)arg;
@@ -77,6 +82,11 @@ static void *worker_thread_fn(void *arg) {
         atomic_store_explicit(&job.future->done, 1, memory_order_release);
         pthread_cond_broadcast(&job.future->cond);
         pthread_mutex_unlock(&job.future->mutex);
+
+        /* wake any thread blocked in __future_wait_any */
+        pthread_mutex_lock(&__any_mutex);
+        pthread_cond_broadcast(&__any_cv);
+        pthread_mutex_unlock(&__any_mutex);
     }
     return NULL;
 }
@@ -184,6 +194,32 @@ void __future_wait(__future_t *f) {
 
 int __future_ready(__future_t *f) {
     return atomic_load_explicit(&f->done, memory_order_acquire);
+}
+
+int __future_wait_any(__future_t **fs, int n) {
+    if (n <= 0 || !fs) return -1;
+    for (;;) {
+        /* fast scan — any already done? */
+        for (int i = 0; i < n; i++) {
+            if (fs[i] && atomic_load_explicit(&fs[i]->done, memory_order_acquire))
+                return i;
+        }
+        /* block until some future signals completion */
+        pthread_mutex_lock(&__any_mutex);
+        /* re-check under lock to avoid missed wakeup */
+        int idx = -1;
+        for (int i = 0; i < n; i++) {
+            if (fs[i] && atomic_load_explicit(&fs[i]->done, memory_order_acquire)) {
+                idx = i; break;
+            }
+        }
+        if (idx >= 0) {
+            pthread_mutex_unlock(&__any_mutex);
+            return idx;
+        }
+        pthread_cond_wait(&__any_cv, &__any_mutex);
+        pthread_mutex_unlock(&__any_mutex);
+    }
 }
 
 void __future_drop(__future_t *f) {

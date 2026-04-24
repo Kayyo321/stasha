@@ -345,6 +345,202 @@ static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
     return 0;
 }
 
+/* ── Unconsumed-future check ─────────────────────────────────────────────
+ * Warn when a `future.[T]` local goes out of scope without ever being
+ * passed to `await(...)`, `await.(fn)(...)`, `await.all/any(...)`,
+ * `future.wait/ready/get/drop(...)`, or referenced inside a `defer` block.
+ *
+ * This is a syntactic heuristic — no dataflow. A false negative is
+ * preferable to a false positive here. In practice the check catches
+ * the common "declared but forgot to consume" case, which maps directly
+ * to a runtime leak of the `__future_t`, its result buffer, and the
+ * pthread condvar/mutex pair inside it. */
+
+typedef struct {
+    const char *names[128];
+    usize_t     lines[128];
+    usize_t     count;
+} fut_name_set_t;
+
+static void fut_set_add(fut_name_set_t *s, const char *name, usize_t line) {
+    if (!name || s->count >= 128) return;
+    for (usize_t i = 0; i < s->count; i++)
+        if (strcmp(s->names[i], name) == 0) return;
+    s->names[s->count] = name;
+    s->lines[s->count] = line;
+    s->count++;
+}
+
+static boolean_t fut_set_has(fut_name_set_t *s, const char *name) {
+    if (!name) return False;
+    for (usize_t i = 0; i < s->count; i++)
+        if (strcmp(s->names[i], name) == 0) return True;
+    return False;
+}
+
+static void collect_consumed_ident(fut_name_set_t *used, node_t *handle) {
+    if (!handle) return;
+    if (handle->kind == NodeIdentExpr)
+        fut_set_add(used, handle->as.ident.name, handle->line);
+}
+
+static void walk_unconsumed_futures(node_t *n, fut_name_set_t *decls,
+                                     fut_name_set_t *used);
+
+static void walk_list(node_list_t *list, fut_name_set_t *decls, fut_name_set_t *used) {
+    if (!list) return;
+    for (usize_t i = 0; i < list->count; i++)
+        walk_unconsumed_futures(list->items[i], decls, used);
+}
+
+static void walk_unconsumed_futures(node_t *n, fut_name_set_t *decls,
+                                     fut_name_set_t *used) {
+    if (!n) return;
+    switch (n->kind) {
+        case NodeVarDecl:
+            if (n->as.var_decl.type.base == TypeFuture
+                    && !n->as.var_decl.type.is_pointer
+                    && n->as.var_decl.name)
+                fut_set_add(decls, n->as.var_decl.name, n->line);
+            walk_unconsumed_futures(n->as.var_decl.init, decls, used);
+            break;
+        case NodeAwaitExpr:
+            collect_consumed_ident(used, n->as.await_expr.handle);
+            walk_unconsumed_futures(n->as.await_expr.handle, decls, used);
+            break;
+        case NodeFutureOp:
+            collect_consumed_ident(used, n->as.future_op.handle);
+            walk_unconsumed_futures(n->as.future_op.handle, decls, used);
+            break;
+        case NodeAwaitCombinator:
+            for (usize_t i = 0; i < n->as.await_combinator.handles.count; i++) {
+                node_t *h = n->as.await_combinator.handles.items[i];
+                collect_consumed_ident(used, h);
+                walk_unconsumed_futures(h, decls, used);
+            }
+            break;
+        case NodeBlock:        walk_list(&n->as.block.stmts,     decls, used); break;
+        case NodeExprStmt:     walk_unconsumed_futures(n->as.expr_stmt.expr, decls, used); break;
+        case NodeIfStmt:
+            walk_unconsumed_futures(n->as.if_stmt.cond, decls, used);
+            walk_unconsumed_futures(n->as.if_stmt.then_block, decls, used);
+            walk_unconsumed_futures(n->as.if_stmt.else_block, decls, used);
+            break;
+        case NodeForStmt:
+            walk_unconsumed_futures(n->as.for_stmt.init,   decls, used);
+            walk_unconsumed_futures(n->as.for_stmt.cond,   decls, used);
+            walk_unconsumed_futures(n->as.for_stmt.update, decls, used);
+            walk_unconsumed_futures(n->as.for_stmt.body,   decls, used);
+            break;
+        case NodeWhileStmt:
+            walk_unconsumed_futures(n->as.while_stmt.cond, decls, used);
+            walk_unconsumed_futures(n->as.while_stmt.body, decls, used);
+            break;
+        case NodeDoWhileStmt:
+            walk_unconsumed_futures(n->as.do_while_stmt.body, decls, used);
+            walk_unconsumed_futures(n->as.do_while_stmt.cond, decls, used);
+            break;
+        case NodeForeachStmt:
+            walk_unconsumed_futures(n->as.foreach_stmt.slice, decls, used);
+            walk_unconsumed_futures(n->as.foreach_stmt.body,  decls, used);
+            break;
+        case NodeInfLoop:      walk_unconsumed_futures(n->as.inf_loop.body, decls, used); break;
+        case NodeDeferStmt:    walk_unconsumed_futures(n->as.defer_stmt.body, decls, used); break;
+        case NodeRetStmt:      walk_list(&n->as.ret_stmt.values,  decls, used); break;
+        case NodeMatchStmt:
+            walk_unconsumed_futures(n->as.match_stmt.expr, decls, used);
+            for (usize_t i = 0; i < n->as.match_stmt.arms.count; i++)
+                walk_unconsumed_futures(n->as.match_stmt.arms.items[i]->as.match_arm.body,
+                                         decls, used);
+            break;
+        case NodeSwitchStmt:
+            walk_unconsumed_futures(n->as.switch_stmt.expr, decls, used);
+            for (usize_t i = 0; i < n->as.switch_stmt.cases.count; i++)
+                walk_unconsumed_futures(n->as.switch_stmt.cases.items[i]->as.switch_case.body,
+                                         decls, used);
+            break;
+        case NodeWithStmt:
+            walk_unconsumed_futures(n->as.with_stmt.decl, decls, used);
+            walk_unconsumed_futures(n->as.with_stmt.cond, decls, used);
+            walk_unconsumed_futures(n->as.with_stmt.body, decls, used);
+            walk_unconsumed_futures(n->as.with_stmt.else_block, decls, used);
+            break;
+        case NodeUnsafeBlock:  walk_unconsumed_futures(n->as.unsafe_block.body, decls, used); break;
+        case NodeZoneDecl:     walk_unconsumed_futures(n->as.zone_decl.body, decls, used); break;
+        case NodeAsyncCall:    walk_list(&n->as.async_call.args,  decls, used); break;
+        case NodeThreadCall:   walk_list(&n->as.thread_call.args, decls, used); break;
+        case NodeCallExpr:
+            /* futures passed as ordinary call arguments are treated as consumed
+               — the callee takes ownership of the handle. */
+            for (usize_t i = 0; i < n->as.call.args.count; i++) {
+                collect_consumed_ident(used, n->as.call.args.items[i]);
+                walk_unconsumed_futures(n->as.call.args.items[i], decls, used);
+            }
+            break;
+        case NodeMethodCall:
+            walk_unconsumed_futures(n->as.method_call.object, decls, used);
+            for (usize_t i = 0; i < n->as.method_call.args.count; i++) {
+                collect_consumed_ident(used, n->as.method_call.args.items[i]);
+                walk_unconsumed_futures(n->as.method_call.args.items[i], decls, used);
+            }
+            break;
+        case NodeAssignExpr:
+            /* `f = other_future` rebinds the slot — treat the old value as
+               consumed (caller must have handled it) and the new RHS ident
+               as consumed too. */
+            collect_consumed_ident(used, n->as.assign.target);
+            collect_consumed_ident(used, n->as.assign.value);
+            walk_unconsumed_futures(n->as.assign.target, decls, used);
+            walk_unconsumed_futures(n->as.assign.value, decls, used);
+            break;
+        case NodeMultiAssign:
+            walk_list(&n->as.multi_assign.targets, decls, used);
+            walk_list(&n->as.multi_assign.values,  decls, used);
+            break;
+        case NodeAddrOf:
+            /* &f — escaping the handle's address counts as consumption. */
+            collect_consumed_ident(used, n->as.addr_of.operand);
+            walk_unconsumed_futures(n->as.addr_of.operand, decls, used);
+            break;
+        case NodeBinaryExpr:
+            walk_unconsumed_futures(n->as.binary.left,  decls, used);
+            walk_unconsumed_futures(n->as.binary.right, decls, used);
+            break;
+        case NodeUnaryPrefixExpr:
+        case NodeUnaryPostfixExpr:
+            walk_unconsumed_futures(n->as.unary.operand, decls, used);
+            break;
+        default: break;
+    }
+}
+
+static void check_unconsumed_futures(cg_t *cg, node_t *fn_decl) {
+    (void)cg;
+    if (!fn_decl || fn_decl->kind != NodeFnDecl) return;
+    node_t *body = fn_decl->as.fn_decl.body;
+    if (!body) return;
+
+    fut_name_set_t decls = {0};
+    fut_name_set_t used  = {0};
+    walk_unconsumed_futures(body, &decls, &used);
+
+    for (usize_t i = 0; i < decls.count; i++) {
+        if (fut_set_has(&used, decls.names[i])) continue;
+        /* a local named '_' (discard) is intentional. */
+        if (decls.names[i][0] == '_') continue;
+        diag_begin_warning("future '%s' is never consumed — this leaks the handle, "
+                           "result buffer, and condvar", decls.names[i]);
+        diag_span(SRC_LOC(decls.lines[i], 0, 0), True,
+                  "declared here");
+        diag_note("futures own runtime resources; consume with "
+                  "await(f), future.drop(f), await.all(...), or await.any(...)");
+        diag_help("if the result is intentionally discarded, add "
+                  "'defer future.drop(%s);' right after the declaration",
+                  decls.names[i]);
+        diag_finish();
+    }
+}
+
 /* Check: pointer arithmetic permission and known array bounds */
 static void check_ptr_arith_bounds(cg_t *cg, node_t *node) {
     if (node->as.binary.op != TokPlus && node->as.binary.op != TokMinus) return;

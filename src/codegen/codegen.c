@@ -265,6 +265,8 @@ typedef struct {
     LLVMTypeRef  future_ready_type;
     LLVMValueRef future_drop_fn;
     LLVMTypeRef  future_drop_type;
+    LLVMValueRef future_wait_any_fn;
+    LLVMTypeRef  future_wait_any_type;
 
     /* ── thread wrapper cache ── */
     thr_wrapper_t *thr_wrappers;
@@ -641,6 +643,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.future_drop_type = LLVMFunctionType(void_t, fdr_params, 1, 0);
         cg.future_drop_fn   = LLVMAddFunction(cg.module, "__future_drop", cg.future_drop_type);
         symtab_add(&cg.globals, "__future_drop", cg.future_drop_fn, Null, rt_dummy2, False);
+
+        /* __future_wait_any(future_ptr *, i32) -> i32 */
+        LLVMTypeRef fwa_params[2] = { ptr_t, i32_t };
+        cg.future_wait_any_type = LLVMFunctionType(i32_t, fwa_params, 2, 0);
+        cg.future_wait_any_fn   = LLVMAddFunction(cg.module, "__future_wait_any", cg.future_wait_any_type);
+        symtab_add(&cg.globals, "__future_wait_any", cg.future_wait_any_fn, Null, rt_dummy2, False);
     }
 
     /* ── zone runtime function declarations ──
@@ -1508,6 +1516,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         gen_block(&cg, decl->as.fn_decl.body);
 
+        /* Leak check: warn on any future.[T] local never passed to
+           await / future.* / a combinator / defer. */
+        check_unconsumed_futures(&cg, decl);
+
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
         if (!LLVMGetBasicBlockTerminator(cur_bb)) {
             type_info_t rti = decl->as.fn_decl.return_types[0];
@@ -1533,6 +1545,26 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         /* Restore scope to compile unit after leaving the function. */
         if (cg.debug_mode)
             cg.di_scope = cg.di_compile_unit;
+    }
+
+    /* Eagerly materialize the thread-pool wrapper for every `async fn`.
+       The wrapper is what worker threads actually call (it unpacks args and
+       invokes the real fn). Forcing creation here — instead of only at first
+       `async.()` call-site — lets separate-compilation callers of this
+       module find `__thr_wrap_<fn>` by name in the object file. */
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind != NodeFnDecl) continue;
+        if (!decl->as.fn_decl.is_async) continue;
+        if (decl->from_lib) continue;
+        if (decl->as.fn_decl.body == Null) continue;
+        if (decl->as.fn_decl.is_method) continue;       /* async methods not supported in v1 */
+        if (decl->as.fn_decl.type_param_count > 0) continue;
+        const char *name = decl->as.fn_decl.name;
+        if (!name) continue;
+        symbol_t *sym = cg_lookup(&cg, name);
+        if (!sym) continue;
+        (void)get_or_create_thread_wrapper(&cg, name, sym, decl);
     }
 
     /* handle top-level comptime_assert (now that data layout is available) */
@@ -1682,6 +1714,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
 
             gen_block(&cg, method->as.fn_decl.body);
+            check_unconsumed_futures(&cg, method);
 
             LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
             if (!LLVMGetBasicBlockTerminator(cur_bb)) {

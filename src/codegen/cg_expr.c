@@ -1942,47 +1942,22 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
         return agg;
     }
 
-    /* await.any — poll ready on each handle, round-robin with brief sleep.
-       Once a winner is chosen: get+load+drop winner; drop the rest. */
-    LLVMValueRef winner_idx = alloc_in_entry(cg, i32_t, "awany_i");
-    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, (unsigned long long)-1, 1), winner_idx);
-
-    LLVMBasicBlockRef poll_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.poll");
-    LLVMBasicBlockRef found_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.found");
-    LLVMBuildBr(cg->builder, poll_bb);
-
-    LLVMPositionBuilderAtEnd(cg->builder, poll_bb);
-    /* Chain of ready checks: for i in 0..N if ready(slots[i]) → store i, goto found. */
-    LLVMBasicBlockRef next_check = Null;
+    /* await.any — block on the runtime wait_any primitive. Workers broadcast
+       a global cv after every completion, so this has no spin overhead. */
+    LLVMTypeRef arr_ty = LLVMArrayType2(ptr_t, (unsigned long long)n);
+    LLVMValueRef arr   = alloc_in_entry(cg, arr_ty, "awany_fs");
     for (usize_t i = 0; i < n; i++) {
-        LLVMBasicBlockRef hit = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.hit");
-        next_check = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.nxt");
         LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-        LLVMValueRef ca[1] = { hv };
-        LLVMValueRef rdy = LLVMBuildCall2(cg->builder, cg->future_ready_type,
-                                           cg->future_ready_fn, ca, 1, "rdy");
-        LLVMValueRef zero = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef is_rdy = LLVMBuildICmp(cg->builder, LLVMIntNE, rdy, zero, "is_rdy");
-        LLVMBuildCondBr(cg->builder, is_rdy, hit, next_check);
-
-        LLVMPositionBuilderAtEnd(cg->builder, hit);
-        LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, i, 0), winner_idx);
-        LLVMBuildBr(cg->builder, found_bb);
-
-        LLVMPositionBuilderAtEnd(cg->builder, next_check);
+        LLVMValueRef idx[2] = {
+            LLVMConstInt(i32_t, 0, 0),
+            LLVMConstInt(i32_t, i, 0),
+        };
+        LLVMValueRef ep = LLVMBuildInBoundsGEP2(cg->builder, arr_ty, arr, idx, 2, "ep");
+        LLVMBuildStore(cg->builder, hv, ep);
     }
-    /* None ready: briefly back off by yielding on future.wait of slot 0's handle.
-       Simpler than timed sleeps — blocks on one until it completes, then retry. */
-    {
-        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[0], "ah");
-        LLVMValueRef ca[1] = { hv };
-        LLVMBuildCall2(cg->builder, cg->future_wait_type,
-                       cg->future_wait_fn, ca, 1, "");
-        LLVMBuildBr(cg->builder, poll_bb);
-    }
-
-    LLVMPositionBuilderAtEnd(cg->builder, found_bb);
-    LLVMValueRef win_i = LLVMBuildLoad2(cg->builder, i32_t, winner_idx, "wi");
+    LLVMValueRef wa_args[2] = { arr, LLVMConstInt(i32_t, n, 0) };
+    LLVMValueRef win_i = LLVMBuildCall2(cg->builder, cg->future_wait_any_type,
+                                         cg->future_wait_any_fn, wa_args, 2, "awany_win");
 
     /* Drop losers: for i in 0..N if i != win_i → drop(slots[i]). Winner:
        get+load+drop, stash value in a slot reused as return. */
