@@ -4632,6 +4632,68 @@ static LLVMValueRef gen_any_type_expr(cg_t *cg, node_t *node) {
     return LLVMBuildExtractValue(cg->builder, val, 0, "any_tag");
 }
 
+static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
+    const char *mod_alias = node->as.colon_call.module_name;
+    const char *type_name = node->as.colon_call.type_name;   /* NULL for 2-segment form */
+    const char *meth_name = node->as.colon_call.method_name;
+    usize_t     argc      = node->as.colon_call.args.count;
+
+    lib_entry_t *lib_ent = find_lib_entry(cg, mod_alias);
+    if (!lib_ent || !lib_ent->mod_prefix || !lib_ent->mod_prefix[0]) {
+        log_err("'%s' is not a known module alias", mod_alias);
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    char mangled_sym[512];
+    if (type_name)
+        snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s__%s",
+                 lib_ent->mod_prefix, type_name, meth_name);
+    else
+        snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s",
+                 lib_ent->mod_prefix, meth_name);
+
+    symbol_t *fn_sym = cg_lookup(cg, mangled_sym);
+    if (!fn_sym) {
+        log_err("undefined static '%s' (looked up as '%s')", meth_name, mangled_sym);
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+    unsigned n_params   = LLVMCountParamTypes(fn_type);
+
+    /* All non-"new" methods are forward-declared with a leading `this` slot.
+       For static-style colon calls the user supplies no `this`, so detect the
+       mismatch and pass null as the implicit first argument. */
+    boolean_t has_this  = ((usize_t)n_params == argc + 1);
+    usize_t   total_args = has_this ? argc + 1 : argc;
+
+    heap_t args_heap = NullHeap;
+    LLVMValueRef *args = Null;
+    if (total_args > 0) {
+        args_heap = allocate(total_args, sizeof(LLVMValueRef));
+        args = args_heap.pointer;
+        usize_t offset = 0;
+        if (has_this) {
+            args[0] = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+            offset = 1;
+        }
+        for (usize_t i = 0; i < argc; i++)
+            args[i + offset] = gen_expr(cg, node->as.colon_call.args.items[i]);
+    }
+    if (total_args > 0 && n_params > 0) {
+        heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
+        LLVMTypeRef *ptypes = pt_heap.pointer;
+        LLVMGetParamTypes(fn_type, ptypes);
+        for (usize_t i = 0; i < total_args && i < (usize_t)n_params; i++)
+            args[i] = coerce_int(cg, args[i], ptypes[i]);
+        deallocate(pt_heap);
+    }
+    LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type,
+                                       fn_sym->value, args, (unsigned)total_args, "");
+    if (total_args > 0) deallocate(args_heap);
+    return ret;
+}
+
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
     switch (node->kind) {
         case NodeIntLitExpr:       return gen_int_lit(cg, node);
@@ -4667,6 +4729,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeAddrOf:           return gen_addr_of(cg, node);
         case NodeErrorExpr:        return gen_error_expr(cg, node);
         case NodeComptimeFmt:      return gen_comptime_fmt(cg, node);
+        case NodeColonCall:        return gen_colon_call(cg, node);
         case NodeExpectExpr: {
             /* expect.(expr) — if !expr, print failure and increment fail count */
             LLVMValueRef val = gen_expr(cg, node->as.expect_expr.expr);

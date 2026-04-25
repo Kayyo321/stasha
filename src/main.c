@@ -438,6 +438,26 @@ static void resolve_imports(node_t *ast, const char *input_path) {
             node_t *d = mod_ast->as.module.decls.items[j];
             if (d->kind == NodeImpDecl) continue;  /* handled by outer loop */
 
+            /* skip internal sub-module blocks and their hidden children */
+            if (d->kind == NodeSubMod &&
+                    d->as.submod.linkage == LinkageInternal) continue;
+            if (d->hidden_from_import) continue;
+
+            /* ext NodeSubMod: splice its children directly (not the wrapper) */
+            if (d->kind == NodeSubMod) {
+                for (usize_t k = 0; k < d->as.submod.decls.count; k++) {
+                    node_t *child = d->as.submod.decls.items[k];
+                    if (lib_backed) child->from_lib = True;
+                    /* child->module_name already set to submod name by parser */
+                    if (child->kind == NodeTypeDecl) {
+                        for (usize_t m = 0; m < child->as.type_decl.methods.count; m++)
+                            child->as.type_decl.methods.items[m]->module_name = child->module_name;
+                    }
+                    node_list_push(&ast->as.module.decls, child);
+                }
+                continue;
+            }
+
             if (lib_backed)
                 d->from_lib = True;
 

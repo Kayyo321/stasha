@@ -1479,30 +1479,31 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     }
     consume(p, TokRParen, "')'");
 
-    consume(p, TokColon, "':'");
-
-    /* return type(s): single type or [type, type, ...] */
-    usize_t ret_count = 0;
-    type_info_t *ret_types = Null;
-    if (check(p, TokLBracket)) {
-        advance_parser(p);
-        node_list_t tmp;
-        node_list_init(&tmp);
-        do {
-            type_info_t rt = parse_type(p);
-            node_t *dummy = make_node(NodeVarDecl, p->previous.line);
-            dummy->as.var_decl.type = rt;
-            node_list_push(&tmp, dummy);
-        } while (match_tok(p, TokComma));
-        consume(p, TokRBracket, "']'");
-        ret_count = tmp.count;
-        ret_types = alloc_type_array(ret_count);
-        for (usize_t i = 0; i < ret_count; i++)
-            ret_types[i] = tmp.items[i]->as.var_decl.type;
+    /* return type — optional: if '{', ';', or '=>' follows the params, default to void */
+    usize_t ret_count = 1;
+    type_info_t *ret_types = alloc_type_array(1);
+    if (match_tok(p, TokColon)) {
+        /* explicit return type(s): single type or [type, type, ...] */
+        if (check(p, TokLBracket)) {
+            advance_parser(p);
+            node_list_t tmp;
+            node_list_init(&tmp);
+            do {
+                type_info_t rt = parse_type(p);
+                node_t *dummy = make_node(NodeVarDecl, p->previous.line);
+                dummy->as.var_decl.type = rt;
+                node_list_push(&tmp, dummy);
+            } while (match_tok(p, TokComma));
+            consume(p, TokRBracket, "']'");
+            ret_count = tmp.count;
+            ret_types = alloc_type_array(ret_count);
+            for (usize_t i = 0; i < ret_count; i++)
+                ret_types[i] = tmp.items[i]->as.var_decl.type;
+        } else {
+            ret_types[0] = parse_type(p);
+        }
     } else {
-        ret_count = 1;
-        ret_types = alloc_type_array(1);
-        ret_types[0] = parse_type(p);
+        ret_types[0] = NO_TYPE; /* void */
     }
 
     /* expression-bodied function: fn name(...): T => expr; */
@@ -1778,6 +1779,35 @@ static node_t *parse_test_block(parser_t *p) {
     return n;
 }
 
+static node_t *parse_top_decl(parser_t *p); /* forward decl — used by parse_submod_block */
+
+static node_t *parse_submod_block(parser_t *p, linkage_t linkage) {
+    usize_t line = p->current.line;
+    token_t name_tok = consume(p, TokIdent, "sub-module name");
+    char *name = copy_token_text(name_tok);
+
+    consume(p, TokLBrace, "'{'");
+
+    node_t *n = make_node(NodeSubMod, line);
+    n->as.submod.name    = name;
+    n->as.submod.linkage = linkage;
+    node_list_init(&n->as.submod.decls);
+
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        node_t *decl = parse_top_decl(p);
+        if (!decl) { synchronize(p); continue; }
+        /* tag every child with this submod's name for mangling */
+        decl->module_name = name;
+        /* hide internal submod members from importers */
+        if (linkage == LinkageInternal)
+            decl->hidden_from_import = True;
+        node_list_push(&n->as.submod.decls, decl);
+    }
+
+    consume(p, TokRBrace, "'}'");
+    return n;
+}
+
 static node_t *parse_top_decl(parser_t *p) {
     /* ── Collect leading @[[...]] fileheader groups ── */
     fileheader_t pending;
@@ -1935,6 +1965,13 @@ static node_t *parse_top_decl(parser_t *p) {
     if (check(p, TokInt) || check(p, TokExt)) {
         linkage = check(p, TokInt) ? LinkageInternal : LinkageExternal;
         advance_parser(p);
+    }
+
+    /* [int|ext] mod name { ... } — inline sub-module block */
+    if (check(p, TokMod)) {
+        advance_parser(p); /* consume 'mod' */
+        result = parse_submod_block(p, linkage);
+        goto attach_headers;
     }
 
     /* async fn ... — marker enabling async.()/await.() shorthand + typed future */

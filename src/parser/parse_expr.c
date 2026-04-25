@@ -122,7 +122,16 @@ static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usiz
                 return n;
             }
             if (c == '}' && depth == 0) { found_end = True; break; }
-            if (c == ':' && depth == 0 && !has_colon) { colon_pos = j; has_colon = True; }
+            if (c == ':' && depth == 0 && !has_colon) {
+                /* Only treat ':' as a format-spec separator when followed by a
+                   non-identifier character (all valid specs start with digits,
+                   '<', '>', '+', '#', '.', etc.).  An identifier char after ':'
+                   means this is a colon static accessor inside the expression. */
+                char next_c = (j + 1 < fmt_len) ? fmt[j + 1] : '\0';
+                boolean_t next_is_ident = (next_c >= 'a' && next_c <= 'z') ||
+                                          (next_c >= 'A' && next_c <= 'Z') || next_c == '_';
+                if (!next_is_ident) { colon_pos = j; has_colon = True; }
+            }
             j++;
         }
         if (!found_end) {
@@ -1210,6 +1219,45 @@ static node_t *parse_postfix(parser_t *p) {
             n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
             n->as.member_expr.object = expr;
             n->as.member_expr.field = field_name;
+            expr = n;
+            continue;
+        }
+
+        /* colon static accessor: ident:fn(args)  or  ident:Type:method(args)
+           Only valid when the LHS is a plain identifier (module/submod alias).
+           Disambiguated from arr[lo:hi] because we are outside '[...]' here. */
+        if (check(p, TokColon) && expr->kind == NodeIdentExpr) {
+            usize_t line = p->current.line;
+            advance_parser(p); /* consume ':' */
+
+            token_t seg1_tok = consume(p, TokIdent, "static member name after ':'");
+            char *seg1 = copy_token_text(seg1_tok);
+
+            char *module_name = expr->as.ident.name;
+            char *type_name   = Null;
+            char *method_name = seg1;
+
+            /* optional second ':' — module:Type:method */
+            if (check(p, TokColon)) {
+                advance_parser(p); /* consume second ':' */
+                token_t seg2_tok = consume(p, TokIdent, "method name after ':'");
+                type_name   = seg1;
+                method_name = copy_token_text(seg2_tok);
+            }
+
+            consume(p, TokLParen, "'(' after colon accessor");
+            node_list_t args;
+            node_list_init(&args);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+
+            node_t *n = make_node(NodeColonCall, line);
+            n->as.colon_call.module_name = module_name;
+            n->as.colon_call.type_name   = type_name;
+            n->as.colon_call.method_name = method_name;
+            n->as.colon_call.args        = args;
             expr = n;
             continue;
         }

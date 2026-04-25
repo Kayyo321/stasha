@@ -694,6 +694,32 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMSetInitializer(cg.test_fail_count, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
     }
 
+    /* pre-pass: flatten NodeSubMod wrappers.
+       Register each submod as a module alias so greeter.fn() / greeter:fn()
+       resolve correctly, then splice its children into the top-level decl list
+       (children already have module_name set by the parser). */
+    {
+        node_list_t flat;
+        node_list_init(&flat);
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *d = ast->as.module.decls.items[i];
+            if (d->kind == NodeSubMod) {
+                /* register submod name as a module alias (like imp does) */
+                char pfx[512];
+                mangle_module_prefix(d->as.submod.name, pfx, sizeof(pfx));
+                register_lib(&cg, d->as.submod.name, d->as.submod.name, Null);
+                if (cg.lib_count > 0)
+                    cg.libs[cg.lib_count - 1].mod_prefix = ast_strdup(pfx, strlen(pfx));
+                /* splice children */
+                for (usize_t j = 0; j < d->as.submod.decls.count; j++)
+                    node_list_push(&flat, d->as.submod.decls.items[j]);
+            } else {
+                node_list_push(&flat, d);
+            }
+        }
+        ast->as.module.decls = flat;
+    }
+
     /* pass 0: register type declarations, lib declarations */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];

@@ -239,7 +239,15 @@ static node_t *parse_print_stmt(parser_t *p) {
                     break;
                 }
                 if (c == '}' && depth == 0) { found_end = True; break; }
-                if (c == ':' && depth == 0 && !has_colon) { colon_pos = j; has_colon = True; }
+                if (c == ':' && depth == 0 && !has_colon) {
+                    /* Treat ':' as a format-spec separator only when followed by
+                       a non-identifier char.  An ident char after ':' means this
+                       is a colon static accessor inside the expression. */
+                    char next_c = (j + 1 < raw_len) ? raw[j + 1] : '\0';
+                    boolean_t next_is_ident = (next_c >= 'a' && next_c <= 'z') ||
+                                              (next_c >= 'A' && next_c <= 'Z') || next_c == '_';
+                    if (!next_is_ident) { colon_pos = j; has_colon = True; }
+                }
                 j++;
             }
             if (bad) break;

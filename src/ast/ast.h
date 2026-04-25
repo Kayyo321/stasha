@@ -280,6 +280,12 @@ typedef enum {
     /* comptime format string: @'...' / heap @'...' */
     NodeComptimeFmt,
 
+    /* inline sub-module block: [int|ext] mod name { decls... } */
+    NodeSubMod,
+
+    /* colon static accessor: module:fn(args) or module:Type:method(args) */
+    NodeColonCall,
+
     /* signals: type-routed synchronous dispatch */
     NodeWatchStmt,   /* watch.(T name) => { body } */
     NodeSendStmt,    /* send.(expr) */
@@ -323,7 +329,8 @@ struct node {
     char *source_file;   /* source file that produced this node */
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */
-    boolean_t is_c_extern; /* True if symbol must not be mangled (C library symbol) */
+    boolean_t is_c_extern;        /* True if symbol must not be mangled (C library symbol) */
+    boolean_t hidden_from_import; /* True for decls inside int mod blocks — skipped by resolve_imports */
 
     /* fileheader entries attached to the node (decls + module).
        NULL if no @[[...]] attributes were applied to this node. */
@@ -581,6 +588,17 @@ struct node {
 
         /* NodeAwaitCombinator: await.all(...) / await.any(...) */
         struct { boolean_t is_any; node_list_t handles; } await_combinator;
+
+        /* NodeSubMod: [int|ext] mod name { decls... } */
+        struct { char *name; linkage_t linkage; node_list_t decls; } submod;
+
+        /* NodeColonCall: module:fn(args)  or  module:Type:method(args) */
+        struct {
+            char *module_name;  /* "greeter" */
+            char *type_name;    /* "Builder" — NULL for 2-segment form */
+            char *method_name;  /* "company" or "greet" */
+            node_list_t args;
+        } colon_call;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

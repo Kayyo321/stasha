@@ -4,7 +4,7 @@ mod ex_submods;
 // sub mod since it's marked internal
 int mod greeter {
     ext fn greet(i8 *r name) {
-        print.('Nice to meet you, {}!', name);
+        print.('Nice to meet you, {}!\n', name);
     }
 
     ext type Builder: struct {
@@ -28,7 +28,7 @@ fn main(void): i32 {
     // while . can be used for both static and member fields/funcs
     // : can ONLY be used on static's
 
-    print(@'{greeter:Builder:company()}\n');
+    print.(@'{greeter:Builder:company()}\n');
 
     ret 0;
 }
