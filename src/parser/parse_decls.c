@@ -741,7 +741,9 @@ static node_t *parse_match_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'match' */
 
+    p->no_trailing_closure++;
     node_t *subject = parse_expr(p);
+    p->no_trailing_closure--;
     consume(p, TokLBrace, "'{'");
 
     node_t *n = make_node(NodeMatchStmt, line);
@@ -1554,7 +1556,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
 static node_t *parse_switch_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'switch' */
+    p->no_trailing_closure++;
     node_t *expr = parse_expr(p);
+    p->no_trailing_closure--;
     consume(p, TokLBrace, "'{'");
 
     node_t *n = make_node(NodeSwitchStmt, line);

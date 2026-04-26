@@ -22,6 +22,12 @@ typedef struct {
     /* Current top-level module under construction — used by fileheader
        parsing to attach file-wide @[[...]] metadata.  Null outside run_parse. */
     node_t   *current_module;
+
+    /* Sugar pack: when > 0, suppress trailing-closure parsing because the
+       brace would belong to the surrounding control-flow construct
+       (if/while/for/do-while condition, etc.).  Counter, not bool, so
+       nesting works correctly. */
+    int no_trailing_closure;
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */

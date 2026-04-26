@@ -206,6 +206,10 @@ typedef enum {
     /* async/await — thin surface layer over thread pool + future              */
     TokAsync,       /* async fn ... / async.(fn)(args)                        */
     TokAwait,       /* await(f) / await.(fn)(args) / await.all(..) / await.any(..) */
+
+    /* sugar pack: lambda + pipeline */
+    TokLam,         /* lam.(...) — non-capturing lambda expression            */
+    TokPipeline,    /* |> — left-associative pipeline operator                */
 } token_kind_t;
 
 typedef struct {

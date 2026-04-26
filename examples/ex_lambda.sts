@@ -1,0 +1,19 @@
+/* ex_lambda.sts — sugar pack v1: bare lambda expressions */
+
+mod ex_lambda;
+
+lib "stdio" = io;
+
+ext fn apply(stack fn*(stack i32): i32 f, stack i32 x): i32 {
+    ret f(x);
+}
+
+ext fn main(void): i32 {
+    stack fn*(stack i32): i32 sq = lam.(stack i32 x): i32 { ret x * x; };
+    stack i32 r1 = sq(5);
+    io.printf('sq(5) = %d\n', r1);
+
+    stack i32 r2 = apply(lam.(stack i32 x): i32 { ret x + 100; }, 7);
+    io.printf('apply(+100, 7) = %d\n', r2);
+    ret 0;
+}

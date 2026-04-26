@@ -170,7 +170,65 @@ static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usiz
     return n;
 }
 
+/* ── lambda parser: lam.(params): ret { body } ──
+ * Called with TokLam already on the current token.  Produces NodeLambda. */
+static node_t *parse_lambda_expr(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'lam' */
+    consume(p, TokDot, "'.' after 'lam'");
+    consume(p, TokLParen, "'(' after 'lam.'");
+
+    node_list_t params;
+    node_list_init(&params);
+
+    if (!check(p, TokRParen) && !check(p, TokVoid)) {
+        type_info_t last_type = NO_TYPE;
+        storage_t last_storage = StorageDefault;
+        do {
+            storage_t param_storage = StorageDefault;
+            if (check(p, TokStack))      { param_storage = StorageStack; advance_parser(p); }
+            else if (check(p, TokHeap)) { param_storage = StorageHeap;  advance_parser(p); }
+            if (param_storage != StorageDefault) last_storage = param_storage;
+            else param_storage = last_storage;
+            if (can_start_param_type(p))
+                last_type = parse_type(p);
+            token_t pname = consume_name(p, "lambda parameter name");
+            node_t *param = make_node(NodeVarDecl, pname.line);
+            ast_set_loc(param, pname);
+            param->as.var_decl.name    = copy_token_text(pname);
+            param->as.var_decl.type    = last_type;
+            param->as.var_decl.storage = param_storage;
+            node_list_push(&params, param);
+        } while (match_tok(p, TokComma));
+    } else if (check(p, TokVoid)) {
+        advance_parser(p);
+    }
+    consume(p, TokRParen, "')'");
+
+    type_info_t ret_type = NO_TYPE; /* default void */
+    boolean_t inferred_ret = True;
+    if (match_tok(p, TokColon)) {
+        ret_type = parse_type(p);
+        inferred_ret = False;
+    }
+
+    node_t *body = parse_block(p);
+
+    node_t *n = make_node(NodeLambda, line);
+    n->as.lambda_expr.params         = params;
+    n->as.lambda_expr.ret_type       = ret_type;
+    n->as.lambda_expr.body           = body;
+    n->as.lambda_expr.mangled_name   = Null;
+    n->as.lambda_expr.inferred_params = False;
+    n->as.lambda_expr.inferred_ret   = inferred_ret;
+    return n;
+}
+
 static node_t *parse_primary(parser_t *p) {
+    /* lam.(params): ret { body } — non-capturing lambda expression */
+    if (check(p, TokLam))
+        return parse_lambda_expr(p);
+
     /* heap @'...' — heap-allocated comptime format string */
     if (check(p, TokHeap)) {
         parser_state_t snap = save_state(p);
@@ -928,6 +986,111 @@ static node_t *parse_primary(parser_t *p) {
     return make_node(NodeIntLitExpr, p->previous.line);
 }
 
+/* ── trailing-closure peek: { |p1, p2| body }  or  { body } ──
+ * Called after a `.( args )` call form is built.  If the next token is '{',
+ * parse a short-form lambda and append it to the call's args list.
+ * Param types are left as TypeInfer — gen_call backfills them from the
+ * callee's matching parameter slot. */
+static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
+    if (!check(p, TokLBrace)) return;
+    /* Suppressed in if/while/for/do-while conditions — the brace belongs
+       to the surrounding control-flow body. */
+    if (p->no_trailing_closure > 0) return;
+
+    usize_t lbrace_line = p->current.line;
+    /* speculative: only treat as trailing closure if we see "|...|" or
+       statement-like content (i.e., the brace is NOT a designated-init form
+       like `{ .field = ... }` — that prefix begins with TokDot). */
+    parser_state_t snap = save_state(p);
+    advance_parser(p); /* consume '{' */
+    if (check(p, TokDot)) {
+        /* Looks like `{ .field = ... }` — leave alone. */
+        restore_state(p, snap);
+        return;
+    }
+
+    node_list_t params;
+    node_list_init(&params);
+
+    if (check(p, TokPipe)) {
+        advance_parser(p); /* consume opening '|' */
+        if (!check(p, TokPipe)) {
+            do {
+                token_t pname = consume_name(p, "trailing-closure parameter name");
+                node_t *param = make_node(NodeVarDecl, pname.line);
+                ast_set_loc(param, pname);
+                param->as.var_decl.name    = copy_token_text(pname);
+                type_info_t ti = NO_TYPE;
+                ti.base = TypeInfer;
+                param->as.var_decl.type    = ti;
+                param->as.var_decl.storage = StorageStack;
+                node_list_push(&params, param);
+            } while (match_tok(p, TokComma));
+        }
+        consume(p, TokPipe, "closing '|' after parameter list");
+    }
+
+    /* parse statements until '}'.  Trailing-closure bodies accept a final
+       bare expression (no ';') as an implicit return — that's the whole
+       point of `{|x| x*2}`.  Statements that obviously start with a
+       keyword/decl are still parsed via parse_statement. */
+    node_t *body = make_node(NodeBlock, lbrace_line);
+    node_list_init(&body->as.block.stmts);
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        /* Only treat as a statement when prefix is unambiguous.  We
+           deliberately do NOT call `can_start_var_decl` here because it
+           accepts `Ident *...` forms that collide with `x * 3` inside
+           a trailing closure body. */
+        boolean_t starts_var_decl_unambig =
+               check(p, TokStack)    || check(p, TokHeap)
+            || check(p, TokLet)      || check(p, TokAtomic)
+            || check(p, TokConst)    || check(p, TokFinal)
+            || check(p, TokVolatile) || check(p, TokTls)
+            || is_builtin_type_token(p->current.kind);
+        boolean_t is_stmt_form =
+               check(p, TokRet)    || check(p, TokIf)     || check(p, TokFor)
+            || check(p, TokForeach)|| check(p, TokWhile)  || check(p, TokDo)
+            || check(p, TokInf)    || check(p, TokMatch)  || check(p, TokSwitch)
+            || check(p, TokDefer)  || check(p, TokBreak)  || check(p, TokContinue)
+            || check(p, TokPrint)  || check(p, TokLBrace) || check(p, TokUnsafe)
+            || check(p, TokZone)   || check(p, TokWith)
+            || check(p, TokWatch)  || check(p, TokSend)   || check(p, TokQuit)
+            || starts_var_decl_unambig;
+        if (is_stmt_form) {
+            node_t *stmt = parse_statement(p);
+            if (stmt) node_list_push(&body->as.block.stmts, stmt);
+            continue;
+        }
+        node_t *expr = parse_expr(p);
+        if (check(p, TokRBrace)) {
+            /* implicit-return tail */
+            node_t *ret_node = make_node(NodeRetStmt, expr->line);
+            node_list_init(&ret_node->as.ret_stmt.values);
+            node_list_push(&ret_node->as.ret_stmt.values, expr);
+            node_list_push(&body->as.block.stmts, ret_node);
+            break;
+        }
+        consume(p, TokSemicolon, "';' or '}'");
+        node_t *st = make_node(NodeExprStmt, expr->line);
+        st->as.expr_stmt.expr = expr;
+        node_list_push(&body->as.block.stmts, st);
+    }
+    consume(p, TokRBrace, "'}'");
+
+    type_info_t inferred_ret = NO_TYPE;
+    inferred_ret.base = TypeInfer;
+
+    node_t *lam = make_node(NodeLambda, lbrace_line);
+    lam->as.lambda_expr.params         = params;
+    lam->as.lambda_expr.ret_type       = inferred_ret;
+    lam->as.lambda_expr.body           = body;
+    lam->as.lambda_expr.mangled_name   = Null;
+    lam->as.lambda_expr.inferred_params = True;
+    lam->as.lambda_expr.inferred_ret   = True;
+
+    node_list_push(args_dest, lam);
+}
+
 /* ── postfix: calls, indexing, member access, ++/-- ── */
 
 static node_t *parse_postfix(parser_t *p) {
@@ -950,6 +1113,7 @@ static node_t *parse_postfix(parser_t *p) {
             n->as.self_method_call.type_name = type_name;
             n->as.self_method_call.method = method_name;
             n->as.self_method_call.args = args;
+            parse_trailing_closure(p, &n->as.self_method_call.args);
             expr = n;
             continue;
         }
@@ -970,6 +1134,7 @@ static node_t *parse_postfix(parser_t *p) {
             n->source_file = expr->source_file;
             n->as.call.callee = name;
             n->as.call.args = args;
+            parse_trailing_closure(p, &n->as.call.args);
             expr = n;
             continue;
         }
@@ -1169,6 +1334,7 @@ static node_t *parse_postfix(parser_t *p) {
                 node_t *n = make_node(NodeConstructorCall, line);
                 n->as.ctor_call.type_name = type_name;
                 n->as.ctor_call.args = args;
+                parse_trailing_closure(p, &n->as.ctor_call.args);
                 expr = n;
                 continue;
             }
@@ -1209,6 +1375,7 @@ static node_t *parse_postfix(parser_t *p) {
                 n->as.method_call.object = expr;
                 n->as.method_call.method = field_name;
                 n->as.method_call.args = args;
+                parse_trailing_closure(p, &n->as.method_call.args);
                 expr = n;
                 continue;
             }
@@ -1258,6 +1425,7 @@ static node_t *parse_postfix(parser_t *p) {
             n->as.colon_call.type_name   = type_name;
             n->as.colon_call.method_name = method_name;
             n->as.colon_call.args        = args;
+            parse_trailing_closure(p, &n->as.colon_call.args);
             expr = n;
             continue;
         }
@@ -1679,6 +1847,106 @@ static node_t *parse_ternary(parser_t *p) {
     return cond;
 }
 
+/* ── pipeline: a |> f.(b, c)  →  f.(a, b, c) ──
+ * Pure parser desugar — no new AST node.  Left-associative.  Precedence sits
+ * between assignment and ternary, so chained `|>` reads top-to-bottom.
+ *
+ *   a |> f.(b, c)        → f.(a, b, c)
+ *   a |> f               → f.(a)
+ *   a |> obj.method.(b)  → obj.method.(a, b)
+ *   a |> Type.method     → Type.method.(a)              (member auto-call)
+ *   a |> mod:fn          → mod:fn(a)                    (colon auto-call)
+ *   a |> lam.(x){...}    → (lam.(x){...}).(a)           (rare — wraps lambda)
+ */
+static node_list_t prepend_arg(node_t *first, node_list_t orig) {
+    node_list_t out;
+    node_list_init(&out);
+    node_list_push(&out, first);
+    for (usize_t i = 0; i < orig.count; i++)
+        node_list_push(&out, orig.items[i]);
+    return out;
+}
+
+static node_t *parse_pipeline(parser_t *p) {
+    node_t *left = parse_ternary(p);
+    while (check(p, TokPipeline)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume '|>' */
+        node_t *right = parse_ternary(p);
+
+        switch (right->kind) {
+            case NodeCallExpr:
+                right->as.call.args = prepend_arg(left, right->as.call.args);
+                left = right;
+                break;
+            case NodeMethodCall:
+                right->as.method_call.args = prepend_arg(left, right->as.method_call.args);
+                left = right;
+                break;
+            case NodeColonCall:
+                right->as.colon_call.args = prepend_arg(left, right->as.colon_call.args);
+                left = right;
+                break;
+            case NodeConstructorCall:
+                right->as.ctor_call.args = prepend_arg(left, right->as.ctor_call.args);
+                left = right;
+                break;
+            case NodeSelfMethodCall:
+                right->as.self_method_call.args = prepend_arg(left, right->as.self_method_call.args);
+                left = right;
+                break;
+            case NodeIdentExpr: {
+                /* bare ident pipes auto-call: a |> f → f.(a) */
+                node_t *n = make_node(NodeCallExpr, line);
+                n->as.call.callee = right->as.ident.name;
+                node_list_init(&n->as.call.args);
+                node_list_push(&n->as.call.args, left);
+                left = n;
+                break;
+            }
+            case NodeMemberExpr: {
+                /* obj.field |>  → method-call on the member chain with single arg */
+                node_t *n = make_node(NodeMethodCall, line);
+                n->as.method_call.object = right->as.member_expr.object;
+                n->as.method_call.method = right->as.member_expr.field;
+                node_list_init(&n->as.method_call.args);
+                node_list_push(&n->as.method_call.args, left);
+                left = n;
+                break;
+            }
+            case NodeLambda: {
+                /* (lam.(x){...}).(a) — wrap as direct call.  The lambda is
+                   lifted to a top-level fn at codegen, so we synthesize a
+                   NodeCallExpr with a placeholder callee that gen_pipeline_call
+                   would resolve.  To keep v1 simple, we emit a method-shaped
+                   call where the object is the lambda itself.  Codegen of
+                   NodeMethodCall already evaluates `object`; we need a tiny
+                   special path.  Easier approach: produce a method-style call
+                   that gen_call can handle by direct invocation. */
+                /* Strategy: use NodeMethodCall with a synthetic empty method,
+                   where the object expr is the lambda — and we emit a special
+                   marker.  Simpler: don't allow lam on RHS in v1. */
+                diag_begin_error("lambda on the right of '|>' is not supported in v1");
+                diag_span(SRC_LOC(line, p->previous.col, 2), True,
+                          "bind the lambda to a variable and pipe into it instead");
+                diag_finish();
+                p->had_error = True;
+                left = right;
+                break;
+            }
+            default:
+                diag_begin_error("right side of '|>' must be a call or callable");
+                diag_span(SRC_LOC(line, p->previous.col, 2), True,
+                          "expected a call like f.(b) or a callable identifier");
+                diag_finish();
+                p->had_error = True;
+                left = right;
+                break;
+        }
+    }
+    return left;
+}
+
 /* ── assignment: = += -= *= /= %= &= |= ^= <<= >>= ── */
 
 static boolean_t is_compound_assign(token_kind_t k) {
@@ -1689,7 +1957,7 @@ static boolean_t is_compound_assign(token_kind_t k) {
 }
 
 static node_t *parse_assignment(parser_t *p) {
-    node_t *expr = parse_ternary(p);
+    node_t *expr = parse_pipeline(p);
 
     if (expr->kind == NodeIdentExpr || expr->kind == NodeIndexExpr
         || expr->kind == NodeMemberExpr || expr->kind == NodeSelfMemberExpr

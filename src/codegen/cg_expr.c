@@ -408,6 +408,26 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         sym = cg_lookup(cg, mangled);
     }
     if (!sym) {
+        /* Inside a lambda body (v1: non-capturing only): if the name matches
+           an outer-scope local that was hidden when entering the lambda,
+           emit a specific "may not capture" error. */
+        if (cg->lambda_depth > 0 && cg->lambda_blocked_names) {
+            for (usize_t i = 0; i < cg->lambda_blocked_count; i++) {
+                if (strcmp(cg->lambda_blocked_names[i], node->as.ident.name) == 0) {
+                    char dedup_key[600];
+                    snprintf(dedup_key, sizeof(dedup_key), "lam_capture:%s", node->as.ident.name);
+                    if (!cg_error_already_reported(cg, dedup_key)) {
+                        diag_begin_error("lambda may not capture local '%s' from enclosing scope",
+                                         node->as.ident.name);
+                        diag_set_category(ErrCatOther);
+                        diag_span(DIAG_NODE(node), True, "captured here");
+                        diag_note("capturing closures land in v2 with explicit `heap`/`stack` env storage");
+                        diag_finish();
+                    }
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+            }
+        }
         char dedup_key[600];
         snprintf(dedup_key, sizeof(dedup_key), "undef_var:%s", node->as.ident.name);
         if (!cg_error_already_reported(cg, dedup_key)) {
@@ -980,7 +1000,258 @@ static LLVMValueRef try_coerce_arg_to_iface(cg_t *cg, LLVMValueRef arg_val,
     return construct_fat_ptr(cg, struct_name, cg->interfaces[iface_ii].name, tmp);
 }
 
+/* ── lambda expressions (sugar pack v1) ──
+ * lam.(params): ret { body } — non-capturing.  Lifted to a module-level LLVM
+ * function with internal linkage; the expression evaluates to a fn pointer.
+ * Param/ret types may be TypeInfer when the lambda came from a trailing
+ * closure: gen_call backfills concrete types before invoking gen_lambda. */
+
+/* Forward declaration — needed by infer_trailing_closure_types. */
+static LLVMValueRef gen_lambda(cg_t *cg, node_t *node);
+
+/* Walk the AST decl list for a callee fn and yank out its source-level
+   parameter type at slot `slot` (0-based, no implicit-this offset).  Returns
+   True on success. */
+static boolean_t lookup_callee_param_type(cg_t *cg, const char *callee,
+                                          usize_t slot, type_info_t *out_param_ti,
+                                          type_info_t *out_ret_ti) {
+    node_t *fn = find_fn_decl(cg, callee);
+    if (!fn) {
+        /* Try mangled (intra-module) name */
+        if (cg->current_module_prefix[0]) {
+            char mangled[512];
+            snprintf(mangled, sizeof(mangled), "%s__%s",
+                     cg->current_module_prefix, callee);
+            fn = find_fn_decl(cg, mangled);
+        }
+    }
+    if (!fn || fn->kind != NodeFnDecl) return False;
+    if (slot >= fn->as.fn_decl.params.count) return False;
+    node_t *param = fn->as.fn_decl.params.items[slot];
+    type_info_t pti = param->as.var_decl.type;
+    if (pti.base != TypeFnPtr || !pti.fn_ptr_desc) return False;
+    if (out_ret_ti) *out_ret_ti = pti.fn_ptr_desc->ret_type;
+    /* For trailing-closure inference we copy the fn-pointer descriptor as a
+       whole — the lambda's params are inferred from desc->params.  We
+       overload `out_param_ti` to mean "the full fn-ptr descriptor for the
+       slot".  Caller distinguishes via base == TypeFnPtr. */
+    if (out_param_ti) *out_param_ti = pti;
+    return True;
+}
+
+/* Backfill TypeInfer params/ret on a NodeLambda from the callee's matching
+   fn-pointer parameter slot.  Caller must already know the matching fn
+   parameter is a fn pointer with the right arity. */
+static void apply_inferred_lambda_types(node_t *lam, fn_ptr_desc_t *desc) {
+    if (!lam || lam->kind != NodeLambda || !desc) return;
+    usize_t lp = lam->as.lambda_expr.params.count;
+    /* Be lenient if arities mismatch: assign what we can. */
+    for (usize_t i = 0; i < lp && i < desc->param_count; i++) {
+        node_t *p = lam->as.lambda_expr.params.items[i];
+        if (p->as.var_decl.type.base == TypeInfer) {
+            p->as.var_decl.type = desc->params[i].type;
+            if (p->as.var_decl.storage == StorageDefault)
+                p->as.var_decl.storage = desc->params[i].storage != StorageDefault
+                                       ? desc->params[i].storage
+                                       : StorageStack;
+        }
+    }
+    if (lam->as.lambda_expr.ret_type.base == TypeInfer)
+        lam->as.lambda_expr.ret_type = desc->ret_type;
+    lam->as.lambda_expr.inferred_params = False;
+    lam->as.lambda_expr.inferred_ret    = False;
+}
+
+/* When passing a lambda as an argument to a call, fix up its inferred types
+   from the callee's signature before lowering.  Operates on the full args
+   list of a NodeCall; for trailing-closure cases the lambda is the last arg. */
+static void infer_call_lambda_args(cg_t *cg, const char *callee, node_list_t args) {
+    for (usize_t i = 0; i < args.count; i++) {
+        node_t *a = args.items[i];
+        if (a && a->kind == NodeLambda &&
+            (a->as.lambda_expr.inferred_params || a->as.lambda_expr.inferred_ret)) {
+            type_info_t pti, rti;
+            if (lookup_callee_param_type(cg, callee, i, &pti, &rti) &&
+                pti.base == TypeFnPtr && pti.fn_ptr_desc) {
+                apply_inferred_lambda_types(a, pti.fn_ptr_desc);
+            } else {
+                /* Could not resolve callee signature; default any remaining
+                   TypeInfer to i32/void so codegen still produces something
+                   usable and the user gets a downstream error if mismatched. */
+                for (usize_t j = 0; j < a->as.lambda_expr.params.count; j++) {
+                    node_t *p = a->as.lambda_expr.params.items[j];
+                    if (p->as.var_decl.type.base == TypeInfer) {
+                        type_info_t ti = NO_TYPE;
+                        ti.base = TypeI32;
+                        p->as.var_decl.type = ti;
+                        if (p->as.var_decl.storage == StorageDefault)
+                            p->as.var_decl.storage = StorageStack;
+                    }
+                }
+                if (a->as.lambda_expr.ret_type.base == TypeInfer) {
+                    type_info_t ti = NO_TYPE;
+                    ti.base = TypeI32;
+                    a->as.lambda_expr.ret_type = ti;
+                }
+                a->as.lambda_expr.inferred_params = False;
+                a->as.lambda_expr.inferred_ret    = False;
+            }
+        }
+    }
+}
+
+static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
+    /* If we still have unresolved inferred types (lambda used outside a
+       call argument context), default them to i32/void so we can still
+       produce code — produces a typed fn whose signature may not match
+       what the user expects, but avoids a crash. */
+    {
+        for (usize_t i = 0; i < node->as.lambda_expr.params.count; i++) {
+            node_t *p = node->as.lambda_expr.params.items[i];
+            if (p->as.var_decl.type.base == TypeInfer) {
+                diag_begin_error("trailing-closure parameter '%s' has unknown type",
+                                 p->as.var_decl.name ? p->as.var_decl.name : "?");
+                diag_span(DIAG_NODE(node), True,
+                          "callee signature could not be resolved for inference");
+                diag_note("annotate the parameter type explicitly via lam.(stack T x)");
+                diag_finish();
+                type_info_t ti = NO_TYPE;
+                ti.base = TypeI32;
+                p->as.var_decl.type = ti;
+                if (p->as.var_decl.storage == StorageDefault)
+                    p->as.var_decl.storage = StorageStack;
+            }
+        }
+        if (node->as.lambda_expr.ret_type.base == TypeInfer) {
+            type_info_t ti = NO_TYPE;
+            ti.base = TypeVoid;
+            node->as.lambda_expr.ret_type = ti;
+        }
+    }
+
+    /* synthesize a unique mangled name */
+    char buf[64];
+    snprintf(buf, sizeof(buf), "__lam_%lu",
+             (unsigned long)cg->lambda_counter++);
+    char *mangled = ast_strdup(buf, strlen(buf));
+    node->as.lambda_expr.mangled_name = mangled;
+
+    /* build LLVM param types */
+    usize_t pc = node->as.lambda_expr.params.count;
+    LLVMTypeRef *ptypes = Null;
+    heap_t pt_heap = NullHeap;
+    if (pc > 0) {
+        pt_heap = allocate(pc, sizeof(LLVMTypeRef));
+        ptypes = pt_heap.pointer;
+        for (usize_t i = 0; i < pc; i++) {
+            node_t *p = node->as.lambda_expr.params.items[i];
+            type_info_t pti = resolve_alias(cg, p->as.var_decl.type);
+            ptypes[i] = get_llvm_type(cg, pti);
+        }
+    }
+    type_info_t rti_resolved = resolve_alias(cg, node->as.lambda_expr.ret_type);
+    LLVMTypeRef ret_type = get_llvm_type(cg, rti_resolved);
+
+    LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes, (unsigned)pc, 0);
+    LLVMValueRef fn = LLVMAddFunction(cg->module, mangled, fn_type);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+
+    /* register in the global symtab so further references can resolve */
+    type_info_t dummy = NO_TYPE;
+    symtab_add(&cg->globals, ast_strdup(mangled, strlen(mangled)),
+               fn, Null, dummy, False);
+
+    if (pc > 0) deallocate(pt_heap);
+
+    /* ── save outer codegen state ── */
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
+    LLVMValueRef saved_fn = cg->current_fn;
+    char *saved_struct = cg->current_struct_name;
+    boolean_t saved_inline_method = cg->current_fn_is_inline_method;
+    boolean_t saved_entry_main = cg->current_fn_is_entry_main;
+    linkage_t saved_linkage = cg->current_fn_linkage;
+    LLVMBasicBlockRef saved_break = cg->break_target;
+    LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_locals_count = cg->locals.count;
+    usize_t saved_dtor_depth = cg->dtor_depth;
+
+    /* snapshot outer local NAMES so capture detection in gen_ident can
+       distinguish "captured outer local" from generic "undefined" */
+    char **saved_blocked = cg->lambda_blocked_names;
+    usize_t saved_blocked_count = cg->lambda_blocked_count;
+    char **new_blocked = Null;
+    heap_t blocked_heap = NullHeap;
+    if (saved_locals_count > 0) {
+        blocked_heap = allocate(saved_locals_count, sizeof(char *));
+        new_blocked = blocked_heap.pointer;
+        for (usize_t i = 0; i < saved_locals_count; i++)
+            new_blocked[i] = cg->locals.entries[i].name;
+    }
+    cg->lambda_blocked_names = new_blocked;
+    cg->lambda_blocked_count = saved_locals_count;
+    cg->lambda_depth++;
+
+    /* hide outer locals; set current_fn to the lambda */
+    cg->locals.count = 0;
+    cg->current_fn = fn;
+    cg->current_fn_is_inline_method = False;
+    cg->current_fn_is_entry_main = False;
+    cg->current_struct_name = Null;
+    cg->break_target = Null;
+    cg->continue_target = Null;
+    cg->dtor_depth = 0;
+
+    LLVMBasicBlockRef entry =
+        LLVMAppendBasicBlockInContext(cg->ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(cg->builder, entry);
+
+    /* register lambda params as locals */
+    for (usize_t i = 0; i < pc; i++) {
+        node_t *p = node->as.lambda_expr.params.items[i];
+        type_info_t pti = resolve_alias(cg, p->as.var_decl.type);
+        LLVMTypeRef ptype = get_llvm_type(cg, pti);
+        LLVMValueRef alloca_val = LLVMBuildAlloca(cg->builder, ptype,
+                                                   p->as.var_decl.name);
+        LLVMBuildStore(cg->builder, LLVMGetParam(fn, (unsigned)i), alloca_val);
+        symtab_add(&cg->locals, p->as.var_decl.name, alloca_val, ptype, pti, 0);
+    }
+
+    /* generate the body */
+    gen_block(cg, node->as.lambda_expr.body);
+
+    /* default ret if missing */
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg->builder);
+    if (!LLVMGetBasicBlockTerminator(cur_bb)) {
+        if (rti_resolved.base == TypeVoid && !rti_resolved.is_pointer)
+            LLVMBuildRetVoid(cg->builder);
+        else
+            LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
+    }
+
+    /* ── restore outer state ── */
+    cg->lambda_depth--;
+    if (blocked_heap.pointer) deallocate(blocked_heap);
+    cg->lambda_blocked_names = saved_blocked;
+    cg->lambda_blocked_count = saved_blocked_count;
+    cg->locals.count = saved_locals_count;
+    cg->dtor_depth = saved_dtor_depth;
+    cg->current_fn = saved_fn;
+    cg->current_struct_name = saved_struct;
+    cg->current_fn_is_inline_method = saved_inline_method;
+    cg->current_fn_is_entry_main = saved_entry_main;
+    cg->current_fn_linkage = saved_linkage;
+    cg->break_target = saved_break;
+    cg->continue_target = saved_cont;
+    if (saved_bb) LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
+
+    /* expression value: the function pointer (an opaque LLVM ptr) */
+    return fn;
+}
+
 static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
+    /* sugar pack: backfill any TypeInfer params on lambda args */
+    infer_call_lambda_args(cg, node->as.call.callee, node->as.call.args);
+
     symbol_t *sym = cg_lookup(cg, node->as.call.callee);
 
     /* intra-module unqualified call: try module__callee when inside an
@@ -4727,6 +4998,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeNilExpr:          return gen_nil(cg);
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);
+        case NodeLambda:           return gen_lambda(cg, node);
         case NodeErrorExpr:        return gen_error_expr(cg, node);
         case NodeComptimeFmt:      return gen_comptime_fmt(cg, node);
         case NodeColonCall:        return gen_colon_call(cg, node);

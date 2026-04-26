@@ -25,6 +25,7 @@ typedef enum {
     TypeFuture,     /* future handle — opaque ptr to __future_t (thread result) */
     TypeSlice,      /* []T — fat pointer (ptr, len, cap) */
     TypeZone,       /* zone — opaque arena allocator handle (void* state pointer) */
+    TypeInfer,      /* sentinel: "infer me" — used for trailing-closure params */
 } type_kind_t;
 
 /* ── forward declaration for fn_ptr_desc_t and type_info_t ── */
@@ -295,6 +296,9 @@ typedef enum {
     NodeAsyncCall,       /* async.(fn)(args) — dispatch, returns future.[T] */
     NodeAwaitExpr,       /* await(f) / await.(fn)(args) — block, drop, return value */
     NodeAwaitCombinator, /* await.all(...) / await.any(...) */
+
+    /* sugar pack: lambda expression */
+    NodeLambda,          /* lam.(params): ret { body } — lifted to module-level fn */
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -588,6 +592,19 @@ struct node {
 
         /* NodeAwaitCombinator: await.all(...) / await.any(...) */
         struct { boolean_t is_any; node_list_t handles; } await_combinator;
+
+        /* NodeLambda: lam.(params): ret { body }
+           Lifted to a module-level LLVM fn during codegen.  v1: non-capturing only.
+           When `inferred_params` is True, params carry TypeInfer types — gen_call
+           backfills concrete types from the callee's matching parameter slot. */
+        struct {
+            node_list_t params;       /* VarDecl nodes (name + type + storage)      */
+            type_info_t ret_type;     /* TypeInfer means infer from body's `ret`    */
+            node_t     *body;         /* Block                                       */
+            char       *mangled_name; /* assigned at codegen time                    */
+            boolean_t   inferred_params; /* True for trailing-closure short form     */
+            boolean_t   inferred_ret;    /* True when ret type was omitted           */
+        } lambda_expr;
 
         /* NodeSubMod: [int|ext] mod name { decls... } */
         struct { char *name; linkage_t linkage; node_list_t decls; } submod;

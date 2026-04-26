@@ -1,0 +1,25 @@
+/* ex_pipeline.sts — sugar pack v1: |> pipeline operator */
+
+mod ex_pipeline;
+
+lib "stdio" = io;
+
+ext fn double(stack i32 x): i32 { ret x * 2; }
+ext fn add(stack i32 a, stack i32 b): i32 { ret a + b; }
+ext fn negate(stack i32 x): i32 { ret -x; }
+
+ext fn main(void): i32 {
+    /* a |> f → f.(a) */
+    stack i32 r1 = 21 |> double;
+    io.printf('21 |> double = %d\n', r1);
+
+    /* chaining: ((5 |> double) |> negate) → -10 */
+    stack i32 r2 = 5 |> double |> negate;
+    io.printf('5 |> double |> negate = %d\n', r2);
+
+    /* a |> f.(b) → f.(a, b) */
+    stack i32 r3 = 100 |> add(50);
+    io.printf('100 |> add(50) = %d\n', r3);
+
+    ret 0;
+}

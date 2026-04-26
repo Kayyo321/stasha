@@ -1,0 +1,36 @@
+/* ex_trailing.sts — sugar pack v1: trailing-closure short form
+   Trailing-closure idiom: the closure is the LAST argument of the call. */
+
+mod ex_trailing;
+
+lib "stdio" = io;
+
+/* Take an i32 + a fn pointer, return f(x).  Closure parameter LAST. */
+ext fn apply(stack i32 x, stack fn*(stack i32): i32 f): i32 {
+    ret f(x);
+}
+
+/* Two ints + 2-arg fn pointer last. */
+ext fn apply2(stack i32 a, stack i32 b, stack fn*(stack i32, stack i32): i32 f): i32 {
+    ret f(a, b);
+}
+
+/* Side-effect runner: zero-arg fn last. */
+ext fn run(stack fn*(void): void f): void {
+    f();
+}
+
+ext fn main(void): i32 {
+    /* `{ |x| x*3 }` becomes lam.(stack i32 x): i32 { ret x*3; } via inference. */
+    stack i32 r1 = apply(7) { |x| x * 3 };
+    io.printf('apply(7){|x|x*3} = %d\n', r1);
+
+    /* two params, sum them */
+    stack i32 r2 = apply2(10, 20) { |a, b| a + b };
+    io.printf('apply2(10,20){|a,b|a+b} = %d\n', r2);
+
+    /* zero params, plain block */
+    run() { io.printf('hello from trailing closure\n'); };
+
+    ret 0;
+}

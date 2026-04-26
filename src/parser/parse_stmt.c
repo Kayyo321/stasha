@@ -48,9 +48,11 @@ static node_t *parse_for_stmt(parser_t *p) {
         consume(p, TokSemicolon, "';'");
     }
 
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
     consume(p, TokSemicolon, "';'");
     node_t *update = parse_expr(p);
+    p->no_trailing_closure--;
     if (guarded) consume(p, TokRParen, "')'");
     node_t *body = parse_body(p);
 
@@ -65,7 +67,9 @@ static node_t *parse_for_stmt(parser_t *p) {
 static node_t *parse_while_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
+    p->no_trailing_closure--;
     node_t *body = parse_body(p);
 
     node_t *n = make_node(NodeWhileStmt, line);
@@ -83,7 +87,9 @@ static node_t *parse_foreach_stmt(parser_t *p) {
 
     consume(p, TokIn, "'in'");
 
+    p->no_trailing_closure++;
     node_t *slice = parse_expr(p);
+    p->no_trailing_closure--;
     node_t *body  = parse_body(p);
 
     node_t *n = make_node(NodeForeachStmt, line);
@@ -100,7 +106,9 @@ static node_t *parse_do_while_stmt(parser_t *p) {
     consume(p, TokWhile, "'while'");
     /* optional guard parens: do { } while (cond); or do { } while cond; */
     boolean_t guarded = match_tok(p, TokLParen);
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
+    p->no_trailing_closure--;
     if (guarded) consume(p, TokRParen, "')'");
     consume(p, TokSemicolon, "';'");
 
@@ -122,7 +130,9 @@ static node_t *parse_inf_loop(parser_t *p) {
 static node_t *parse_if_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
+    p->no_trailing_closure--;
     node_t *then_block = parse_body(p);
     node_t *else_block = Null;
     if (match_tok(p, TokElse)) {

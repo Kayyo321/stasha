@@ -391,6 +391,12 @@ typedef struct {
     LLVMValueRef      exit_fn;                LLVMTypeRef exit_type;
     LLVMValueRef      underscore_exit_fn;     LLVMTypeRef underscore_exit_type;
     LLVMValueRef      fflush_fn;              LLVMTypeRef fflush_type;
+
+    /* ── lambda lifting (sugar pack v1: non-capturing only) ── */
+    int    lambda_depth;            /* > 0 while emitting a lambda body */
+    char **lambda_blocked_names;    /* outer-scope local names — capture is forbidden */
+    usize_t lambda_blocked_count;
+    usize_t lambda_counter;         /* monotonic id for synthesised lambda fn names */
 } cg_t;
 
 /* ── helpers ── */

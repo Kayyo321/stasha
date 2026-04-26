@@ -198,6 +198,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("quit",      TokQuit);
     KW("async",     TokAsync);
     KW("await",     TokAwait);
+    KW("lam",       TokLam);
     /* "frees" is NOT a keyword — parsed contextually as TokIdent after '@' */
 
     KW("i8", TokI8);
@@ -354,6 +355,7 @@ token_t next_token(lexer_t *lex) {
         case '|':
             if (match(lex, '|')) return make_token(lex, TokPipePipe);
             if (match(lex, '=')) return make_token(lex, TokPipeEq);
+            if (match(lex, '>')) return make_token(lex, TokPipeline);
             return make_token(lex, TokPipe);
         case '^':
             if (match(lex, '=')) return make_token(lex, TokCaretEq);
