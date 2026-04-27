@@ -190,6 +190,38 @@ future.drop(f);                    // wait + free future
 // Bitfield: i32 flags: 3;  (inside struct)
 ```
 
+### Sugar — pipeline `|>`, lambdas `lam.()`, trailing closures
+
+```
+// Lambda — non-capturing in v1.  Lifted to a module-level fn; expression
+// value is a plain function pointer (fn*(...) : ret).
+stack fn*(stack i32): i32 sq = lam.(stack i32 x): i32 { ret x * x; };
+
+// Pipeline — left-associative, low-precedence.  `a |> f`        → f.(a)
+//                                                `a |> f.(b,c)` → f.(a, b, c)
+stack i32 r = 5 |> double |> negate;          // -10
+stack i32 s = 100 |> add(50);                 // 150
+
+// Trailing closure — short-form lambda after a `.()` call.  Param types
+// are inferred from the callee's matching fn-pointer parameter slot.
+//   f.(args) { |p1, p2| body-expr-or-stmts }    // typed-param form
+//   f.(args) { stmts; }                          // zero-arg form
+// The closure is appended as the LAST argument, so write higher-order fns
+// with the fn-pointer parameter LAST: `fn map(arr, len, out, fn*(T):U f)`.
+filter(&nums[0], 5, &out[0], &out_len) { |n| n % 2 == 0 };
+sum = reduce(&arr[0], len, 0) { |acc, n| acc + n };
+run() { print.('hi\n'); };
+
+// Capture is rejected in v1 — the lambda body may reference module-scope
+// names (functions, globals, types) but NOT enclosing locals.  Capturing
+// closures land in v2 with explicit `heap`/`stack` env storage.
+//
+// Trailing-closure parsing is suppressed inside if/while/for/do-while/
+// match/switch conditions, so `if pred(x) { ... }` still parses the brace
+// as the if-body.
+```
+
+
 **Module system**: every file starts with `mod name;` (root) or `mod dir.subdir.name;` (nested). The dotted name mirrors the directory path relative to the entry file: `mod printer.typewriter;` lives at `printer/typewriter.sts`. `imp other.mod;` splices that module's types/sigs into the current AST; dots in the name are converted to path separators for lookup. `int` = module-private, `ext` = exported. Library-backed imports: `lib "x" from "libx.a"; imp x;` — codegen skips bodies, linker resolves from `.a`.
 
 **`libimp` — combined lib+imp shorthand**:
@@ -270,7 +302,3 @@ rem.(q);                               // rem on stack pointer — ERROR
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler
-
-**Open design questions:**
-- `error` type: carry integer code alongside message?
-- Error propagation `?` suffix operator (Rust/Zig style)?
