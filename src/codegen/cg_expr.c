@@ -155,12 +155,19 @@ static long count_spread_values(cg_t *cg, node_t *node, boolean_t *ok) {
 
 static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node);
 
-static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
-                              LLVMTypeRef elem_ty, long idx, node_t *value_node) {
-    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-    LLVMValueRef idx_val = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)idx, 0);
-    LLVMValueRef indices[2] = { zero, idx_val };
-    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.idx");
+/* Element-store helpers come in two flavours:
+ *   *_at(base, elem_ty, ...)  — base is a T* pointing to slot 0 of a flat
+ *       buffer (either heap-malloc'd or a GEP'd alloca). Used by both the
+ *       array-init path (via thin wrappers below) and gen_make_init.
+ *   plain wrappers (tmp, arr_ty, elem_ty, ...) — preserve the previous API
+ *       for callers that own an alloca [N x T]. They GEP to slot 0 then
+ *       delegate to *_at. */
+
+static void store_array_value_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef elem_ty,
+                                 long idx, node_t *value_node) {
+    LLVMValueRef idx_val = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
+                                        (unsigned long long)idx, 0);
+    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &idx_val, 1, "init.idx");
     LLVMTypeRef saved_hint = cg->hint_ret_type;
     cg->hint_ret_type = elem_ty;
     LLVMValueRef val = gen_expr(cg, value_node);
@@ -170,8 +177,16 @@ static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
     LLVMBuildStore(cg->builder, val, gep);
 }
 
-static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
-                                   LLVMTypeRef elem_ty, long *cursor, node_t *node) {
+static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                              LLVMTypeRef elem_ty, long idx, node_t *value_node) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef indices[2] = { zero, zero };
+    LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.base");
+    store_array_value_at(cg, base, elem_ty, idx, value_node);
+}
+
+static boolean_t emit_range_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef elem_ty,
+                                      long *cursor, node_t *node) {
     long start = 0, end = 0, step = 1;
     if (!const_int_value(node->as.range_expr.start, &start)
             || !const_int_value(node->as.range_expr.end, &end)
@@ -189,7 +204,7 @@ static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_t
             node_t fake = {0};
             fake.kind = NodeIntLitExpr;
             fake.as.int_lit.value = v;
-            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
             (*cursor)++;
         }
     } else {
@@ -198,15 +213,23 @@ static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_t
             node_t fake = {0};
             fake.kind = NodeIntLitExpr;
             fake.as.int_lit.value = v;
-            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
             (*cursor)++;
         }
     }
     return True;
 }
 
-static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
-                                    LLVMTypeRef elem_ty, long *cursor, node_t *expr) {
+static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                                   LLVMTypeRef elem_ty, long *cursor, node_t *node) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef indices[2] = { zero, zero };
+    LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.base");
+    return emit_range_values_at(cg, base, elem_ty, cursor, node);
+}
+
+static boolean_t emit_spread_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef elem_ty,
+                                       long *cursor, node_t *expr) {
     if (!expr) return False;
 
     if (expr->kind == NodeStrLitExpr) {
@@ -214,14 +237,14 @@ static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_
             node_t fake = {0};
             fake.kind = NodeCharLitExpr;
             fake.as.char_lit.value = expr->as.str_lit.value[i];
-            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
             (*cursor)++;
         }
         return True;
     }
 
     if (expr->kind == NodeRangeExpr)
-        return emit_range_values(cg, tmp, arr_ty, elem_ty, cursor, expr);
+        return emit_range_values_at(cg, base_ptr, elem_ty, cursor, expr);
 
     if (expr->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, expr->as.ident.name);
@@ -234,9 +257,10 @@ static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_
                 LLVMValueRef src_gep = LLVMBuildGEP2(cg->builder, sym->type, sym->value, src_indices, 2, "spread.src");
                 LLVMValueRef val = LLVMBuildLoad2(cg->builder, src_elem_ty, src_gep, "spread.val");
 
-                LLVMValueRef dst_idx = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)(*cursor), 0);
-                LLVMValueRef dst_indices[2] = { zero, dst_idx };
-                LLVMValueRef dst_gep = LLVMBuildGEP2(cg->builder, arr_ty, tmp, dst_indices, 2, "spread.dst");
+                LLVMValueRef dst_idx = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
+                                                    (unsigned long long)(*cursor), 0);
+                LLVMValueRef dst_gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr,
+                                                    &dst_idx, 1, "spread.dst");
                 if (src_elem_ty != elem_ty)
                     val = coerce_int(cg, val, elem_ty);
                 LLVMBuildStore(cg->builder, val, dst_gep);
@@ -250,6 +274,14 @@ static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_
     diag_span(DIAG_NODE(expr), True, "cannot spread this value");
     diag_finish();
     return False;
+}
+
+static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                                    LLVMTypeRef elem_ty, long *cursor, node_t *expr) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef indices[2] = { zero, zero };
+    LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.base");
+    return emit_spread_values_at(cg, base, elem_ty, cursor, expr);
 }
 
 static boolean_t store_struct_field(cg_t *cg, LLVMValueRef tmp, struct_reg_t *sr,
@@ -4710,9 +4742,144 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
     return result;
 }
 
-/* ── NodeMakeExpr: make.([]T, len) / make.([]T, len, cap) ── */
+/* ── NodeMakeExpr: make.([]T, len) / make.([]T, len, cap) / make.{ items } ── */
+
+/* make.{ items } — element type & storage come from the LHS via
+ * cg->hint_slice_elem / cg->hint_storage (set by gen_local_var). */
+static LLVMValueRef gen_make_init(cg_t *cg, node_t *node) {
+    node_t *init = node->as.make_expr.init;
+    LLVMTypeRef sl_ty  = slice_struct_type(cg);
+
+    type_info_t elem_ti = cg->hint_slice_elem;
+    if (elem_ti.base == TypeVoid) {
+        diag_begin_error("'make.{}' requires a slice element type from context");
+        diag_span(DIAG_NODE(node), True, "no LHS slice type to infer T");
+        diag_note("declare the variable with an explicit type, e.g. 'heap []i32 xs = make.{1, 2, 3};'");
+        diag_finish();
+        return LLVMConstNull(sl_ty);
+    }
+
+    /* v1 caveat: reject struct elements that have a destructor */
+    if (elem_ti.base == TypeUser && elem_ti.user_name && !elem_ti.is_pointer) {
+        struct_reg_t *sr = find_struct(cg, elem_ti.user_name);
+        if (sr && sr->destructor) {
+            diag_begin_error("'make.{}' element type '%s' has a destructor — not supported in v1",
+                             elem_ti.user_name);
+            diag_span(DIAG_NODE(node), True, "slice constructed here");
+            diag_note("each element would need a destructor call on rem.(); not yet implemented");
+            diag_finish();
+            return LLVMConstNull(sl_ty);
+        }
+    }
+
+    /* v1 caveat: heap-of-heap nested slices */
+    if (elem_ti.base == TypeSlice && cg->hint_storage == StorageHeap) {
+        diag_begin_error("'make.{}' on heap [][]T is not supported in v1");
+        diag_span(DIAG_NODE(node), True, "nested heap slice constructed here");
+        diag_finish();
+        return LLVMConstNull(sl_ty);
+    }
+
+    LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
+    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
+
+    /* validate items: reject designators; gate string spread on byte-sized elem */
+    boolean_t bad = False;
+    boolean_t elem_is_byte = (LLVMGetTypeKind(elem_ty) == LLVMIntegerTypeKind
+                              && LLVMGetIntTypeWidth(elem_ty) == 8);
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        node_t *it = init->as.compound_init.items.items[i];
+        if (it->kind == NodeInitField) {
+            diag_begin_error("'make.{}' does not accept '.field = ...' designators (slices have no named fields)");
+            diag_span(DIAG_NODE(it), True, "designator here");
+            diag_finish();
+            bad = True;
+        } else if (it->kind == NodeInitIndex) {
+            diag_begin_error("'make.{}' does not accept '[i] = ...' designators");
+            diag_span(DIAG_NODE(it), True, "designator here");
+            diag_note("use 'make.([]T, n)' then assign to indices");
+            diag_finish();
+            bad = True;
+        } else if (it->kind == NodeSpreadExpr && it->as.spread_expr.expr
+                   && it->as.spread_expr.expr->kind == NodeStrLitExpr
+                   && !elem_is_byte) {
+            diag_begin_error("string spread '..\"...\"' requires []i8 or []u8 element type");
+            diag_span(DIAG_NODE(it), True, "spread here");
+            diag_finish();
+            bad = True;
+        }
+    }
+    if (bad) return LLVMConstNull(sl_ty);
+
+    /* comptime element count */
+    boolean_t needs_nul = False, ok = True;
+    long n = count_compound_init_values(cg, init, &needs_nul, &ok);
+    if (!ok) {
+        diag_begin_error("'make.{}' requires a compile-time-knowable length");
+        diag_span(DIAG_NODE(node), True, "non-comptime length");
+        diag_note("range bounds and step must be integer literals; spread sources must be fixed-size arrays");
+        diag_finish();
+        return LLVMConstNull(sl_ty);
+    }
+
+    /* empty form → null slice */
+    if (n == 0) {
+        LLVMValueRef result = LLVMGetUndef(sl_ty);
+        LLVMValueRef zptr   = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+        LLVMValueRef zlen   = LLVMConstInt(i32_ty, 0, 0);
+        result = LLVMBuildInsertValue(cg->builder, result, zptr, 0, "mk.0");
+        result = LLVMBuildInsertValue(cg->builder, result, zlen, 1, "mk.1");
+        result = LLVMBuildInsertValue(cg->builder, result, zlen, 2, "mk.2");
+        return result;
+    }
+
+    LLVMValueRef len_v   = LLVMConstInt(i32_ty, (unsigned long long)n, 0);
+    boolean_t    on_heap = (cg->hint_storage == StorageHeap);
+    LLVMValueRef base_ptr;
+    if (on_heap) {
+        LLVMValueRef bytes = LLVMBuildMul(cg->builder,
+            LLVMConstInt(i64_ty, (unsigned long long)n, 0),
+            LLVMSizeOf(elem_ty), "mk.bytes");
+        LLVMValueRef margs[1] = { bytes };
+        base_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
+                                  margs, 1, "mk.ptr");
+        LLVMBuildMemSet(cg->builder, base_ptr,
+                        LLVMConstInt(LLVMInt8TypeInContext(cg->ctx), 0, 0),
+                        bytes, 0);
+    } else {
+        LLVMTypeRef arr_ty = LLVMArrayType2(elem_ty, (unsigned long long)n);
+        LLVMValueRef arr   = alloc_in_entry(cg, arr_ty, "mk.alloca");
+        LLVMBuildStore(cg->builder, LLVMConstNull(arr_ty), arr);
+        LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+        LLVMValueRef idx[2] = { zero, zero };
+        base_ptr = LLVMBuildGEP2(cg->builder, arr_ty, arr, idx, 2, "mk.base");
+    }
+
+    /* fill items */
+    long cursor = 0;
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        node_t *it = init->as.compound_init.items.items[i];
+        if (it->kind == NodeSpreadExpr) {
+            emit_spread_values_at(cg, base_ptr, elem_ty, &cursor, it->as.spread_expr.expr);
+        } else if (it->kind == NodeRangeExpr) {
+            emit_range_values_at(cg, base_ptr, elem_ty, &cursor, it);
+        } else {
+            store_array_value_at(cg, base_ptr, elem_ty, cursor++, it);
+        }
+    }
+
+    LLVMValueRef result = LLVMGetUndef(sl_ty);
+    result = LLVMBuildInsertValue(cg->builder, result, base_ptr, 0, "mk.0");
+    result = LLVMBuildInsertValue(cg->builder, result, len_v,    1, "mk.1");
+    result = LLVMBuildInsertValue(cg->builder, result, len_v,    2, "mk.2");
+    return result;
+}
 
 static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
+    if (node->as.make_expr.init)
+        return gen_make_init(cg, node);
+
     type_info_t elem_ti = node->as.make_expr.elem_type;
     LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
 

@@ -752,7 +752,9 @@ static node_t *parse_primary(parser_t *p) {
     }
 
     /* make.([]T, len) / make.([]T, len, cap) — allocate an owned slice.
-       Speculative: only treat as builtin if followed by '.(' */
+       make.{ items } — inline-initialised slice (element type comes from
+       the LHS context).  Speculative: only treat as builtin when followed
+       by '.(' or '.{'. */
     if (check(p, TokMake)) {
         parser_state_t snap = save_state(p);
         usize_t line = p->current.line;
@@ -775,6 +777,16 @@ static node_t *parse_primary(parser_t *p) {
                 n->as.make_expr.elem_type = elem_ti;
                 n->as.make_expr.len       = len_expr;
                 n->as.make_expr.cap       = cap_expr;
+                n->as.make_expr.init      = Null;
+                return n;
+            }
+            if (check(p, TokLBrace)) {
+                node_t *init = parse_compound_init(p, line);
+                node_t *n = make_node(NodeMakeExpr, line);
+                n->as.make_expr.elem_type = NO_TYPE;
+                n->as.make_expr.len       = Null;
+                n->as.make_expr.cap       = Null;
+                n->as.make_expr.init      = init;
                 return n;
             }
         }

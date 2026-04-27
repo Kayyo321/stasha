@@ -254,6 +254,12 @@ typedef struct {
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
     LLVMTypeRef hint_ret_type;      /* hint for C lib call return type (set by gen_local_var) */
 
+    /* hints for make.{...} when LHS is []T — set by gen_local_var around the
+     * init expression. hint_slice_elem.base == TypeVoid means "no slice ctx".
+     * hint_storage is the LHS storage (StorageHeap / StorageStack / Default). */
+    type_info_t hint_slice_elem;
+    storage_t   hint_storage;
+
     /* ── thread runtime function declarations ── */
     LLVMValueRef thread_dispatch_fn;
     LLVMTypeRef  thread_dispatch_type;

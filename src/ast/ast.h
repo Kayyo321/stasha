@@ -555,8 +555,12 @@ struct node {
         struct { node_t *object; node_t *lo; node_t *hi; } slice_expr;
 
         /* NodeMakeExpr: make.([]T, len) / make.([]T, len, cap)
-           cap==Null means cap=len */
-        struct { type_info_t elem_type; node_t *len; node_t *cap; } make_expr;
+           cap==Null means cap=len.
+           init!=Null is the inline-initialised form make.{...}; init points
+           at a NodeCompoundInit. In that form elem_type is filled in lazily
+           by codegen from cg->hint_slice_elem (LHS context); len/cap are
+           ignored. */
+        struct { type_info_t elem_type; node_t *len; node_t *cap; node_t *init; } make_expr;
 
         /* NodeAppendExpr: append.(slice, val) */
         struct { node_t *slice; node_t *val; } append_expr;

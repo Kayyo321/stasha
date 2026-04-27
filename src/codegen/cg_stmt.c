@@ -244,9 +244,17 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             /* nil → zero-initialised slice { null, 0, 0 } */
             init = LLVMConstNull(type);
         } else {
+            type_info_t saved_slice_elem = cg->hint_slice_elem;
+            storage_t   saved_storage    = cg->hint_storage;
+            if (ti.base == TypeSlice && ti.elem_type) {
+                cg->hint_slice_elem = ti.elem_type[0];
+                cg->hint_storage    = node->as.var_decl.storage;
+            }
             cg->hint_ret_type = type;
             init = gen_expr(cg, node->as.var_decl.init);
-            cg->hint_ret_type = Null;
+            cg->hint_ret_type   = Null;
+            cg->hint_slice_elem = saved_slice_elem;
+            cg->hint_storage    = saved_storage;
             if (!(node->as.var_decl.flags & VdeclArray))
                 init = coerce_int(cg, init, type);
         }
