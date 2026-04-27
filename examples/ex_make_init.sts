@@ -1,0 +1,73 @@
+mod ex_make_init;
+
+// ── make.{...} — inline-initialised slices ────────────────────────────────
+//
+// `make.{...}` builds a slice with literal values, ranges, and spreads — the
+// same compound-init grammar that powers `.{...}` for arrays and structs.
+// Element type is inferred from the LHS slice type. Length is computed at
+// compile time. The storage class on the LHS picks where the backing buffer
+// lives:
+//
+//   heap  []T  — malloc'd; user must `defer rem.(s);`
+//   stack []T  — alloca-backed; never escapes the function
+//
+// Caveats (v1):
+//   · No designated indices — use make.([]T, n) then assign.
+//   · Range bounds and step must be compile-time integer literals.
+//   · String spread `.."abc"` requires an i8/u8 element type.
+//   · Spreading a runtime-length slice is rejected — the size must be known.
+//   · Element type cannot have a destructor.
+//   · Heap-of-heap (`make.{}` into `heap [][]T`) is rejected.
+// ──────────────────────────────────────────────────────────────────────────
+
+int fn print_islice(stack []i32 s): void {
+    print.('[');
+    for (stack i32 i = 0; i < len.(s); i++) {
+        if (i > 0) { print.(' '); }
+        print.('{}', s[i]);
+    }
+    print.(']\n');
+}
+
+fn main(void): i32 {
+    print.('--- positional literals ---\n');
+    heap []i32 a = make.{1, 2, 3, 4};
+    defer rem.(a);
+    print.('a: '); print_islice(a);
+
+    print.('\n--- inclusive range ---\n');
+    heap []i32 b = make.{1..=8};
+    defer rem.(b);
+    print.('b: '); print_islice(b);
+
+    print.('\n--- range with step ---\n');
+    heap []i32 c = make.{0..10:2};
+    defer rem.(c);
+    print.('c: '); print_islice(c);
+
+    print.('\n--- spread of fixed array + extras ---\n');
+    stack i32 src[4] = .{10, 20, 30, 40};
+    heap []i32 d = make.{..src, 99, 100};
+    defer rem.(d);
+    print.('d: '); print_islice(d);
+
+    print.('\n--- mixed range and literals ---\n');
+    heap []i32 e = make.{0..3, 99, 100};
+    defer rem.(e);
+    print.('e: '); print_islice(e);
+
+    print.('\n--- int range coerced to f32 ---\n');
+    heap []f32 f = make.{1..=4};
+    defer rem.(f);
+    print.('f: {} {} {} {} (len={})\n', f[0], f[1], f[2], f[3], len.(f));
+
+    print.('\n--- empty slice ---\n');
+    heap []i32 z = make.{};
+    print.('z: len={} cap={}\n', len.(z), cap.(z));
+
+    print.('\n--- stack slice (alloca-backed) ---\n');
+    stack []i32 s = make.{7, 8, 9};
+    print.('s: '); print_islice(s);
+
+    ret 0;
+}

@@ -323,6 +323,8 @@ static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
     if (!rhs) return 0;
     if (rhs->kind == NodeNewExpr)   return  1;   /* heap — needs rem.() */
     if (rhs->kind == NodeNewInZone) return -1;   /* zone-managed, stack-like */
+    if (rhs->kind == NodeMakeExpr)
+        return rhs->as.make_expr.init ? 0 : 1;   /* make.{} domain follows LHS */
     if (rhs->kind == NodeComptimeFmt)
         return rhs->as.comptime_fmt.on_heap ? 1 : -1;
     if (rhs->kind == NodeAddrOf) {
