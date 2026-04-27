@@ -44,16 +44,14 @@ ext fn reduce(stack i32 *r in_arr, stack i32 len,
 }
 
 ext fn main(void): i32 {
-    stack i32 nums[16];
-    nums[0] = 1; nums[1] = 2; nums[2] = 3; nums[3] = 4; nums[4] = 5;
-
-    stack i32 evens[16];
+    /* fixed-size stack arrays + compound init `.{...}` */
+    stack i32 nums[16] = .{ 1..=5 };   /* rest zero-filled */
+    stack i32 evens[16] = .{};
+    stack i32 doubled[16] = .{};
     stack i32 ev_len = 0;
+
     filter(&nums[0], 5, &evens[0], &ev_len) { |n| n % 2 == 0 };
-
-    stack i32 doubled[16];
     map(&evens[0], ev_len, &doubled[0], &double);
-
     stack i32 sum = reduce(&doubled[0], ev_len, 0) { |acc, n| acc + n };
 
     io.printf('sum = %d\n', sum);

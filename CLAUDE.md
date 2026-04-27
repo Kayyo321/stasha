@@ -153,6 +153,30 @@ continue;   // next iteration of innermost loop (not valid in switch)
 //            & | ^ ~ << >>  && || !  < > <= >= == !=
 //            &x (addr-of)   x[i] (index)
 
+// Compound init `.{...}` — preferred over manual element-by-element fills.
+// Works for arrays AND structs (also nested).  Always prefer this over
+// `arr[0] = a; arr[1] = b; ...` — it's shorter and codegen pre-fills zeros.
+i32 a1[]  = .{1, 2, 3};                   // length inferred from initializer
+i32 b1[5] = .{1, 2};                       // remaining slots zero-filled
+i32 c1[3] = .{[1] = 5};                    // designated index: c1 = {0, 5, 0}
+stack i32 buf[16] = .{1, 2, 3, 4, 5};      // typical stack array — rest zero
+stack i32 z[64]   = .{};                    // zero-initialise the whole array
+player_t p = .{ .pos = .{ .x = 1, .y = 2 }, .hp = 100 };  // nested + designated
+player_t q = .{ ..p, .hp = 200 };          // struct merge with `..` spread
+i32 arr2[] = .{..arr1, 4, 5};              // array spread with `..`
+i8 s[]     = .{.."Hello", .." ", .."World"};  // string spread
+
+// Range expressions `start..end`, `start..=end`, `start..end:step`.
+// Half-open by default (`..` excludes end).  `..=` is inclusive.  `:step`
+// sets a stride.  Useful inside compound initializers and (where supported)
+// foreach/iteration contexts.
+i32 r1[] = .{0..5};        // 0 1 2 3 4
+i32 r2[] = .{0..=5};       // 0 1 2 3 4 5
+i32 r3[] = .{0..10:2};     // 0 2 4 6 8
+i32 mix[] = .{ ..(0..5), 10, ..(20..=25), ..(0..10:2) };  // ranges + spread compose
+
+// Slice ranges share the syntax: arr[lo:hi]  (half-open) — see foreach below.
+
 // Built-in formatted output (no import required)
 // First arg must be a string literal; {} inserts the next argument.
 // Format specs after ':' inside {}: x/X (hex), b (binary), o (octal),
