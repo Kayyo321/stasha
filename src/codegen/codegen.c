@@ -259,6 +259,7 @@ typedef struct {
      * hint_storage is the LHS storage (StorageHeap / StorageStack / Default). */
     type_info_t hint_slice_elem;
     storage_t   hint_storage;
+    int         hint_var_flags;     /* VdeclConst / VdeclFinal of LHS, when known */
 
     /* ── thread runtime function declarations ── */
     LLVMValueRef thread_dispatch_fn;

@@ -235,6 +235,10 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             check_storage_domain(cg, node->as.var_decl.storage, ak == 1, ak == -1, node->line);
     }
 
+    /* slice-LHS domain check at declaration */
+    if (node->as.var_decl.init && ti.base == TypeSlice)
+        check_slice_domain(cg, node->as.var_decl.storage, node->as.var_decl.init, node->line);
+
     if (node->as.var_decl.init) {
         LLVMValueRef init;
         /* nil → error type produces a nil error struct */
@@ -246,15 +250,18 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         } else {
             type_info_t saved_slice_elem = cg->hint_slice_elem;
             storage_t   saved_storage    = cg->hint_storage;
+            int         saved_var_flags  = cg->hint_var_flags;
             if (ti.base == TypeSlice && ti.elem_type) {
                 cg->hint_slice_elem = ti.elem_type[0];
                 cg->hint_storage    = node->as.var_decl.storage;
+                cg->hint_var_flags  = node->as.var_decl.flags;
             }
             cg->hint_ret_type = type;
             init = gen_expr(cg, node->as.var_decl.init);
             cg->hint_ret_type   = Null;
             cg->hint_slice_elem = saved_slice_elem;
             cg->hint_storage    = saved_storage;
+            cg->hint_var_flags  = saved_var_flags;
             if (!(node->as.var_decl.flags & VdeclArray))
                 init = coerce_int(cg, init, type);
         }

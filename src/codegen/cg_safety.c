@@ -85,6 +85,45 @@ static void check_stack_escape(cg_t *cg, node_t *ret_val, usize_t line) {
             }
         }
     }
+
+    /* returning a stack-stored slice — its data ptr dangles */
+    if (ret_val->kind == NodeIdentExpr) {
+        symbol_t *src = cg_lookup(cg, ret_val->as.ident.name);
+        if (src && src->stype.base == TypeSlice && src->storage == StorageStack
+                && symtab_lookup(&cg->locals, ret_val->as.ident.name)) {
+            diag_begin_error("cannot return stack slice '%s'", ret_val->as.ident.name);
+            diag_set_category(ErrCatPointerSafety);
+            diag_span(SRC_LOC(line, 0, 0), True,
+                      "'%s' borrows stack memory — it dies when the function returns",
+                      ret_val->as.ident.name);
+            diag_note("stack slices view stack-allocated memory; the data pointer would dangle after return");
+            diag_help("declare the slice as 'heap []T' and allocate with make.([]T, n) or make.{...}");
+            diag_finish();
+        }
+    }
+
+    /* returning arr[:] / arr[lo:hi] of a local fixed array — same dangle */
+    if (ret_val->kind == NodeSliceExpr) {
+        node_t *obj = ret_val->as.slice_expr.object;
+        if (obj && obj->kind == NodeIdentExpr) {
+            symbol_t *src = cg_lookup(cg, obj->as.ident.name);
+            if (src && symtab_lookup(&cg->locals, obj->as.ident.name)) {
+                boolean_t is_local_array = (LLVMGetTypeKind(src->type) == LLVMArrayTypeKind);
+                boolean_t is_stack_slice = (src->stype.base == TypeSlice
+                                            && src->storage == StorageStack);
+                if (is_local_array || is_stack_slice) {
+                    diag_begin_error("cannot return slice that views local stack memory");
+                    diag_set_category(ErrCatPointerSafety);
+                    diag_span(SRC_LOC(line, 0, 0), True,
+                              "'%s' is local — its memory dies when the function returns",
+                              obj->as.ident.name);
+                    diag_note("returned slice would point at freed stack frame");
+                    diag_help("allocate a heap slice and copy into it before returning");
+                    diag_finish();
+                }
+            }
+        }
+    }
 }
 
 /* Check: no ext function returning pointer to int (private) global */
@@ -325,6 +364,7 @@ static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
     if (rhs->kind == NodeNewInZone) return -1;   /* zone-managed, stack-like */
     if (rhs->kind == NodeMakeExpr)
         return rhs->as.make_expr.init ? 0 : 1;   /* make.{} domain follows LHS */
+    if (rhs->kind == NodeAppendExpr) return 1;   /* append always returns heap */
     if (rhs->kind == NodeComptimeFmt)
         return rhs->as.comptime_fmt.on_heap ? 1 : -1;
     if (rhs->kind == NodeAddrOf) {
@@ -345,6 +385,55 @@ static int rhs_addr_kind(cg_t *cg, node_t *rhs) {
         return 0;
     }
     return 0;
+}
+
+/* Classify a slice-typed RHS as heap (+1) / stack (-1) / unknown (0).
+ * Used for slice-LHS assignments — pointer-only rhs_addr_kind misses these. */
+static int slice_addr_kind(cg_t *cg, node_t *rhs) {
+    if (!rhs) return 0;
+    if (rhs->kind == NodeMakeExpr)
+        return rhs->as.make_expr.init ? 0 : 1;   /* make.{} domain follows LHS */
+    if (rhs->kind == NodeAppendExpr) return 1;
+    if (rhs->kind == NodeNilExpr)    return 0;
+    if (rhs->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, rhs->as.ident.name);
+        if (sym && sym->stype.base == TypeSlice) {
+            if (sym->storage == StorageHeap)  return  1;
+            if (sym->storage == StorageStack) return -1;
+        }
+        return 0;
+    }
+    if (rhs->kind == NodeSliceExpr) {
+        node_t *obj = rhs->as.slice_expr.object;
+        if (obj && obj->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+            if (sym) {
+                if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) return -1;
+                if (sym->stype.base == TypeSlice) {
+                    if (sym->storage == StorageHeap)  return  1;
+                    if (sym->storage == StorageStack) return -1;
+                }
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+/* Reject storing a stack-borrowed slice into a heap slice variable.
+ * The reverse (heap → stack reslice) stays allowed — it is a borrowed view. */
+static void check_slice_domain(cg_t *cg, storage_t lhs_storage, node_t *rhs, usize_t line) {
+    if (cg->in_unsafe > 0) return;
+    if (lhs_storage != StorageHeap) return;
+    int ak = slice_addr_kind(cg, rhs);
+    if (ak == -1) {
+        diag_begin_error("cannot assign a stack-borrowed slice to a heap slice");
+        diag_set_category(ErrCatStorageDomain);
+        diag_span(SRC_LOC(line, 0, 0), True, "assignment here");
+        diag_note("heap-qualified slices must own their backing allocation");
+        diag_help("allocate with make.([]T, n) or make.{...} into the heap slice");
+        diag_finish();
+    }
 }
 
 /* ── Unconsumed-future check ─────────────────────────────────────────────
