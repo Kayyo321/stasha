@@ -1,0 +1,14 @@
+mod row01_scalars;
+
+cheader "support/scalars.h" search "tests/cinterop";
+
+fn main(void): i32 {
+    if scal_id_i32(42) != 42 { print.("FAIL i32\n"); ret 1; }
+    if scal_id_i64(-1234567890123) != -1234567890123 { print.("FAIL i64\n"); ret 1; }
+    if scal_id_u32(0xdeadbeef) != 0xdeadbeef { print.("FAIL u32\n"); ret 1; }
+    if scal_sum_i32(7, 35) != 42 { print.("FAIL sum_i32\n"); ret 1; }
+    if scal_sum_f64(1.5, 2.25) != 3.75 { print.("FAIL sum_f64\n"); ret 1; }
+    if scal_mix(1, 2, 3, 4) != 10 { print.("FAIL mix\n"); ret 1; }
+    print.("01_scalars: ok\n");
+    ret 0;
+}

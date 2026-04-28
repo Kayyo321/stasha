@@ -112,7 +112,7 @@ else
   endif
 endif
 
-.PHONY: all stdlib stdlib-test thread-runtime zone-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads
+.PHONY: all stdlib stdlib-test thread-runtime zone-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop
 
 all: $(TARGET) thread-runtime zone-runtime
 
@@ -306,6 +306,36 @@ $(ZONE_RUNTIME_LIB): $(ZONE_RUNTIME_OBJ) | bin
 
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
+
+# ── C interop test suite ───────────────────────────────────────────────────
+# Compiles every .c under tests/cinterop/support/ into a single static archive
+# linked against the .sts tests via `stasha -l`.  The shell driver runs each
+# matrix row, then the LLVM smoke capstone, then the negative tests.
+
+CINTEROP_DIR        = tests/cinterop
+CINTEROP_BUILD      = $(CINTEROP_DIR)/build
+CINTEROP_SUPPORT_C  = $(wildcard $(CINTEROP_DIR)/support/*.c)
+CINTEROP_SUPPORT_O  = $(patsubst $(CINTEROP_DIR)/support/%.c,$(CINTEROP_BUILD)/%.o,$(CINTEROP_SUPPORT_C))
+CINTEROP_SUPPORT_LIB = $(CINTEROP_BUILD)/libcinterop_support.a
+
+$(CINTEROP_BUILD)/%.o: $(CINTEROP_DIR)/support/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O0 -Wall -fPIC -c -o $@ $<
+
+$(CINTEROP_SUPPORT_LIB): $(CINTEROP_SUPPORT_O)
+	@mkdir -p $(dir $@)
+	@if [ -n "$(CINTEROP_SUPPORT_O)" ]; then \
+	    ar rcs $@ $(CINTEROP_SUPPORT_O); \
+	    ranlib $@; \
+	else \
+	    rm -f $@; \
+	fi
+
+test-cinterop: $(TARGET) $(CINTEROP_SUPPORT_LIB)
+	@bash $(CINTEROP_DIR)/run_cinterop_tests.sh $(TARGET)
+
+clean-cinterop:
+	rm -rf $(CINTEROP_BUILD)
 
 # Run all thread-related test programs via 'stasha test'
 test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
