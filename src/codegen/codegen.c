@@ -261,6 +261,24 @@ typedef struct {
     storage_t   hint_storage;
     int         hint_var_flags;     /* VdeclConst / VdeclFinal of LHS, when known */
 
+    /* ── async runtime function declarations ── */
+    LLVMValueRef async_dispatch_fn;
+    LLVMTypeRef  async_dispatch_type;
+    LLVMValueRef async_get_fn;
+    LLVMTypeRef  async_get_type;
+    LLVMValueRef async_wait_fn;
+    LLVMTypeRef  async_wait_type;
+    LLVMValueRef async_ready_fn;
+    LLVMTypeRef  async_ready_type;
+    LLVMValueRef async_drop_fn;
+    LLVMTypeRef  async_drop_type;
+    LLVMValueRef async_wait_any_fn;
+    LLVMTypeRef  async_wait_any_type;
+    LLVMValueRef async_cancel_fn;
+    LLVMTypeRef  async_cancel_type;
+    LLVMValueRef async_cancelled_fn;
+    LLVMTypeRef  async_cancelled_type;
+
     /* ── thread runtime function declarations ── */
     LLVMValueRef thread_dispatch_fn;
     LLVMTypeRef  thread_dispatch_type;
@@ -618,6 +636,55 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                         realloc_params, 2, 0);
     cg.realloc_fn = LLVMAddFunction(cg.module, "realloc", cg.realloc_type);
     symtab_add(&cg.globals, "realloc", cg.realloc_fn, Null, rt_dummy, False);
+
+    /* ── async runtime function declarations ── */
+    {
+        LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg.ctx, 0);
+        LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg.ctx);
+        LLVMTypeRef i32_t  = LLVMInt32TypeInContext(cg.ctx);
+        LLVMTypeRef void_t = LLVMVoidTypeInContext(cg.ctx);
+        type_info_t rt_dummy2 = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
+
+        LLVMTypeRef ad_params[3] = { ptr_t, ptr_t, i64_t };
+        cg.async_dispatch_type = LLVMFunctionType(ptr_t, ad_params, 3, 0);
+        cg.async_dispatch_fn   = LLVMAddFunction(cg.module, "__async_dispatch", cg.async_dispatch_type);
+        symtab_add(&cg.globals, "__async_dispatch", cg.async_dispatch_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef ag_params[1] = { ptr_t };
+        cg.async_get_type = LLVMFunctionType(ptr_t, ag_params, 1, 0);
+        cg.async_get_fn   = LLVMAddFunction(cg.module, "__async_get", cg.async_get_type);
+        symtab_add(&cg.globals, "__async_get", cg.async_get_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef aw_params[1] = { ptr_t };
+        cg.async_wait_type = LLVMFunctionType(void_t, aw_params, 1, 0);
+        cg.async_wait_fn   = LLVMAddFunction(cg.module, "__async_wait", cg.async_wait_type);
+        symtab_add(&cg.globals, "__async_wait", cg.async_wait_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef ar_params[1] = { ptr_t };
+        cg.async_ready_type = LLVMFunctionType(i32_t, ar_params, 1, 0);
+        cg.async_ready_fn   = LLVMAddFunction(cg.module, "__async_ready", cg.async_ready_type);
+        symtab_add(&cg.globals, "__async_ready", cg.async_ready_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef adr_params[1] = { ptr_t };
+        cg.async_drop_type = LLVMFunctionType(void_t, adr_params, 1, 0);
+        cg.async_drop_fn   = LLVMAddFunction(cg.module, "__async_drop", cg.async_drop_type);
+        symtab_add(&cg.globals, "__async_drop", cg.async_drop_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef awa_params[2] = { ptr_t, i32_t };
+        cg.async_wait_any_type = LLVMFunctionType(i32_t, awa_params, 2, 0);
+        cg.async_wait_any_fn   = LLVMAddFunction(cg.module, "__async_wait_any", cg.async_wait_any_type);
+        symtab_add(&cg.globals, "__async_wait_any", cg.async_wait_any_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef ac_params[1] = { ptr_t };
+        cg.async_cancel_type = LLVMFunctionType(void_t, ac_params, 1, 0);
+        cg.async_cancel_fn   = LLVMAddFunction(cg.module, "__async_cancel", cg.async_cancel_type);
+        symtab_add(&cg.globals, "__async_cancel", cg.async_cancel_fn, Null, rt_dummy2, False);
+
+        LLVMTypeRef acd_params[1] = { ptr_t };
+        cg.async_cancelled_type = LLVMFunctionType(i32_t, acd_params, 1, 0);
+        cg.async_cancelled_fn   = LLVMAddFunction(cg.module, "__async_cancelled", cg.async_cancelled_type);
+        symtab_add(&cg.globals, "__async_cancelled", cg.async_cancelled_fn, Null, rt_dummy2, False);
+    }
 
     /* ── thread runtime function declarations ── */
     {

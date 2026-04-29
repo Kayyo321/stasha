@@ -1588,8 +1588,11 @@ static result_t compile_file(const cfile_params_t *p) {
         boolean_t freestanding = ast->as.module.freestanding;
 
         if (!freestanding) {
-            /* EmitExe / EmitTest: link the thread and zone runtimes. */
-            char rt_path[512];
+            /* EmitExe / EmitTest: link the async/coroutine, thread, and zone runtimes. */
+            static char async_rt_path[512];
+            snprintf(async_rt_path, sizeof(async_rt_path), "%s/coro_runtime.a", bin_dir);
+            if (all_lib_count < 511) all_libs[all_lib_count++] = async_rt_path;
+            static char rt_path[512];
             snprintf(rt_path, sizeof(rt_path), "%s/thread_runtime.a", bin_dir);
             if (all_lib_count < 511) all_libs[all_lib_count++] = rt_path;
             static char zone_rt_path[512];

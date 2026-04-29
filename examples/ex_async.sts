@@ -2,18 +2,11 @@ mod ex_async;
 
 lib "stdio" = io;
 
-// ── async/await surface ────────────────────────────────────────────────────
+// ── async task runtime surface ────────────────────────────────────────────
 //
-// async fn marks a function for use with async.() / await.() shorthand.
-// Typed futures: future.[T] carries the element type so await(f) can
-// extract the value without restating T at every use.
-//
-//   async fn work(args): T { ... }
-//   stack future.[T] f = async.(work)(args);   // dispatch, typed handle
-//   stack T v          = await(f);              // block, load T, drop
-//   stack T v          = await.(work)(args);    // one-shot dispatch+await
-//   await.all(f1, f2, ...)                      // block until all done
-//   await.any(f1, f2, ...)                      // return first winner, drop rest
+// The dedicated async runtime now backs `async.()` dispatch. Outside an
+// `async fn`, you can still inspect and collect task handles explicitly with
+// `future.ready`, `future.get.(T)`, `future.wait`, and `future.drop`.
 
 int atomic i32 work_done = 0;
 
@@ -30,72 +23,53 @@ async fn add(i32 a, i32 b): i32 {
 }
 
 fn main(void): i16 {
-    // ── deferred form: dispatch, then await typed value ──
     stack future.[i32] fs = async.(square)(7);
-    stack i32          sq = await(fs);
-    io.printf('7^2 = %d\n', sq);          // 49
+    stack i32 sq = future.get.(i32)(fs);
+    io.printf('7^2 = %d\n', sq);
+    future.drop(fs);
 
-    // ── one-shot form: dispatch + await in one expression ──
-    stack i32 sum = await.(add)(10, 32);
-    io.printf('10+32 = %d\n', sum);       // 42
+    stack future.[i32] sum_f = async.(add)(10, 32);
+    stack i32 sum = future.get.(i32)(sum_f);
+    io.printf('10+32 = %d\n', sum);
+    future.drop(sum_f);
 
-    // ── await.all — block until every future completes, homogeneous T ──
-    stack future.[i32] fa = async.(square)(3);
-    stack future.[i32] fb = async.(square)(4);
-    stack future.[i32] fc = async.(square)(5);
-    stack let [a, b, c] = await.all(fa, fb, fc);
-    io.printf('%d %d %d\n', a, b, c);      // 9 16 25
-
-    // ── await.any — return first result, drop losers ──
-    stack future.[i32] ga = async.(square)(6);
-    stack future.[i32] gb = async.(square)(7);
-    stack i32 winner = await.any(ga, gb);
-    io.printf('winner = %d\n', winner);    // 36 or 49
-
-    // ── void future + await(f) ──
     stack future.[void] vf = async.(worker)();
-    await(vf);
-    io.printf('work_done = %d\n', work_done);   // 1
+    future.wait(vf);
+    future.drop(vf);
+    io.printf('work_done = %d\n', work_done);
 
     ret 0;
 }
 
-test 'async deferred + await' {
+test 'async future get/drop uses async runtime' {
     stack future.[i32] f = async.(square)(5);
-    expect_eq.(await(f), 25);
+    expect_eq.(future.get.(i32)(f), 25);
+    future.drop(f);
 }
 
-test 'await.(fn)(args) one-shot' {
-    expect_eq.(await.(add)(6, 7), 13);
-    expect_eq.(await.(square)(9), 81);
+test 'async future ready eventually flips' {
+    stack future.[i32] f = async.(square)(9);
+    inf {
+        if (future.ready(f)) {
+            break;
+        }
+    }
+    expect_eq.(future.get.(i32)(f), 81);
+    future.drop(f);
 }
 
-test 'await.all returns values in order' {
-    stack future.[i32] fa = async.(square)(2);
-    stack future.[i32] fb = async.(square)(3);
-    stack let [a, b] = await.all(fa, fb);
-    expect_eq.(a, 4);
-    expect_eq.(b, 9);
+test 'void async future wait/drop' {
+    stack future.[void] f = async.(worker)();
+    future.wait(f);
+    future.drop(f);
+    expect.(work_done >= 1);
 }
 
-test 'await.any returns one of the values' {
-    stack future.[i32] fa = async.(square)(4);
-    stack future.[i32] fb = async.(square)(5);
-    stack i32 w = await.any(fa, fb);
-    expect.(w == 16 || w == 25);
-}
-
-test 'async + thread interop: same module, mixed dispatch' {
+test 'async + thread interop: same module, mixed runtimes' {
     stack future.[i32] f1 = async.(square)(3);
     future             f2 = thread.(add)(1, 2);
-    expect_eq.(await(f1), 9);
+    expect_eq.(future.get.(i32)(f1), 9);
+    future.drop(f1);
     expect_eq.(future.get.(i32)(f2), 3);
     future.drop(f2);
-}
-
-test 'void future: await(f) blocks and drops' {
-    stack future.[void] f = async.(worker)();
-    await(f);
-    /* worker incremented work_done; exact value depends on test ordering */
-    expect.(work_done >= 1);
 }

@@ -2209,9 +2209,10 @@ static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
 }
 
 /* Shared lowering for thread.() and async.(): pack args on the heap, call
-   __thread_dispatch, return the __future_t*. */
+   the provided runtime dispatch function, return the opaque handle. */
 static LLVMValueRef gen_dispatch_to_pool(cg_t *cg, node_t *diag_node,
-        const char *callee, node_list_t *args) {
+        const char *callee, node_list_t *args,
+        LLVMValueRef dispatch_fn, LLVMTypeRef dispatch_type, const char *result_name) {
     symbol_t *sym = cg_lookup(cg, callee);
     if (!sym) {
         diag_begin_error("undefined function '%s'", callee);
@@ -2255,14 +2256,15 @@ static LLVMValueRef gen_dispatch_to_pool(cg_t *cg, node_t *diag_node,
                                            (unsigned long long)w->result_size, 0);
     LLVMValueRef dispatch_args[3] = { w->wrapper_fn, args_ptr, result_sz };
     return LLVMBuildCall2(cg->builder,
-                          cg->thread_dispatch_type,
-                          cg->thread_dispatch_fn,
-                          dispatch_args, 3, "future");
+                          dispatch_type,
+                          dispatch_fn,
+                          dispatch_args, 3, result_name);
 }
 
 static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
     return gen_dispatch_to_pool(cg, node,
-        node->as.thread_call.callee, &node->as.thread_call.args);
+        node->as.thread_call.callee, &node->as.thread_call.args,
+        cg->thread_dispatch_fn, cg->thread_dispatch_type, "thread_future");
 }
 
 static LLVMValueRef gen_async_call(cg_t *cg, node_t *node) {
@@ -2275,7 +2277,8 @@ static LLVMValueRef gen_async_call(cg_t *cg, node_t *node) {
                   callee, callee);
         diag_finish();
     }
-    return gen_dispatch_to_pool(cg, node, callee, &node->as.async_call.args);
+    return gen_dispatch_to_pool(cg, node, callee, &node->as.async_call.args,
+        cg->async_dispatch_fn, cg->async_dispatch_type, "async_future");
 }
 
 /* Resolve the element type `T` of a `future.[T]` handle expression. Returns
@@ -2283,10 +2286,8 @@ static LLVMValueRef gen_async_call(cg_t *cg, node_t *node) {
    unresolved handle); caller falls back to the wait-and-drop lowering. */
 static type_info_t resolve_future_elem_type(cg_t *cg, node_t *handle) {
     if (!handle) return NO_TYPE;
-    if (handle->kind == NodeAsyncCall || handle->kind == NodeThreadCall) {
-        const char *callee = (handle->kind == NodeAsyncCall)
-            ? handle->as.async_call.callee
-            : handle->as.thread_call.callee;
+    if (handle->kind == NodeAsyncCall) {
+        const char *callee = handle->as.async_call.callee;
         node_t *fn = find_fn_decl(cg, callee);
         if (fn && fn->as.fn_decl.return_count > 0) {
             type_info_t rt = fn->as.fn_decl.return_types[0];
@@ -2316,20 +2317,20 @@ static LLVMValueRef gen_await(cg_t *cg, node_t *node) {
 
     if (et.base == TypeVoid && !et.is_pointer) {
         /* void future: wait + drop, no typed result */
-        LLVMBuildCall2(cg->builder, cg->future_wait_type,
-                       cg->future_wait_fn, call_args, 1, "");
-        LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                       cg->future_drop_fn, call_args, 1, "");
+        LLVMBuildCall2(cg->builder, cg->async_wait_type,
+                       cg->async_wait_fn, call_args, 1, "");
+        LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                       cg->async_drop_fn, call_args, 1, "");
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
     /* typed: __future_get → raw ptr, load T, __future_drop (frees buffer) */
-    LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
-                                       cg->future_get_fn, call_args, 1, "await_raw");
+    LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->async_get_type,
+                                       cg->async_get_fn, call_args, 1, "await_raw");
     LLVMTypeRef lt = get_llvm_type(cg, et);
     LLVMValueRef val = LLVMBuildLoad2(cg->builder, lt, raw, "await_val");
-    LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                   cg->future_drop_fn, call_args, 1, "");
+    LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                   cg->async_drop_fn, call_args, 1, "");
     return val;
 }
 
@@ -2389,10 +2390,10 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
             for (usize_t i = 0; i < n; i++) {
                 LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
                 LLVMValueRef ca[1] = { hv };
-                LLVMBuildCall2(cg->builder, cg->future_wait_type,
-                               cg->future_wait_fn, ca, 1, "");
-                LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                               cg->future_drop_fn, ca, 1, "");
+                LLVMBuildCall2(cg->builder, cg->async_wait_type,
+                               cg->async_wait_fn, ca, 1, "");
+                LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                               cg->async_drop_fn, ca, 1, "");
             }
             deallocate(slots_h);
             return LLVMConstInt(i32_t, 0, 0);
@@ -2407,12 +2408,12 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
         for (usize_t i = 0; i < n; i++) {
             LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
             LLVMValueRef ca[1] = { hv };
-            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
-                                               cg->future_get_fn, ca, 1, "awall_raw");
+            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->async_get_type,
+                                               cg->async_get_fn, ca, 1, "awall_raw");
             LLVMValueRef v = LLVMBuildLoad2(cg->builder, elem_lt, raw, "awall_v");
             agg = LLVMBuildInsertValue(cg->builder, agg, v, (unsigned)i, "awall");
-            LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                           cg->future_drop_fn, ca, 1, "");
+            LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                           cg->async_drop_fn, ca, 1, "");
         }
         deallocate(tys_h);
         deallocate(slots_h);
@@ -2433,8 +2434,8 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
         LLVMBuildStore(cg->builder, hv, ep);
     }
     LLVMValueRef wa_args[2] = { arr, LLVMConstInt(i32_t, n, 0) };
-    LLVMValueRef win_i = LLVMBuildCall2(cg->builder, cg->future_wait_any_type,
-                                         cg->future_wait_any_fn, wa_args, 2, "awany_win");
+    LLVMValueRef win_i = LLVMBuildCall2(cg->builder, cg->async_wait_any_type,
+                                         cg->async_wait_any_fn, wa_args, 2, "awany_win");
 
     /* Drop losers: for i in 0..N if i != win_i → drop(slots[i]). Winner:
        get+load+drop, stash value in a slot reused as return. */
@@ -2455,15 +2456,15 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
             LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
             LLVMValueRef ca[1] = { hv };
             if (et0_void) {
-                LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                               cg->future_drop_fn, ca, 1, "");
+                LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                               cg->async_drop_fn, ca, 1, "");
             } else {
-                LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
-                                                   cg->future_get_fn, ca, 1, "awany_raw");
+                LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->async_get_type,
+                                                   cg->async_get_fn, ca, 1, "awany_raw");
                 LLVMValueRef v = LLVMBuildLoad2(cg->builder, elem_lt, raw, "awany_vload");
                 LLVMBuildStore(cg->builder, v, result_slot);
-                LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                               cg->future_drop_fn, ca, 1, "");
+                LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                               cg->async_drop_fn, ca, 1, "");
             }
             LLVMBuildBr(cg->builder, after_i);
         }
@@ -2472,8 +2473,8 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
         {
             LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
             LLVMValueRef ca[1] = { hv };
-            LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                           cg->future_drop_fn, ca, 1, "");
+            LLVMBuildCall2(cg->builder, cg->async_drop_type,
+                           cg->async_drop_fn, ca, 1, "");
             LLVMBuildBr(cg->builder, after_i);
         }
 
@@ -2492,33 +2493,48 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
     LLVMValueRef handle = gen_expr(cg, node->as.future_op.handle);
     LLVMValueRef call_args[1] = { handle };
+    boolean_t use_async_runtime = False;
+    if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, node->as.future_op.handle->as.ident.name);
+        if (sym && sym->stype.base == TypeFuture && sym->stype.elem_type)
+            use_async_runtime = True;
+    } else if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeAsyncCall) {
+        use_async_runtime = True;
+    }
+
+    LLVMTypeRef wait_ty  = use_async_runtime ? cg->async_wait_type  : cg->future_wait_type;
+    LLVMValueRef wait_fn = use_async_runtime ? cg->async_wait_fn    : cg->future_wait_fn;
+    LLVMTypeRef ready_ty = use_async_runtime ? cg->async_ready_type : cg->future_ready_type;
+    LLVMValueRef ready_fn= use_async_runtime ? cg->async_ready_fn   : cg->future_ready_fn;
+    LLVMTypeRef get_ty   = use_async_runtime ? cg->async_get_type   : cg->future_get_type;
+    LLVMValueRef get_fn  = use_async_runtime ? cg->async_get_fn     : cg->future_get_fn;
+    LLVMTypeRef drop_ty  = use_async_runtime ? cg->async_drop_type  : cg->future_drop_type;
+    LLVMValueRef drop_fn = use_async_runtime ? cg->async_drop_fn    : cg->future_drop_fn;
 
     switch (node->as.future_op.op) {
         case FutureWait:
-            LLVMBuildCall2(cg->builder, cg->future_wait_type,
-                           cg->future_wait_fn, call_args, 1, "");
+            LLVMBuildCall2(cg->builder, wait_ty, wait_fn, call_args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 
         case FutureReady:
-            return LLVMBuildCall2(cg->builder, cg->future_ready_type,
-                                   cg->future_ready_fn, call_args, 1, "fready");
+            return LLVMBuildCall2(cg->builder, ready_ty,
+                                   ready_fn, call_args, 1, "fready");
 
         case FutureGetRaw:
-            return LLVMBuildCall2(cg->builder, cg->future_get_type,
-                                   cg->future_get_fn, call_args, 1, "fget");
+            return LLVMBuildCall2(cg->builder, get_ty,
+                                   get_fn, call_args, 1, "fget");
 
         case FutureGet: {
             /* block and get the void* result pointer */
-            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
-                                               cg->future_get_fn, call_args, 1, "fget_raw");
+            LLVMValueRef raw = LLVMBuildCall2(cg->builder, get_ty,
+                                               get_fn, call_args, 1, "fget_raw");
             /* load the typed value from the result buffer */
             LLVMTypeRef llvm_ret_type = get_llvm_type(cg, node->as.future_op.get_type);
             return LLVMBuildLoad2(cg->builder, llvm_ret_type, raw, "fget_val");
         }
 
         case FutureDrop:
-            LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                           cg->future_drop_fn, call_args, 1, "");
+            LLVMBuildCall2(cg->builder, drop_ty, drop_fn, call_args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);

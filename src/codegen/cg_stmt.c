@@ -27,9 +27,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* Infer future.[T] / stream.[T] when the RHS is a thread/async
            dispatch, so later lowering can recover the carried element type. */
         node_t *init_n = node->as.var_decl.init;
-        if (init_n && (init_n->kind == NodeAsyncCall || init_n->kind == NodeThreadCall)) {
-            const char *callee = (init_n->kind == NodeAsyncCall)
-                ? init_n->as.async_call.callee : init_n->as.thread_call.callee;
+        if (init_n && init_n->kind == NodeAsyncCall) {
+            const char *callee = init_n->as.async_call.callee;
             node_t *fn = find_fn_decl(cg, callee);
             ti.base       = TypeFuture;
             ti.is_pointer = False;
@@ -41,7 +40,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 if (ti.base == TypeStream && rt.base == TypeStream && rt.elem_type) {
                     ti.elem_type = alloc_type_array(1);
                     ti.elem_type[0] = rt.elem_type[0];
-                } else if (!(rt.base == TypeVoid && !rt.is_pointer)) {
+                } else {
                     ti.elem_type = alloc_type_array(1);
                     ti.elem_type[0] = rt;
                 }
