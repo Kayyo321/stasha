@@ -334,6 +334,30 @@ $(CINTEROP_SUPPORT_LIB): $(CINTEROP_SUPPORT_O)
 test-cinterop: $(TARGET) $(CINTEROP_SUPPORT_LIB)
 	@bash $(CINTEROP_DIR)/run_cinterop_tests.sh $(TARGET)
 
+# LLVM C API capstone — needs the in-tree LLVM build (`make llvm`).  Uses
+# llvm-config to assemble the libfile list and drives stasha to compile +
+# link the .sts directly.  Also verifies the produced binary emits a
+# valid LLVM IR module to stdout.
+LLVM_SMOKE_SRC  = $(CINTEROP_DIR)/llvm_smoke.sts
+LLVM_SMOKE_BIN  = $(CINTEROP_BUILD)/llvm_smoke
+
+test-llvm-smoke: $(TARGET) $(LLVM_SMOKE_SRC) | $(LLVM_CFG)
+	@mkdir -p $(CINTEROP_BUILD)
+	@echo "=== LLVM C API capstone ==="
+	@LIBS=$$($(LLVM_CFG) --libfiles core analysis native lto passes option codegen bitwriter debuginfodwarf objcarcopts textapi object 2>/dev/null); \
+	LARGS=""; for L in $$LIBS; do LARGS="$$LARGS -l $$L"; done; \
+	OUT=$$($(TARGET) build $(LLVM_SMOKE_SRC) -o $(LLVM_SMOKE_BIN) $$LARGS 2>&1); \
+	if [ ! -x $(LLVM_SMOKE_BIN) ]; then \
+	    echo "  FAIL llvm_smoke (compile/link):"; echo "$$OUT" | grep -E '^error:|ld64.lld' | head -5; exit 1; \
+	fi; \
+	OUT=$$($(LLVM_SMOKE_BIN) 2>&1); \
+	if echo "$$OUT" | grep -qE 'ModuleID|target triple'; then \
+	    echo "  PASS llvm_smoke"; \
+	    echo "$$OUT" | head -3 | sed 's/^/    | /'; \
+	else \
+	    echo "  FAIL llvm_smoke (no IR in stdout):"; echo "$$OUT" | head -5; exit 1; \
+	fi
+
 clean-cinterop:
 	rm -rf $(CINTEROP_BUILD)
 

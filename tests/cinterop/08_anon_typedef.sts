@@ -1,0 +1,16 @@
+mod row08_anon_typedef;
+
+cheader "support/structs.h" search "tests/cinterop";
+
+// point_t is `typedef struct { int32_t x; int32_t y; } point_t;` —
+// the underlying struct is anonymous; the cheader synthesizer must
+// surface the typedef name as the Stasha type name.
+
+fn main(void): i32 {
+    point_t p;
+    p.x = 11;
+    p.y = 22;
+    if p.x + p.y != 33 { print.("FAIL\n"); ret 1; }
+    print.("08_anon_typedef: ok\n");
+    ret 0;
+}

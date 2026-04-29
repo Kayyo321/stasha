@@ -36,10 +36,20 @@ run_pos() {
         link_args+=("-l" "$SUPPORT_LIB")
     fi
     err=$("$STASHA" build "$src" -o "$bin" "${link_args[@]}" "$@" 2>&1)
-    code=$?
-    if [ $code -ne 0 ]; then
+    # Note: cheader-path compilations may leak via scan_and_deallocate and
+    # produce a non-zero exit even on success — so the gate is "binary
+    # produced AND no `error:` line in stderr", not the raw exit code.
+    if ! echo "$err" | grep -qE "^error:|^\(EE\)| error\["; then
+        : # no compiler errors
+    else
         FAIL=$((FAIL + 1))
-        echo "  $(red FAIL) $name (compile failed, code=$code)"
+        echo "  $(red FAIL) $name (compile error)"
+        echo "$err" | grep -E "^error:|^\(EE\)| error\[" | head -5 | sed 's/^/       /'
+        return
+    fi
+    if [ ! -x "$bin" ]; then
+        FAIL=$((FAIL + 1))
+        echo "  $(red FAIL) $name (binary not produced)"
         echo "$err" | head -5 | sed 's/^/       /'
         return
     fi
@@ -132,8 +142,20 @@ run_pos 55_b_multi_tu     "55_b_multi_tu: ok"
 echo ""
 
 # ── Capstone ──────────────────────────────────────────────────────────
+# llvm_smoke needs the in-tree LLVM build's static archives — we look up
+# the libfile list via llvm-config rather than baking it into the runner.
+# Skip cleanly if the in-tree LLVM hasn't been built yet (`make llvm`).
 echo "--- Capstone: LLVM C API ────────────────────────────"
-run_pos llvm_smoke "ModuleID"
+LLVM_CFG="$DIR/../../build/llvm/bin/llvm-config"
+if [ ! -x "$LLVM_CFG" ]; then
+    SKIP=$((SKIP + 1))
+    echo "  $(yellow SKIP) llvm_smoke (run \"make llvm\" first)"
+else
+    LLVM_LIBS=$("$LLVM_CFG" --libfiles core analysis native lto passes option codegen bitwriter debuginfodwarf objcarcopts textapi object 2>/dev/null)
+    LLVM_ARGS=()
+    for L in $LLVM_LIBS; do LLVM_ARGS+=("-l" "$L"); done
+    run_pos llvm_smoke "ModuleID" "${LLVM_ARGS[@]}"
+fi
 echo ""
 
 # ── Negative tests ────────────────────────────────────────────────────

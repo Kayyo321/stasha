@@ -70,6 +70,12 @@ static const char *ch_default_dirs[] = {
 
 static cheader_result_t *ch_active_result = NULL;
 
+/* True while scanning the cheader path the user explicitly wrote.
+ * Toggled to False around #include recursion so transitively-pulled
+ * declarations (system headers, support helpers) can be distinguished
+ * from the user's own definitions when issuing FFI-fatal errors. */
+static boolean_t ch_at_top_file = True;
+
 static void ch_track_heap(heap_t h) {
     if (!ch_active_result || !h.pointer) return;
     if (ch_active_result->owned_heap_count >= ch_active_result->owned_heap_cap) {
@@ -263,8 +269,15 @@ static boolean_t ch_result_has_const(cheader_result_t *r, const char *name) {
     return False;
 }
 
+static boolean_t ch_result_has_global(cheader_result_t *r, const char *name) {
+    for (usize_t i = 0; i < r->global_count; i++)
+        if (strcmp(r->globals[i].name, name) == 0) return True;
+    return False;
+}
+
 static void ch_push_fn(cheader_result_t *r, c_fn_t fn) {
     if (!fn.name || ch_result_has_fn(r, fn.name)) return;
+    fn.from_user_header = ch_at_top_file;
     if (r->fn_count == 0) {
         r->fns_heap = allocate(8, sizeof(c_fn_t));
         r->fns = r->fns_heap.pointer;
@@ -278,6 +291,7 @@ static void ch_push_fn(cheader_result_t *r, c_fn_t fn) {
 
 static void ch_push_struct(cheader_result_t *r, c_struct_t st) {
     if (!st.name || ch_result_has_struct(r, st.name)) return;
+    st.from_user_header = ch_at_top_file;
     if (r->struct_count == 0) {
         r->structs_heap = allocate(8, sizeof(c_struct_t));
         r->structs = r->structs_heap.pointer;
@@ -291,6 +305,7 @@ static void ch_push_struct(cheader_result_t *r, c_struct_t st) {
 
 static void ch_push_typedef(cheader_result_t *r, c_typedef_t td) {
     if (!td.name || ch_result_has_typedef(r, td.name)) return;
+    td.from_user_header = ch_at_top_file;
     if (r->tdef_count == 0) {
         r->tdefs_heap = allocate(8, sizeof(c_typedef_t));
         r->tdefs = r->tdefs_heap.pointer;
@@ -326,6 +341,20 @@ static void ch_push_const(cheader_result_t *r, c_const_t cn) {
         r->consts = r->consts_heap.pointer;
     }
     r->consts[r->const_count++] = cn;
+}
+
+static void ch_push_global(cheader_result_t *r, c_global_t g) {
+    if (!g.name || ch_result_has_global(r, g.name)) return;
+    g.from_user_header = ch_at_top_file;
+    if (r->global_count == 0) {
+        r->globals_heap = allocate(8, sizeof(c_global_t));
+        r->globals = r->globals_heap.pointer;
+    } else if ((r->global_count & (r->global_count - 1)) == 0) {
+        usize_t cap = r->global_count < 8 ? 8 : r->global_count;
+        r->globals_heap = reallocate(r->globals_heap, (cap * 2) * sizeof(c_global_t));
+        r->globals = r->globals_heap.pointer;
+    }
+    r->globals[r->global_count++] = g;
 }
 
 static c_type_t ch_type_make(c_type_kind_t kind) {
@@ -618,7 +647,16 @@ static c_type_t ch_parse_declspec(ch_ctx_t *ctx, ch_tok_stream_t *ts,
             continue;
         }
         if (strcmp(s, "const") == 0) { *is_const = True; ts->pos++; continue; }
-        if (strcmp(s, "volatile") == 0 || strcmp(s, "register") == 0) { ts->pos++; continue; }
+        if (strcmp(s, "volatile") == 0 || strcmp(s, "register") == 0
+                || strcmp(s, "restrict") == 0 || strcmp(s, "__restrict") == 0
+                || strcmp(s, "__restrict__") == 0
+                || strcmp(s, "_Atomic") == 0 || strcmp(s, "_Nullable") == 0
+                || strcmp(s, "_Nonnull") == 0 || strcmp(s, "_Null_unspecified") == 0) {
+            ts->pos++; continue;
+        }
+        if (strcmp(s, "_Bool") == 0 || strcmp(s, "bool") == 0) {
+            t.kind = CTypeBool; ts->pos++; continue;
+        }
         if (strcmp(s, "unsigned") == 0) { seen_unsigned = True; ts->pos++; continue; }
         if (strcmp(s, "signed") == 0) { seen_signed = True; ts->pos++; continue; }
         if (strcmp(s, "long") == 0) { long_count++; ts->pos++; continue; }
@@ -636,7 +674,15 @@ static c_type_t ch_parse_declspec(ch_ctx_t *ctx, ch_tok_stream_t *ts,
             continue;
         }
         if (strcmp(s, "float") == 0) { t.kind = CTypeFloat; ts->pos++; continue; }
-        if (strcmp(s, "double") == 0) { t.kind = CTypeDouble; ts->pos++; continue; }
+        if (strcmp(s, "double") == 0) {
+            /* `long double` is an 80-/128-bit ABI type that Stasha can't
+             * lower to LLVM IR portably yet — flag it distinctly so the
+             * mapping layer in main.c can emit a precise error instead
+             * of silently degrading to `double`. */
+            t.kind = (long_count > 0) ? CTypeLongDouble : CTypeDouble;
+            ts->pos++;
+            continue;
+        }
         if (strcmp(s, "void") == 0) { t.kind = CTypeVoid; ts->pos++; continue; }
         if (strcmp(s, "struct") == 0 || strcmp(s, "union") == 0) {
             boolean_t is_union = strcmp(s, "union") == 0;
@@ -714,9 +760,28 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
         ch_track_heap(h);
         ptr.elem = h.pointer;
         *ptr.elem = d.type;
-        if (ch_is_ident(ts, "const")) {
-            ptr.is_const = True;
-            ts->pos++;
+        /* Consume zero-or-more pointer-level qualifiers: const, volatile,
+         * and the various restrict spellings.  Only `const` affects the
+         * Stasha pointer permission; the rest are accepted and dropped. */
+        while (ch_peek(ts)->kind == CHTokIdent) {
+            const char *q = ch_peek(ts)->text;
+            if (strcmp(q, "const") == 0) {
+                ptr.is_const = True;
+                ts->pos++;
+                continue;
+            }
+            if (strcmp(q, "volatile") == 0
+                    || strcmp(q, "restrict") == 0
+                    || strcmp(q, "__restrict") == 0
+                    || strcmp(q, "__restrict__") == 0
+                    || strcmp(q, "_Atomic") == 0
+                    || strcmp(q, "_Nullable") == 0
+                    || strcmp(q, "_Nonnull") == 0
+                    || strcmp(q, "_Null_unspecified") == 0) {
+                ts->pos++;
+                continue;
+            }
+            break;
         }
         d.type = ptr;
     }
@@ -755,7 +820,12 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
         }
         if (ch_match(ts, CHTokLParen)) {
             d.is_fn = True;
-            if (ch_peek(ts)->kind == CHTokIdent && strcmp(ch_peek(ts)->text, "void") == 0) {
+            /* `(void)` means zero params.  But `(void *p, …)` is a real
+             * pointer-to-void parameter — only treat the bare `void` form
+             * as the empty-params sentinel. */
+            if (ch_peek(ts)->kind == CHTokIdent && strcmp(ch_peek(ts)->text, "void") == 0
+                    && ts->pos + 1 < ts->count
+                    && ts->toks[ts->pos + 1].kind == CHTokRParen) {
                 ts->pos++;
                 ch_match(ts, CHTokRParen);
                 break;
@@ -802,6 +872,19 @@ static c_field_t ch_parse_field(ch_ctx_t *ctx, ch_tok_stream_t *ts) {
     if (d.name) f.name = d.name;
     f.type = d.type;
     if (f.type.kind == CTypeArray && f.type.elem) f.array_len = f.type.array_len;
+    /* Bitfield detection: `int flags : 3;` — record the colon and width
+     * but don't treat as a normal field.  main.c later refuses any struct
+     * containing bitfields, surfacing a precise error rather than silently
+     * mis-laying out the struct. */
+    if (ch_peek(ts)->kind == CHTokColon) {
+        ts->pos++;
+        f.is_bitfield = True;
+        if (ch_peek(ts)->kind == CHTokNumber) {
+            boolean_t ok = False;
+            f.bit_width = ch_parse_int_literal(ch_peek(ts)->text, &ok);
+            ts->pos++;
+        }
+    }
     ch_match(ts, CHTokSemicolon);
     if (st.name) ch_push_struct(ctx->out, st);
     if (en.name) ch_push_enum(ctx->out, en);
@@ -853,13 +936,23 @@ static void ch_parse_top_decl(ch_ctx_t *ctx, ch_tok_stream_t *ts) {
             ch_push_fn(ctx->out, fn);
         }
     } else if (is_typedef && decl.name) {
-        if (!st.name && (base.kind == CTypeStructRef || base.kind == CTypeUnionRef)) {
+        /* Adopt the typedef name as the struct/enum name *only* when the
+         * underlying tag is anonymous AND the declarator didn't add any
+         * indirection (no pointer/array layers).  Otherwise patterns like
+         *   typedef struct OpaqueFoo *FooRef;   (explicit tag, pointer)
+         *   typedef struct { … } *FooRef;       (anon, but pointer)
+         * would lose the pointer and silently turn FooRef into a struct
+         * type with empty body — corrupting opaque-handle FFI. */
+        boolean_t has_tag      = (base.name != Null);
+        boolean_t has_pointer  = (decl.type.kind == CTypePointer || decl.type.kind == CTypeArray);
+        if (!st.name && !has_tag && !has_pointer
+                && (base.kind == CTypeStructRef || base.kind == CTypeUnionRef)) {
             /* anonymous typedef struct/union { ... } name — adopt the typedef name */
             st.name = ch_strdup(decl.name, strlen(decl.name));
             ch_push_struct(ctx->out, st);
             base.name = ch_strdup(decl.name, strlen(decl.name));
             decl.type = base;
-        } else if (!en.name && base.kind == CTypeEnumRef) {
+        } else if (!en.name && !has_tag && !has_pointer && base.kind == CTypeEnumRef) {
             /* anonymous typedef enum { ... } name — adopt the typedef name */
             en.name = ch_strdup(decl.name, strlen(decl.name));
             ch_push_enum(ctx->out, en);
@@ -888,6 +981,31 @@ static void ch_parse_top_decl(ch_ctx_t *ctx, ch_tok_stream_t *ts) {
         }
         ch_match(ts, CHTokSemicolon);
     } else {
+        /* Top-level non-fn, non-typedef → treat as a global variable
+         * declaration when the declarator produced a name + type that
+         * map_c_type can lower.  Skip past any initializer expression
+         * to the terminating semicolon. */
+        if (decl.name && decl.type.kind != CTypeUnsupported) {
+            c_global_t g;
+            memset(&g, 0, sizeof(g));
+            g.name = decl.name;
+            g.type = decl.type;
+            if (g.type.kind == CTypeArray) g.array_len = g.type.array_len;
+            ch_push_global(ctx->out, g);
+            /* Same line may declare multiple comma-separated names. */
+            while (ch_peek(ts)->kind == CHTokComma) {
+                ts->pos++;
+                ch_decl_t extra = ch_parse_declarator(ctx, ts, base);
+                if (extra.name && extra.type.kind != CTypeUnsupported) {
+                    c_global_t g2;
+                    memset(&g2, 0, sizeof(g2));
+                    g2.name = extra.name;
+                    g2.type = extra.type;
+                    if (g2.type.kind == CTypeArray) g2.array_len = g2.type.array_len;
+                    ch_push_global(ctx->out, g2);
+                }
+            }
+        }
         while (ch_peek(ts)->kind != CHTokSemicolon && ch_peek(ts)->kind != CHTokEof) {
             if (ch_peek(ts)->kind == CHTokLBrace) ch_skip_balanced(ts, CHTokLBrace, CHTokRBrace);
             else ts->pos++;
@@ -914,8 +1032,26 @@ static void ch_extract_define(cheader_result_t *out, const char *line) {
     char *name = ch_strdup(name_start, (usize_t)(p - name_start));
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '\0') return;
+    /* Strip a trailing line- or block-comment from the value: system
+     * headers routinely append a description comment after the macro
+     * body, and a comment leftover would cause ch_parse_int_literal to
+     * refuse the value because parse_end is not at end-of-string. */
+    char value_buf[256];
+    usize_t vlen = 0;
+    while (*p && vlen + 1 < sizeof(value_buf)) {
+        if (*p == '/' && (p[1] == '/' || p[1] == '*')) break;
+        value_buf[vlen++] = *p++;
+    }
+    value_buf[vlen] = '\0';
+    /* Trim trailing whitespace on the captured slice. */
+    while (vlen > 0 && (value_buf[vlen - 1] == ' '
+                        || value_buf[vlen - 1] == '\t'
+                        || value_buf[vlen - 1] == '\r')) {
+        value_buf[--vlen] = '\0';
+    }
+    if (vlen == 0) return;
     boolean_t ok = False;
-    long value = ch_parse_int_literal(p, &ok);
+    long value = ch_parse_int_literal(value_buf, &ok);
     if (!ok) return;
     c_const_t cn;
     cn.name = name;
@@ -978,8 +1114,12 @@ static void ch_scan_source(ch_ctx_t *ctx, const char *path, char *source) {
                         memcpy(hdr, q, hlen);
                         hdr[hlen] = '\0';
                         char resolved[2048];
-                        if (ch_resolve_header(ctx, path, hdr, quoted, resolved, sizeof(resolved)))
+                        if (ch_resolve_header(ctx, path, hdr, quoted, resolved, sizeof(resolved))) {
+                            boolean_t saved_top = ch_at_top_file;
+                            ch_at_top_file = False;
                             ch_process_file(ctx, resolved);
+                            ch_at_top_file = saved_top;
+                        }
                     }
                 }
             } else {
@@ -1004,6 +1144,7 @@ static void ch_scan_source(ch_ctx_t *ctx, const char *path, char *source) {
 }
 
 static void ch_process_file(ch_ctx_t *ctx, const char *path) {
+    fprintf(stderr, "[chdbg] process %s\n", path);
     if (ch_str_list_has(&ctx->seen_files, path)) return;
     ch_str_list_push(&ctx->seen_files, path);
     heap_t src_heap = NullHeap;
@@ -1021,6 +1162,7 @@ static boolean_t parse_cheader_file(const char *header_path,
                                     usize_t resolved_path_cap) {
     memset(out, 0, sizeof(*out));
     ch_active_result = out;
+    ch_at_top_file = True;
 
     ch_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -1076,11 +1218,14 @@ static void free_cheader_result(cheader_result_t *result) {
     for (usize_t i = 0; i < result->enum_count; i++)
         if (result->enums[i].variants_heap.pointer)
             deallocate(result->enums[i].variants_heap);
+    for (usize_t i = 0; i < result->global_count; i++)
+        ch_type_free(&result->globals[i].type);
     if (result->fns_heap.pointer) deallocate(result->fns_heap);
     if (result->structs_heap.pointer) deallocate(result->structs_heap);
     if (result->tdefs_heap.pointer) deallocate(result->tdefs_heap);
     if (result->enums_heap.pointer) deallocate(result->enums_heap);
     if (result->consts_heap.pointer) deallocate(result->consts_heap);
+    if (result->globals_heap.pointer) deallocate(result->globals_heap);
     for (usize_t i = 0; i < result->owned_heap_count; i++)
         if (result->owned_heaps[i].pointer)
             deallocate(result->owned_heaps[i]);

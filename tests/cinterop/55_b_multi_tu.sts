@@ -1,0 +1,16 @@
+mod row55_b_multi_tu;
+
+// Multiple translation units (multi_a.c, multi_b.c) in one archive —
+// linker must pull both for `multi_combined` (defined in a.c, calls
+// multi_b_value defined in b.c).  Verifies inter-TU symbol resolution
+// inside the support archive, not just visible-from-Stasha symbols.
+
+lib "cinterop_support" = c;
+
+fn main(void): i32 {
+    if c.multi_a_value() != 100 { print.("FAIL a\n"); ret 1; }
+    if c.multi_b_value() != 23  { print.("FAIL b\n"); ret 1; }
+    if c.multi_combined() != 123 { print.("FAIL combined\n"); ret 1; }
+    print.("55_b_multi_tu: ok\n");
+    ret 0;
+}

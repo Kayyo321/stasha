@@ -1,0 +1,24 @@
+mod row20_globals;
+
+cheader "support/globals.h" search "tests/cinterop";
+
+// Global variables declared in a C header are surfaced as ext var
+// decls with `from_lib = True`.  Codegen leaves them externally-
+// initialised; the linker resolves them from the support archive.
+
+fn main(void): i32 {
+    if glob_read() != 100 { print.("FAIL initial\n"); ret 1; }
+
+    glob_increment();
+    if glob_counter != 101 { print.("FAIL after inc, got {}\n", glob_counter); ret 1; }
+
+    glob_set(7);
+    if glob_read() != 7 { print.("FAIL after set\n"); ret 1; }
+    if glob_counter != 7 { print.("FAIL counter mirror\n"); ret 1; }
+
+    if glob_array[0] != 1 { print.("FAIL arr[0]\n"); ret 1; }
+    if glob_array[3] != 4 { print.("FAIL arr[3]\n"); ret 1; }
+
+    print.("20_globals: ok\n");
+    ret 0;
+}

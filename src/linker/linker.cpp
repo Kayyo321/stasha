@@ -58,6 +58,7 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
     args.push_back("-syslibroot");
     args.push_back(get_sdk_path());
     args.push_back("-lSystem");
+    args.push_back("-lc++");
     args.push_back(obj_path);
     /* custom .a libraries from `lib "name" from "path"` declarations */
     if (extra_libs) {

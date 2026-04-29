@@ -1,0 +1,21 @@
+mod xfail_04b_struct_byval_arg;
+
+cheader "support/../support/structs.h" search "tests/cinterop";
+
+// XFAIL — struct-by-value ARGUMENT lowering is not AAPCS-compliant.
+// On macOS/arm64, an 8-byte struct of {i32,i32} must be passed in a
+// single i64 GPR (low-half = first field, high-half = second).  Stasha
+// currently lowers each field as its own i32 arg, so the C callee reads
+// junk for the second field.  See tests/cinterop/04_struct_byval.sts
+// for the limited (return-only) coverage that does work.
+//
+// When the ABI lowering is implemented, this test starts passing and
+// row 04 can be unified again.
+
+fn main(void): i32 {
+    point_t a = point_make(3, 4);
+    point_t b = point_make(5, 6);
+    if point_dot(a, b) != 39 { print.("XFAIL struct-byval arg got wrong value\n"); ret 1; }
+    print.("04b_struct_byval_arg: ok\n");
+    ret 0;
+}

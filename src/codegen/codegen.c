@@ -1004,6 +1004,17 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
             LLVMTypeRef type = get_llvm_type(&cg, ti);
+            /* Globals declared as fixed-size arrays (e.g. `extern int32_t
+             * buf[8];` from cheader) must be laid out as LLVM array types
+             * so indexing/sizeof do the right thing.  Mirror the wrapping
+             * already done for fn params and struct fields. */
+            if (decl->as.var_decl.flags & VdeclArray) {
+                int _nd = decl->as.var_decl.array_ndim > 0
+                          ? decl->as.var_decl.array_ndim : 1;
+                for (int _d = _nd - 1; _d >= 0; _d--)
+                    type = LLVMArrayType2(type,
+                        (unsigned long long)decl->as.var_decl.array_sizes[_d]);
+            }
             /* mangle the LLVM symbol name for imported-module globals */
             char var_llvm_name[512];
             mangle_global(decl->is_c_extern ? Null : decl->module_name,

@@ -1,0 +1,14 @@
+mod row06_nested;
+
+cheader "support/structs.h" search "tests/cinterop";
+
+fn main(void): i32 {
+    rect_t r = .{ .origin = point_make(0, 0), .size = point_make(4, 5) };
+    if rect_area(&r) != 20 { print.("FAIL area\n"); ret 1; }
+
+    stack i32 data[3] = .{ 99, 1, 2 };
+    islice_t s = .{ .data = &data[0], .n = 3 };
+    if slice_first(s) != 99 { print.("FAIL slice\n"); ret 1; }
+    print.("06_nested: ok\n");
+    ret 0;
+}

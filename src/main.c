@@ -485,25 +485,48 @@ static c_typedef_t *find_cheader_typedef(cheader_result_t *r, const char *name) 
     return Null;
 }
 
+static c_struct_t *find_cheader_struct(cheader_result_t *r, const char *name) {
+    if (!name) return Null;
+    for (usize_t i = 0; i < r->struct_count; i++)
+        if (r->structs[i].name && strcmp(r->structs[i].name, name) == 0)
+            return &r->structs[i];
+    return Null;
+}
+
 static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
                             const char *decl_name, c_type_t *ct,
-                            type_info_t *out, long *array_len_out) {
+                            type_info_t *out, long *array_len_out,
+                            boolean_t emit_diag) {
     if (!ct || !out) return False;
     *out = NO_TYPE;
     if (array_len_out) *array_len_out = 0;
 
-    boolean_t quiet_skip = decl_name
+    boolean_t quiet_skip = !emit_diag || (decl_name
         && ((decl_name[0] == '_' && decl_name[1] == '_')
-            || strcmp(decl_name, "arg") == 0);
+            || strcmp(decl_name, "arg") == 0));
 
     if (ct->kind == CTypeArray) {
         if (array_len_out) *array_len_out = ct->array_len;
-        return map_c_type(src_node, r, decl_name, ct->elem, out, Null);
+        return map_c_type(src_node, r, decl_name, ct->elem, out, Null, emit_diag);
     }
 
     if (ct->kind == CTypePointer) {
+        /* Opaque-handle pattern: `typedef struct OpaqueFoo *FooRef;` where
+         * the struct has no body in the header.  Surface as `*rw void` so
+         * the pointer width is correct on 64-bit targets — otherwise we'd
+         * fall through to an unresolvable TypeUser{OpaqueFoo} and corrupt
+         * the high 32 bits at runtime. */
+        if (ct->elem && ct->elem->kind == CTypeStructRef && ct->elem->name) {
+            c_struct_t *def = find_cheader_struct(r, ct->elem->name);
+            if (!def || def->field_count == 0) {
+                out->base = TypeVoid;
+                out->is_pointer = True;
+                out->ptr_perm = ct->is_const ? PtrRead : PtrReadWrite;
+                return True;
+            }
+        }
         type_info_t inner = NO_TYPE;
-        if (!ct->elem || !map_c_type(src_node, r, decl_name, ct->elem, &inner, Null))
+        if (!ct->elem || !map_c_type(src_node, r, decl_name, ct->elem, &inner, Null, emit_diag))
             return False;
         if (inner.is_pointer || inner.base == TypeFnPtr) {
             if (!quiet_skip) {
@@ -538,7 +561,7 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
         if (strcmp(ct->name, "int8_t") == 0) { out->base = TypeI8; return True; }
         if (strcmp(ct->name, "uint8_t") == 0) { out->base = TypeU8; return True; }
         c_typedef_t *td = find_cheader_typedef(r, ct->name);
-        if (td) return map_c_type(src_node, r, decl_name, &td->actual, out, array_len_out);
+        if (td) return map_c_type(src_node, r, decl_name, &td->actual, out, array_len_out, emit_diag);
         out->base = TypeUser;
         out->user_name = ast_strdup(ct->name, strlen(ct->name));
         return True;
@@ -546,6 +569,7 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
 
     switch (ct->kind) {
         case CTypeVoid:      out->base = TypeVoid; return True;
+        case CTypeBool:      out->base = TypeBool; return True;
         case CTypeChar:
         case CTypeSChar:     out->base = TypeI8; return True;
         case CTypeUChar:     out->base = TypeU8; return True;
@@ -559,6 +583,21 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
         case CTypeULongLong: out->base = TypeU64; return True;
         case CTypeFloat:     out->base = TypeF32; return True;
         case CTypeDouble:    out->base = TypeF64; return True;
+        case CTypeLongDouble:
+            /* long double has a platform-specific ABI (80-bit on x86,
+             * 128-bit on aarch64 darwin, …) that Stasha does not model.
+             * Hard-error only when the surrounding decl came from the
+             * user's own cheader — system headers regularly declare
+             * long-double math fns (e.g. sqrtl) that the user never
+             * actually calls; silently skip those. */
+            if (emit_diag) {
+                diag_begin_error("C declaration '%s' uses unsupported `long double` type",
+                                 decl_name ? decl_name : "?");
+                diag_span(DIAG_NODE(src_node), True,
+                          "long double has platform-specific ABI; declare via Stasha-side wrapper");
+                diag_finish();
+            }
+            return False;
         case CTypeStructRef:
         case CTypeUnionRef:
         case CTypeEnumRef:
@@ -608,6 +647,45 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
         for (usize_t j = 0; j < result.struct_count; j++) {
             c_struct_t *st = &result.structs[j];
             if (!st->name || !st->name[0]) continue;
+
+            /* Reject bitfield-bearing structs.  A C bitfield like `int x : 4;`
+             * has packed sub-byte storage with target-specific layout that
+             * Stasha's struct ABI does not model — silent acceptance would
+             * corrupt every field after it.  Errors only on user-defined
+             * structs; system headers can contain bitfields (terminfo,
+             * tcb_t, …) that are never directly referenced from Stasha. */
+            for (usize_t k = 0; k < st->field_count; k++) {
+                if (st->fields[k].is_bitfield) {
+                    if (st->from_user_header) {
+                        diag_begin_error("C struct '%s' contains unsupported bitfield '%s : %ld'",
+                                         st->name,
+                                         st->fields[k].name ? st->fields[k].name : "?",
+                                         st->fields[k].bit_width);
+                        diag_span(DIAG_NODE(decl), True,
+                                  "bitfield layout is target-specific; rewrite the C side as a plain integer field");
+                        diag_finish();
+                    }
+                    goto next_struct;
+                }
+            }
+
+            /* Reject unions: Stasha does not currently implement C-compatible
+             * union layout (overlapping storage with widest-member size).
+             * Errors only fire for unions defined in the user's own
+             * cheader file — system headers and transitive includes have
+             * unions all over the place (mbstate_t, sigval, …) that the
+             * user never directly references. */
+            if (st->is_union) {
+                if (st->from_user_header) {
+                    diag_begin_error("C union '%s' is not currently supported for FFI",
+                                     st->name);
+                    diag_span(DIAG_NODE(decl), True,
+                              "union layout is not yet implemented; wrap on the C side or expose individual fields");
+                    diag_finish();
+                }
+                goto next_struct;
+            }
+
             node_t *tn = make_node(NodeTypeDecl, decl->line);
             tn->col = decl->col;
             tn->source_file = decl->source_file;
@@ -623,7 +701,8 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
                 c_field_t *f = &st->fields[k];
                 type_info_t ti;
                 long array_len = 0;
-                if (!map_c_type(decl, &result, f->name, &f->type, &ti, &array_len))
+                if (!map_c_type(decl, &result, f->name, &f->type, &ti, &array_len,
+                                st->from_user_header))
                     continue;
                 node_t *field = make_node(NodeVarDecl, decl->line);
                 field->col = decl->col;
@@ -640,6 +719,9 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
                 node_list_push(&tn->as.type_decl.fields, field);
             }
             node_list_push(&generated, tn);
+            continue;
+next_struct:
+            ;
         }
 
         for (usize_t j = 0; j < result.enum_count; j++) {
@@ -680,7 +762,8 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
         for (usize_t j = 0; j < result.tdef_count; j++) {
             c_typedef_t *td = &result.tdefs[j];
             type_info_t ti;
-            if (!map_c_type(decl, &result, td->name, &td->actual, &ti, Null))
+            if (!map_c_type(decl, &result, td->name, &td->actual, &ti, Null,
+                            td->from_user_header))
                 continue;
             node_t *tn = make_node(NodeTypeDecl, decl->line);
             tn->col = decl->col;
@@ -698,7 +781,8 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
         for (usize_t j = 0; j < result.fn_count; j++) {
             c_fn_t *fn = &result.fns[j];
             type_info_t ret;
-            if (!map_c_type(decl, &result, fn->name, &fn->ret, &ret, Null))
+            if (!map_c_type(decl, &result, fn->name, &fn->ret, &ret, Null,
+                            fn->from_user_header))
                 continue;
             node_t *fd = make_node(NodeFnDecl, decl->line);
             fd->col = decl->col;
@@ -715,7 +799,8 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
             node_list_init(&fd->as.fn_decl.params);
             for (usize_t k = 0; k < fn->param_count; k++) {
                 type_info_t pti;
-                if (!map_c_type(decl, &result, fn->params[k].name, &fn->params[k].type, &pti, Null))
+                if (!map_c_type(decl, &result, fn->params[k].name, &fn->params[k].type, &pti, Null,
+                                fn->from_user_header))
                     goto skip_fn_decl;
                 node_t *param = make_node(NodeVarDecl, decl->line);
                 param->col = decl->col;
@@ -743,6 +828,34 @@ skip_fn_decl:
             vd->as.var_decl.storage = StorageStack;
             vd->as.var_decl.flags |= VdeclConst;
             vd->as.var_decl.init = make_cheader_int_lit(decl, cn->value);
+            node_list_push(&generated, vd);
+        }
+
+        /* C globals (e.g. `extern int32_t ctor_canary;` or `int errno;`).
+         * Surface as library-backed external var decls — codegen leaves
+         * them externally-initialised and the linker resolves the symbol
+         * from the user-supplied archive at link time. */
+        for (usize_t j = 0; j < result.global_count; j++) {
+            c_global_t *g = &result.globals[j];
+            type_info_t ti;
+            long array_len = 0;
+            if (!map_c_type(decl, &result, g->name, &g->type, &ti, &array_len,
+                            g->from_user_header))
+                continue;
+            node_t *vd = make_node(NodeVarDecl, decl->line);
+            vd->col = decl->col;
+            vd->source_file = decl->source_file;
+            vd->is_c_extern = True;
+            vd->from_lib = True;
+            vd->as.var_decl.name = ast_strdup(g->name, strlen(g->name));
+            vd->as.var_decl.type = ti;
+            vd->as.var_decl.storage = StorageStack;
+            vd->as.var_decl.linkage = LinkageExternal;
+            if (array_len > 0) {
+                vd->as.var_decl.flags        |= VdeclArray;
+                vd->as.var_decl.array_ndim    = 1;
+                vd->as.var_decl.array_sizes[0] = array_len;
+            }
             node_list_push(&generated, vd);
         }
 
@@ -1425,13 +1538,13 @@ static result_t compile_file(const cfile_params_t *p) {
     }
 
     /* ── build final library list: AST libs + caller-supplied extras ── */
-    const char *all_libs[128];
+    const char *all_libs[512];
     usize_t     all_lib_count = 0;
 
-    for (usize_t i = 0; i < ast_lib_count && all_lib_count < 127; i++)
+    for (usize_t i = 0; i < ast_lib_count && all_lib_count < 511; i++)
         all_libs[all_lib_count++] = ast_lib_buf[i];
     if (p->extra_lib_paths) {
-        for (usize_t i = 0; i < p->extra_lib_count && all_lib_count < 127; i++)
+        for (usize_t i = 0; i < p->extra_lib_count && all_lib_count < 511; i++)
             all_libs[all_lib_count++] = p->extra_lib_paths[i];
     }
 
@@ -1471,10 +1584,10 @@ static result_t compile_file(const cfile_params_t *p) {
             /* EmitExe / EmitTest: link the thread and zone runtimes. */
             char rt_path[512];
             snprintf(rt_path, sizeof(rt_path), "%s/thread_runtime.a", bin_dir);
-            if (all_lib_count < 127) all_libs[all_lib_count++] = rt_path;
+            if (all_lib_count < 511) all_libs[all_lib_count++] = rt_path;
             static char zone_rt_path[512];
             snprintf(zone_rt_path, sizeof(zone_rt_path), "%s/zone_runtime.a", bin_dir);
-            if (all_lib_count < 127) all_libs[all_lib_count++] = zone_rt_path;
+            if (all_lib_count < 511) all_libs[all_lib_count++] = zone_rt_path;
         }
         all_libs[all_lib_count] = Null;
 
@@ -1724,7 +1837,7 @@ int main(int argc, char **argv) {
     int         optimization_level = 2;   /* LLVM default */
     char        lib_name_buf[300];
     const char *output_path       = Null;
-    const char *cli_extra_libs[32];
+    const char *cli_extra_libs[256];
     usize_t     cli_extra_lib_count = 0;
 
     const char *explicit_input_path =
@@ -1756,7 +1869,7 @@ int main(int argc, char **argv) {
             target_triple = argv[++i];
         } else if (strcmp(argv[i], "-g") == 0) {
             debug_mode = True;
-        } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 32) {
+        } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 256) {
             cli_extra_libs[cli_extra_lib_count++] = argv[++i];
         } else if (strcmp(argv[i], "--strict") == 0) {
             diag_config_t cfg = diag_get_config();

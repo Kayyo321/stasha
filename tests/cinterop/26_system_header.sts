@@ -1,0 +1,24 @@
+mod row26_system_header;
+
+// Pull in a real system header.  cheader's resolver falls back to the
+// platform default search path (/usr/include, /usr/local/include, the
+// macOS CommandLineTools SDK, …) so the user does not have to spell
+// out where stdlib headers live.
+cheader "string.h";
+
+fn main(void): i32 {
+    // strlen / strcmp from <string.h>.  Stasha does not understand the
+    // C `size_t` typedef directly, but cheader maps it to u64, which
+    // round-trips through Stasha as a numeric value compatible with
+    // i32 comparisons after truncation.
+    stack i8 buf[16] = .{};
+    buf[0] = 'h';
+    buf[1] = 'i';
+    /* `.{}` zero-fills the rest, so the implicit NUL terminator at
+     * buf[2] is already in place; no need to write it explicitly. */
+    stack u64 n = strlen(&buf[0]);
+    if n != 2 { print.("FAIL strlen={}\n", n); ret 1; }
+
+    print.("26_system_header: ok\n");
+    ret 0;
+}

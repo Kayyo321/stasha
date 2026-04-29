@@ -1,0 +1,35 @@
+mod llvm_smoke;
+
+// LLVM C API capstone — drives the real LLVM C API from Stasha through
+// the `lib + auto-declare` path (Path B).  cheader cannot parse the
+// LLVM headers (LLVM_C_EXTERN_C_BEGIN / LLVM_C_ABI macros require a real
+// C preprocessor, not the cheader tokenizer), so we declare each entry
+// point at the call site and let stasha auto-synth the LLVM signature
+// from the arg types.  Pin return types via explicit storage so pointer
+// returns are not truncated to i32.
+//
+// What this proves works:
+//   * opaque pointer-to-incomplete-struct typedefs (LLVMContextRef,
+//     LLVMModuleRef) round-trip as `*rw void` without truncation
+//   * mixed scalar/pointer C calls under the heuristic auto-declare
+//   * foreign-owned lifetimes: every LLVMCreate* gets its LLVMDispose*
+//   * the LLVM C API actually emits a valid IR module from Stasha-driven
+//     setup — not a toy header
+//
+// Build/link is wired via the Makefile `test-llvm-smoke` target which
+// uses llvm-config to assemble the libfile list.
+
+lib "LLVMCore" = llvm;
+
+fn main(void): i32 {
+    stack void *rw ctx = llvm.LLVMContextCreate();
+    stack void *rw m   = llvm.LLVMModuleCreateWithNameInContext("smoke_mod", ctx);
+
+    stack i8 *rw ir = llvm.LLVMPrintModuleToString(m);
+    printf("%s", ir);
+    llvm.LLVMDisposeMessage(ir);
+
+    llvm.LLVMDisposeModule(m);
+    llvm.LLVMContextDispose(ctx);
+    ret 0;
+}
