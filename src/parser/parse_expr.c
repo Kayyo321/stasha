@@ -698,6 +698,20 @@ static node_t *parse_primary(parser_t *p) {
             return n;
         }
 
+        /* await.next(stream) — consume the next item from a stream.[T]. */
+        if (check(p, TokIdent) && p->current.length == 4
+                && memcmp(p->current.start, "next", 4) == 0) {
+            advance_parser(p); /* consume 'next' */
+            consume(p, TokLParen, "'('");
+            node_t *handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeAwaitExpr, line);
+            n->as.await_expr.handle = handle;
+            n->as.await_expr.get_type = NO_TYPE;
+            n->as.await_expr.is_stream_next = True;
+            return n;
+        }
+
         /* await.all(f1, ...) / await.any(f1, ...).
            Note: `any` is a lexer keyword (TokAny), `all` is an ident — accept both. */
         if (check(p, TokIdent) || check(p, TokAny)) {

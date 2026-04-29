@@ -159,6 +159,7 @@ static boolean_t is_builtin_type_token(token_kind_t k) {
         || k == TokU8  || k == TokU16 || k == TokU32 || k == TokU64
         || k == TokF32 || k == TokF64
         || k == TokBool || k == TokVoid || k == TokErrorType || k == TokFuture
+        || k == TokStream
         || k == TokAny || k == TokZone;
 }
 
@@ -178,6 +179,7 @@ static type_kind_t token_to_type(token_kind_t k) {
         case TokF64:  return TypeF64;
         case TokErrorType: return TypeError;
         case TokFuture:    return TypeFuture;
+        case TokStream:    return TypeStream;
         case TokZone:      return TypeZone;
         default:      return TypeVoid;
     }
@@ -201,6 +203,8 @@ static const char *comptime_type_name(type_info_t ti) {
         case TypeF32:   return "f32";
         case TypeF64:   return "f64";
         case TypeUser:  return ti.user_name ? ti.user_name : "user";
+        case TypeFuture: return "future";
+        case TypeStream: return "stream";
         case TypeSlice: return "slice";
         default:        return "type";
     }
@@ -336,9 +340,9 @@ static type_info_t parse_type(parser_t *p) {
         info.base = token_to_type(tk);
         advance_parser(p);
 
-        /* future.[T] — typed future handle. ABI-identical to opaque `future`;
-           T is recorded in elem_type only for typed await/get lowerings. */
-        if (tk == TokFuture && check(p, TokDot)) {
+        /* future.[T] / stream.[T] — typed coroutine handles. ABI-identical
+           to opaque pointers; T is recorded in elem_type for later passes. */
+        if ((tk == TokFuture || tk == TokStream) && check(p, TokDot)) {
             parser_state_t snap = save_state(p);
             advance_parser(p); /* consume '.' */
             if (check(p, TokLBracket)) {

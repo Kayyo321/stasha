@@ -51,6 +51,7 @@ SRCS = src/main.c                       \
        src/common/common.c               \
        src/lexer/lexer.c                 \
        src/ast/ast.c                     \
+       src/analysis/coroutines.c         \
        src/parser/parser.c               \
        src/preprocessor/preprocessor.c  \
        src/tooling/editor.c             \

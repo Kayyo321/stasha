@@ -168,6 +168,35 @@ expect_in "$STDERR" "warning" "warning stays warning without --strict"
 
 echo ""
 
+# ── Coroutine migration diagnostics ───────────────────────────────────
+echo "--- Coroutine Diagnostics ---"
+
+echo "coro_await_outside_async.sts"
+compile "$DIR/coro_await_outside_async.sts"
+expect_in "$STDERR" "only legal inside 'async fn'" "await outside async is rejected"
+
+echo "coro_yield_outside_async.sts"
+compile "$DIR/coro_yield_outside_async.sts"
+expect_in "$STDERR" "'yield' is only legal inside 'async fn'" "yield outside async is rejected"
+
+echo "coro_mixed_yield_types.sts"
+compile "$DIR/coro_mixed_yield_types.sts"
+expect_in "$STDERR" "must share one type" "mixed stream yield types are rejected"
+
+echo "coro_stream_nonvoid_ret.sts"
+compile "$DIR/coro_stream_nonvoid_ret.sts"
+expect_in "$STDERR" "cannot return a final value" "stream coroutines reject non-void ret"
+
+echo "coro_async_dispatch_stream.sts"
+compile "$DIR/coro_async_dispatch_stream.sts"
+expect_in "$STDERR" "cannot dispatch yielding async function" "async.() rejects stream coroutines"
+
+echo "coro_await_next_requires_stream.sts"
+compile "$DIR/coro_await_next_requires_stream.sts"
+expect_in "$STDERR" "expects a stream" "await.next requires a stream handle"
+
+echo ""
+
 # ── Structured summary ──────────────────────────────────────────────
 echo "--- Structured Summary ---"
 

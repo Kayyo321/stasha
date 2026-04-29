@@ -22,7 +22,8 @@ typedef enum {
     TypeUser,       /* struct, enum, or alias — name stored in type_info_t */
     TypeError,      /* built-in error type: nil or message */
     TypeFnPtr,      /* function pointer with domain-tagged parameters */
-    TypeFuture,     /* future handle — opaque ptr to __future_t (thread result) */
+    TypeFuture,     /* future.[T] task handle — opaque runtime pointer */
+    TypeStream,     /* stream.[T] async stream handle — opaque runtime pointer */
     TypeSlice,      /* []T — fat pointer (ptr, len, cap) */
     TypeZone,       /* zone — opaque arena allocator handle (void* state pointer) */
     TypeInfer,      /* sentinel: "infer me" — used for trailing-closure params */
@@ -64,6 +65,13 @@ typedef enum {
     StorageStack,
     StorageHeap,
 } storage_t;
+
+typedef enum {
+    CoroNone,
+    CoroTask,
+    CoroStream,
+    CoroUnknown,
+} coro_flavor_t;
 
 /* ── function pointer descriptor (domain-tagged parameter list) ── */
 
@@ -296,6 +304,8 @@ typedef enum {
     NodeAsyncCall,       /* async.(fn)(args) — dispatch, returns future.[T] */
     NodeAwaitExpr,       /* await(f) / await.(fn)(args) — block, drop, return value */
     NodeAwaitCombinator, /* await.all(...) / await.any(...) */
+    NodeYieldExpr,       /* yield expr; */
+    NodeYieldNowExpr,    /* yield;      */
 
     /* sugar pack: lambda expression */
     NodeLambda,          /* lam.(params): ret { body } — lifted to module-level fn */
@@ -362,6 +372,11 @@ struct node {
             usize_t type_param_count;
             char *iface_qualifier;      /* non-null for "fn flyable_i.move()" inside struct body */
             boolean_t is_async;         /* `async fn ...` marker — enables async.()/await.() shorthand */
+            coro_flavor_t coro_flavor;  /* inferred coroutine flavor for async fns */
+            type_info_t yield_type;     /* inferred stream item type for yielding async fns */
+            boolean_t has_await;
+            boolean_t has_yield_value;
+            boolean_t has_yield_now;
         } fn_decl;
 
         struct {
@@ -592,10 +607,16 @@ struct node {
            await.(fn)(args) desugaring. Codegen blocks, loads typed value,
            then drops the future. `get_type.base == TypeVoid` means "infer
            from handle" at codegen (the usual case). */
-        struct { node_t *handle; type_info_t get_type; } await_expr;
+        struct { node_t *handle; type_info_t get_type; boolean_t is_stream_next; } await_expr;
 
         /* NodeAwaitCombinator: await.all(...) / await.any(...) */
         struct { boolean_t is_any; node_list_t handles; } await_combinator;
+
+        /* NodeYieldExpr: yield expr; */
+        struct { node_t *value; } yield_expr;
+
+        /* NodeYieldNowExpr: yield; */
+        struct { int unused; } yield_now_expr;
 
         /* NodeLambda: lam.(params): ret { body }
            Lifted to a module-level LLVM fn during codegen.  v1: non-capturing only.

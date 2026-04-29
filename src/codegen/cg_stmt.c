@@ -6,6 +6,7 @@ static boolean_t is_primitive_type(type_info_t ti) {
     if (ti.base == TypeUser)   return False;
     if (ti.base == TypeFnPtr)  return False; /* function pointers are not heap primitives */
     if (ti.base == TypeFuture) return False; /* future is an opaque pointer — never heap-wrap */
+    if (ti.base == TypeStream) return False; /* stream is an opaque pointer — never heap-wrap */
     return True;
 }
 
@@ -23,8 +24,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         LLVMValueRef init_val = gen_expr(cg, node->as.var_decl.init);
         LLVMTypeRef  inferred = LLVMTypeOf(init_val);
         type_info_t  ti       = llvm_type_to_ti(inferred);
-        /* Infer future.[T] when the RHS is a thread/async dispatch, so that
-           `await(f)` can later resolve T from the symbol's stype. */
+        /* Infer future.[T] / stream.[T] when the RHS is a thread/async
+           dispatch, so later lowering can recover the carried element type. */
         node_t *init_n = node->as.var_decl.init;
         if (init_n && (init_n->kind == NodeAsyncCall || init_n->kind == NodeThreadCall)) {
             const char *callee = (init_n->kind == NodeAsyncCall)
@@ -34,9 +35,13 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             ti.is_pointer = False;
             ti.ptr_perm   = PtrNone;
             ti.ptr_depth  = 0;
+            if (fn && fn->as.fn_decl.coro_flavor == CoroStream) ti.base = TypeStream;
             if (fn && fn->as.fn_decl.return_count > 0) {
                 type_info_t rt = fn->as.fn_decl.return_types[0];
-                if (!(rt.base == TypeVoid && !rt.is_pointer)) {
+                if (ti.base == TypeStream && rt.base == TypeStream && rt.elem_type) {
+                    ti.elem_type = alloc_type_array(1);
+                    ti.elem_type[0] = rt.elem_type[0];
+                } else if (!(rt.base == TypeVoid && !rt.is_pointer)) {
                     ti.elem_type = alloc_type_array(1);
                     ti.elem_type[0] = rt;
                 }
@@ -1938,6 +1943,12 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeComptimeIf:   gen_comptime_if(cg, node); break;
         case NodeComptimeAssert: gen_comptime_assert(cg, node); break;
         case NodeWithStmt:     gen_with_stmt(cg, node); break;
+        case NodeYieldExpr:
+        case NodeYieldNowExpr:
+            diag_begin_error("coroutine lowering for 'yield' is not implemented yet");
+            diag_span(DIAG_NODE(node), True, "coroutine suspension would be lowered here");
+            diag_finish();
+            break;
         case NodeBreakStmt:
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);

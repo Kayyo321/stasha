@@ -885,15 +885,29 @@ static node_t *parse_statement(parser_t *p) {
         return make_node(NodeContinueStmt, line);
     }
 
+    if (check(p, TokYield)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokSemicolon)) {
+            advance_parser(p);
+            return make_node(NodeYieldNowExpr, line);
+        }
+        node_t *value = parse_expr(p);
+        consume(p, TokSemicolon, "';'");
+        node_t *n = make_node(NodeYieldExpr, line);
+        n->as.yield_expr.value = value;
+        return n;
+    }
+
     /* future.op(...) is an expression statement, not a var decl — peek ahead.
        Distinguish from `future.[T] name = …;` which is a typed-future decl. */
-    if (check(p, TokFuture)) {
+    if (check(p, TokFuture) || check(p, TokStream)) {
         parser_state_t snap = save_state(p);
         advance_parser(p);
         boolean_t is_future_op = False;
         if (check(p, TokDot)) {
             advance_parser(p); /* consume '.' */
-            /* '.' followed by '[' is a typed future type (future.[T]) */
+            /* '.' followed by '[' is a typed coroutine-handle type. */
             is_future_op = !check(p, TokLBracket);
         }
         restore_state(p, snap);

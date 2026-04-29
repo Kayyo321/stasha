@@ -1,0 +1,6 @@
+mod coro_stream_nonvoid_ret;
+
+async fn bad(void): stream.[i64] {
+    yield 1;
+    ret 2;
+}

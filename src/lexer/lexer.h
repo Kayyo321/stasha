@@ -34,6 +34,7 @@ typedef enum {
     TokFinal,
     TokThread,  /* thread — parallel dispatch to thread pool */
     TokFuture,  /* future — handle to an async result       */
+    TokStream,  /* stream — handle to an async yield stream */
     TokPrint,
     TokVoid,
     TokTrue,
@@ -206,6 +207,7 @@ typedef enum {
     /* async/await — thin surface layer over thread pool + future              */
     TokAsync,       /* async fn ... / async.(fn)(args)                        */
     TokAwait,       /* await(f) / await.(fn)(args) / await.all(..) / await.any(..) */
+    TokYield,       /* yield expr; / yield; inside async coroutines                  */
 
     /* sugar pack: lambda + pipeline */
     TokLam,         /* lam.(...) — non-capturing lambda expression            */

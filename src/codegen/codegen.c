@@ -1564,6 +1564,19 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
         }
 
+        if (decl->as.fn_decl.is_async
+                && (decl->as.fn_decl.has_await
+                    || decl->as.fn_decl.has_yield_value
+                    || decl->as.fn_decl.has_yield_now)) {
+            diag_begin_error("coroutine lowering is not implemented yet for async function '%s'",
+                             decl->as.fn_decl.name);
+            diag_span(DIAG_NODE(decl), True,
+                      "this async function now requires coroutine lowering");
+            diag_help("plain 'async fn' markers without await/yield still compile on the legacy runtime path");
+            diag_finish();
+            continue;
+        }
+
         gen_block(&cg, decl->as.fn_decl.body);
 
         /* Leak check: warn on any future.[T] local never passed to

@@ -1,6 +1,18 @@
 # Async / Await
 
-Stasha layers an `async` / `await` surface on top of the thread-pool runtime. It is **not** a coroutine system — there is no green-thread scheduler, no stack switching, no event loop. `async fn` dispatches to the same POSIX thread pool that powers `thread.(fn)(args)`, and `await(f)` blocks the calling thread until the future resolves.
+Stasha is in the middle of migrating `async` / `await` from thread-pool sugar to a real coroutine model.
+
+Today, the runtime and lowering are still legacy for plain `async.(fn)(args)` task dispatch, but the language surface has started moving toward coroutine rules:
+
+- `await(...)` is only legal inside `async fn`
+- `stream.[T]` is the dedicated handle type for yielding async functions
+- `yield expr;` produces a stream item from an `async fn`
+- `yield;` is reserved for cooperative scheduler yield inside an `async fn`
+- `await.next(stream)` is the stream-consume spelling in the new surface
+
+The coroutine lowering/runtime work is not fully finished yet, so stream/yield syntax is currently validated by the compiler but not executable end-to-end.
+
+Historically, Stasha layered an `async` / `await` surface on top of the thread-pool runtime. It was **not** a coroutine system — there was no green-thread scheduler, no stack switching, no event loop. `async fn` dispatched to the same POSIX thread pool that powers `thread.(fn)(args)`, and `await(f)` blocked the calling thread until the future resolved.
 
 The point is ergonomics:
 

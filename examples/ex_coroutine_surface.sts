@@ -1,0 +1,20 @@
+mod ex_coroutine_surface;
+
+// Surface syntax example for the coroutine migration.
+// This shows the intended task and stream forms:
+//
+//   async fn task(...): T { ... await(...); ret value; }
+//   async fn streamer(...): stream.[T] { yield item; yield; ret; }
+//
+// Full coroutine lowering is still compiler work-in-progress, so this file
+// serves as a language example rather than a runnable sample today.
+
+async fn produce(i32 n): stream.[i64] {
+    stack i32 i = 0;
+    while (i < n) {
+        yield i;
+        yield;
+        i = i + 1;
+    }
+    ret;
+}

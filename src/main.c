@@ -13,6 +13,7 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #include "common/common.h"
 #include "parser/parser.h"
 #include "preprocessor/preprocessor.h"
+#include "analysis/coroutines.h"
 #include "codegen/codegen.h"
 #include "linker/linker.h"
 #include "tooling/editor.h"
@@ -1362,6 +1363,7 @@ static result_t run_editor_check(const char *source, const char *input_path) {
 
     resolve_imports(ast, input_path);
     process_cheader_decls(ast, input_path);
+    analyze_coroutines(ast);
     free_imp_sources();
 
     char obj_path[512];
@@ -1478,6 +1480,11 @@ static result_t compile_file(const cfile_params_t *p) {
 
     resolve_imports(ast, p->input_path);
     process_cheader_decls(ast, p->input_path);
+    if (analyze_coroutines(ast) != Ok) {
+        free_imp_sources();
+        compile_cleanup();
+        return Err;
+    }
     free_imp_sources();
 
     /* ── codegen ── */

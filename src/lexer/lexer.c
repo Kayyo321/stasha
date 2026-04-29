@@ -137,6 +137,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("final", TokFinal);
     KW("thread", TokThread);
     KW("future", TokFuture);
+    KW("stream", TokStream);
     KW("print", TokPrint);
     KW("void", TokVoid);
     KW("true", TokTrue);
@@ -198,6 +199,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("quit",      TokQuit);
     KW("async",     TokAsync);
     KW("await",     TokAwait);
+    KW("yield",     TokYield);
     KW("lam",       TokLam);
     /* "frees" is NOT a keyword — parsed contextually as TokIdent after '@' */
 
