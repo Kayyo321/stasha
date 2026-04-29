@@ -3,6 +3,7 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/DebugInfo.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -22,6 +23,31 @@ static LLVMCodeGenOptLevel map_opt_level(int level) {
     default:
         return LLVMCodeGenLevelDefault;
     }
+}
+
+static boolean_t ast_requires_coro_pipeline(node_t *ast) {
+    if (!ast || ast->kind != NodeModule) return False;
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind == NodeFnDecl
+                && decl->as.fn_decl.is_async
+                && (decl->as.fn_decl.has_await
+                    || decl->as.fn_decl.has_yield_value
+                    || decl->as.fn_decl.has_yield_now))
+            return True;
+        if (decl->kind == NodeTypeDecl) {
+            for (usize_t j = 0; j < decl->as.type_decl.methods.count; j++) {
+                node_t *method = decl->as.type_decl.methods.items[j];
+                if (method->kind == NodeFnDecl
+                        && method->as.fn_decl.is_async
+                        && (method->as.fn_decl.has_await
+                            || method->as.fn_decl.has_yield_value
+                            || method->as.fn_decl.has_yield_now))
+                    return True;
+            }
+        }
+    }
+    return False;
 }
 
 typedef struct {
@@ -2005,6 +2031,26 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMDisposeMessage(error);
     } else {
         if (error) LLVMDisposeMessage(error);
+    }
+
+    if (get_error_count() == errors_before && ast_requires_coro_pipeline(ast)) {
+        LLVMPassBuilderOptionsRef pb_opts = LLVMCreatePassBuilderOptions();
+        LLVMPassBuilderOptionsSetVerifyEach(pb_opts, 1);
+        LLVMErrorRef pass_err = LLVMRunPasses(
+            cg.module,
+            "coro-early,coro-split,coro-elide,coro-cleanup",
+            machine,
+            pb_opts);
+        LLVMDisposePassBuilderOptions(pb_opts);
+        if (pass_err) {
+            char *msg = LLVMGetErrorMessage(pass_err);
+            diag_begin_error("LLVM coroutine pass pipeline failed: %s", msg ? msg : "unknown error");
+            diag_finish();
+            if (msg) LLVMDisposeErrorMessage(msg);
+            LLVMConsumeError(pass_err);
+            emit_result = Err;
+            goto cg_cleanup;
+        }
     }
 
     /* debug: dump IR if STS_DUMP_IR env var is set */
