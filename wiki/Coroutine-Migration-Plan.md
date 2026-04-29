@@ -1,90 +1,85 @@
-# Unified Async Coroutine And Yield Migration Plan
+# Coro Plan
 
-## Summary
+## Big Goal
 
-Create `wiki/Coroutine-Migration-Plan.md` as a concrete implementation plan for replacing the current thread-pool future sugar with a unified LLVM coroutine system that supports all of the following in one model:
+Make real LLVM coroutine system. Replace current thread-pool async sugar.
 
-- `async fn` lowered with `llvm.coro.*`
-- `await` inside async functions
-- `yield value` inside async functions for async-stream / async-generator semantics
-- a separate no-value cooperative scheduler yield
-- typed final return values plus typed yielded element values
-- continuation passing, executor scheduling, cancellation, destruction, and interop with the existing thread runtime during migration
+Need one model with all:
 
-Current implementation facts this plan is anchored on:
+- `async fn` lowered by `llvm.coro.*`
+- `await` inside async fn
+- `yield expr` inside async fn for async stream/generator
+- `yield;` for no-value cooperative resched
+- typed final return for task
+- typed yielded item for stream
+- continuation passing
+- executor scheduling
+- cancellation
+- destroy
+- bridge to old thread runtime during migration
 
-- Today `async fn` is only a dispatch marker, not a coroutine body transform.
-- `async.(fn)(args)` lowers to `__thread_dispatch(...)`.
-- `await(f)` blocks the current thread via `__future_get` / `__future_wait`.
-- `await.all` and `await.any` are thread-future fan-in helpers, not coroutine combinators.
-- `TypeFuture` is currently an opaque runtime pointer ABI in `src/ast/ast.h`, `src/parser/parser.c`, and `src/codegen/cg_types.c`.
-- There is no existing `llvm.coro.*` lowering or coroutine pass integration.
-- The current pthread runtime in `src/runtime/thread_runtime.c` should become a compatibility backend, not the coroutine substrate.
+## Truth Now
 
-Chosen defaults for the migration:
+Now system not coro. Now system is typed thread-pool dispatch.
 
-- Preserve `async fn`, `await(f)`, and `await.(fn)(args)` as the main surface.
-- Preserve `future.[T]` initially as source syntax for coroutine-backed tasks.
-- Add value-yielding async generators and a separate scheduler-yield primitive in the same coroutine framework.
-- Treat async functions as belonging to two coroutine-capable families: returning tasks and returning async streams.
-- Keep one shared frame/runtime model for both async tasks and async generators.
+- `async fn` only marker, not body transform
+- `async.(fn)(args)` -> `__thread_dispatch(...)`
+- `await(f)` blocks thread with `__future_get` / `__future_wait`
+- `await.all` / `await.any` are thread-future fan-in, not coro combinators
+- `TypeFuture` now opaque runtime ptr ABI in `src/ast/ast.h`, `src/parser/parser.c`, `src/codegen/cg_types.c`
+- no `llvm.coro.*` lowering exists
+- no coro pass pipeline exists
+- `src/runtime/thread_runtime.c` is pthread backend; keep only as compat backend later
 
-## Current State
+Repo pieces already there:
 
-The current implementation is a typed thread-pool dispatch layer, not a coroutine system.
+- AST: `TypeFuture`, `NodeAsyncCall`, `NodeAwaitExpr`, `NodeAwaitCombinator`, `NodeFutureOp`
+- Parser: `async fn` marker on `NodeFnDecl`; `await(...)`, `await.(fn)(args)`, `await.all/any(...)`
+- Codegen: `gen_async_call()` -> `gen_dispatch_to_pool()`; `gen_await()` does blocking wait + auto-drop; `await.all/any` use `__future_get`, `__future_drop`, `__future_wait_any`
+- Docs: `wiki/Async-Await.md` says current async/await is not coroutine system and `await` blocks thread
 
-- AST:
-  `TypeFuture`, `NodeAsyncCall`, `NodeAwaitExpr`, `NodeAwaitCombinator`, and `NodeFutureOp` already exist.
-- Parser:
-  `async fn` is parsed as a marker on `NodeFnDecl`; `await(...)`, `await.(fn)(args)`, and `await.all/any(...)` are parsed as expressions.
-- Codegen:
-  `gen_async_call()` lowers to `gen_dispatch_to_pool()`. `gen_await()` lowers to blocking runtime calls and auto-drops the future. `await.all` and `await.any` are lowered around `__future_get`, `__future_drop`, and `__future_wait_any`.
-- Runtime:
-  `src/runtime/thread_runtime.c` provides a pthread-based worker pool, opaque `__future_t`, condition-variable waits, and queue-based job submission.
-- Documentation:
-  `wiki/Async-Await.md` explicitly states that current async/await is not a coroutine system and that `await` blocks the current thread.
+So migration big architecture change, not small cleanup.
 
-This means the migration is architectural, not incremental cleanup of a half-lowered coroutine path.
+## Main Choices
 
-## Language And Type-System Design
+Keep source feel:
 
-Define three coroutine-facing concepts:
+- keep `async fn`
+- keep `await(f)`
+- keep `await.(fn)(args)`
+- keep `future.[T]` first, but now means coroutine task handle
 
-- `future.[T]` as the compatibility spelling for a task-like async result that eventually completes with `T`
-- `stream.[T]` as a new public type for async generators that `yield T` multiple times
-- a no-value scheduler-yield operation spelled `yield;`
+Add:
 
-### Source Rules
+- `stream.[T]` for yielding async fn
+- `yield expr`
+- `yield;`
+- `await.next(stream)` for v1 stream consume
 
-- `async fn` with no `yield value` lowers to a task coroutine producing one final result.
-- `async fn` with at least one `yield value` lowers to an async generator / stream coroutine.
-- `ret` remains the final completion path for task coroutines.
-- For yielding async functions, v1 forbids non-void terminal returns. A yielding `async fn` completes with end-of-stream plus optional error, not a second typed final value.
-- `yield expr` is only legal inside `async fn`.
-- `yield;` is only legal inside `async fn`.
-- `await expr` is only legal inside `async fn`.
+Rules:
 
-### Surface Compatibility
+- `async fn` with no `yield expr` => task coroutine
+- `async fn` with any `yield expr` => stream coroutine
+- task coroutine may `ret expr`
+- stream coroutine v1 may only `ret;`, not non-void `ret expr`
+- stream coroutine ends with eos + optional error, not second typed final value
+- `await`, `yield expr`, `yield;` only legal inside `async fn`
+- `future.[T]` only for single-result task, never for stream
+- calling yielding `async fn` returns `stream.[T]`
+- save nicer sugar like `for await` for later
 
-- Keep `async.(fn)(args)` and `await.(fn)(args)` for task-producing async functions.
-- Keep current `future.[T]` syntax for task-producing async functions only.
-- Do not overload `future.[T]` to mean both single-shot tasks and streams.
-- Introduce stream construction through ordinary async-function invocation:
-  calling a yielding `async fn` returns `stream.[T]`.
-- Introduce stream consumption via a new builtin surface:
-  `await.next(stream)` returns the next yielded item or end-of-stream state.
-- Reserve ergonomic sugar such as `for await` for a later follow-up after the core runtime and lowering are stable.
+## AST + Types
 
-### AST Additions
+Change `src/ast/ast.h`.
 
-Update `src/ast/ast.h` to add:
+Add:
 
 - `TypeStream`
-- coroutine flavor metadata on function declarations:
+- coro flavor enum on fn decl:
   `CoroNone`, `CoroTask`, `CoroStream`, `CoroUnknown`
-- `NodeYieldExpr` for `yield value`
+- `NodeYieldExpr` for `yield expr`
 - `NodeYieldNowExpr` for `yield;`
-- function declaration fields:
+- fn fields:
   `coro_flavor`, `yield_type`, `has_await`, `has_yield_value`, `has_yield_now`
 
 Keep:
@@ -93,137 +88,139 @@ Keep:
 - `NodeAwaitCombinator`
 - `NodeAsyncCall`
 
-Refactor:
+Refactor meaning:
 
-- `TypeFuture` from "opaque pointer to pthread future" into "task handle type in source language"
-- `NodeAwaitExpr` semantic meaning from blocking wait to coroutine suspension when inside async code
+- `TypeFuture`: from "pthread future ptr ABI" to "task handle source type"
+- `NodeAwaitExpr`: from blocking wait to suspend/resume when inside async fn
 
-### Semantic Analysis Requirements
+## Semantic Pass
 
-Add a coroutine-analysis pass before LLVM codegen:
+Add coroutine-analysis pass before LLVM codegen.
 
-- infer coroutine flavor from function body
-- if any `yield value` appears, mark function as `CoroStream`
-- if only `await` / `yield;` / `ret` appear, mark function as `CoroTask`
-- reject `yield value` outside `async fn`
+Pass must:
+
+- infer fn flavor from body
+- if any `yield expr`, mark `CoroStream`
+- if only `await` / `yield;` / `ret`, mark `CoroTask`
+- reject `yield expr` outside `async fn`
 - reject `yield;` outside `async fn`
 - reject `await` outside `async fn`
-- infer stream element type from all `yield value` sites
-- reject mixed `yield` types
-- reject non-void `ret` inside a stream coroutine in v1
-- preserve current async marker checks for `async.(fn)(args)`, but extend them to reject dispatch forms that target stream coroutines where a task is required
+- infer stream item type from all `yield expr`
+- reject mixed yield types
+- reject non-void `ret` in stream coroutine v1
+- keep current `async.(fn)(args)` marker checks
+- also reject dispatch forms that expect task but target stream coroutine
 
-## LLVM Lowering Design
+## LLVM Lowering
 
-Use one shared coroutine lowering scheme for both tasks and streams:
+One shared coro model for task + stream:
 
-1. emit `llvm.coro.id`
-2. emit `llvm.coro.size`
-3. allocate frame memory
-4. emit `llvm.coro.begin`
-5. emit suspension sites with `llvm.coro.suspend`
-6. emit destroy path with `llvm.coro.destroy`
-7. terminate with `llvm.coro.end`
+1. `llvm.coro.id`
+2. `llvm.coro.size`
+3. alloc frame
+4. `llvm.coro.begin`
+5. use `llvm.coro.suspend` for all await/yield/final suspend points
+6. `llvm.coro.destroy` on destroy path
+7. `llvm.coro.end` at end
 
-### Frame Layout
+### Frame Must Hold
 
-Every coroutine frame must carry:
+All coroutines:
 
-- resume index / coroutine state
-- spilled locals that live across suspension points
-- cleanup flags for partially initialized values
-- executor pointer
+- resume index / state
+- spilled locals crossing suspend
+- cleanup flags for partial init
+- executor ptr
 - continuation handle
 - cancellation state
 - completion state
 - error state
 
-Task coroutine frames additionally carry:
+Task also:
 
 - final result slot
-- completion waiters / continuation registration
+- completion waiter / continuation registration
 
-Stream coroutine frames additionally carry:
+Stream also:
 
 - current yielded item slot
 - item-ready flag
 - consumer waiting flag
 - end-of-stream flag
 
-### Task Coroutine Lowering
+## Task Lowering
 
-For `async fn foo(...): T` with no `yield value`:
+For `async fn foo(...): T` with no `yield expr`:
 
-- lower function body as a coroutine-producing function that returns a task handle
-- allocate coroutine frame with `llvm.coro.size`
-- initialize runtime task header and promise/result storage
-- schedule initial resume on the executor
-- return a lightweight handle to the caller
+- lower body as coroutine-producing function
+- alloc frame with `llvm.coro.size`
+- init runtime task header + result storage
+- schedule first resume on executor
+- return lightweight task handle
 
-Return lowering:
+`ret expr`:
 
-- `ret expr` stores the value into the task result slot
-- mark task completion
-- wake registered continuation / awaiter
-- branch to final suspend
+- store result in task slot
+- mark complete
+- wake continuation / awaiter
+- jump final suspend
 
-Final suspend lowering:
+Final suspend:
 
-- emit a dedicated final-suspend block
-- call `llvm.coro.suspend` with final-suspend semantics
-- on destroy path call `llvm.coro.destroy`
-- close with `llvm.coro.end`
+- dedicated block
+- `llvm.coro.suspend` with final-suspend meaning
+- destroy path calls `llvm.coro.destroy`
+- end with `llvm.coro.end`
 
-### Await Lowering
+## Await Lowering
 
-For `await expr` inside a task or stream coroutine:
+For `await expr` in task or stream coro:
 
-1. evaluate the awaitable expression
-2. check readiness through runtime await hooks
-3. if ready:
-   extract value immediately and continue
+1. eval awaitable
+2. ready-check through runtime await hooks
+3. if ready, extract value and continue
 4. if not ready:
-   register current coroutine as continuation on the child task
-   store any live values needed after resumption into the frame
-   emit `llvm.coro.suspend`
-   on resume, reload live values and extract child result
-5. if child completed with error:
-   propagate through the language's error model
+   register current coro as continuation on child task
+   spill live-after-resume values to frame
+   `llvm.coro.suspend`
+   on resume reload values and extract child result
+5. if child errored, propagate through language error model
 
-The fast path must avoid executor round-trips when the awaited value is already complete.
+Need fast path: if already ready, no needless executor round-trip.
 
-### Stream Coroutine Lowering
+## Stream Lowering
 
-For `async fn` with `yield value`:
+For `async fn` with `yield expr`:
 
-- function call constructs a stream coroutine and returns `stream.[T]`
-- producer is resumed by consumer demand or scheduling policy
-- every `yield expr` is a suspension point
+- call builds stream coroutine
+- call returns `stream.[T]`
+- producer resumes by consumer demand or scheduler policy
+- each `yield expr` is suspend point
 
-`yield expr` lowering:
+`yield expr`:
 
-1. evaluate yield value
-2. store value into current-yield slot in the frame
-3. set item-ready state
-4. wake any waiting consumer continuation
-5. emit `llvm.coro.suspend`
-6. on resume, clear item-ready and continue after the yield site
+1. eval value
+2. store in current-item slot
+3. set item-ready
+4. wake waiting consumer continuation
+5. `llvm.coro.suspend`
+6. on resume clear item-ready and continue after yield
 
-`yield;` lowering:
+`yield;`:
 
-1. enqueue current coroutine back onto executor ready queue
-2. emit `llvm.coro.suspend`
-3. resume at the next block with no produced item
+1. enqueue self back onto executor ready queue
+2. `llvm.coro.suspend`
+3. resume next block, no produced item
 
-Stream completion:
+Stream complete:
 
-- mark end-of-stream
+- mark eos
 - wake waiting consumer continuation
-- branch to final suspend
+- jump final suspend
 
-### Worked Lowering Example: Task Coroutine
+## Worked Lowering Sketches
 
-Source:
+Task example source:
 
 ```stasha
 async fn add_then_square(i32 a, i32 b): i32 {
@@ -233,7 +230,7 @@ async fn add_then_square(i32 a, i32 b): i32 {
 }
 ```
 
-Lowering shape:
+Task shape:
 
 ```text
 foo():
@@ -270,9 +267,7 @@ destroy:
   coro.destroy
 ```
 
-### Worked Lowering Example: Stream Coroutine
-
-Source:
+Stream example source:
 
 ```stasha
 async fn produce(i32 n): stream.[i32] {
@@ -287,7 +282,7 @@ async fn produce(i32 n): stream.[i32] {
 }
 ```
 
-Lowering shape:
+Stream shape:
 
 ```text
 produce():
@@ -328,49 +323,46 @@ final.suspend:
   coro.end
 ```
 
-### LLVM Pass Pipeline
+## LLVM Pass Pipeline
 
-Extend the LLVM emission pipeline to support coroutine passes before object emission:
+Run coro passes after IR gen, before object emit:
 
 - `coro-early`
 - `coro-split`
 - `coro-elide`
 - `coro-cleanup`
 
-Requirements:
+Need:
 
-- coroutine passes must run after IR generation and before final object emission
-- verification must run both before and after coroutine transformation where practical
-- optimized builds must preserve coroutine correctness
-- stack-allocation elision must be permitted when LLVM can prove safe non-escaping frames
+- verify IR before/after coroutine transform where practical
+- optimized builds keep coroutine correctness
+- allow stack elide when LLVM proves frame non-escaping
 
-## Runtime Design
+## Runtime
 
-Add a new coroutine runtime alongside the existing thread runtime.
+Add new coroutine runtime beside old thread runtime.
 
-### Core Runtime Objects
+### Core Objects
 
-#### Coroutine Header
+Coroutine header has:
 
-Every coroutine frame is associated with a header containing:
-
-- frame pointer
-- resume function pointer
-- destroy function pointer
-- executor pointer
+- frame ptr
+- resume fn ptr
+- destroy fn ptr
+- executor ptr
 - state flags
 - refcount
 - cancellation flags
-- continuation pointer
+- continuation ptr
 
-#### Task State
+Task state has:
 
 - result storage
 - error storage
 - completion status
 - awaiter / continuation registration
 
-#### Stream State
+Stream state has:
 
 - current yielded item storage
 - item-ready flag
@@ -378,38 +370,33 @@ Every coroutine frame is associated with a header containing:
 - terminal completion flag
 - terminal error storage
 
-#### Executor
-
-Start with a single-threaded executor:
+Executor v1 is single-threaded:
 
 - ready queue
 - `schedule(task_or_stream)`
 - `wake(coroutine)`
 - `run()`
 
-Design the API so later multithreaded executors can reuse the same task/stream handles.
+API must let later multithreaded executors reuse same task/stream handles.
 
-### Required Runtime Behavior
+### Runtime Behavior
 
 Task await:
 
-- parent coroutine installs itself as continuation on child task
-- child completion enqueues parent on executor
+- parent installs self as continuation on child task
+- child completion enqueues parent
 - parent resumes and extracts result
 
 Stream next:
 
-- consumer requests next item through runtime `next` API
-- producer resumes until one of:
-  item yielded
-  completed
-  errored
-- producer stores yielded item in stream slot and suspends
+- consumer asks next through runtime `next` API
+- producer resumes until yielded / completed / errored
+- producer stores yielded item then suspends
 
 Scheduler yield:
 
-- current coroutine is re-enqueued on ready queue
-- coroutine suspends
+- current coro re-enqueued on ready queue
+- coro suspends
 
 Completion:
 
@@ -417,59 +404,59 @@ Completion:
 
 Destroy:
 
-- dropped tasks/streams call `llvm.coro.destroy` exactly once when final ownership is released
+- dropped task/stream calls `llvm.coro.destroy` exactly once when final ownership released
 
 Cancellation:
 
 - cooperative only in v1
-- checked at await/yield/scheduler boundaries and before resumption where practical
+- check at await / `yield expr` / `yield;` boundaries and before resume where practical
 
-### Interop With Existing Thread Runtime
+## Interop
 
-Keep the current thread runtime temporarily for explicit `thread.(fn)` usage and migration bridging.
+Keep old thread runtime for now, but only for explicit `thread.(fn)` usage + bridge path.
 
-Interop rules:
+Rules:
 
-- existing `thread.(fn)` / raw `future` runtime remains available
-- bridge awaitables adapt legacy thread futures into new task await semantics
-- no attempt is made to use blocking futures as the internal implementation model for async coroutines
-- `await.all` / `await.any` are rebuilt on top of coroutine tasks, not pthread condition waits
+- old `thread.(fn)` / raw `future` still available
+- bridge awaitables adapt old thread futures into new task-await semantics
+- do not use blocking futures as core async implementation
+- rebuild `await.all` / `await.any` on coroutine tasks, not pthread cond waits
 
-## Compiler Migration Sequence
+## Migration Order
 
-1. Add coroutine flavor metadata and new yield nodes to AST.
-2. Add `TypeStream` and refactor `TypeFuture` into a task-handle type while preserving `future.[T]` parsing.
-3. Add coroutine semantic analysis for legality and flavor inference.
-4. Extend lexer/parser to support `yield expr` and `yield;`.
-5. Add coroutine intrinsic declarations and builder helpers in codegen.
-6. Introduce runtime coroutine header, task state, stream state, and executor APIs beside the legacy thread runtime.
-7. Lower task-producing `async fn` bodies as LLVM coroutines.
-8. Lower generator-producing `async fn` bodies as LLVM coroutines using the same frame model.
-9. Rework `async.(fn)(args)` and direct async calls to construct coroutine tasks or streams, not pthread jobs.
-10. Reimplement `await` in async bodies as real suspension/resume.
-11. Add stream-consumption API and lowering for requesting the next yielded item.
-12. Add `yield;` lowering and executor support.
+1. Add coro flavor metadata + yield nodes to AST.
+2. Add `TypeStream`; refactor `TypeFuture` into task-handle type; keep `future.[T]` parse.
+3. Add coroutine semantic pass for legality + flavor inference.
+4. Extend lexer/parser for `yield expr` and `yield;`.
+5. Add coro intrinsic declarations + builder helpers in codegen.
+6. Add runtime coroutine header, task state, stream state, executor API beside legacy thread runtime.
+7. Lower task-producing `async fn` as LLVM coroutines.
+8. Lower generator-producing `async fn` as LLVM coroutines with same frame model.
+9. Rework `async.(fn)(args)` and direct async calls to build coroutine tasks/streams, not pthread jobs.
+10. Reimplement `await` in async bodies as real suspend/resume.
+11. Add stream-consume API + lowering for next item.
+12. Add `yield;` lowering + executor support.
 13. Rebuild `await.all` and `await.any` as coroutine combinators.
-14. Add adapters for legacy thread futures during migration.
-15. Remove eager generation of thread wrappers for async functions once coroutine-backed dispatch fully replaces them.
-16. Update examples/docs to demonstrate async tasks, async streams, and scheduler-yield semantics.
+14. Add legacy thread-future adapters.
+15. Remove eager async thread-wrapper generation once coroutine dispatch replaces it.
+16. Update examples + docs for async tasks, async streams, scheduler-yield.
 
-## Keep, Delete, Refactor
+## Keep / Delete / Refactor
 
-### Keep Temporarily
+Keep temporary:
 
-- thread pool runtime as compatibility backend for explicit `thread.(fn)` usage
-- raw future runtime API for bridge adapters only
+- thread pool runtime for explicit `thread.(fn)` compat
+- raw future runtime API only for bridge adapters
 
-### Delete Or Demote
+Delete or demote:
 
-- async-specific reliance on `__thread_dispatch`
-- blocking `__future_get` as the core meaning of `await`
-- blocking `__future_wait` as the core meaning of `await`
-- `__future_wait_any` as the implementation basis for coroutine fan-in
-- eager generation of async thread wrappers once coroutine lowering is complete
+- async reliance on `__thread_dispatch`
+- blocking `__future_get` as core meaning of `await`
+- blocking `__future_wait` as core meaning of `await`
+- `__future_wait_any` as core fan-in impl
+- eager async thread wrappers after coroutine lowering complete
 
-### Refactor
+Refactor:
 
 - `TypeFuture`
 - `NodeAwaitExpr`
@@ -477,63 +464,65 @@ Interop rules:
 - async examples
 - ownership diagnostics
 - fan-in combinators
-- codegen runtime function registration
+- codegen runtime fn registration
 
-## Public API And Interface Changes
+## Public API
 
-### Source Language
+Source keep:
 
-- keep:
-  `async fn`, `await(f)`, `await.(fn)(args)`, `future.[T]`
-- add:
-  `stream.[T]`
-  `yield expr`
-  `yield;`
-  `await.next(stream)`
+- `async fn`
+- `await(f)`
+- `await.(fn)(args)`
+- `future.[T]` for task coroutines
 
-### Runtime API
+Source add:
 
-Add a new coroutine runtime header and implementation with functions conceptually equivalent to:
+- `stream.[T]`
+- `yield expr`
+- `yield;`
+- `await.next(stream)`
 
-- task creation / handle init
-- stream creation / handle init
-- continuation registration
-- executor scheduling
-- stream next polling / waiting
-- task completion
-- stream item publication
+Runtime add new coro API for:
+
+- task create / handle init
+- stream create / handle init
+- continuation register
+- executor schedule
+- stream next poll / wait
+- task complete
+- stream item publish
 - cancellation request
 - destroy / release
 
-The exact C symbol names should be chosen to avoid collision with the legacy thread runtime and to make the split obvious, for example `__coro_*`, `__task_*`, and `__stream_*`.
+Choose C names that do not collide with old runtime, like `__coro_*`, `__task_*`, `__stream_*`.
 
-## Test Plan
+## Tests
 
-### Parsing And Semantics
+Parsing + semantics:
 
-- `await` valid only in async coroutines
-- `yield value` valid only in async coroutines
-- `yield;` valid only in async coroutines
-- mixed-yield type mismatches rejected
-- task-vs-stream coroutine flavor inferred or validated correctly
+- `await` only in async coroutines
+- `yield expr` only in async coroutines
+- `yield;` only in async coroutines
+- mixed yield type mismatch rejected
+- task-vs-stream flavor inferred/validated right
 - non-void `ret` in stream coroutine rejected in v1
 
-### Task Codegen IR
+Task IR:
 
-- emitted IR contains `llvm.coro.id`
-- emitted IR contains `llvm.coro.begin`
-- emitted IR contains suspend sites for each await
-- emitted IR contains final suspend
-- emitted IR contains destroy path
-- emitted IR contains `llvm.coro.end`
+- has `llvm.coro.id`
+- has `llvm.coro.begin`
+- has suspend site for each await
+- has final suspend
+- has destroy path
+- has `llvm.coro.end`
 
-### Stream Codegen IR
+Stream IR:
 
-- emitted IR contains suspension at every `yield value`
-- emitted IR contains suspension at every `yield;`
-- producer resume points are preserved correctly
+- has suspend at every `yield expr`
+- has suspend at every `yield;`
+- producer resume points preserved right
 
-### Runtime Task Behavior
+Runtime task behavior:
 
 - single await
 - multiple awaits
@@ -542,41 +531,41 @@ The exact C symbol names should be chosen to avoid collision with the legacy thr
 - void-return tasks
 - error propagation through await
 
-### Runtime Stream Behavior
+Runtime stream behavior:
 
-- multiple yielded values in order
-- await between yields
+- yielded values stay in order
+- await between yields works
 - scheduler-yield fairness
 - consumer waiting before producer yield
 - producer yielding before consumer wait
 - clean completion
 - clean early drop
 
-### Combinators
+Combinators:
 
 - `await.all` preserves order
 - `await.any` resumes one winner path safely
 - no use-after-free on loser cleanup
 
-### Cancellation And Destruction
+Cancellation + destruction:
 
 - dropped unfinished task destroys safely
 - dropped stream destroys safely mid-sequence
-- cancellation observed at await/yield boundaries
+- cancellation seen at await/yield boundaries
 - no leaks after cancellation
 
-### Compatibility
+Compatibility:
 
-- legacy `thread.(fn)` jobs can still be bridged into coroutine awaits during migration
+- legacy `thread.(fn)` jobs still bridge into coroutine await
 
-### Optimization
+Optimization:
 
-- coroutine pass pipeline succeeds
-- optimized builds preserve correctness for task and stream coroutines
+- coro pass pipeline succeeds
+- optimized builds keep task + stream correctness
 
-## Migration Notes For Existing Code
+## Old Code Impact
 
-What stays source-compatible:
+Source-compatible stays:
 
 - `async fn`
 - `async.(fn)(args)` for task coroutines
@@ -584,21 +573,21 @@ What stays source-compatible:
 - `await.(fn)(args)`
 - `future.[T]` for task coroutines
 
-What changes semantically:
+Meaning changes:
 
-- `await` inside async bodies becomes suspension, not blocking wait
-- `async fn` is no longer just a dispatch marker; it changes function lowering
-- yielding async functions return streams, not task futures
+- `await` inside async fn now suspends, not blocks
+- `async fn` now changes lowering, not just dispatch eligibility
+- yielding async fn returns stream, not task future
 
-What needs a new surface:
+New surface needed:
 
-- stream-producing async functions need `stream.[T]`
-- consumers need `await.next(stream)` in v1
+- `stream.[T]`
+- `await.next(stream)` in v1
 
 ## Assumptions
 
-- The file created during execution is `wiki/Coroutine-Migration-Plan.md`.
-- The document is concrete and implementation-ready, not a high-level concept note.
-- `yield` support is part of the first-class coroutine migration, not a deferred extension.
-- Both value-yielding async generators and a separate no-value scheduler-yield are included in the design.
-- `future.[T]` remains the compatibility spelling for single-result async tasks only; streams get their own distinct type.
+- file is `wiki/Coroutine-Migration-Plan.md`
+- doc must be concrete, implementation-ready, not vague concept note
+- `yield` ships in first-class migration, not later
+- both value-yielding async generators and no-value scheduler-yield are required
+- `future.[T]` stays compatibility spelling for single-result tasks only; streams get distinct type
