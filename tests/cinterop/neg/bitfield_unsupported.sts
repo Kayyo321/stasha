@@ -1,0 +1,11 @@
+mod neg_bitfield_unsupported;
+
+cheader "support/bitfield.h" search "tests/cinterop/neg";
+
+// Negative test: importing a C header that declares a struct with
+// bitfield members must fail compilation with a "bitfield"-bearing
+// error message, not silently corrupt the layout.
+
+fn main(void): i32 {
+    ret 0;
+}

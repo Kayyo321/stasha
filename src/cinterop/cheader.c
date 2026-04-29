@@ -1144,7 +1144,6 @@ static void ch_scan_source(ch_ctx_t *ctx, const char *path, char *source) {
 }
 
 static void ch_process_file(ch_ctx_t *ctx, const char *path) {
-    fprintf(stderr, "[chdbg] process %s\n", path);
     if (ch_str_list_has(&ctx->seen_files, path)) return;
     ch_str_list_push(&ctx->seen_files, path);
     heap_t src_heap = NullHeap;
