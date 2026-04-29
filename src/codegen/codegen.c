@@ -218,6 +218,22 @@ typedef struct {
     LLVMValueRef lock_gv;    /* i32: atomic spinlock state         */
 } signal_storage_t;
 
+/* ── coroutine lowering context (defined before cg_t so cg_t can embed it) ── */
+
+typedef struct {
+    LLVMValueRef       handle;            /* result of llvm.coro.begin */
+    LLVMValueRef       id_token;          /* result of llvm.coro.id    */
+    LLVMValueRef       promise;           /* alloca ptr for promise    */
+    LLVMTypeRef        promise_type;      /* %__sts_stream_prom_<T>    */
+    LLVMTypeRef        hdr_type;          /* %__sts_coro_prom_hdr      */
+    LLVMTypeRef        item_type;         /* T (or i8 placeholder)     */
+    LLVMBasicBlockRef  final_suspend_bb;
+    LLVMBasicBlockRef  cleanup_bb;
+    LLVMBasicBlockRef  suspend_bb;
+    int                active;
+    int                susp_counter;
+} sts_coro_ctx_t;
+
 /* ── code generator state ── */
 
 typedef struct {
@@ -507,6 +523,7 @@ static void gen_quit_stmt(cg_t *cg, node_t *node);
 #include "cg_lookup.c"
 #include "cg_dtors.c"
 #include "cg_types.c"
+#include "cg_coro.c"
 #include "cg_registry.c"
 #include "cg_interfaces.c"
 #include "cg_expr.c"
@@ -1663,17 +1680,16 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
         }
 
-        if (decl->as.fn_decl.is_async
-                && (decl->as.fn_decl.has_await
-                    || decl->as.fn_decl.has_yield_value
-                    || decl->as.fn_decl.has_yield_now)) {
-            diag_begin_error("coroutine lowering is not implemented yet for async function '%s'",
-                             decl->as.fn_decl.name);
-            diag_span(DIAG_NODE(decl), True,
-                      "this async function now requires coroutine lowering");
-            diag_help("plain 'async fn' markers without await/yield still compile on the legacy runtime path");
-            diag_finish();
-            continue;
+        /* Stream coroutine: wrap the body with the LLVM coro prologue/epilogue.
+           `gen_yield_*` and `gen_ret` consult cg.cur_coro to branch into the
+           suspend/cleanup blocks built here. */
+        boolean_t is_stream_coro = decl->as.fn_decl.is_async
+            && decl->as.fn_decl.coro_flavor == CoroStream;
+        sts_coro_ctx_t prev_coro = cg.cur_coro;
+        if (is_stream_coro) {
+            sts_emit_coro_stream_prologue(&cg, decl->as.fn_decl.yield_type, &cg.cur_coro);
+        } else {
+            cg.cur_coro.active = 0;
         }
 
         gen_block(&cg, decl->as.fn_decl.body);
@@ -1683,6 +1699,13 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         check_unconsumed_futures(&cg, decl);
 
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
+        if (is_stream_coro) {
+            sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
+            cg.cur_coro = prev_coro;
+            if (cg.debug_mode) cg.di_scope = cg.di_compile_unit;
+            continue;
+        }
+        cg.cur_coro = prev_coro;
         if (!LLVMGetBasicBlockTerminator(cur_bb)) {
             type_info_t rti = decl->as.fn_decl.return_types[0];
             if (cg.current_fn_is_entry_main)
@@ -1722,6 +1745,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->as.fn_decl.body == Null) continue;
         if (decl->as.fn_decl.is_method) continue;       /* async methods not supported in v1 */
         if (decl->as.fn_decl.type_param_count > 0) continue;
+        if (decl->as.fn_decl.coro_flavor == CoroStream) continue; /* stream coros aren't dispatched */
         const char *name = decl->as.fn_decl.name;
         if (!name) continue;
         symbol_t *sym = cg_lookup(&cg, name);
@@ -2039,12 +2063,22 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (error) LLVMDisposeMessage(error);
     }
 
+    if (getenv("STS_DUMP_IR_PRE")) {
+        /* Dump IR before the coroutine pass pipeline runs. Useful when
+         * triaging an "Instruction does not dominate all uses" verifier
+         * abort that fires inside the coro passes. */
+        char *ir_str = LLVMPrintModuleToString(cg.module);
+        FILE *f = fopen(getenv("STS_DUMP_IR_PRE"), "w");
+        if (f) { fputs(ir_str, f); fclose(f); }
+        LLVMDisposeMessage(ir_str);
+    }
+
     if (get_error_count() == errors_before && ast_requires_coro_pipeline(ast)) {
         LLVMPassBuilderOptionsRef pb_opts = LLVMCreatePassBuilderOptions();
         LLVMPassBuilderOptionsSetVerifyEach(pb_opts, 1);
         LLVMErrorRef pass_err = LLVMRunPasses(
             cg.module,
-            "coro-early,coro-split,coro-elide,coro-cleanup",
+            "coro-early,cgscc(coro-split),coro-cleanup,globaldce",
             machine,
             pb_opts);
         LLVMDisposePassBuilderOptions(pb_opts);

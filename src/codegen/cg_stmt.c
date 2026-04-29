@@ -578,6 +578,15 @@ static void gen_if(cg_t *cg, node_t *node) {
 }
 
 static void gen_ret(cg_t *cg, node_t *node) {
+    /* Stream coroutine: `ret;` jumps to the final-suspend block, which
+       sets eos/complete and runs the coro.end epilogue.  Coroutine analysis
+       already rejects `ret expr;` in stream context, so we only see void rets. */
+    if (cg->cur_coro.active) {
+        emit_all_dtor_calls(cg);
+        sts_emit_stream_ret(cg, &cg->cur_coro);
+        return;
+    }
+
     /* pointer safety: check each return value */
     for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
         node_t *rv = node->as.ret_stmt.values.items[i];
@@ -1942,11 +1951,25 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeComptimeIf:   gen_comptime_if(cg, node); break;
         case NodeComptimeAssert: gen_comptime_assert(cg, node); break;
         case NodeWithStmt:     gen_with_stmt(cg, node); break;
-        case NodeYieldExpr:
+        case NodeYieldExpr: {
+            if (!cg->cur_coro.active) {
+                diag_begin_error("'yield' is only legal inside a stream coroutine");
+                diag_span(DIAG_NODE(node), True, "yield used in non-stream context");
+                diag_finish();
+                break;
+            }
+            LLVMValueRef yv = gen_expr(cg, node->as.yield_expr.value);
+            sts_emit_yield_value(cg, &cg->cur_coro, yv, LLVMTypeOf(yv));
+            break;
+        }
         case NodeYieldNowExpr:
-            diag_begin_error("coroutine lowering for 'yield' is not implemented yet");
-            diag_span(DIAG_NODE(node), True, "coroutine suspension would be lowered here");
-            diag_finish();
+            if (!cg->cur_coro.active) {
+                diag_begin_error("'yield;' is only legal inside a stream coroutine");
+                diag_span(DIAG_NODE(node), True, "scheduler-yield used outside coroutine");
+                diag_finish();
+                break;
+            }
+            sts_emit_yield_now(cg, &cg->cur_coro);
             break;
         case NodeBreakStmt:
             if (cg->break_target)

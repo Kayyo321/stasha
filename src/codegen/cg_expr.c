@@ -2305,10 +2305,29 @@ static type_info_t resolve_future_elem_type(cg_t *cg, node_t *handle) {
     return NO_TYPE;
 }
 
-/* await(f) / await.(fn)(args) — block on handle, load typed result, drop. */
+/* await(f) / await.(fn)(args) / await.next(s) — drive handle, load value. */
 static LLVMValueRef gen_await(cg_t *cg, node_t *node) {
     node_t *handle = node->as.await_expr.handle;
     type_info_t et = node->as.await_expr.get_type;
+
+    /* await.next(s) — stream consumer: drive coro.resume until yield/eos. */
+    if (node->as.await_expr.is_stream_next) {
+        type_info_t item_ti = NO_TYPE;
+        if (handle && handle->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, handle->as.ident.name);
+            if (sym && sym->stype.base == TypeStream && sym->stype.elem_type)
+                item_ti = resolve_alias(cg, sym->stype.elem_type[0]);
+        }
+        if (item_ti.base == TypeVoid && !item_ti.is_pointer) {
+            diag_begin_error("await.next(...) requires a stream.[T] handle with a known item type");
+            diag_span(DIAG_NODE(node), True, "stream item type could not be resolved");
+            diag_finish();
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        LLVMValueRef hh = gen_expr(cg, handle);
+        return sts_emit_await_next(cg, hh, item_ti);
+    }
+
     if (et.base == TypeVoid && !et.is_pointer)
         et = resolve_future_elem_type(cg, handle);
 
@@ -2491,6 +2510,24 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
+    /* stream.* ops route to the coroutine intrinsic helpers regardless of
+       which `op` the parser tagged them with — the handle's TypeStream
+       binding is the source of truth. */
+    if (node->as.future_op.op == StreamDone || node->as.future_op.op == StreamDrop) {
+        type_info_t item_ti = NO_TYPE;
+        if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, node->as.future_op.handle->as.ident.name);
+            if (sym && sym->stype.base == TypeStream && sym->stype.elem_type)
+                item_ti = resolve_alias(cg, sym->stype.elem_type[0]);
+        }
+        LLVMValueRef sh = gen_expr(cg, node->as.future_op.handle);
+        if (node->as.future_op.op == StreamDrop) {
+            sts_emit_stream_drop(cg, sh);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        return sts_emit_stream_done(cg, sh, item_ti);
+    }
+
     LLVMValueRef handle = gen_expr(cg, node->as.future_op.handle);
     LLVMValueRef call_args[1] = { handle };
     boolean_t use_async_runtime = False;

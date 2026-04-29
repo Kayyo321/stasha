@@ -77,6 +77,7 @@ CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module A
 | `cg_stmt.c` (900) | `gen_local_var`, `gen_for/while/do_while/inf_loop/if/ret/debug/multi_assign/match/switch/asm_stmt/comptime_if/comptime_assert`, `gen_stmt` dispatcher, `gen_block` |
 | `cg_registry.c` (132) | `register_struct/enum/alias/lib`, `struct_add_field/field_ex` |
 | `cg_debug.c` (288) | `di_cache_lookup/set`, `get_di_named_type`, `get_di_type`, `di_make_location`, `di_set_location` |
+| `cg_coro.c` | LLVM coroutine intrinsic declarations + stream coroutine lowering: `sts_emit_coro_stream_prologue`, `sts_emit_yield_value`, `sts_emit_yield_now`, `sts_emit_stream_ret`, `sts_finish_coro_body_if_open`, `sts_emit_await_next`, `sts_emit_stream_done`, `sts_emit_stream_drop`. Promise layout (`__sts_coro_prom_hdr` + inline `T`) and `presplitcoroutine` attribute applied here. |
 | `codegen.h` (10) | `codegen()` declaration |
 
 ### `src/runtime/`
@@ -207,6 +208,30 @@ stack i32 v = future.get.(i32)(f); // block and return typed result
 stack void *p = future.get(f);     // block and return raw void*
 future.drop(f);                    // wait + free future
 
+// Async tasks (typed thread-pool dispatch; legacy runtime path)
+async fn add(i32 a, i32 b): i32 { ret a + b; }
+stack future.[i32] f = async.(add)(1, 2);
+stack i32 v = await(f);                  // block, load i32, drop
+stack i32 sum = await.(add)(1, 2);       // dispatch + block + drop in one
+stack [i32, i32] both = await.all(async.(add)(1,2), async.(add)(3,4));
+stack i32 winner = await.any(async.(add)(1,2), async.(add)(3,4));
+
+// Stream coroutines (real LLVM coroutines lowered through llvm.coro.*)
+async fn fib(i32 n): stream.[i64] {
+    stack i64 a = 0; stack i64 b = 1; stack i32 i = 0;
+    while (i < n) { yield a; stack i64 t = a + b; a = b; b = t; i = i + 1; }
+    ret;                            // ret expr; is rejected in stream coros
+}
+stream.[i64] f = fib(10);
+inf {
+    stack i64 v = await.next(f);    // drives producer to next yield (or eos)
+    if (stream.done(f)) { break; }  // post-call eos check
+    print.('{}\n', v);
+}
+stream.drop(f);                     // destroy coro frame (safe at any state)
+// `yield expr;` produces an item; `yield;` is a bare cooperative reschedule.
+// `await.next(s)` is legal anywhere — it drives the producer synchronously.
+
 // Struct attributes: @packed  @align(N)  @c_layout
 // Fn/var attributes: @weak  @hidden  @restrict
 // Variadic: fn foo(stack i32 n, ...): void
@@ -323,6 +348,9 @@ rem.(q);                               // rem on stack pointer — ERROR
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
 - [x] Dotted module names + sts.sproj project file
 - [x] Thread parallelism: `thread.(fn)(args)` + `future` type (thread pool, POSIX pthreads)
+- [x] Stream coroutines: `async fn ...: stream.[T]` lowered through `llvm.coro.*` — `yield expr;`, `yield;`, `await.next(s)`, `stream.done(s)`, `stream.drop(s)`
+- [ ] Task coroutines: lower `async fn ...: T` through `llvm.coro.*` (today only stream coroutines run on the coroutine pipeline; tasks still ride the thread pool)
+- [ ] Coroutine executor queue + cross-coroutine continuations (so `await(child_future)` inside an async fn becomes a real `coro.suspend`)
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler

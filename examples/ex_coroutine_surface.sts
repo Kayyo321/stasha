@@ -1,20 +1,207 @@
 mod ex_coroutine_surface;
 
-// Surface syntax example for the coroutine migration.
-// This shows the intended task and stream forms:
+// ── Stasha coroutines: async fn + stream.[T] + yield ──────────────────────
 //
-//   async fn task(...): T { ... await(...); ret value; }
-//   async fn streamer(...): stream.[T] { yield item; yield; ret; }
+// Stream coroutines are real LLVM coroutines lowered through `llvm.coro.*`
+// intrinsics + the `coro-early`/`coro-split`/`coro-cleanup` pass pipeline.
+// Calling a yielding `async fn` returns a `stream.[T]` handle that the
+// consumer drives synchronously through `await.next(s)` / `stream.done(s)` /
+// `stream.drop(s)`.
 //
-// Full coroutine lowering is still compiler work-in-progress, so this file
-// serves as a language example rather than a runnable sample today.
+// `yield expr` produces an item.
+// `yield;`     cooperative reschedule — no item, just suspends.
+// `ret;`       end of stream.
+//
+// This example is meant to compile and run.  Build with:
+//     stasha build examples/ex_coroutine_surface.sts -o /tmp/coro_demo
 
-async fn produce(i32 n): stream.[i64] {
+lib "stdio" = io;
+
+// ── 1. simple counter ──────────────────────────────────────────────────────
+async fn count_up(i32 n): stream.[i32] {
     stack i32 i = 0;
     while (i < n) {
         yield i;
-        yield;
         i = i + 1;
     }
     ret;
+}
+
+fn run_counter(void): void {
+    stream.[i32] s = count_up(5);
+    inf {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        io.printf('count_up: %d\n', v);
+    }
+    stream.drop(s);
+}
+
+// ── 2. fibonacci stream ────────────────────────────────────────────────────
+async fn fib(i32 n): stream.[i64] {
+    stack i64 a = 0;
+    stack i64 b = 1;
+    stack i32 i = 0;
+    while (i < n) {
+        yield a;
+        stack i64 t = a + b;
+        a = b;
+        b = t;
+        i = i + 1;
+    }
+    ret;
+}
+
+fn run_fib(void): void {
+    stream.[i64] f = fib(10);
+    inf {
+        stack i64 v = await.next(f);
+        if (stream.done(f)) { break; }
+        io.printf('fib: %lld\n', v);
+    }
+    stream.drop(f);
+}
+
+// ── 3. cooperative `yield;` between items ──────────────────────────────────
+// Each value is interleaved with a bare `yield;` that lets the consumer
+// re-enter the producer without burning a slot.  The drive loop keeps
+// resuming until the next yielded item arrives.
+async fn pulse(i32 n): stream.[i32] {
+    stack i32 i = 0;
+    while (i < n) {
+        yield i * 10;
+        yield;          // scheduler-yield, no item
+        i = i + 1;
+    }
+    ret;
+}
+
+fn run_pulse(void): void {
+    stream.[i32] p = pulse(4);
+    inf {
+        stack i32 v = await.next(p);
+        if (stream.done(p)) { break; }
+        io.printf('pulse: %d\n', v);
+    }
+    stream.drop(p);
+}
+
+// ── 4. early drop — destroy a stream before exhausting it ──────────────────
+async fn nats(void): stream.[i32] {
+    stack i32 i = 0;
+    inf {
+        yield i;
+        i = i + 1;
+    }
+    ret;
+}
+
+fn run_take_3(void): void {
+    stream.[i32] s = nats();
+    stack i32 taken = 0;
+    while (taken < 3) {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        io.printf('take: %d\n', v);
+        taken = taken + 1;
+    }
+    // drop the stream while it's still suspended — coro.destroy unwinds
+    // the frame's heap allocation without leaking.
+    stream.drop(s);
+}
+
+// ── 5. branching producer ──────────────────────────────────────────────────
+// Coroutine state lives in the frame, so locals captured across suspend
+// points are spilled automatically by the coro-split pass.
+async fn alternating(i32 n): stream.[i32] {
+    stack i32 i = 0;
+    while (i < n) {
+        if (i % 2 == 0) {
+            yield i;
+        } else {
+            yield -i;
+        }
+        i = i + 1;
+    }
+    ret;
+}
+
+fn run_alt(void): void {
+    stream.[i32] s = alternating(6);
+    inf {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        io.printf('alt: %d\n', v);
+    }
+    stream.drop(s);
+}
+
+fn main(void): i32 {
+    io.printf('--- counter ---\n');
+    run_counter();
+    io.printf('--- fib ---\n');
+    run_fib();
+    io.printf('--- pulse ---\n');
+    run_pulse();
+    io.printf('--- take 3 of infinite ---\n');
+    run_take_3();
+    io.printf('--- alternating ---\n');
+    run_alt();
+    ret 0;
+}
+
+test 'count_up yields 0..n' {
+    stream.[i32] s = count_up(3);
+    stack i32 a = await.next(s);
+    expect.(stream.done(s) == 0);
+    expect_eq.(a, 0);
+    stack i32 b = await.next(s);
+    expect.(stream.done(s) == 0);
+    expect_eq.(b, 1);
+    stack i32 c = await.next(s);
+    expect.(stream.done(s) == 0);
+    expect_eq.(c, 2);
+    stack i32 d = await.next(s);
+    expect.(stream.done(s) != 0);
+    stream.drop(s);
+}
+
+test 'pulse interleaves yield; with values' {
+    stream.[i32] p = pulse(2);
+    stack i32 a = await.next(p);
+    expect_eq.(a, 0);
+    stack i32 b = await.next(p);
+    expect_eq.(b, 10);
+    stack i32 c = await.next(p);
+    expect.(stream.done(p) != 0);
+    stream.drop(p);
+}
+
+test 'fib stays correct after suspend/resume' {
+    stream.[i64] f = fib(7);
+    stack i64 v0 = await.next(f);
+    stack i64 v1 = await.next(f);
+    stack i64 v2 = await.next(f);
+    stack i64 v3 = await.next(f);
+    stack i64 v4 = await.next(f);
+    stack i64 v5 = await.next(f);
+    stack i64 v6 = await.next(f);
+    expect_eq.(v0, 0);
+    expect_eq.(v1, 1);
+    expect_eq.(v2, 1);
+    expect_eq.(v3, 2);
+    expect_eq.(v4, 3);
+    expect_eq.(v5, 5);
+    expect_eq.(v6, 8);
+    stream.drop(f);
+}
+
+test 'early drop on infinite stream does not leak' {
+    stream.[i32] s = nats();
+    stack i32 a = await.next(s);
+    stack i32 b = await.next(s);
+    expect_eq.(a, 0);
+    expect_eq.(b, 1);
+    // drop while still suspended at yield
+    stream.drop(s);
 }

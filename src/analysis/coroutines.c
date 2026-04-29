@@ -204,7 +204,12 @@ static void analyze_expr(coro_analysis_t *ca, node_t *expr) {
             analyze_node_list(ca, &expr->as.async_call.args, False);
             break;
         case NodeAwaitExpr:
-            if (!ca->current_fn || !ca->current_fn->as.fn_decl.is_async) {
+            /* `await.next(s)` synchronously drives a stream — legal anywhere.
+               Other forms still require an enclosing `async fn`. */
+            if (expr->as.await_expr.is_stream_next) {
+                if (ca->current_fn && ca->current_fn->as.fn_decl.is_async)
+                    ca->current_fn->as.fn_decl.has_await = True;
+            } else if (!ca->current_fn || !ca->current_fn->as.fn_decl.is_async) {
                 diag_begin_error("'await' is only legal inside 'async fn'");
                 diag_span(DIAG_NODE(expr), True, "await used here");
                 diag_help("wrap this logic in an 'async fn' and await from there");

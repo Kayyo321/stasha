@@ -321,6 +321,8 @@ typedef enum {
     FutureGet,   /* future.get.(Type)(f)        — block, return typed val  */
     FutureGetRaw,/* future.get(f)               — block, return void ptr   */
     FutureDrop,  /* future.drop(f)              — wait + free future       */
+    StreamDone,  /* stream.done(s)              — i32 1 if EOS, else 0     */
+    StreamDrop,  /* stream.drop(s)              — destroy stream coroutine */
 } future_op_t;
 
 /* ── node list ── */

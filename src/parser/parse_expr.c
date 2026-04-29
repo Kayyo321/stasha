@@ -578,6 +578,41 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* stream.op(handle) — done(s)/drop(s) for stream.[T] coroutine handles. */
+    if (check(p, TokStream)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        token_t op_tok = consume(p, TokIdent, "stream operation (done, drop)");
+        char op_name[16];
+        usize_t op_len = op_tok.length < 15 ? op_tok.length : 15;
+        memcpy(op_name, op_tok.start, op_len);
+        op_name[op_len] = '\0';
+
+        future_op_t op;
+        if (strcmp(op_name, "done") == 0) {
+            op = StreamDone;
+        } else if (strcmp(op_name, "drop") == 0) {
+            op = StreamDrop;
+        } else {
+            diag_begin_error("unknown stream operation '%s'", op_name);
+            diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
+                      "expected: done, drop");
+            diag_finish();
+            op = StreamDrop; /* recover */
+        }
+
+        consume(p, TokLParen, "'('");
+        node_t *handle = parse_expr(p);
+        consume(p, TokRParen, "')'");
+
+        node_t *n = make_node(NodeFutureOp, line);
+        n->as.future_op.op       = op;
+        n->as.future_op.handle   = handle;
+        n->as.future_op.get_type = NO_TYPE;
+        return n;
+    }
+
     /* future.op(handle) / future.get.(Type)(handle) */
     if (check(p, TokFuture)) {
         usize_t line = p->current.line;

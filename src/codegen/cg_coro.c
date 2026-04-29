@@ -15,7 +15,7 @@
  * Promise layout — every stream coroutine stores its state in an alloca whose
  * address is registered with `llvm.coro.id`.  After `coro-split`, the alloca
  * lives in the coroutine frame and can be reached from the outside through
- * `llvm.coro.promise(handle, alignment, /*from_promise=*/false)`.  The header
+ * `llvm.coro.promise(handle, alignment, false)` (from_promise = false).  The header
  * is fixed-size (40 bytes on 64-bit), and the inline item slot follows it:
  *
  *     %__sts_coro_prom_hdr = type {
@@ -98,22 +98,6 @@
 #define STS_PROM_OFF_ERROR_MSG     7u
 #define STS_PROM_HDR_NUM_FIELDS    8u
 #define STS_PROM_ALIGN             8u
-
-/* ── per-coroutine codegen state ── */
-
-typedef struct {
-    LLVMValueRef       handle;            /* result of llvm.coro.begin */
-    LLVMValueRef       id_token;          /* result of llvm.coro.id    */
-    LLVMValueRef       promise;           /* alloca ptr for promise    */
-    LLVMTypeRef        promise_type;      /* %__sts_stream_prom_<T>    */
-    LLVMTypeRef        hdr_type;          /* %__sts_coro_prom_hdr      */
-    LLVMTypeRef        item_type;         /* T (or i8 placeholder)     */
-    LLVMBasicBlockRef  final_suspend_bb;
-    LLVMBasicBlockRef  cleanup_bb;
-    LLVMBasicBlockRef  suspend_bb;
-    int                active;
-    int                susp_counter;      /* unique label suffix       */
-} coro_ctx_t;
 
 /* ── intrinsic getters ── */
 
@@ -239,6 +223,9 @@ static LLVMValueRef sts_gep_hdr_field(cg_t *cg, LLVMTypeRef prom_ty,
     return LLVMBuildInBoundsGEP2(cg->builder, prom_ty, prom_ptr, idx, 3, "prom.hdr.fld");
 }
 
+/* Forward decl: defined below in the consumer-side helpers section. */
+static LLVMValueRef sts_call_coro_promise(cg_t *cg, LLVMValueRef handle);
+
 static LLVMValueRef sts_gep_item(cg_t *cg, LLVMTypeRef prom_ty,
                                  LLVMValueRef prom_ptr) {
     LLVMValueRef idx[2] = {
@@ -257,27 +244,32 @@ static LLVMValueRef sts_gep_item(cg_t *cg, LLVMTypeRef prom_ty,
  *
  * On return, *out_ctx is filled with all the state needed by yield/ret. */
 static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
-                                          coro_ctx_t *out_ctx) {
+                                          sts_coro_ctx_t *out_ctx) {
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
 
-    /* allocate promise alloca in entry block (alongside other allocas) */
+    /* CoroEarly requires the frontend to mark Switch-Resumed coroutines with
+       the `presplitcoroutine` function attribute — without it, the pass
+       skips the function entirely and CoroSplit never fires. */
+    {
+        unsigned attr_kind = LLVMGetEnumAttributeKindForName("presplitcoroutine",
+                                                             strlen("presplitcoroutine"));
+        if (attr_kind != 0) {
+            LLVMAttributeRef attr = LLVMCreateEnumAttribute(cg->ctx, attr_kind, 0);
+            LLVMAddAttributeAtIndex(cg->current_fn,
+                                    LLVMAttributeFunctionIndex, attr);
+        }
+    }
+
+    /* allocate promise alloca in entry block (alongside other allocas).
+       Init stores are emitted AFTER `coro.begin` — the CoroEarly pass rewrites
+       loads/stores through the promise alloca to `llvm.coro.promise(hdl, ...)`,
+       which requires hdl to dominate the use.  Initializing earlier breaks
+       domination after the pass runs. */
     LLVMTypeRef item_lt;
     LLVMTypeRef prom_ty = sts_stream_prom_type(cg, item_ti, &item_lt);
     LLVMTypeRef hdr_ty  = sts_coro_hdr_type(cg);
     LLVMValueRef prom   = alloc_in_entry(cg, prom_ty, "coro.prom");
-
-    /* zero-init header fields, then mark is_stream=1 */
-    for (unsigned f = 0; f < STS_PROM_HDR_NUM_FIELDS; f++) {
-        LLVMValueRef gep = sts_gep_hdr_field(cg, prom_ty, prom, f);
-        if (f == STS_PROM_OFF_CONTINUATION || f == STS_PROM_OFF_ERROR_MSG)
-            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), gep);
-        else
-            LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0), gep);
-    }
-    LLVMBuildStore(cg->builder,
-                   LLVMConstInt(i32_t, 1, 0),
-                   sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_IS_STREAM));
 
     /* coro.id */
     LLVMValueRef id_args[4] = {
@@ -329,18 +321,37 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
     LLVMValueRef hdl = LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_begin(cg)),
         sts_intrinsic_coro_begin(cg), begin_args, 2, "coro.hdl");
+
+    /* Resolve the promise pointer through `llvm.coro.promise(hdl)` rather
+       than the alloca — both producer and consumer access the promise
+       through this canonical intrinsic so CoroEarly lowers them to the
+       same frame-relative GEP. */
+    LLVMValueRef prom_via_hdl = sts_call_coro_promise(cg, hdl);
+
+    /* zero-init header fields, then mark is_stream=1 */
+    for (unsigned f = 0; f < STS_PROM_HDR_NUM_FIELDS; f++) {
+        LLVMValueRef gep = sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, f);
+        if (f == STS_PROM_OFF_CONTINUATION || f == STS_PROM_OFF_ERROR_MSG)
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), gep);
+        else
+            LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0), gep);
+    }
+    LLVMBuildStore(cg->builder,
+                   LLVMConstInt(i32_t, 1, 0),
+                   sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_IS_STREAM));
+
     LLVMBuildBr(cg->builder, bb_body);
 
     /* coro.final_suspend */
     LLVMPositionBuilderAtEnd(cg->builder, bb_final);
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0),
-                   sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_EOS));
+                   sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_EOS));
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0),
-                   sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_COMPLETE));
+                   sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_COMPLETE));
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0),
-                   sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_ITEM_READY));
+                   sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_ITEM_READY));
     LLVMValueRef fs_args[2] = {
-        LLVMGetUndef(sts_token_ty(cg)),
+        LLVMConstNull(sts_token_ty(cg)),
         LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0)
     };
     LLVMValueRef fs_v = LLVMBuildCall2(cg->builder,
@@ -375,7 +386,7 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
     LLVMValueRef end_args[3] = {
         hdl,
         LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0),
-        LLVMGetUndef(sts_token_ty(cg))
+        LLVMConstNull(sts_token_ty(cg))
     };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_end(cg)),
@@ -387,7 +398,7 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
 
     out_ctx->handle           = hdl;
     out_ctx->id_token         = id_token;
-    out_ctx->promise          = prom;
+    out_ctx->promise          = prom_via_hdl;  /* canonical promise ptr */
     out_ctx->promise_type     = prom_ty;
     out_ctx->hdr_type         = hdr_ty;
     out_ctx->item_type        = item_lt;
@@ -402,7 +413,7 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
  * item_ready=1, and suspends.  After the suspend, the producer's resume
  * lands at the new "coro.after_yield_<n>" block which becomes the current
  * insertion point. */
-static void sts_emit_yield_value(cg_t *cg, coro_ctx_t *cx,
+static void sts_emit_yield_value(cg_t *cg, sts_coro_ctx_t *cx,
                                  LLVMValueRef value, LLVMTypeRef value_ty) {
     if (!cx || !cx->active) return;
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
@@ -421,7 +432,7 @@ static void sts_emit_yield_value(cg_t *cg, coro_ctx_t *cx,
     snprintf(nm, sizeof(nm), "coro.after_yield_%d", cx->susp_counter++);
     LLVMBasicBlockRef bb_after = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, nm);
     LLVMValueRef sp_args[2] = {
-        LLVMGetUndef(sts_token_ty(cg)),
+        LLVMConstNull(sts_token_ty(cg)),
         LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0)
     };
     LLVMValueRef sp = LLVMBuildCall2(cg->builder,
@@ -438,14 +449,14 @@ static void sts_emit_yield_value(cg_t *cg, coro_ctx_t *cx,
 }
 
 /* Emit a bare `yield;` cooperative reschedule (no item produced). */
-static void sts_emit_yield_now(cg_t *cg, coro_ctx_t *cx) {
+static void sts_emit_yield_now(cg_t *cg, sts_coro_ctx_t *cx) {
     if (!cx || !cx->active) return;
     LLVMTypeRef i8_t = LLVMInt8TypeInContext(cg->ctx);
     char nm[64];
     snprintf(nm, sizeof(nm), "coro.after_ynow_%d", cx->susp_counter++);
     LLVMBasicBlockRef bb_after = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, nm);
     LLVMValueRef sp_args[2] = {
-        LLVMGetUndef(sts_token_ty(cg)),
+        LLVMConstNull(sts_token_ty(cg)),
         LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0)
     };
     LLVMValueRef sp = LLVMBuildCall2(cg->builder,
@@ -458,14 +469,14 @@ static void sts_emit_yield_now(cg_t *cg, coro_ctx_t *cx) {
 }
 
 /* `ret;` inside a stream coroutine — branch to the final suspend block. */
-static void sts_emit_stream_ret(cg_t *cg, coro_ctx_t *cx) {
+static void sts_emit_stream_ret(cg_t *cg, sts_coro_ctx_t *cx) {
     if (!cx || !cx->active) return;
     LLVMBuildBr(cg->builder, cx->final_suspend_bb);
 }
 
 /* If the body of a coroutine fell through without `ret;`, close it for the
  * user — branch to final suspend so the IR is well-formed. */
-static void sts_finish_coro_body_if_open(cg_t *cg, coro_ctx_t *cx) {
+static void sts_finish_coro_body_if_open(cg_t *cg, sts_coro_ctx_t *cx) {
     if (!cx || !cx->active) return;
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(cg->builder);
     if (!LLVMGetBasicBlockTerminator(cur))
@@ -475,7 +486,7 @@ static void sts_finish_coro_body_if_open(cg_t *cg, coro_ctx_t *cx) {
 /* ── consumer-side primitives ── */
 
 /* Resolve the promise pointer for a stream handle by calling
- * `llvm.coro.promise(handle, alignment, /*from_promise=*/false)`. */
+ * `llvm.coro.promise(handle, alignment, false)` (from_promise = false). */
 static LLVMValueRef sts_call_coro_promise(cg_t *cg, LLVMValueRef handle) {
     LLVMValueRef args[3] = {
         handle,
@@ -499,46 +510,51 @@ static LLVMValueRef sts_emit_await_next(cg_t *cg, LLVMValueRef stream_h,
 
     LLVMValueRef prom = sts_call_coro_promise(cg, stream_h);
 
-    /* loop: clear item_ready, resume, check eos, check item_ready */
+    /* Drive flow:
+         loop_head: if item_ready -> got_item
+                    if eos        -> eos
+                    call coro.resume; goto loop_head
+       The producer side clears item_ready via the post-yield resume edge
+       and via final_suspend, so the consumer never has to.  Eager-start
+       leaves item_ready=1 / item populated for the first-call fast path. */
     LLVMBasicBlockRef bb_loop  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.loop");
-    LLVMBasicBlockRef bb_chk   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.chk");
+    LLVMBasicBlockRef bb_after_chk = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.after_chk");
+    LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.resume");
     LLVMBasicBlockRef bb_got   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.got");
     LLVMBasicBlockRef bb_eos   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.eos");
     LLVMBasicBlockRef bb_done  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "anext.done");
+    LLVMBuildBr(cg->builder, bb_loop);
 
-    /* If the stream is already at eos before we even resume, short-circuit. */
-    LLVMValueRef eos_pre_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_EOS);
-    LLVMValueRef eos_pre   = LLVMBuildLoad2(cg->builder, i32_t, eos_pre_p, "anext.eos_pre");
-    LLVMValueRef is_eos_pre = LLVMBuildICmp(cg->builder, LLVMIntNE, eos_pre,
-        LLVMConstInt(i32_t, 0, 0), "anext.is_eos_pre");
-    LLVMBuildCondBr(cg->builder, is_eos_pre, bb_eos, bb_loop);
-
-    /* anext.loop */
+    /* anext.loop: check item_ready first */
     LLVMPositionBuilderAtEnd(cg->builder, bb_loop);
-    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0),
-        sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_ITEM_READY));
+    LLVMValueRef ir_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_ITEM_READY);
+    LLVMValueRef ir_v = LLVMBuildLoad2(cg->builder, i32_t, ir_p, "anext.ir");
+    LLVMValueRef has_item = LLVMBuildICmp(cg->builder, LLVMIntNE, ir_v,
+        LLVMConstInt(i32_t, 0, 0), "anext.has_item");
+    LLVMBuildCondBr(cg->builder, has_item, bb_got, bb_after_chk);
+
+    /* anext.after_chk: no item; check eos */
+    LLVMPositionBuilderAtEnd(cg->builder, bb_after_chk);
+    LLVMValueRef eos_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_EOS);
+    LLVMValueRef eos_v = LLVMBuildLoad2(cg->builder, i32_t, eos_p, "anext.eos");
+    LLVMValueRef is_eos = LLVMBuildICmp(cg->builder, LLVMIntNE, eos_v,
+        LLVMConstInt(i32_t, 0, 0), "anext.is_eos");
+    LLVMBuildCondBr(cg->builder, is_eos, bb_eos, bb_resume);
+
+    /* anext.resume: drive producer one step */
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
     LLVMValueRef rargs[1] = { stream_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
         sts_intrinsic_coro_resume(cg), rargs, 1, "");
-    LLVMValueRef eos_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_EOS);
-    LLVMValueRef eos_v = LLVMBuildLoad2(cg->builder, i32_t, eos_p, "anext.eos_v");
-    LLVMValueRef is_eos = LLVMBuildICmp(cg->builder, LLVMIntNE, eos_v,
-        LLVMConstInt(i32_t, 0, 0), "anext.is_eos");
-    LLVMBuildCondBr(cg->builder, is_eos, bb_eos, bb_chk);
+    LLVMBuildBr(cg->builder, bb_loop);
 
-    /* anext.chk */
-    LLVMPositionBuilderAtEnd(cg->builder, bb_chk);
-    LLVMValueRef ir_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_ITEM_READY);
-    LLVMValueRef ir_v = LLVMBuildLoad2(cg->builder, i32_t, ir_p, "anext.ir_v");
-    LLVMValueRef has_item = LLVMBuildICmp(cg->builder, LLVMIntNE, ir_v,
-        LLVMConstInt(i32_t, 0, 0), "anext.has_item");
-    LLVMBuildCondBr(cg->builder, has_item, bb_got, bb_loop);
-
-    /* anext.got */
+    /* anext.got — consume the item, clear item_ready for the next round */
     LLVMPositionBuilderAtEnd(cg->builder, bb_got);
     LLVMValueRef item_p = sts_gep_item(cg, prom_ty, prom);
     LLVMValueRef item_v = LLVMBuildLoad2(cg->builder, item_lt, item_p, "anext.item");
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0),
+        sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_ITEM_READY));
     LLVMBuildBr(cg->builder, bb_done);
 
     /* anext.eos */
