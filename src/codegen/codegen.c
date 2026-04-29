@@ -329,6 +329,12 @@ typedef struct {
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
 
+    /* ── active coroutine lowering context ──
+     * `cur_coro.active != 0` means the function currently being lowered is
+     * a stream coroutine: yield/yield;/ret consult these fields when they
+     * emit suspend points or branch to the final-suspend block. */
+    sts_coro_ctx_t cur_coro;
+
     /* ── generics / @comptime[T] ── */
     /* names of generic template struct types (not instantiated — skipped in passes) */
     char *generic_templates[64];
