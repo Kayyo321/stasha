@@ -74,12 +74,17 @@ s.remove(42);
 ```stasha
 libimp "opt" from std;
 
-opt_t.[i32] maybe = opt_t.[i32].some(42);
-opt_t.[i32] none  = opt_t.[i32].none();
+opt_t.[i32] maybe = opt_t.[i32].from_some(42);
+opt_t.[i32] none  = opt_t.[i32].from_none();
 
-bool has = maybe.is_some();     // true
-i32  val = maybe.get();         // 42
-bool eq  = maybe.equ(none);     // false
+bool has = maybe.is_some();      // true
+let [ptr, err] = maybe.get();    // ptr is ?i32 *r, err is nil on Some
+if err == nil {
+    print.('{}\n', ptr[0]);      // 42
+}
+bool eq = maybe.equ(&none);      // false
+maybe.set(100);
+maybe.set_none();
 ```
 
 ### `buffer` — Ring Buffer
@@ -110,8 +115,12 @@ defer m.rem();
 m.insert(1, true);
 m.insert(2, false);
 
-bool val = m.get(1);            // true
-bool exists = m.contains(2);   // true
+let [val, err] = m.get(1);      // val is bool *r, err is nil when found
+if err == nil {
+    print.('{}\n', val[0]);     // true
+}
+stack bool *r maybe = m.get_or_nil(2);
+bool exists = m.contains(2);    // true
 m.remove(1);
 ```
 

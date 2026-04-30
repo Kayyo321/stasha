@@ -84,7 +84,9 @@ T *rw+       // full: read + write + arithmetic
 T[N]                         // fixed array, size N
 fn*(params): ret             // function pointer
 fn*(domain T *perm, ...): ret   // function pointer with domain tags
-future                       // async result handle
+future                       // untyped thread-pool future handle
+future.[T]                   // typed coroutine task handle
+stream.[T]                   // coroutine stream handle
 zone                         // arena allocator
 any.[T1, T2, ...]            // inline tagged union
 ```
@@ -346,6 +348,16 @@ future.wait(f);
 future.drop(f);
 i32 r = future.get.(i32)(f);
 bool done = future.ready(f);
+
+async fn task(void): i32 { ret 42; }
+future.[i32] tf = async.(task)();
+i32 tr = await(tf);
+
+async fn range(void): stream.[i32] { yield 1; ret; }
+stream.[i32] s = range();
+i32 item = await.next(s);
+i32 eos = stream.done(s);
+stream.drop(s);
 ```
 
 ---

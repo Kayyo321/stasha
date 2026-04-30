@@ -4,10 +4,10 @@ Stasha has two flavors of `async fn`, both lowered via **LLVM coroutines** (`llv
 
 | flavor | declared as | call returns | semantics |
 |---|---|---|---|
-| **task** | `async fn f(...): T` | `future.[T]` (coro frame ptr) | synchronous drive — drives to completion inline on `await(f)` |
+| **task** | `async fn f(...): T` | `future.[T]` (coro frame ptr) | cooperative task — caller drives it with `await`, `future.*`, or fan-in combinators |
 | **stream** | `async fn g(...): stream.[T]` | `stream.[T]` (coro frame ptr) | suspends on every `yield`; consumer drives via `await.next(s)` |
 
-Both flavors compile to LLVM split-resume/destroy coroutine objects. There is no thread-pool dispatch for `async fn` — execution is synchronous on the calling thread. Use `thread.(fn)(args)` when you want parallel execution on the POSIX thread pool.
+Both flavors compile to LLVM split-resume/destroy coroutine objects. `async fn` does **not** dispatch to the POSIX thread pool; it uses coroutine frames plus a small thread-local executor for cooperative `yield;` rescheduling. Use `thread.(fn)(args)` when you want real parallel execution.
 
 ---
 
@@ -31,8 +31,8 @@ stream.drop(s);
 stream.cancel(s);   // sets cancelled flag; producer sees it at next yield
 
 // fan-in
-stack i32 [a, b] = await.all(sum(3), sum(4));   // drive both, return in order
-stack i32 w      = await.any(sum(1), sum(99));   // drive first, cancel + drop rest
+stack i32 [a, b] = await.all(sum(3), sum(4));   // round-robin both, return in order
+stack i32 w      = await.any(slow(), fast());   // first completed task wins
 
 // async methods
 type Foo: struct {
@@ -48,12 +48,13 @@ stack i32 r = await(wrap.[i32](42));
 ```
 
 Key rules:
-- `await(f)` is legal **anywhere** (not just inside `async fn`). It drives the task coroutine synchronously on the calling thread.
+- `await(f)` is legal **anywhere** (not just inside `async fn`). It drives the task coroutine on the calling thread.
+- `future.ready`, `future.wait`, `future.get.(T)`, and `future.drop` also work on typed `future.[T]` coroutine task handles.
 - `await.next(s)` is legal anywhere — drives one step and returns the next item.
 - `stream.done(s)` — non-zero once the producer hits `ret;`. Check after every `await.next(s)`.
 - `stream.drop(s)` — destroy frame; always call for every constructed stream.
 - `yield expr;` — produce an item and suspend. Legal only in `async fn` returning `stream.[T]`.
-- `yield;` — cooperative suspend, no item. Consumer re-resumes immediately (no executor yet).
+- `yield;` — cooperative suspend, no item. The coroutine is queued on the thread-local executor and can be resumed by waits/awaits that pump pending work.
 - `ret;` — end a stream. `ret expr;` is rejected in stream coroutines.
 
 ---
@@ -76,7 +77,7 @@ async fn sum_to(i32 n): i32 {
 stack i32 v = await(sum_to(100));   // 5050
 ```
 
-`await(f)` drives the coroutine with `llvm.coro.resume` until `complete == 1`, loads the result from the promise slot, destroys the frame, and returns `T`.
+`await(f)` drives the coroutine with `llvm.coro.resume` until `complete == 1`, loads the result from the promise slot, destroys the frame, and returns `T`. While waiting, it also lets the thread-local coroutine executor run any pending `yield;` continuations.
 
 A task may `await` another task inside its body — the inner await drives the child synchronously on the same thread:
 
@@ -89,14 +90,22 @@ async fn fib(i32 n): i32 {
 }
 ```
 
-### Dispatch: `async.(fn)(args)`
+### Starting Tasks: Direct Calls and `async.(fn)(args)`
 
-`async.(fn)(args)` is syntax sugar for calling the function and getting a `future.[T]` handle back. The future is **not** dispatched to a thread pool — it's a coroutine handle. Use it when you want to hold the future before driving it:
+Calling an `async fn` directly creates and returns its `future.[T]` coroutine handle:
+
+```stasha
+stack future.[i32] f = sum_to(10);
+// ... other work ...
+stack i32 result = await(f);
+```
+
+`async.(fn)(args)` is kept as intent-revealing sugar for the same operation. It is a synonym for a direct call to an `async fn`; it does **not** move the task to the thread pool:
 
 ```stasha
 stack future.[i32] f = async.(sum_to)(10);
-// ... other work ...
-stack i32 result = await(f);
+stack i32 result = future.get.(i32)(f);
+future.drop(f);
 ```
 
 ### `await.(fn)(args)`
@@ -109,20 +118,39 @@ stack i32 r = await.(sum_to)(10);
 
 ### Fan-in: `await.all` and `await.any`
 
-`await.all` drives each task in argument order and returns their results in the same order:
+`await.all` drives all live tasks cooperatively in round-robin order and returns their results in argument order:
 
 ```stasha
 stack i32 [a, b, c] = await.all(sum_to(3), sum_to(4), sum_to(5));
 // a=6, b=10, c=15
 ```
 
-`await.any` drives the **first** argument to completion, then cancels and drops the rest. Returns only the first result:
+`await.any` drives all live tasks cooperatively in round-robin order until one completes. The first task to report `complete` wins; the remaining live tasks are cancelled and dropped. It returns only the winner's result:
 
 ```stasha
-stack i32 winner = await.any(fast_fn(1), slow_fn(99));
+stack i32 winner = await.any(slow_fn(99), fast_fn(1));
 ```
 
-In v1, `await.any` drives tasks synchronously in order — "first" means first argument, not whichever finishes fastest. Parallel race semantics require explicit thread dispatch (`thread.(fn)(args)`).
+This is still single-threaded cooperative scheduling. CPU-bound tasks only yield to their peers at explicit coroutine suspension points such as `yield;`, nested awaits, or completion. Parallel race semantics require explicit thread dispatch (`thread.(fn)(args)`).
+
+### Future Operations on Coroutine Tasks
+
+Typed coroutine task handles use `future.[T]` and support the same surface spelling as thread-pool futures:
+
+```stasha
+stack future.[i32] f = async.(square)(9);
+if (!future.ready(f)) {
+    // do local work
+}
+stack i32 n = future.get.(i32)(f);
+future.drop(f);
+
+stack future.[void] vf = async.(worker)();
+future.wait(vf);
+future.drop(vf);
+```
+
+For a typed coroutine future, `future.wait` and `future.get.(T)` drive the coroutine to completion on the calling thread. `future.drop` waits if needed, then destroys the coroutine frame. Untyped `future` values from `thread.(fn)` still use the thread-pool runtime.
 
 ---
 
@@ -261,15 +289,15 @@ Type parameters are instantiated at each call site. The coroutine prologue is ap
 
 | | `async fn` + `await` | `thread.(fn)` + `future` |
 |---|---|---|
-| Execution | synchronous (same thread) | parallel (POSIX thread pool) |
-| Returns | `future.[T]` (coro frame) | `future` (untyped pool handle) |
+| Execution | cooperative, caller-driven, same thread | parallel (POSIX thread pool) |
+| Returns | `future.[T]` (typed coro frame) | `future` (untyped pool handle) |
 | Await | `await(f)` or `await.(fn)(args)` | `future.get.(T)(f); future.drop(f);` |
 | Poll | `future.ready(f)` | `future.ready(f)` |
-| Fan-in all | `await.all(...)` | manual loop |
-| Fan-in race | `await.any(...)` | manual loop |
+| Fan-in all | `await.all(...)` round-robin | manual loop |
+| Fan-in race | `await.any(...)` cooperative first-complete | manual loop |
 | Cancellation | `stream.cancel(s)` (streams only) | none |
 
-Use `async fn` for cooperative, single-thread coroutine-style logic. Use `thread.(fn)` when you need real parallelism.
+Use `async fn` for cooperative coroutine-style logic and typed coroutine handles. Use `thread.(fn)` when you need real parallelism.
 
 ---
 
@@ -285,8 +313,8 @@ Every coroutine (task or stream) has a promise header that the compiler reads an
     i32 has_error,     // reserved
     i32 is_stream,     // 1 for streams, 0 for tasks
     i32 cancelled,     // 1 after stream.cancel(s)
-    ptr continuation,  // reserved
-    ptr error_msg      // reserved
+    ptr continuation,  // awaiting coroutine to resume
+    ptr child          // current child coroutine handle
 }
 // Stream promise: { header, T item }
 // Task promise:   { header, T result }
@@ -310,10 +338,10 @@ after IR generation. Every `async fn` receives the `presplitcoroutine` attribute
 
 | limitation | notes |
 |---|---|
-| No parallel tasks | `await.all`/`await.any` drive sequentially. Use `thread.(fn)` for parallelism. |
-| `await.any` selects first argument | not whichever completes fastest; sequential drive only. |
-| Cancellation propagation | `stream.cancel` flags the stream but does not propagate through `await(child_task)` calls inside the producer. |
-| No executor / continuations | `yield;` resumes immediately on the consumer thread. The promise has a `continuation` slot but nothing wires it up yet. |
+| No parallel tasks | `await.all`/`await.any` drive cooperatively on the caller thread. Use `thread.(fn)` for parallelism. |
+| Cooperative race only | `await.any` observes coroutine completion, not wall-clock thread completion. CPU-bound tasks must suspend explicitly to share progress. |
+| Cancellation propagation | `stream.cancel`/loser cancellation flags a coroutine and is observed at resume edges such as `yield`, `yield;`, and `await`. Deep cancellation policy is still minimal. |
+| Executor is thread-local | `yield;` queues the coroutine on a fixed-size thread-local executor; there is no IO reactor or cross-thread scheduler yet. |
 | `ret expr;` in stream | rejected. Use `yield expr; ret;` for a last-value-then-end pattern. |
 | `await` inside `freestanding` | not supported; the coroutine frame uses heap allocation. |
 
@@ -321,11 +349,11 @@ after IR generation. Every `async fn` receives the `presplitcoroutine` attribute
 
 ## Complete examples
 
-[`examples/ex_coroutine_surface.sts`](../examples/ex_coroutine_surface.sts) — stream coroutines: counter, fibonacci, infinite early-drop, `yield;`, 19 tests.
+[`examples/ex_coroutine_surface.sts`](../examples/ex_coroutine_surface.sts) — stream coroutines: counter, fibonacci, infinite early-drop, and `yield;`.
 
-[`examples/ex_coro_tasks.sts`](../examples/ex_coro_tasks.sts) — task coroutines + streams + cancellation + async methods + generic async fns + `await.all`/`await.any`, 13 tests (54 assertions).
+[`examples/ex_coro_tasks.sts`](../examples/ex_coro_tasks.sts) — task coroutines + streams + cancellation + async methods + generic async fns + cooperative `await.all`/`await.any`.
 
-[`examples/ex_async.sts`](../examples/ex_async.sts) — `thread.(fn)` / typed futures interop, 5 tests.
+[`examples/ex_async.sts`](../examples/ex_async.sts) — typed coroutine future operations and interop with untyped `thread.(fn)` futures.
 
 Build any of them:
 ```sh

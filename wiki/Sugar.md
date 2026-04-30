@@ -94,12 +94,14 @@ stack i32 r3 = 100 |> add(50);                  // 150  (add(100, 50))
 
 ### Composing With Lambdas
 
-A lambda is just a function-pointer expression — pipeline accepts it directly:
+A lambda is just a function-pointer expression. In v1, bind the lambda first and pipe into the function-pointer variable:
 
 ```stasha
 stack fn*(stack i32): i32 inc = lam.(stack i32 x): i32 { ret x + 1; };
 stack i32 r = 10 |> inc |> double;              // 22
 ```
+
+Putting a `lam.(...)` expression directly on the right of `|>` is rejected today; binding it to a named function-pointer keeps the lowering simple.
 
 ### What Goes On the Right
 
@@ -237,9 +239,9 @@ ext fn main(void): i32 {
     stack i32 in[5]  = .{1, 2, 3, 4, 5};
     stack i32 out[5] = .{};
 
-    // pipeline + lambda
-    stack i32 r = 10 |> lam.(stack i32 x): i32 { ret x + 1; }
-                     |> double;
+    // pipeline + function pointer
+    stack fn*(stack i32): i32 inc = lam.(stack i32 x): i32 { ret x + 1; };
+    stack i32 r = 10 |> inc |> double;
     print.('{}\n', r);                       // 22
 
     // map with a trailing closure
