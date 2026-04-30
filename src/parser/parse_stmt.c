@@ -82,8 +82,8 @@ static node_t *parse_foreach_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p); /* consume 'foreach' */
 
-    token_t iter_tok = consume(p, TokIdent, "iteration variable name");
-    char *iter_name  = copy_token_text(iter_tok);
+    token_t iter_tok = consume_name(p, "iteration variable name");
+    char *iter_name  = copy_name_text(iter_tok);
 
     consume(p, TokIn, "'in'");
 
@@ -346,8 +346,8 @@ static node_t *parse_watch_stmt(parser_t *p) {
     consume(p, TokDot,    "'.'");
     consume(p, TokLParen, "'('");
     type_info_t type = parse_type(p);
-    token_t name_tok = consume(p, TokIdent, "handler parameter name");
-    char *param_name = copy_token_text(name_tok);
+    token_t name_tok = consume_name(p, "handler parameter name");
+    char *param_name = copy_name_text(name_tok);
     consume(p, TokRParen, "')'");
     node_t *body = parse_body(p);
     node_t *n = make_node(NodeWatchStmt, line);
@@ -408,7 +408,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         flags |= VdeclLet;
 
         /* single-variable form: stack let name = expr; */
-        if (check(p, TokIdent)) {
+        if (is_name_token(p)) {
             token_t name_tok = p->current;
             advance_parser(p);
             consume(p, TokEq, "'='");
@@ -416,7 +416,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
             consume(p, TokSemicolon, "';'");
             node_t *n = make_node(NodeVarDecl, line);
             ast_set_loc(n, name_tok);
-            n->as.var_decl.name    = copy_token_text(name_tok);
+            n->as.var_decl.name    = copy_name_text(name_tok);
             n->as.var_decl.type    = NO_TYPE; /* filled in by codegen */
             n->as.var_decl.storage = storage;
             n->as.var_decl.linkage = linkage;
@@ -432,10 +432,10 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         node_list_t values;
         node_list_init(&values);
         do {
-            token_t name_tok = consume(p, TokIdent, "variable name");
+            token_t name_tok = consume_name(p, "variable name");
             node_t *var = make_node(NodeVarDecl, name_tok.line);
             ast_set_loc(var, name_tok);
-            var->as.var_decl.name    = copy_token_text(name_tok);
+            var->as.var_decl.name    = copy_name_text(name_tok);
             var->as.var_decl.type    = NO_TYPE; /* filled in by codegen */
             var->as.var_decl.storage = storage;
             var->as.var_decl.linkage = linkage;
@@ -475,10 +475,10 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         node_list_t values;
         node_list_init(&values);
         do {
-            token_t name_tok = consume(p, TokIdent, "variable name");
+            token_t name_tok = consume_name(p, "variable name");
             node_t *var = make_node(NodeVarDecl, name_tok.line);
             ast_set_loc(var, name_tok);
-            var->as.var_decl.name = copy_token_text(name_tok);
+            var->as.var_decl.name = copy_name_text(name_tok);
             var->as.var_decl.type = type;
             var->as.var_decl.storage = storage;
             var->as.var_decl.linkage = linkage;
@@ -501,7 +501,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     }
 
     token_t name_tok = consume_name(p, "variable name");
-    char *name = copy_token_text(name_tok);
+    char *name = copy_name_text(name_tok);
 
     /* array: type name[d0][d1]... — arbitrary nesting depth up to 8 */
     int  arr_ndim = 0;
@@ -512,8 +512,8 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
         if (check(p, TokIntLit)) {
             arr_sizes[arr_ndim] = parse_int_value(p->current);
             advance_parser(p);
-        } else if (check(p, TokIdent)) {
-            arr_size_names[arr_ndim] = copy_token_text(p->current);
+        } else if (is_name_token(p)) {
+            arr_size_names[arr_ndim] = copy_name_text(p->current);
             advance_parser(p);
         }
         consume(p, TokRBracket, "']'");
@@ -556,10 +556,10 @@ static node_t *parse_with_stmt(parser_t *p) {
         node_list_t values;
         node_list_init(&values);
         do {
-            token_t name_tok = consume(p, TokIdent, "variable name");
+            token_t name_tok = consume_name(p, "variable name");
             node_t *var = make_node(NodeVarDecl, name_tok.line);
             ast_set_loc(var, name_tok);
-            var->as.var_decl.name    = copy_token_text(name_tok);
+            var->as.var_decl.name    = copy_name_text(name_tok);
             var->as.var_decl.type    = NO_TYPE;
             var->as.var_decl.storage = StorageDefault;
             var->as.var_decl.flags   = VdeclLet;
@@ -574,7 +574,7 @@ static node_t *parse_with_stmt(parser_t *p) {
         decl = ma;
     }
     /* Bare single inferred binding: name = expr  (ident followed directly by '=') */
-    else if (check(p, TokIdent)) {
+    else if (is_name_token(p)) {
         parser_state_t snap = save_state(p);
         token_t name_tok = p->current;
         advance_parser(p);
@@ -583,7 +583,7 @@ static node_t *parse_with_stmt(parser_t *p) {
             node_t *init = parse_expr(p);
             node_t *var = make_node(NodeVarDecl, name_tok.line);
             ast_set_loc(var, name_tok);
-            var->as.var_decl.name    = copy_token_text(name_tok);
+            var->as.var_decl.name    = copy_name_text(name_tok);
             var->as.var_decl.type    = NO_TYPE;
             var->as.var_decl.storage = StorageDefault;
             var->as.var_decl.flags   = VdeclLet;
@@ -611,10 +611,10 @@ static node_t *parse_with_stmt(parser_t *p) {
                 node_list_t values;
                 node_list_init(&values);
                 do {
-                    token_t name_tok = consume(p, TokIdent, "variable name");
+                    token_t name_tok = consume_name(p, "variable name");
                     node_t *var = make_node(NodeVarDecl, name_tok.line);
                     ast_set_loc(var, name_tok);
-                    var->as.var_decl.name    = copy_token_text(name_tok);
+                    var->as.var_decl.name    = copy_name_text(name_tok);
                     var->as.var_decl.type    = NO_TYPE;
                     var->as.var_decl.storage = storage;
                     var->as.var_decl.flags   = flags;
@@ -629,12 +629,12 @@ static node_t *parse_with_stmt(parser_t *p) {
                 decl = ma;
             } else {
                 /* single: stack let name = expr */
-                token_t name_tok = consume(p, TokIdent, "variable name");
+                token_t name_tok = consume_name(p, "variable name");
                 consume(p, TokEq, "'='");
                 node_t *init = parse_expr(p);
                 node_t *var = make_node(NodeVarDecl, name_tok.line);
                 ast_set_loc(var, name_tok);
-                var->as.var_decl.name    = copy_token_text(name_tok);
+                var->as.var_decl.name    = copy_name_text(name_tok);
                 var->as.var_decl.type    = NO_TYPE;
                 var->as.var_decl.storage = storage;
                 var->as.var_decl.flags   = flags;
@@ -654,10 +654,10 @@ static node_t *parse_with_stmt(parser_t *p) {
                 node_list_t values;
                 node_list_init(&values);
                 do {
-                    token_t name_tok = consume(p, TokIdent, "variable name");
+                    token_t name_tok = consume_name(p, "variable name");
                     node_t *var = make_node(NodeVarDecl, name_tok.line);
                     ast_set_loc(var, name_tok);
-                    var->as.var_decl.name    = copy_token_text(name_tok);
+                    var->as.var_decl.name    = copy_name_text(name_tok);
                     var->as.var_decl.type    = NO_TYPE;
                     var->as.var_decl.storage = storage;
                     var->as.var_decl.flags   = flags;
@@ -673,7 +673,7 @@ static node_t *parse_with_stmt(parser_t *p) {
             } else {
                 /* peek: if ident is immediately followed by '=', type-inferred single bind */
                 boolean_t single_inferred = False;
-                if (check(p, TokIdent)) {
+                if (is_name_token(p)) {
                     parser_state_t snap = save_state(p);
                     token_t name_tok = p->current;
                     advance_parser(p);
@@ -683,7 +683,7 @@ static node_t *parse_with_stmt(parser_t *p) {
                         node_t *init = parse_expr(p);
                         node_t *var = make_node(NodeVarDecl, name_tok.line);
                         ast_set_loc(var, name_tok);
-                        var->as.var_decl.name    = copy_token_text(name_tok);
+                        var->as.var_decl.name    = copy_name_text(name_tok);
                         var->as.var_decl.type    = NO_TYPE;
                         var->as.var_decl.storage = storage;
                         var->as.var_decl.flags   = flags | VdeclLet;
@@ -704,10 +704,10 @@ static node_t *parse_with_stmt(parser_t *p) {
                         node_list_t values;
                         node_list_init(&values);
                         do {
-                            token_t name_tok = consume(p, TokIdent, "variable name");
+                            token_t name_tok = consume_name(p, "variable name");
                             node_t *var = make_node(NodeVarDecl, name_tok.line);
                             ast_set_loc(var, name_tok);
-                            var->as.var_decl.name    = copy_token_text(name_tok);
+                            var->as.var_decl.name    = copy_name_text(name_tok);
                             var->as.var_decl.type    = type;
                             var->as.var_decl.storage = storage;
                             var->as.var_decl.flags   = flags;
@@ -721,12 +721,12 @@ static node_t *parse_with_stmt(parser_t *p) {
                         ma->as.multi_assign.values  = values;
                         decl = ma;
                     } else {
-                        token_t name_tok = consume(p, TokIdent, "variable name");
+                        token_t name_tok = consume_name(p, "variable name");
                         consume(p, TokEq, "'='");
                         node_t *init = parse_expr(p);
                         node_t *var = make_node(NodeVarDecl, name_tok.line);
                         ast_set_loc(var, name_tok);
-                        var->as.var_decl.name    = copy_token_text(name_tok);
+                        var->as.var_decl.name    = copy_name_text(name_tok);
                         var->as.var_decl.type    = type;
                         var->as.var_decl.storage = storage;
                         var->as.var_decl.flags   = flags;
@@ -831,8 +831,8 @@ static node_t *parse_statement(parser_t *p) {
             return make_node(NodeExprStmt, line);
         }
 
-        token_t name_tok = consume(p, TokIdent, "zone name");
-        char *zone_name = copy_token_text(name_tok);
+        token_t name_tok = consume_name(p, "zone name");
+        char *zone_name = copy_name_text(name_tok);
 
         if (check(p, TokLBrace)) {
             /* lexical zone: zone name { body } */

@@ -57,10 +57,10 @@ static node_t *parse_compound_init(parser_t *p, usize_t line) {
             item = make_node(NodeSpreadExpr, p->previous.line);
             item->as.spread_expr.expr = parse_expr(p);
         } else if (match_tok(p, TokDot)) {
-            token_t name_tok = consume(p, TokIdent, "field name");
+            token_t name_tok = consume_name(p, "field name");
             consume(p, TokEq, "'='");
             item = make_node(NodeInitField, name_tok.line);
-            item->as.init_field.name = copy_token_text(name_tok);
+            item->as.init_field.name = copy_name_text(name_tok);
             item->as.init_field.value = parse_expr(p);
         } else if (match_tok(p, TokLBracket)) {
             item = make_node(NodeInitIndex, p->previous.line);
@@ -195,7 +195,7 @@ static node_t *parse_lambda_expr(parser_t *p) {
             token_t pname = consume_name(p, "lambda parameter name");
             node_t *param = make_node(NodeVarDecl, pname.line);
             ast_set_loc(param, pname);
-            param->as.var_decl.name    = copy_token_text(pname);
+            param->as.var_decl.name    = copy_name_text(pname);
             param->as.var_decl.type    = last_type;
             param->as.var_decl.storage = param_storage;
             node_list_push(&params, param);
@@ -562,8 +562,8 @@ static node_t *parse_primary(parser_t *p) {
         advance_parser(p);
         consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
-        token_t name_tok = consume(p, TokIdent, "function name");
-        char *name = copy_token_text(name_tok);
+        token_t name_tok = consume_name(p, "function name");
+        char *name = copy_name_text(name_tok);
         consume(p, TokRParen, "')'");
         consume(p, TokLParen, "'('");
         node_list_t args;
@@ -679,8 +679,8 @@ static node_t *parse_primary(parser_t *p) {
         advance_parser(p);
         consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
-        token_t name_tok = consume(p, TokIdent, "function name");
-        char *name = copy_token_text(name_tok);
+        token_t name_tok = consume_name(p, "function name");
+        char *name = copy_name_text(name_tok);
         consume(p, TokRParen, "')'");
         consume(p, TokLParen, "'('");
         node_list_t args;
@@ -716,8 +716,8 @@ static node_t *parse_primary(parser_t *p) {
         /* await.(fn)(args) — one-shot: dispatch + block + drop, return typed value */
         if (check(p, TokLParen)) {
             advance_parser(p); /* consume '(' */
-            token_t name_tok = consume(p, TokIdent, "function name");
-            char *name = copy_token_text(name_tok);
+            token_t name_tok = consume_name(p, "function name");
+            char *name = copy_name_text(name_tok);
             consume(p, TokRParen, "')'");
             consume(p, TokLParen, "'('");
             node_list_t args;
@@ -956,14 +956,14 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    if (check(p, TokIdent)) {
+    if (check(p, TokIdent) || check(p, TokDollarStr)) {
         token_t ident_tok = p->current;
         advance_parser(p);
-        char *name = copy_token_text(p->previous);
+        char *name = copy_name_text(p->previous);
         usize_t line = p->previous.line;
 
-        /* designated initializer: Type { .field = val, ... } */
-        if (check(p, TokLBrace)) {
+        /* designated initializer: Type { .field = val, ... } — only for plain idents */
+        if (ident_tok.kind == TokIdent && check(p, TokLBrace)) {
             parser_state_t snap = save_state(p);
             advance_parser(p); /* consume '{' */
             if (check(p, TokDot)) {
@@ -977,7 +977,7 @@ static node_t *parse_primary(parser_t *p) {
                     token_t fname = consume_name(p, "field name");
                     node_t *fn_node = make_node(NodeIdentExpr, fname.line);
                     ast_set_loc(fn_node, fname);
-                    fn_node->as.ident.name = copy_token_text(fname);
+                    fn_node->as.ident.name = copy_name_text(fname);
                     node_list_push(&n->as.desig_init.fields, fn_node);
                     consume(p, TokEq, "'='");
                     node_list_push(&n->as.desig_init.values, parse_expr(p));
@@ -1082,7 +1082,7 @@ static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
                 token_t pname = consume_name(p, "trailing-closure parameter name");
                 node_t *param = make_node(NodeVarDecl, pname.line);
                 ast_set_loc(param, pname);
-                param->as.var_decl.name    = copy_token_text(pname);
+                param->as.var_decl.name    = copy_name_text(pname);
                 type_info_t ti = NO_TYPE;
                 ti.base = TypeInfer;
                 param->as.var_decl.type    = ti;
@@ -1152,19 +1152,6 @@ static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
     lam->as.lambda_expr.inferred_ret   = True;
 
     node_list_push(args_dest, lam);
-}
-
-/* Extract the field name from a name token or a $"..." dollar-string token. */
-static char *copy_field_name(token_t tok) {
-    if (tok.kind == TokDollarStr) {
-        /* token spans $"content" — skip $" (2 chars), drop closing " (1 char) */
-        return ast_strdup(tok.start + 2, tok.length - 3);
-    }
-    return copy_token_text(tok);
-}
-
-static boolean_t is_field_name_token(parser_t *p) {
-    return is_name_token(p) || p->current.kind == TokDollarStr;
 }
 
 /* ── postfix: calls, indexing, member access, ++/-- ── */
@@ -1313,7 +1300,7 @@ static node_t *parse_postfix(parser_t *p) {
                             token_t fname = consume_name(p, "field name");
                             node_t *fn_node = make_node(NodeIdentExpr, fname.line);
                             ast_set_loc(fn_node, fname);
-                            fn_node->as.ident.name = copy_token_text(fname);
+                            fn_node->as.ident.name = copy_name_text(fname);
                             node_list_push(&di->as.desig_init.fields, fn_node);
                             consume(p, TokEq, "'='");
                             node_list_push(&di->as.desig_init.values, parse_expr(p));
@@ -1334,9 +1321,9 @@ static node_t *parse_postfix(parser_t *p) {
                 /* consume method/field name */
                 char *field_name;
                 token_t field_tok;
-                if (is_field_name_token(p)) {
+                if (is_name_token(p)) {
                     field_tok = p->current;
-                    field_name = copy_field_name(p->current);
+                    field_name = copy_name_text(p->current);
                     advance_parser(p);
                 } else {
                     field_tok = p->current;
@@ -1418,9 +1405,9 @@ static node_t *parse_postfix(parser_t *p) {
             /* consume method/field name — accept contextual keywords and $"name" */
             char *field_name;
             token_t field_tok;
-            if (is_field_name_token(p)) {
+            if (is_name_token(p)) {
                 field_tok = p->current;
-                field_name = copy_field_name(p->current);
+                field_name = copy_name_text(p->current);
                 advance_parser(p);
             } else if (check(p, TokPrint)) {
                 field_tok = p->current;
@@ -1485,8 +1472,8 @@ static node_t *parse_postfix(parser_t *p) {
             usize_t line = p->current.line;
             advance_parser(p); /* consume ':' */
 
-            token_t seg1_tok = consume(p, TokIdent, "static member name after ':'");
-            char *seg1 = copy_token_text(seg1_tok);
+            token_t seg1_tok = consume_name(p, "static member name after ':'");
+            char *seg1 = copy_name_text(seg1_tok);
 
             char *module_name = expr->as.ident.name;
             char *type_name   = Null;
@@ -1495,9 +1482,9 @@ static node_t *parse_postfix(parser_t *p) {
             /* optional second ':' — module:Type:method */
             if (check(p, TokColon)) {
                 advance_parser(p); /* consume second ':' */
-                token_t seg2_tok = consume(p, TokIdent, "method name after ':'");
+                token_t seg2_tok = consume_name(p, "method name after ':'");
                 type_name   = seg1;
-                method_name = copy_token_text(seg2_tok);
+                method_name = copy_name_text(seg2_tok);
             }
 
             consume(p, TokLParen, "'(' after colon accessor");

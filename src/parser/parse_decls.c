@@ -447,7 +447,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                             token_t fname = consume_name(p, "field name");
                             node_t *field = make_node(NodeVarDecl, fname.line);
                             ast_set_loc(field, fname);
-                            field->as.var_decl.name = copy_token_text(fname);
+                            field->as.var_decl.name = copy_name_text(fname);
                             field->as.var_decl.type = ftype;
                             field->as.var_decl.storage = fstore;
                             field->as.var_decl.linkage = fl;
@@ -489,7 +489,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                                 token_t fname = consume_name(p, "field name");
                                 node_t *field = make_node(NodeVarDecl, fname.line);
                                 ast_set_loc(field, fname);
-                                field->as.var_decl.name = copy_token_text(fname);
+                                field->as.var_decl.name = copy_name_text(fname);
                                 field->as.var_decl.type = ftype;
                                 field->as.var_decl.storage = fstore;
                                 field->as.var_decl.linkage = fl;
@@ -542,35 +542,35 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             advance_parser(p);
             /* accept ident or built-in keywords used as method names (hash, equ, new, rem, ...) */
             token_t fn_name;
-            if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
+            if (check(p, TokIdent) || check(p, TokDollarStr) || check(p, TokHash) || check(p, TokEqu)
                     || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
                     || check(p, TokPrint) || check(p, TokSend)) {
                 fn_name = p->current; advance_parser(p);
             } else {
-                fn_name = consume(p, TokIdent, "method name");
+                fn_name = consume_name(p, "method name");
             }
             /* allow "fn qualifier.method_name" — qualifier could be struct name or interface name */
             char *iface_qual = Null;
             if (check(p, TokDot)) {
                 iface_qual = copy_token_text(fn_name); /* save qualifier */
                 advance_parser(p); /* consume '.' */
-                if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
+                if (check(p, TokIdent) || check(p, TokDollarStr) || check(p, TokHash) || check(p, TokEqu)
                         || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
                         || check(p, TokPrint) || check(p, TokSend)) {
                     fn_name = p->current; advance_parser(p);
                 } else {
-                    fn_name = consume(p, TokIdent, "method name");
+                    fn_name = consume_name(p, "method name");
                 }
                 /* handle double dot: fn StructName.iface_name.method_name — skip extra prefix */
                 if (check(p, TokDot)) {
                     advance_parser(p); /* consume '.' */
                     iface_qual = copy_token_text(fn_name); /* now iface_qual is the middle name */
-                    if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
+                    if (check(p, TokIdent) || check(p, TokDollarStr) || check(p, TokHash) || check(p, TokEqu)
                             || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
                             || check(p, TokPrint) || check(p, TokSend)) {
                         fn_name = p->current; advance_parser(p);
                     } else {
-                        fn_name = consume(p, TokIdent, "method name");
+                        fn_name = consume_name(p, "method name");
                     }
                 }
             }
@@ -590,7 +590,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                         ptype = parse_type(p);
                     token_t pname = consume_name(p, "parameter name");
                     node_t *param = make_node(NodeVarDecl, pname.line);
-                    param->as.var_decl.name = copy_token_text(pname);
+                    param->as.var_decl.name = copy_name_text(pname);
                     param->as.var_decl.type = ptype;
                     param->as.var_decl.storage = ps;
                     node_list_push(&params, param);
@@ -648,7 +648,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             }
             node_t *method = make_node(NodeFnDecl, fn_name.line);
             ast_set_loc(method, fn_name);
-            method->as.fn_decl.name = copy_token_text(fn_name);
+            method->as.fn_decl.name = copy_name_text(fn_name);
             method->as.fn_decl.linkage = field_link;
             method->as.fn_decl.return_types = ret_types;
             method->as.fn_decl.return_count = ret_count;
@@ -681,7 +681,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             token_t fname = consume_name(p, "field name");
             node_t *field = make_node(NodeVarDecl, fname.line);
             ast_set_loc(field, fname);
-            field->as.var_decl.name = copy_token_text(fname);
+            field->as.var_decl.name = copy_name_text(fname);
             field->as.var_decl.type = ftype;
             field->as.var_decl.storage = field_storage;
             field->as.var_decl.linkage = field_link;
@@ -696,8 +696,8 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                     if (check(p, TokIntLit)) {
                         field->as.var_decl.array_sizes[_ndim] = parse_int_value(p->current);
                         advance_parser(p);
-                    } else if (check(p, TokIdent)) {
-                        field->as.var_decl.array_size_names[_ndim] = copy_token_text(p->current);
+                    } else if (is_name_token(p)) {
+                        field->as.var_decl.array_size_names[_ndim] = copy_name_text(p->current);
                         advance_parser(p);
                     }
                     consume(p, TokRBracket, "']'");
@@ -820,13 +820,13 @@ static node_t *parse_match_stmt(parser_t *p) {
                 else if (match_tok(p, TokHeap)) ps = StorageHeap;
                 arm->any_bind_storage = ps;
                 arm->any_bind_ti = parse_type(p);
-                token_t bname = consume(p, TokIdent, "binding name");
-                arm->any_bind_name = copy_token_text(bname);
+                token_t bname = consume_name(p, "binding name");
+                arm->any_bind_name = copy_name_text(bname);
                 arm->as.match_arm.bind_name = arm->any_bind_name;
                 consume(p, TokRParen, "')'");
             }
 
-        } else if (check(p, TokIdent)) {
+        } else if (check(p, TokIdent) || check(p, TokDollarStr)) {
             /* Speculate: if ident is NOT followed by '.', treat as binding wildcard.
                If followed by '.', treat as enum pattern EnumName.Variant. */
             parser_state_t snap = save_state(p);
@@ -837,7 +837,7 @@ static node_t *parse_match_stmt(parser_t *p) {
                 arm->as.match_arm.is_wildcard = True;
                 arm->as.match_arm.enum_name    = Null;
                 arm->as.match_arm.variant_name = Null;
-                arm->as.match_arm.bind_name    = copy_token_text(etok);
+                arm->as.match_arm.bind_name    = copy_name_text(etok);
             } else {
                 /* enum pattern: EnumName.Variant  or  EnumName.Variant(bind) */
                 consume(p, TokDot, "'.'");
@@ -847,8 +847,8 @@ static node_t *parse_match_stmt(parser_t *p) {
                 arm->as.match_arm.variant_name = copy_token_text(vtok);
                 arm->as.match_arm.bind_name    = Null;
                 if (match_tok(p, TokLParen)) {
-                    token_t btok = consume(p, TokIdent, "binding name");
-                    arm->as.match_arm.bind_name = copy_token_text(btok);
+                    token_t btok = consume_name(p, "binding name");
+                    arm->as.match_arm.bind_name = copy_name_text(btok);
                     consume(p, TokRParen, "')'");
                 }
             }
@@ -923,10 +923,10 @@ static void parse_interface_body(parser_t *p, node_t *decl) {
         usize_t line = p->current.line;
         /* method name */
         token_t mname;
-        if (check(p, TokIdent) || check(p, TokNew) || check(p, TokRem)) {
+        if (is_name_token(p)) {
             mname = p->current; advance_parser(p);
         } else {
-            mname = consume(p, TokIdent, "method name");
+            mname = consume_name(p, "method name");
         }
         consume(p, TokLParen, "'('");
 
@@ -949,7 +949,7 @@ static void parse_interface_body(parser_t *p, node_t *decl) {
                     /* handle grouped names: type a, b — if next token is comma+ident, it's grouped */
                     node_t *param = make_node(NodeVarDecl, pname.line);
                     ast_set_loc(param, pname);
-                    param->as.var_decl.name = copy_token_text(pname);
+                    param->as.var_decl.name = copy_name_text(pname);
                     param->as.var_decl.type = ptype;
                     param->as.var_decl.storage = ps;
                     node_list_push(&params, param);
@@ -996,7 +996,7 @@ static void parse_interface_body(parser_t *p, node_t *decl) {
 
         node_t *fn = make_node(NodeFnDecl, line);
         ast_set_loc(fn, mname);
-        fn->as.fn_decl.name = copy_token_text(mname);
+        fn->as.fn_decl.name = copy_name_text(mname);
         fn->as.fn_decl.linkage = LinkageExternal;
         fn->as.fn_decl.is_method = False;
         fn->as.fn_decl.struct_name = Null;
@@ -1080,7 +1080,7 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
                     if (n->as.type_decl.impl_iface_count < 8) {
                         token_t pname = consume(p, TokIdent, "interface parent name");
                         n->as.type_decl.impl_ifaces[n->as.type_decl.impl_iface_count++] =
-                            copy_token_text(pname);
+                            copy_name_text(pname);
                     }
                     if (!match_tok(p, TokComma)) break;
                 }
@@ -1352,9 +1352,9 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         }
     }
 
-    token_t name_tok = consume(p, TokIdent, "function name");
+    token_t name_tok = consume_name(p, "function name");
     token_t decl_name_tok = name_tok;
-    char *name = copy_token_text(name_tok);
+    char *name = copy_name_text(name_tok);
 
     /* check for Type.method pattern */
     boolean_t is_method = False;
@@ -1364,10 +1364,10 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         struct_name = name;
         is_method = True;
 
-        /* method name: allow ident and contextual keywords used as method names */
-        if (check(p, TokIdent)) {
+        /* method name: allow ident, $"..." dollar-strings, and contextual keywords */
+        if (check(p, TokIdent) || check(p, TokDollarStr)) {
             decl_name_tok = p->current;
-            name = copy_token_text(p->current);
+            name = copy_name_text(p->current);
             advance_parser(p);
         } else if (check(p, TokNew)) {
             decl_name_tok = p->current;
@@ -1462,7 +1462,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             token_t pname = consume_name(p, "parameter name");
             node_t *param = make_node(NodeVarDecl, pname.line);
             ast_set_loc(param, pname);
-            param->as.var_decl.name    = copy_token_text(pname);
+            param->as.var_decl.name    = copy_name_text(pname);
             param->as.var_decl.type    = last_type;
             param->as.var_decl.storage = param_storage;
             if (is_restrict) param->as.var_decl.flags |= VdeclRestrict;
@@ -1475,8 +1475,8 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
                     if (check(p, TokIntLit)) {
                         param->as.var_decl.array_sizes[_pndim] = parse_int_value(p->current);
                         advance_parser(p);
-                    } else if (check(p, TokIdent)) {
-                        param->as.var_decl.array_size_names[_pndim] = copy_token_text(p->current);
+                    } else if (is_name_token(p)) {
+                        param->as.var_decl.array_size_names[_pndim] = copy_name_text(p->current);
                         advance_parser(p);
                     }
                     consume(p, TokRBracket, "']'");
@@ -1922,10 +1922,10 @@ static node_t *parse_top_decl(parser_t *p) {
     if (check(p, TokZone)) {
         usize_t line = p->current.line;
         advance_parser(p); /* consume 'zone' */
-        token_t name_tok = consume(p, TokIdent, "zone name");
+        token_t name_tok = consume_name(p, "zone name");
         consume(p, TokSemicolon, "';'");
         node_t *n = make_node(NodeZoneStmt, line);
-        n->as.zone_stmt.name = copy_token_text(name_tok);
+        n->as.zone_stmt.name = copy_name_text(name_tok);
         result = n;
         goto attach_headers;
     }

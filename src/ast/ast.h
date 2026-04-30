@@ -659,6 +659,7 @@ struct node {
 node_t *make_node(node_kind_t kind, usize_t line);
 void ast_set_loc(node_t *node, token_t tok);
 char *copy_token_text(token_t tok);
+char *copy_name_text(token_t tok);
 char *ast_strdup(const char *src, usize_t len);
 char *ast_strdup_escape(const char *src, usize_t len, usize_t *out_len);
 type_info_t *alloc_type_array(usize_t count);
