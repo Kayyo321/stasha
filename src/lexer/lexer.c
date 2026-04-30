@@ -386,6 +386,16 @@ token_t next_token(lexer_t *lex) {
             if (match(lex, '=')) return make_token(lex, TokGtEq);
             return make_token(lex, TokGt);
 
+        case '$': {
+            char q = peek(lex);
+            if (q == '"' || q == '\'') {
+                advance(lex); /* consume opening quote */
+                token_t t = scan_string(lex, q);
+                if (t.kind != TokError) t.kind = TokDollarStr;
+                return t;
+            }
+            return error_token(lex, "'$' must be followed by a string literal");
+        }
         case '\'': return scan_string(lex, '\'');
         case '"':  return scan_string(lex, '"');
         case '`':  return scan_char_lit(lex);

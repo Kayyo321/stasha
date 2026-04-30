@@ -1154,6 +1154,19 @@ static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
     node_list_push(args_dest, lam);
 }
 
+/* Extract the field name from a name token or a $"..." dollar-string token. */
+static char *copy_field_name(token_t tok) {
+    if (tok.kind == TokDollarStr) {
+        /* token spans $"content" — skip $" (2 chars), drop closing " (1 char) */
+        return ast_strdup(tok.start + 2, tok.length - 3);
+    }
+    return copy_token_text(tok);
+}
+
+static boolean_t is_field_name_token(parser_t *p) {
+    return is_name_token(p) || p->current.kind == TokDollarStr;
+}
+
 /* ── postfix: calls, indexing, member access, ++/-- ── */
 
 static node_t *parse_postfix(parser_t *p) {
@@ -1321,9 +1334,9 @@ static node_t *parse_postfix(parser_t *p) {
                 /* consume method/field name */
                 char *field_name;
                 token_t field_tok;
-                if (is_name_token(p)) {
+                if (is_field_name_token(p)) {
                     field_tok = p->current;
-                    field_name = copy_token_text(p->current);
+                    field_name = copy_field_name(p->current);
                     advance_parser(p);
                 } else {
                     field_tok = p->current;
@@ -1402,12 +1415,12 @@ static node_t *parse_postfix(parser_t *p) {
                 continue;
             }
 
-            /* consume method/field name — accept contextual keywords as method names */
+            /* consume method/field name — accept contextual keywords and $"name" */
             char *field_name;
             token_t field_tok;
-            if (is_name_token(p)) {
+            if (is_field_name_token(p)) {
                 field_tok = p->current;
-                field_name = copy_token_text(p->current);
+                field_name = copy_field_name(p->current);
                 advance_parser(p);
             } else if (check(p, TokPrint)) {
                 field_tok = p->current;
@@ -1455,8 +1468,20 @@ static node_t *parse_postfix(parser_t *p) {
 
         /* colon static accessor: ident:fn(args)  or  ident:Type:method(args)
            Only valid when the LHS is a plain identifier (module/submod alias).
-           Disambiguated from arr[lo:hi] because we are outside '[...]' here. */
+           Disambiguated from arr[lo:hi] because we are outside '[...]' here.
+           Disambiguated from ternary (cond ? a : b) by requiring ident:ident( pattern. */
         if (check(p, TokColon) && expr->kind == NodeIdentExpr) {
+            /* lookahead: must be ident:ident( or ident:ident:ident( — not ternary separator */
+            parser_state_t colon_snap = save_state(p);
+            advance_parser(p); /* tentatively consume ':' */
+            boolean_t is_colon_accessor = check(p, TokIdent);
+            if (is_colon_accessor) {
+                advance_parser(p); /* consume seg1 ident */
+                is_colon_accessor = check(p, TokLParen) || check(p, TokColon);
+            }
+            restore_state(p, colon_snap);
+            if (!is_colon_accessor) break; /* ternary ':' — stop postfix loop */
+
             usize_t line = p->current.line;
             advance_parser(p); /* consume ':' */
 

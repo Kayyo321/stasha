@@ -544,7 +544,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             token_t fn_name;
             if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
                     || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
-                    || check(p, TokPrint)) {
+                    || check(p, TokPrint) || check(p, TokSend)) {
                 fn_name = p->current; advance_parser(p);
             } else {
                 fn_name = consume(p, TokIdent, "method name");
@@ -556,7 +556,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                 advance_parser(p); /* consume '.' */
                 if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
                         || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
-                        || check(p, TokPrint)) {
+                        || check(p, TokPrint) || check(p, TokSend)) {
                     fn_name = p->current; advance_parser(p);
                 } else {
                     fn_name = consume(p, TokIdent, "method name");
@@ -567,7 +567,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                     iface_qual = copy_token_text(fn_name); /* now iface_qual is the middle name */
                     if (check(p, TokIdent) || check(p, TokHash) || check(p, TokEqu)
                             || check(p, TokNew) || check(p, TokRem) || check(p, TokFrom)
-                            || check(p, TokPrint)) {
+                            || check(p, TokPrint) || check(p, TokSend)) {
                         fn_name = p->current; advance_parser(p);
                     } else {
                         fn_name = consume(p, TokIdent, "method name");
@@ -1392,6 +1392,10 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         } else if (check(p, TokEqu)) {
             decl_name_tok = p->current;
             name = ast_strdup("equ", 3);
+            advance_parser(p);
+        } else if (check(p, TokSend)) {
+            decl_name_tok = p->current;
+            name = ast_strdup("send", 4);
             advance_parser(p);
         } else {
             diag_begin_error("expected a method name after '.'");
