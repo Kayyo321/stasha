@@ -212,6 +212,9 @@ typedef enum {
     /* sugar pack: lambda + pipeline */
     TokLam,         /* lam.(...) — non-capturing lambda expression            */
     TokPipeline,    /* |> — left-associative pipeline operator                */
+
+    /* escaped identifier: $"name" or $'name' — allows C names that are Stasha keywords */
+    TokDollarStr,
 } token_kind_t;
 
 typedef struct {

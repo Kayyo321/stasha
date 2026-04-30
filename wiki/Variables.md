@@ -244,3 +244,17 @@ heap i32 *rw x = new.(sizeof.(i32));
 const i32 N = 10;
 N = 20;   // ERROR: cannot assign to const
 ```
+
+---
+
+## Quoted Identifiers
+
+Variable names can contain spaces, keywords, or special characters using the `$"..."` syntax:
+
+```stasha
+stack i32 $"my count" = 0;
+stack f64 $"π"        = 3.14159;
+stack i32 $"if"       = 1;   // keyword as a name
+```
+
+See [Quoted Identifiers](Quoted-Identifiers) for the full reference.

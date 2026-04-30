@@ -65,6 +65,12 @@ char *copy_token_text(token_t tok) {
     return s;
 }
 
+char *copy_name_text(token_t tok) {
+    if (tok.kind == TokDollarStr)
+        return ast_strdup(tok.start + 2, tok.length - 3); /* skip $" and closing " */
+    return copy_token_text(tok);
+}
+
 char *ast_strdup(const char *src, usize_t len) {
     heap_t h = allocate(len + 1, sizeof(char));
     arena_track(h);

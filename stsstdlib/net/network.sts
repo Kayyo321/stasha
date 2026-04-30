@@ -77,7 +77,7 @@ ext type tcp_socket_t: struct {
     }
 
     ext fn send_data(stack u8 *r+ buf, u32 len): [i32, error] {
-        i32 n = cnet.send(this.fd, buf, len, 0);
+        i32 n = cnet.$"send"(this.fd, buf, len, 0);
         if (n < 0) {
             ret -1, error.('send failed');
         }
