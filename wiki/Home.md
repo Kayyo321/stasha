@@ -26,6 +26,7 @@
 - [Getting Started](Getting-Started) — Install and write your first program
 - [Language Basics](Language-Basics) — Core syntax overview
 - [Variables](Variables) — Declarations and storage qualifiers
+- [Quoted Identifiers](Quoted-Identifiers) — `$"..."` syntax for names with spaces, keywords, or special characters
 - [Types](Types) — Full type system guide
 - [Functions](Functions) — Declarations, methods, generics
 - [Control Flow](Control-Flow) — If, loops, match, switch

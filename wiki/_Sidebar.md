@@ -13,6 +13,7 @@
 
 ### Core Language
 - [Variables](Variables)
+- [Quoted Identifiers](Quoted-Identifiers)
 - [Types](Types)
 - [Functions](Functions)
 - [Control Flow](Control-Flow)
