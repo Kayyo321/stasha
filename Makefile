@@ -63,8 +63,8 @@ LINKER_OBJ = build/obj/linker/linker.o
 TARGET = bin/stasha
 
 # ── Thread runtime ─────────────────────────────────────────────────────────
-THREAD_RUNTIME_SRC = src/runtime/thread_runtime.c
-THREAD_RUNTIME_OBJ = build/obj/runtime/thread_runtime.o
+THREAD_RUNTIME_SRC = src/runtime/thread_runtime.c src/runtime/executor.c
+THREAD_RUNTIME_OBJ = build/obj/runtime/thread_runtime.o build/obj/runtime/executor.o
 THREAD_RUNTIME_LIB = bin/thread_runtime.a
 
 # ── Zone runtime ────────────────────────────────────────────────────────────
@@ -294,12 +294,16 @@ clean-stdlib:
 
 thread-runtime: $(THREAD_RUNTIME_LIB)
 
-$(THREAD_RUNTIME_OBJ): $(THREAD_RUNTIME_SRC) src/runtime/thread_runtime.h
+build/obj/runtime/thread_runtime.o: src/runtime/thread_runtime.c src/runtime/thread_runtime.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+
+build/obj/runtime/executor.o: src/runtime/executor.c src/runtime/executor.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
 
 $(THREAD_RUNTIME_LIB): $(THREAD_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	ar rcs $@ $^
 
 zone-runtime: $(ZONE_RUNTIME_LIB)
 
@@ -390,10 +394,13 @@ test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
 	echo "=== All thread tests passed ==="
 
 HDRS := $(shell find src -name '*.h')
+CODEGEN_IMPLS := $(wildcard src/codegen/*.c)
 
 build/obj/%.o: src/%.c $(HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/obj/codegen/codegen.o: $(CODEGEN_IMPLS)
 
 $(LINKER_OBJ): src/linker/linker.cpp
 	@mkdir -p $(dir $@)

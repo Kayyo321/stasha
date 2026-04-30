@@ -2450,10 +2450,78 @@ static LLVMValueRef gen_await(cg_t *cg, node_t *node) {
     return sts_emit_await_task(cg, h, et, caller_handle);
 }
 
+static LLVMValueRef sts_awaitc_array_elem_ptr(cg_t *cg, LLVMTypeRef arr_ty,
+                                              LLVMValueRef arr_ptr, usize_t i,
+                                              const char *name) {
+    LLVMValueRef idxs[2] = {
+        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0),
+        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)i, 0),
+    };
+    return LLVMBuildInBoundsGEP2(cg->builder, arr_ty, arr_ptr, idxs, 2, name);
+}
+
+static LLVMValueRef sts_awaitc_task_complete(cg_t *cg, LLVMTypeRef prom_ty,
+                                             LLVMValueRef task_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMValueRef cmp_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_COMPLETE);
+    LLVMValueRef cmp_v = LLVMBuildLoad2(cg->builder, i32_t, cmp_p, "awaitc.complete");
+    return LLVMBuildICmp(cg->builder, LLVMIntNE, cmp_v,
+        LLVMConstInt(i32_t, 0, 0), "awaitc.is_done");
+}
+
+static LLVMValueRef sts_awaitc_task_result(cg_t *cg, LLVMTypeRef prom_ty,
+                                           LLVMTypeRef elem_lt,
+                                           LLVMValueRef task_h) {
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMValueRef item_p = sts_gep_item(cg, prom_ty, prom);
+    return LLVMBuildLoad2(cg->builder, elem_lt, item_p, "awaitc.result");
+}
+
+static void sts_awaitc_resume_once(cg_t *cg, LLVMValueRef task_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMBasicBlockRef bb_run_pending = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "awaitc.run_pending");
+    LLVMBasicBlockRef bb_resume_target = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "awaitc.resume_target");
+    LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "awaitc.resume_done");
+    LLVMValueRef pending_v = LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_pending(cg)),
+        sts_rt_executor_pending(cg), Null, 0, "awaitc.pending");
+    LLVMValueRef has_pending = LLVMBuildICmp(cg->builder, LLVMIntNE, pending_v,
+        LLVMConstInt(i32_t, 0, 0), "awaitc.has_pending");
+    LLVMBuildCondBr(cg->builder, has_pending, bb_run_pending, bb_resume_target);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_run_pending);
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_run_pending(cg)),
+        sts_rt_executor_run_pending(cg), Null, 0, "");
+    LLVMBuildBr(cg->builder, bb_done);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume_target);
+    sts_executor_remove_handle(cg, task_h);
+    LLVMValueRef rargs[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
+        sts_intrinsic_coro_resume(cg), rargs, 1, "");
+    LLVMBuildBr(cg->builder, bb_done);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+}
+
+static void sts_awaitc_destroy(cg_t *cg, LLVMValueRef task_h) {
+    sts_executor_remove_handle(cg, task_h);
+    LLVMValueRef args[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
+        sts_intrinsic_coro_destroy(cg), args, 1, "");
+}
+
 /* await.all(f1, ..., fN) / await.any(f1, ..., fN).
-   v1: require all handles to resolve to the same element type T.
-   all: sequential get+load+drop into a homogeneous struct { T, T, ..., T }.
-   any: poll __future_ready, get+load+drop the winner, drop the rest, return T. */
+   v2: all handles must still share one element type T, but progress is now
+   round-robin on the calling thread rather than sequentially draining
+   task[0], then task[1], etc. */
 static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
     node_list_t *hs = &node->as.await_combinator.handles;
     boolean_t    is_any = node->as.await_combinator.is_any;
@@ -2500,48 +2568,218 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
 
     LLVMTypeRef elem_lt = et0_void ? i32_t : get_llvm_type(cg, et0);
     LLVMValueRef caller_h = cg->cur_coro.active ? cg->cur_coro.handle : Null;
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, et0, Null);
+
+    if (caller_h != Null) {
+        for (usize_t i = 0; i < n; i++) {
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "awaitc.init_h");
+            LLVMValueRef prom = sts_call_coro_promise(cg, hv);
+            LLVMBuildStore(cg->builder, caller_h,
+                sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_CONTINUATION));
+        }
+    }
+
+    LLVMValueRef pending_slot = alloc_in_entry(cg, i32_t, "awaitc.pending");
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, (unsigned long long)n, 0), pending_slot);
 
     if (!is_any) {
-        /* await.all — drive each task to completion sequentially, collect
-           results in argument order.  Coroutine task awaits run on the
-           caller's thread; v2 will replace this with a parallel scheduler. */
-        if (et0_void) {
-            for (usize_t i = 0; i < n; i++) {
-                LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-                (void)sts_emit_await_task(cg, hv, et0, caller_h);
-            }
-            deallocate(slots_h);
-            return LLVMConstInt(i32_t, 0, 0);
-        }
+        /* await.all — one cooperative step per live task per pass until all
+           handles have completed, preserving input order in the result. */
+        LLVMValueRef results_arr = Null;
+        LLVMTypeRef agg_t = Null;
+        LLVMTypeRef results_arr_ty = Null;
         heap_t tys_h = allocate(n, sizeof(LLVMTypeRef));
         LLVMTypeRef *tys = tys_h.pointer;
         for (usize_t i = 0; i < n; i++) tys[i] = elem_lt;
-        LLVMTypeRef agg_t = LLVMStructTypeInContext(cg->ctx, tys, (unsigned)n, 0);
-        LLVMValueRef agg = LLVMGetUndef(agg_t);
-        for (usize_t i = 0; i < n; i++) {
-            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-            LLVMValueRef v = sts_emit_await_task(cg, hv, et0, caller_h);
-            agg = LLVMBuildInsertValue(cg->builder, agg, v, (unsigned)i, "awall");
+        if (!et0_void) {
+            results_arr_ty = LLVMArrayType2(elem_lt, (unsigned long long)n);
+            results_arr = alloc_in_entry(cg, results_arr_ty, "awaitall.results");
+            agg_t = LLVMStructTypeInContext(cg->ctx, tys, (unsigned)n, 0);
         }
         deallocate(tys_h);
+
+        LLVMBasicBlockRef bb_check = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitall.check");
+        LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitall.done");
+        LLVMBuildBr(cg->builder, bb_check);
+
+        heap_t slot_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+        heap_t next_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+        LLVMBasicBlockRef *slot_blocks = slot_blocks_h.pointer;
+        LLVMBasicBlockRef *next_blocks = next_blocks_h.pointer;
+        for (usize_t i = 0; i < n; i++) {
+            char name_slot[32], name_next[32];
+            snprintf(name_slot, sizeof(name_slot), "awaitall.slot_%llu", (unsigned long long)i);
+            snprintf(name_next, sizeof(name_next), "awaitall.next_%llu", (unsigned long long)i);
+            slot_blocks[i] = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_slot);
+            next_blocks[i] = (i + 1 == n) ? bb_check
+                : LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_next);
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_check);
+        LLVMValueRef pending_v = LLVMBuildLoad2(cg->builder, i32_t, pending_slot, "awaitall.pending");
+        LLVMValueRef done_v = LLVMBuildICmp(cg->builder, LLVMIntEQ, pending_v,
+            LLVMConstInt(i32_t, 0, 0), "awaitall.all_done");
+        LLVMBuildCondBr(cg->builder, done_v, bb_done, slot_blocks[0]);
+
+        for (usize_t i = 0; i < n; i++) {
+            char name_complete[32], name_resume[32], name_live[32];
+            snprintf(name_complete, sizeof(name_complete), "awaitall.complete_%llu", (unsigned long long)i);
+            snprintf(name_resume, sizeof(name_resume), "awaitall.resume_%llu", (unsigned long long)i);
+            snprintf(name_live, sizeof(name_live), "awaitall.live_%llu", (unsigned long long)i);
+            LLVMBasicBlockRef bb_complete = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_complete);
+            LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_resume);
+            LLVMBasicBlockRef bb_live = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_live);
+
+            LLVMPositionBuilderAtEnd(cg->builder, slot_blocks[i]);
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "awaitall.h");
+            LLVMValueRef is_null = LLVMBuildICmp(cg->builder, LLVMIntEQ, hv,
+                LLVMConstNull(ptr_t), "awaitall.is_null");
+            LLVMBuildCondBr(cg->builder, is_null, next_blocks[i], bb_live);
+
+            LLVMPositionBuilderAtEnd(cg->builder, bb_live);
+            LLVMValueRef is_done = sts_awaitc_task_complete(cg, prom_ty, hv);
+            LLVMBuildCondBr(cg->builder, is_done, bb_complete, bb_resume);
+
+            LLVMPositionBuilderAtEnd(cg->builder, bb_complete);
+            if (!et0_void) {
+                LLVMValueRef result_p = sts_awaitc_array_elem_ptr(cg, results_arr_ty, results_arr, i,
+                    "awaitall.result_p");
+                LLVMValueRef rv = sts_awaitc_task_result(cg, prom_ty, elem_lt, hv);
+                LLVMBuildStore(cg->builder, rv, result_p);
+            }
+            sts_awaitc_destroy(cg, hv);
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), slots[i]);
+            LLVMValueRef pending_v = LLVMBuildLoad2(cg->builder, i32_t, pending_slot, "awaitall.pending");
+            LLVMValueRef pending_dec = LLVMBuildSub(cg->builder, pending_v,
+                LLVMConstInt(i32_t, 1, 0), "awaitall.pending_dec");
+            LLVMBuildStore(cg->builder, pending_dec, pending_slot);
+            LLVMBuildBr(cg->builder, next_blocks[i]);
+
+            LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+            sts_set_current_child_handle(cg, hv);
+            sts_awaitc_resume_once(cg, hv);
+            LLVMBuildBr(cg->builder, next_blocks[i]);
+
+            if (i + 1 < n) {
+                LLVMPositionBuilderAtEnd(cg->builder, next_blocks[i]);
+                LLVMBuildBr(cg->builder, slot_blocks[i + 1]);
+            }
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+        sts_set_current_child_handle(cg, Null);
+        deallocate(slot_blocks_h);
+        deallocate(next_blocks_h);
         deallocate(slots_h);
+        if (et0_void)
+            return LLVMConstInt(i32_t, 0, 0);
+
+        LLVMValueRef agg = LLVMGetUndef(agg_t);
+        for (usize_t i = 0; i < n; i++) {
+            LLVMValueRef result_p = sts_awaitc_array_elem_ptr(cg, results_arr_ty, results_arr, i,
+                "awaitall.result_p");
+            LLVMValueRef rv = LLVMBuildLoad2(cg->builder, elem_lt, result_p, "awaitall.result");
+            agg = LLVMBuildInsertValue(cg->builder, agg, rv, (unsigned)i, "awall");
+        }
         return agg;
     }
 
-    /* await.any — single-threaded coroutine model can't actually race; we
-       drive the first handle to completion, drop the rest, and return its
-       result.  The two-arg form ends up equivalent to `await(args[0])` plus
-       cancellation of the others.  Multi-threaded racing is v2 work. */
-    LLVMValueRef h0 = LLVMBuildLoad2(cg->builder, ptr_t, slots[0], "any.h0");
-    LLVMValueRef result = sts_emit_await_task(cg, h0, et0, caller_h);
-    for (usize_t i = 1; i < n; i++) {
-        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "any.drop");
-        sts_emit_coro_cancel(cg, hv);
-        sts_emit_task_drop(cg, hv);
+    /* await.any — round-robin each live task until one completes, then
+       cancel+drop the losers and return the winner's result. */
+    LLVMBasicBlockRef bb_check = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.check");
+    LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.done");
+    LLVMBuildBr(cg->builder, bb_check);
+
+    LLVMValueRef any_result_slot = et0_void ? Null : alloc_in_entry(cg, elem_lt, "awaitany.result");
+
+    heap_t any_slot_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+    heap_t any_next_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+    LLVMBasicBlockRef *slot_blocks = any_slot_blocks_h.pointer;
+    LLVMBasicBlockRef *next_blocks = any_next_blocks_h.pointer;
+    for (usize_t i = 0; i < n; i++) {
+        char name_slot[32], name_next[32];
+        snprintf(name_slot, sizeof(name_slot), "awaitany.slot_%llu", (unsigned long long)i);
+        snprintf(name_next, sizeof(name_next), "awaitany.next_%llu", (unsigned long long)i);
+        slot_blocks[i] = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_slot);
+        next_blocks[i] = (i + 1 == n) ? bb_check
+            : LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_next);
     }
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_check);
+    LLVMValueRef pending_v = LLVMBuildLoad2(cg->builder, i32_t, pending_slot, "awaitany.pending");
+    LLVMValueRef none_left = LLVMBuildICmp(cg->builder, LLVMIntEQ, pending_v,
+        LLVMConstInt(i32_t, 0, 0), "awaitany.none_left");
+    LLVMBuildCondBr(cg->builder, none_left, bb_done, slot_blocks[0]);
+
+    for (usize_t i = 0; i < n; i++) {
+        char name_live[32], name_resume[32], name_post[32], name_winner[32];
+        snprintf(name_live, sizeof(name_live), "awaitany.live_%llu", (unsigned long long)i);
+        snprintf(name_resume, sizeof(name_resume), "awaitany.resume_%llu", (unsigned long long)i);
+        snprintf(name_post, sizeof(name_post), "awaitany.post_%llu", (unsigned long long)i);
+        snprintf(name_winner, sizeof(name_winner), "awaitany.winner_%llu", (unsigned long long)i);
+
+        LLVMBasicBlockRef bb_live = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_live);
+        LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_resume);
+        LLVMBasicBlockRef bb_post = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_post);
+        LLVMBasicBlockRef bb_winner = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_winner);
+
+        LLVMPositionBuilderAtEnd(cg->builder, slot_blocks[i]);
+        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "awaitany.h");
+        LLVMValueRef is_null = LLVMBuildICmp(cg->builder, LLVMIntEQ, hv,
+            LLVMConstNull(ptr_t), "awaitany.is_null");
+        LLVMBuildCondBr(cg->builder, is_null, next_blocks[i], bb_live);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_live);
+        LLVMValueRef done_now = sts_awaitc_task_complete(cg, prom_ty, hv);
+        LLVMBuildCondBr(cg->builder, done_now, bb_winner, bb_resume);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+        sts_set_current_child_handle(cg, hv);
+        sts_awaitc_resume_once(cg, hv);
+        LLVMBuildBr(cg->builder, bb_post);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_post);
+        LLVMValueRef done_after = sts_awaitc_task_complete(cg, prom_ty, hv);
+        LLVMBuildCondBr(cg->builder, done_after, bb_winner, next_blocks[i]);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_winner);
+        if (!et0_void) {
+            LLVMValueRef rv = sts_awaitc_task_result(cg, prom_ty, elem_lt, hv);
+            LLVMBuildStore(cg->builder, rv, any_result_slot);
+        }
+        sts_awaitc_destroy(cg, hv);
+        LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), slots[i]);
+        for (usize_t j = 0; j < n; j++) {
+            if (j == i) continue;
+            LLVMValueRef other_h = LLVMBuildLoad2(cg->builder, ptr_t, slots[j], "awaitany.other");
+            LLVMValueRef other_live = LLVMBuildICmp(cg->builder, LLVMIntNE, other_h,
+                LLVMConstNull(ptr_t), "awaitany.other_live");
+            LLVMBasicBlockRef bb_cancel = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.cancel");
+            LLVMBasicBlockRef bb_after_cancel = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.after_cancel");
+            LLVMBuildCondBr(cg->builder, other_live, bb_cancel, bb_after_cancel);
+            LLVMPositionBuilderAtEnd(cg->builder, bb_cancel);
+            sts_emit_coro_cancel(cg, other_h);
+            sts_emit_task_drop(cg, other_h);
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), slots[j]);
+            LLVMBuildBr(cg->builder, bb_after_cancel);
+            LLVMPositionBuilderAtEnd(cg->builder, bb_after_cancel);
+        }
+        LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0), pending_slot);
+        LLVMBuildBr(cg->builder, bb_done);
+
+        if (i + 1 < n) {
+            LLVMPositionBuilderAtEnd(cg->builder, next_blocks[i]);
+            LLVMBuildBr(cg->builder, slot_blocks[i + 1]);
+        }
+    }
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+    sts_set_current_child_handle(cg, Null);
+    deallocate(any_slot_blocks_h);
+    deallocate(any_next_blocks_h);
     deallocate(slots_h);
     if (et0_void) return LLVMConstInt(i32_t, 0, 0);
-    return result;
+    return LLVMBuildLoad2(cg->builder, elem_lt, any_result_slot, "awaitany.result");
 }
 
 static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {

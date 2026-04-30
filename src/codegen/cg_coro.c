@@ -21,7 +21,7 @@
  *     %__sts_coro_prom_hdr = type {
  *         i32, i32, i32, i32, i32, i32, ptr, ptr
  *     ;   complete, eos, item_ready, has_error, is_stream, padding,
- *     ;   continuation, error_msg
+ *     ;   continuation, child_handle
  *     }
  *     %__sts_stream_prom_<T> = type { %__sts_coro_prom_hdr, T }
  *
@@ -29,7 +29,7 @@
  *     hdr.complete     = 0   hdr.has_error  = 12
  *     hdr.eos          = 4   hdr.is_stream  = 16
  *     hdr.item_ready   = 8   hdr.padding    = 20
- *     hdr.continuation = 24  hdr.error_msg  = 32
+ *     hdr.continuation = 24  hdr.child_handle = 32
  *     item                       = 40 (T-aligned)
  *
  * ── lowering shape (eager-start) ────────────────────────────────────────────
@@ -99,7 +99,7 @@
 #define STS_PROM_OFF_IS_STREAM     4u
 #define STS_PROM_OFF_CANCELLED     5u
 #define STS_PROM_OFF_CONTINUATION  6u
-#define STS_PROM_OFF_ERROR_MSG     7u
+#define STS_PROM_OFF_CHILD         7u
 #define STS_PROM_HDR_NUM_FIELDS    8u
 #define STS_PROM_ALIGN             8u
 
@@ -182,6 +182,30 @@ static LLVMValueRef sts_intrinsic_coro_promise(cg_t *cg) {
     return sts_get_or_decl_intrinsic(cg, "llvm.coro.promise", ptr_t, p, 3);
 }
 
+static LLVMValueRef sts_rt_executor_enqueue(cg_t *cg) {
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef p[1] = { ptr_t };
+    return sts_get_or_decl_intrinsic(cg, "__sts_executor_enqueue",
+                                     LLVMVoidTypeInContext(cg->ctx), p, 1);
+}
+
+static LLVMValueRef sts_rt_executor_remove(cg_t *cg) {
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef p[1] = { ptr_t };
+    return sts_get_or_decl_intrinsic(cg, "__sts_executor_remove",
+                                     LLVMVoidTypeInContext(cg->ctx), p, 1);
+}
+
+static LLVMValueRef sts_rt_executor_run_pending(cg_t *cg) {
+    return sts_get_or_decl_intrinsic(cg, "__sts_executor_run_pending",
+                                     LLVMVoidTypeInContext(cg->ctx), Null, 0);
+}
+
+static LLVMValueRef sts_rt_executor_pending(cg_t *cg) {
+    return sts_get_or_decl_intrinsic(cg, "__sts_executor_pending",
+                                     LLVMInt32TypeInContext(cg->ctx), Null, 0);
+}
+
 /* Look up (creating once) the standard `__sts_coro_prom_hdr` LLVM struct. */
 static LLVMTypeRef sts_coro_hdr_type(cg_t *cg) {
     LLVMTypeRef cached = LLVMGetTypeByName2(cg->ctx, "__sts_coro_prom_hdr");
@@ -229,6 +253,7 @@ static LLVMValueRef sts_gep_hdr_field(cg_t *cg, LLVMTypeRef prom_ty,
 
 /* Forward decl: defined below in the consumer-side helpers section. */
 static LLVMValueRef sts_call_coro_promise(cg_t *cg, LLVMValueRef handle);
+static void sts_emit_coro_cancel(cg_t *cg, LLVMValueRef coro_h);
 
 static LLVMValueRef sts_gep_item(cg_t *cg, LLVMTypeRef prom_ty,
                                  LLVMValueRef prom_ptr) {
@@ -237,6 +262,13 @@ static LLVMValueRef sts_gep_item(cg_t *cg, LLVMTypeRef prom_ty,
         LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0),  /* prom_ty[1] = item */
     };
     return LLVMBuildInBoundsGEP2(cg->builder, prom_ty, prom_ptr, idx, 2, "prom.item");
+}
+
+static void sts_executor_remove_handle(cg_t *cg, LLVMValueRef coro_h) {
+    LLVMValueRef args[1] = { coro_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_remove(cg)),
+        sts_rt_executor_remove(cg), args, 1, "");
 }
 
 /* ── coroutine prologue / epilogue ── */
@@ -337,7 +369,7 @@ static void sts_emit_coro_prologue(cg_t *cg, type_info_t item_ti,
     /* zero-init header fields, then mark is_stream=1 */
     for (unsigned f = 0; f < STS_PROM_HDR_NUM_FIELDS; f++) {
         LLVMValueRef gep = sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, f);
-        if (f == STS_PROM_OFF_CONTINUATION || f == STS_PROM_OFF_ERROR_MSG)
+        if (f == STS_PROM_OFF_CONTINUATION || f == STS_PROM_OFF_CHILD)
             LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), gep);
         else
             LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0), gep);
@@ -371,6 +403,7 @@ static void sts_emit_coro_prologue(cg_t *cg, type_info_t item_ti,
             cg->current_fn, "coro.fs_after_cont");
         LLVMBuildCondBr(cg->builder, has_cont, bb_resume_cont, bb_after_cont);
         LLVMPositionBuilderAtEnd(cg->builder, bb_resume_cont);
+        sts_executor_remove_handle(cg, cont);
         LLVMValueRef rargs[1] = { cont };
         LLVMBuildCall2(cg->builder,
             LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
@@ -458,6 +491,7 @@ static void sts_resume_continuation_if_set(cg_t *cg, sts_coro_ctx_t *cx,
         cg->current_fn, nm_after);
     LLVMBuildCondBr(cg->builder, has_cont, bb_resume_cont, bb_after_cont);
     LLVMPositionBuilderAtEnd(cg->builder, bb_resume_cont);
+    sts_executor_remove_handle(cg, cont);
     LLVMValueRef rargs[1] = { cont };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
@@ -466,22 +500,55 @@ static void sts_resume_continuation_if_set(cg_t *cg, sts_coro_ctx_t *cx,
     LLVMPositionBuilderAtEnd(cg->builder, bb_after_cont);
 }
 
+static void sts_set_current_child_handle(cg_t *cg, LLVMValueRef child_h) {
+    if (!cg->cur_coro.active) return;
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMValueRef child_ptr = sts_gep_hdr_field(cg, cg->cur_coro.promise_type,
+        cg->cur_coro.promise, STS_PROM_OFF_CHILD);
+    LLVMBuildStore(cg->builder,
+        child_h ? child_h : LLVMConstNull(ptr_t),
+        child_ptr);
+}
+
 /* Branch to final-suspend when the producer's `cancelled` flag has been set
  * by an outside caller of `task.cancel`/`stream.cancel`.  Called at the
  * resume edge of every suspend point. */
 static void sts_check_cancelled_and_finalize(cg_t *cg, sts_coro_ctx_t *cx,
                                              const char *label_prefix) {
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
     LLVMValueRef c_ptr = sts_gep_hdr_field(cg, cx->promise_type, cx->promise,
         STS_PROM_OFF_CANCELLED);
     LLVMValueRef c_v = LLVMBuildLoad2(cg->builder, i32_t, c_ptr, "cx.cancel");
     LLVMValueRef is_c = LLVMBuildICmp(cg->builder, LLVMIntNE, c_v,
         LLVMConstInt(i32_t, 0, 0), "cx.is_cancel");
     char nm_continue[80];
+    char nm_cancel_child[80];
     snprintf(nm_continue, sizeof(nm_continue), "%s.live_%d", label_prefix, cx->susp_counter);
+    snprintf(nm_cancel_child, sizeof(nm_cancel_child), "%s.cancel_child_%d",
+             label_prefix, cx->susp_counter);
     LLVMBasicBlockRef bb_live = LLVMAppendBasicBlockInContext(cg->ctx,
         cg->current_fn, nm_continue);
-    LLVMBuildCondBr(cg->builder, is_c, cx->final_suspend_bb, bb_live);
+    LLVMBasicBlockRef bb_cancel_child = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, nm_cancel_child);
+    LLVMBuildCondBr(cg->builder, is_c, bb_cancel_child, bb_live);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_cancel_child);
+    LLVMValueRef child_ptr = sts_gep_hdr_field(cg, cx->promise_type, cx->promise,
+        STS_PROM_OFF_CHILD);
+    LLVMValueRef child_h = LLVMBuildLoad2(cg->builder, ptr_t, child_ptr, "cx.child");
+    LLVMValueRef has_child = LLVMBuildICmp(cg->builder, LLVMIntNE, child_h,
+        LLVMConstNull(ptr_t), "cx.has_child");
+    LLVMBasicBlockRef bb_cancel = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "coro.cancel_child");
+    LLVMBasicBlockRef bb_final = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "coro.cancel_final");
+    LLVMBuildCondBr(cg->builder, has_child, bb_cancel, bb_final);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_cancel);
+    sts_emit_coro_cancel(cg, child_h);
+    LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), child_ptr);
+    LLVMBuildBr(cg->builder, bb_final);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_final);
+    LLVMBuildBr(cg->builder, cx->final_suspend_bb);
     LLVMPositionBuilderAtEnd(cg->builder, bb_live);
 }
 
@@ -576,6 +643,10 @@ static void sts_emit_yield_now(cg_t *cg, sts_coro_ctx_t *cx) {
         LLVMConstNull(sts_token_ty(cg)),
         LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0)
     };
+    LLVMValueRef qargs[1] = { cx->handle };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_enqueue(cg)),
+        sts_rt_executor_enqueue(cg), qargs, 1, "");
     LLVMValueRef sp = LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_suspend(cg)),
         sts_intrinsic_coro_suspend(cg), sp_args, 2, "coro.sp");
@@ -627,6 +698,7 @@ static LLVMValueRef sts_emit_await_next(cg_t *cg, LLVMValueRef stream_h,
     LLVMTypeRef prom_ty = sts_stream_prom_type(cg, item_ti, &item_lt);
 
     LLVMValueRef prom = sts_call_coro_promise(cg, stream_h);
+    sts_set_current_child_handle(cg, stream_h);
 
     /* Drive flow:
          loop_head: if item_ready -> got_item
@@ -659,8 +731,28 @@ static LLVMValueRef sts_emit_await_next(cg_t *cg, LLVMValueRef stream_h,
         LLVMConstInt(i32_t, 0, 0), "anext.is_eos");
     LLVMBuildCondBr(cg->builder, is_eos, bb_eos, bb_resume);
 
-    /* anext.resume: drive producer one step */
+    /* anext.resume: let queued work run first; if that made progress, re-check
+       before explicitly resuming this stream handle. */
     LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+    LLVMBasicBlockRef bb_run_pending = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "anext.run_pending");
+    LLVMBasicBlockRef bb_resume_target = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "anext.resume_target");
+    LLVMValueRef pending_v = LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_pending(cg)),
+        sts_rt_executor_pending(cg), Null, 0, "anext.pending");
+    LLVMValueRef has_pending = LLVMBuildICmp(cg->builder, LLVMIntNE, pending_v,
+        LLVMConstInt(i32_t, 0, 0), "anext.has_pending");
+    LLVMBuildCondBr(cg->builder, has_pending, bb_run_pending, bb_resume_target);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_run_pending);
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_run_pending(cg)),
+        sts_rt_executor_run_pending(cg), Null, 0, "");
+    LLVMBuildBr(cg->builder, bb_loop);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume_target);
+    sts_executor_remove_handle(cg, stream_h);
     LLVMValueRef rargs[1] = { stream_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
@@ -682,6 +774,7 @@ static LLVMValueRef sts_emit_await_next(cg_t *cg, LLVMValueRef stream_h,
 
     /* anext.done */
     LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+    sts_set_current_child_handle(cg, Null);
     LLVMValueRef phi = LLVMBuildPhi(cg->builder, item_lt, "anext.r");
     LLVMValueRef incoming_v[2] = { item_v, eos_zero };
     LLVMBasicBlockRef incoming_b[2] = { bb_got, bb_eos };
@@ -703,12 +796,12 @@ static LLVMValueRef sts_emit_await_task(cg_t *cg, LLVMValueRef task_h,
                                         type_info_t result_ti,
                                         LLVMValueRef caller_handle) {
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
-    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
     LLVMTypeRef item_lt;
     boolean_t  result_is_void = (result_ti.base == TypeVoid && !result_ti.is_pointer);
     LLVMTypeRef prom_ty = sts_stream_prom_type(cg, result_ti, &item_lt);
 
     LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    sts_set_current_child_handle(cg, task_h);
 
     /* Install caller as continuation if we're inside a coroutine. */
     if (caller_handle != Null) {
@@ -729,6 +822,25 @@ static LLVMValueRef sts_emit_await_task(cg_t *cg, LLVMValueRef task_h,
     LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "atask.resume");
     LLVMBuildCondBr(cg->builder, is_done, bb_done, bb_resume);
     LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+    LLVMBasicBlockRef bb_run_pending = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "atask.run_pending");
+    LLVMBasicBlockRef bb_resume_target = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "atask.resume_target");
+    LLVMValueRef pending_v = LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_pending(cg)),
+        sts_rt_executor_pending(cg), Null, 0, "atask.pending");
+    LLVMValueRef has_pending = LLVMBuildICmp(cg->builder, LLVMIntNE, pending_v,
+        LLVMConstInt(i32_t, 0, 0), "atask.has_pending");
+    LLVMBuildCondBr(cg->builder, has_pending, bb_run_pending, bb_resume_target);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_run_pending);
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_run_pending(cg)),
+        sts_rt_executor_run_pending(cg), Null, 0, "");
+    LLVMBuildBr(cg->builder, bb_loop);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume_target);
+    sts_executor_remove_handle(cg, task_h);
     LLVMValueRef rargs[1] = { task_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
@@ -736,12 +848,14 @@ static LLVMValueRef sts_emit_await_task(cg_t *cg, LLVMValueRef task_h,
     LLVMBuildBr(cg->builder, bb_loop);
 
     LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+    sts_set_current_child_handle(cg, Null);
     LLVMValueRef result_val = Null;
     if (!result_is_void) {
         LLVMValueRef item_p = sts_gep_item(cg, prom_ty, prom);
         result_val = LLVMBuildLoad2(cg->builder, item_lt, item_p, "atask.r");
     }
     /* Destroy the task — its frame is no longer needed. */
+    sts_executor_remove_handle(cg, task_h);
     LLVMValueRef destroy_args[1] = { task_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
@@ -777,6 +891,7 @@ static void sts_emit_task_wait(cg_t *cg, LLVMValueRef task_h) {
     LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "wait.resume");
     LLVMBuildCondBr(cg->builder, is_done, bb_done, bb_resume);
     LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+    sts_executor_remove_handle(cg, task_h);
     LLVMValueRef rargs[1] = { task_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
@@ -797,6 +912,7 @@ static LLVMValueRef sts_emit_task_get_raw(cg_t *cg, LLVMValueRef task_h) {
 /* future.drop(t) — wait for completion, then destroy. */
 static void sts_emit_task_drop(cg_t *cg, LLVMValueRef task_h) {
     sts_emit_task_wait(cg, task_h);
+    sts_executor_remove_handle(cg, task_h);
     LLVMValueRef args[1] = { task_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
@@ -815,6 +931,7 @@ static LLVMValueRef sts_emit_stream_done(cg_t *cg, LLVMValueRef stream_h,
 
 /* stream.drop(s) — destroy the stream coroutine, freeing its frame. */
 static void sts_emit_stream_drop(cg_t *cg, LLVMValueRef stream_h) {
+    sts_executor_remove_handle(cg, stream_h);
     LLVMValueRef args[1] = { stream_h };
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),

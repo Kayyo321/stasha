@@ -98,6 +98,45 @@ async fn slow(i32 x): i32 {
     ret x;
 }
 
+int i32 rr_first_phase = 0;
+int i32 rr_second_phase = 0;
+int i32 rr_observed = 0;
+
+async fn round_robin_probe(i32 which): i32 {
+    if (which == 0) {
+        rr_first_phase = 1;
+        yield;
+        if (rr_second_phase == 1) { rr_observed = rr_observed + 1; }
+        rr_first_phase = 2;
+        yield;
+        if (rr_second_phase == 2) { rr_observed = rr_observed + 1; }
+        ret 10;
+    }
+
+    rr_second_phase = 1;
+    yield;
+    if (rr_first_phase == 1) { rr_observed = rr_observed + 1; }
+    rr_second_phase = 2;
+    yield;
+    if (rr_first_phase == 2) { rr_observed = rr_observed + 1; }
+    ret 20;
+}
+
+int i32 any_slow_steps = 0;
+
+async fn any_slow_forever(void): i32 {
+    inf {
+        any_slow_steps = any_slow_steps + 1;
+        yield;
+    }
+    ret 99;
+}
+
+async fn any_fast_value(void): i32 {
+    yield;
+    ret 7;
+}
+
 fn main(void): i32 {
     // basic task await
     stack i32 s = await(sum_to(10));
@@ -318,6 +357,23 @@ test 'await.all preserves order' {
 test 'await.any returns first result' {
     stack i32 w = await.any(slow(1), slow(200));
     expect_eq.(w, 1);
+}
+
+test 'await.all advances tasks round-robin' {
+    rr_first_phase = 0;
+    rr_second_phase = 0;
+    rr_observed = 0;
+    stack i32 [a, b] = await.all(round_robin_probe(0), round_robin_probe(1));
+    expect_eq.(a, 10);
+    expect_eq.(b, 20);
+    expect.(rr_observed >= 3);
+}
+
+test 'await.any can return a later fast task' {
+    any_slow_steps = 0;
+    stack i32 w = await.any(any_slow_forever(), any_fast_value());
+    expect_eq.(w, 7);
+    expect.(any_slow_steps >= 1);
 }
 
 test 'task reuse: multiple sequential awaits' {
