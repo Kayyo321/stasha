@@ -1,0 +1,51 @@
+mod ex_illegal_ident_fix;
+
+type WeirdBox: struct {
+    ext i32 $"the answer";
+    ext i32 $"not the answer";
+
+    ext fn $"do the thing"(stack i32 $"how many times"): void {
+        for (stack i32 $"loop counter" = 0; $"loop counter" < $"how many times"; $"loop counter"++) {
+            print.('  [{}] answer={} not={}\n',
+                $"loop counter", this.$"the answer", this.$"not the answer");
+        }
+    }
+}
+
+fn WeirdBox.new(stack i32 $"answer val", stack i32 $"not val"): WeirdBox {
+    stack WeirdBox $"the result";
+    $"the result".$"the answer"     = $"answer val";
+    $"the result".$"not the answer" = $"not val";
+    ret $"the result";
+}
+
+int fn $"add two numbers"(stack i32 $"first number", stack i32 $"second number"): i32 {
+    ret $"first number" + $"second number";
+}
+
+int fn min_max(stack i32 a, stack i32 b): [i32, i32] {
+    if (a < b) { ret a, b; }
+    ret b, a;
+}
+
+fn main(void): void {
+    stack i32 $"my favourite number" = 42;
+    stack i32 $"some other number"   = 58;
+
+    stack i32 $"their sum" = $"add two numbers"($"my favourite number", $"some other number");
+    print.('sum = {}\n', $"their sum");
+
+    stack i32 [$"first result", $"second result"] = min_max(3, 99);
+    print.('min={} max={}\n', $"first result", $"second result");
+
+    stack WeirdBox $"an instance" = WeirdBox.new(42, 0);
+    $"an instance".$"do the thing"(3);
+
+    stack i32 $"if" = 1;  stack i32 $"for" = 2;  stack i32 $"ret" = 3;
+    print.('keyword names: {} {} {}\n', $"if", $"for", $"ret");
+
+    stack f64 $"π"         = 3.14159265358979;
+    stack f64 $"area=π×r²" = $"π" * (5.0 * 5.0);
+    print.('π        = {}\n', $"π");
+    print.('area=π×r² = {}\n', $"area=π×r²");
+}
