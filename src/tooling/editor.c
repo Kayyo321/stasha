@@ -155,6 +155,7 @@ static const char *token_type_name(token_kind_t kind) {
         case TokFinal:
         case TokThread:
         case TokFuture:
+        case TokStream:
         case TokPrint:
         case TokVoid:
         case TokTrue:
@@ -197,6 +198,9 @@ static const char *token_type_name(token_kind_t kind) {
         case TokAny:
         case TokInterface:
         case TokMacro:
+        case TokAsync:
+        case TokAwait:
+        case TokYield:
             return "keyword";
         case TokI8:
         case TokI16:

@@ -57,10 +57,25 @@ typedef struct {
     boolean_t   primary;   /* True → ^^^, False → --- */
 } diag_label_t;
 
+/* ── Error categories ── */
+
+typedef enum {
+    ErrCatNone,
+    ErrCatSyntax,         /* parser errors */
+    ErrCatUndefined,      /* undefined variable, function, type */
+    ErrCatTypeMismatch,   /* type errors, invalid casts */
+    ErrCatStorageDomain,  /* stack/heap/zone violations */
+    ErrCatPointerSafety,  /* permission, lifetime, null deref */
+    ErrCatImport,         /* module resolution failures */
+    ErrCatConcurrency,    /* thread/future/atomic issues */
+    ErrCatOther,
+} diag_category_t;
+
 /* ── A full diagnostic (built incrementally, then rendered by diag_finish) ── */
 
 typedef struct {
     diag_level_t    level;
+    diag_category_t category;
     char            message[DIAG_MSG_SIZE];
     diag_label_t    labels[DIAG_MAX_LABELS];
     usize_t         label_count;
@@ -92,6 +107,29 @@ void diag_clear_captured(void);
 usize_t diag_get_captured_count(void);
 const captured_diag_t *diag_get_captured(usize_t index);
 
+/* ── Warning flags (bitmask) ── */
+
+typedef enum {
+    WarnUnusedVar       = (1 << 0),
+    WarnUnusedParam     = (1 << 1),
+    WarnMissingReturn   = (1 << 2),
+    WarnUnreachableCode = (1 << 3),
+    WarnShadowedVar     = (1 << 4),
+    WarnImplicitCast    = (1 << 5),
+    WarnAll             = 0xFFFFFFFF,
+} warn_flag_t;
+
+/* ── Diagnostic configuration ── */
+
+typedef struct {
+    boolean_t strict;    /* True → warnings become errors */
+    unsigned  enabled;   /* bitmask of warn_flag_t */
+} diag_config_t;
+
+void diag_set_config(diag_config_t config);
+diag_config_t diag_get_config(void);
+boolean_t diag_warn_enabled(warn_flag_t flag);
+
 /* ── Builder API ── */
 
 /* Start accumulating a new diagnostic.  Calling diag_begin_* discards any
@@ -105,6 +143,12 @@ void diag_span(src_loc_t loc, boolean_t primary, const char *fmt, ...);
 /* Append a note or help line ("= note: ..." / "= help: ..."). */
 void diag_note(const char *fmt, ...);
 void diag_help(const char *fmt, ...);
+
+/* Set the category of the pending diagnostic (optional, for structured output). */
+void diag_set_category(diag_category_t cat);
+
+/* Start an optional warning — silently discarded if `flag` is not enabled. */
+void diag_begin_optional_warning(warn_flag_t flag, const char *fmt, ...);
 
 /* Render and print the pending diagnostic; update global error/warning counts.
    After this call, no diagnostic is pending. */

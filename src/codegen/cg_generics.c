@@ -488,7 +488,12 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
     type_info_t rti = subst_type_info(cg,
         resolve_alias(cg, tmpl->as.fn_decl.return_types[0]));
     LLVMTypeRef ret_type;
-    if (ret_count > 1) {
+    boolean_t gen_is_coro_decl = tmpl->as.fn_decl.is_async
+        && (tmpl->as.fn_decl.coro_flavor == CoroTask
+            || tmpl->as.fn_decl.coro_flavor == CoroStream);
+    if (gen_is_coro_decl) {
+        ret_type = LLVMPointerTypeInContext(cg->ctx, 0);
+    } else if (ret_count > 1) {
         heap_t rt_heap = allocate(ret_count, sizeof(LLVMTypeRef));
         LLVMTypeRef *rt_fields = rt_heap.pointer;
         for (usize_t j = 0; j < ret_count; j++) {
@@ -541,15 +546,41 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
                        alloca_val, ptype, pti, False);
         }
 
+        /* Generic coroutine: wrap body with coro prologue/epilogue after
+           substituting the type parameter for the yielded item / result. */
+        boolean_t gen_is_stream_coro = tmpl->as.fn_decl.is_async
+            && tmpl->as.fn_decl.coro_flavor == CoroStream;
+        boolean_t gen_is_task_coro = tmpl->as.fn_decl.is_async
+            && tmpl->as.fn_decl.coro_flavor == CoroTask;
+        sts_coro_ctx_t prev_gen_coro = cg->cur_coro;
+        boolean_t      prev_gen_is_task = cg->current_fn_is_async_task;
+        cg->current_fn_is_async_task = False;
+        if (gen_is_stream_coro) {
+            type_info_t yt = subst_type_info(cg,
+                resolve_alias(cg, tmpl->as.fn_decl.yield_type));
+            sts_emit_coro_stream_prologue(cg, yt, &cg->cur_coro);
+        } else if (gen_is_task_coro) {
+            type_info_t rt_subst = subst_type_info(cg, rti);
+            sts_emit_coro_task_prologue(cg, rt_subst, &cg->cur_coro);
+            cg->current_fn_is_async_task = True;
+        } else {
+            cg->cur_coro.active = 0;
+        }
+
         gen_block(cg, tmpl->as.fn_decl.body);
 
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg->builder);
-        if (!LLVMGetBasicBlockTerminator(cur_bb)) {
+        if (gen_is_stream_coro || gen_is_task_coro) {
+            sts_finish_coro_body_if_open(cg, &cg->cur_coro);
+            cg->cur_coro = prev_gen_coro;
+        } else if (!LLVMGetBasicBlockTerminator(cur_bb)) {
             if (ret_count <= 1 && rti.base == TypeVoid && !rti.is_pointer)
                 LLVMBuildRetVoid(cg->builder);
             else
                 LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
         }
+        cg->cur_coro = prev_gen_coro;
+        cg->current_fn_is_async_task = prev_gen_is_task;
 
         cg->current_fn = Null;
         memcpy(cg->current_module_prefix, saved_module_prefix,

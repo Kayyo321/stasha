@@ -1,0 +1,13 @@
+// Diagnostic test: Levenshtein suggestion for mistyped type name
+// Expected: "did you mean 'Player'?" in help note
+// Feature: Phase 1B Levenshtein in gen_local_var for types
+mod diag_leven_type;
+
+type Player: struct {
+    ext i32 health;
+};
+
+ext fn main(void): i32 {
+    stack Playr p;
+    ret 0;
+}

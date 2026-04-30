@@ -1,0 +1,75 @@
+mod ex_async;
+
+lib "stdio" = io;
+
+// ── async task runtime surface ────────────────────────────────────────────
+//
+// The dedicated async runtime now backs `async.()` dispatch. Outside an
+// `async fn`, you can still inspect and collect task handles explicitly with
+// `future.ready`, `future.get.(T)`, `future.wait`, and `future.drop`.
+
+int atomic i32 work_done = 0;
+
+async fn worker(void): void {
+    work_done = work_done + 1;
+}
+
+async fn square(i32 x): i32 {
+    ret x * x;
+}
+
+async fn add(i32 a, i32 b): i32 {
+    ret a + b;
+}
+
+fn main(void): i16 {
+    stack future.[i32] fs = async.(square)(7);
+    stack i32 sq = future.get.(i32)(fs);
+    io.printf('7^2 = %d\n', sq);
+    future.drop(fs);
+
+    stack future.[i32] sum_f = async.(add)(10, 32);
+    stack i32 sum = future.get.(i32)(sum_f);
+    io.printf('10+32 = %d\n', sum);
+    future.drop(sum_f);
+
+    stack future.[void] vf = async.(worker)();
+    future.wait(vf);
+    future.drop(vf);
+    io.printf('work_done = %d\n', work_done);
+
+    ret 0;
+}
+
+test 'async future get/drop uses async runtime' {
+    stack future.[i32] f = async.(square)(5);
+    expect_eq.(future.get.(i32)(f), 25);
+    future.drop(f);
+}
+
+test 'async future ready eventually flips' {
+    stack future.[i32] f = async.(square)(9);
+    inf {
+        if (future.ready(f)) {
+            break;
+        }
+    }
+    expect_eq.(future.get.(i32)(f), 81);
+    future.drop(f);
+}
+
+test 'void async future wait/drop' {
+    stack future.[void] f = async.(worker)();
+    future.wait(f);
+    future.drop(f);
+    expect.(work_done >= 1);
+}
+
+test 'async + thread interop: same module, mixed runtimes' {
+    stack future.[i32] f1 = async.(square)(3);
+    future             f2 = thread.(add)(1, 2);
+    expect_eq.(future.get.(i32)(f1), 9);
+    future.drop(f1);
+    expect_eq.(future.get.(i32)(f2), 3);
+    future.drop(f2);
+}

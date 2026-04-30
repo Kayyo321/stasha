@@ -55,6 +55,11 @@ int __future_ready(__future_t *f);
 /* Wait for completion, then free the future and its result buffer. */
 void __future_drop(__future_t *f);
 
+/* Block until any future in `fs[0..n]` completes. Returns the index of the
+   winner (0..n-1). Non-polling: workers broadcast a global completion cv
+   after every job, so this blocks instead of spin-polling. */
+int __future_wait_any(__future_t **fs, int n);
+
 /* Manual pool management (called automatically via constructor/destructor). */
 void __thread_runtime_init(int num_threads);
 void __thread_runtime_shutdown(void);

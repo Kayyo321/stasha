@@ -1,0 +1,11 @@
+// Diagnostic test: error deduplication — undefined variable used multiple times
+// Expected: only ONE "undefined variable 'missing'" error, NOT three
+// Feature: Phase 1 error deduplication
+mod diag_dedup_var;
+
+ext fn main(void): i32 {
+    stack i32 a = missing + 1;
+    stack i32 b = missing + 2;
+    stack i32 c = missing + 3;
+    ret a + b + c;
+}

@@ -33,6 +33,11 @@
 - [Enums](Enums) — Simple and tagged enums
 - [Interfaces](Interfaces) — Interface contracts
 - [Generics](Generics) — Generic programming with `@comptime[T]`
+- [Compile-Time Features](Compile-Time-Features) — `@comptime if`, metadata fields, assertions
+- [Syntax Sugar](Sugar) — Lambdas, pipelines, and trailing closures
+- [Compound Initializers](Compound-Initializers) — Inline array and struct initialization
+- [Slices](Slices) — Fat-pointer slice views and heap slices
+- [Hashing](Hashing) — `hash.(expr)` and custom struct hashes
 
 ### Memory & Safety
 - [Memory Management](Memory-Management) — Stack, heap, zones, rem, defer
@@ -41,6 +46,9 @@
 
 ### Modules & Libraries
 - [Modules and Imports](Modules-and-Imports) — `mod`, `imp`, `lib`, `libimp`
+- [Submodules](Submodules) — Named scopes inside one source file
+- [Preprocessor Macros](Preprocessor-Macros) — Token macros and macro imports
+- [File Headers](File-Headers) — Declarative ABI, target, lifecycle, and diagnostic metadata
 - [Standard Library](Standard-Library) — Built-in modules reference
 - [Creating Libraries](Creating-Libraries) — Compile to `.a` or `.dylib`
 - [Using Libraries](Using-Libraries) — Link and import external libraries
@@ -55,6 +63,8 @@
 
 ### Advanced
 - [Concurrency](Concurrency) — Thread pool, futures, atomic
+- [Async / Await](Async-Await) — Coroutine tasks, streams, and cooperative fan-in
+- [Signals](Signals) — Synchronous typed signal dispatch
 - [C Interoperability](C-Interoperability) — Call C from Stasha and vice versa
 - [How the Compiler Works](How-the-Compiler-Works) — Internals overview
 

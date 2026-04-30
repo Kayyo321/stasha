@@ -34,6 +34,7 @@ typedef enum {
     TokFinal,
     TokThread,  /* thread — parallel dispatch to thread pool */
     TokFuture,  /* future — handle to an async result       */
+    TokStream,  /* stream — handle to an async yield stream */
     TokPrint,
     TokVoid,
     TokTrue,
@@ -197,6 +198,20 @@ typedef enum {
     /* foreach slice iteration */
     TokForeach,     /* foreach — iterate over a slice                        */
     TokIn,          /* in  — separates iter var from slice in foreach        */
+
+    /* signals: type-routed handlers + exit-safe termination */
+    TokWatch,       /* watch.(T name) => { body } — register typed handler  */
+    TokSend,        /* send.(value) — dispatch to handlers of value's type  */
+    TokQuit,        /* quit.(code)  — exit such that @[[exit]] blocks run   */
+
+    /* async/await — thin surface layer over thread pool + future              */
+    TokAsync,       /* async fn ... / async.(fn)(args)                        */
+    TokAwait,       /* await(f) / await.(fn)(args) / await.all(..) / await.any(..) */
+    TokYield,       /* yield expr; / yield; inside async coroutines                  */
+
+    /* sugar pack: lambda + pipeline */
+    TokLam,         /* lam.(...) — non-capturing lambda expression            */
+    TokPipeline,    /* |> — left-associative pipeline operator                */
 } token_kind_t;
 
 typedef struct {

@@ -1,0 +1,18 @@
+// Diagnostic test: parser recovery — multiple syntax errors in separate functions
+// Expected: errors reported for BOTH functions, not just the first
+// Feature: Phase 2 panic_mode + synchronize() recovery
+mod diag_parser_recovery;
+
+ext fn broken1(void): i32 {
+    stack i32 x = ;
+    ret x;
+}
+
+ext fn broken2(void): i32 {
+    stack i32 y = ;
+    ret y;
+}
+
+ext fn main(void): i32 {
+    ret 0;
+}

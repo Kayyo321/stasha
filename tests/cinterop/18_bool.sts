@@ -1,0 +1,23 @@
+mod row18_bool;
+
+cheader "support/bools.h" search "tests/cinterop";
+
+// `_Bool` from C maps to Stasha's TypeBool.  Round-trip a Stasha bool
+// through several C functions and verify the result on each side.
+
+fn main(void): i32 {
+    if bool_not(true) != false { print.("FAIL not(true)\n"); ret 1; }
+    if bool_not(false) != true { print.("FAIL not(false)\n"); ret 1; }
+
+    if bool_and(true, true)  != true  { print.("FAIL and(t,t)\n"); ret 1; }
+    if bool_and(true, false) != false { print.("FAIL and(t,f)\n"); ret 1; }
+
+    if bool_to_int(true)  != 1 { print.("FAIL to_int(t)\n"); ret 1; }
+    if bool_to_int(false) != 0 { print.("FAIL to_int(f)\n"); ret 1; }
+
+    if bool_from_int(7) != true  { print.("FAIL from_int(7)\n"); ret 1; }
+    if bool_from_int(0) != false { print.("FAIL from_int(0)\n"); ret 1; }
+
+    print.("18_bool: ok\n");
+    ret 0;
+}

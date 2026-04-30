@@ -1,0 +1,30 @@
+mod row22_outarray;
+
+cheader "support/outarray.h" search "tests/cinterop";
+
+// `T out[N]` and `T out[]` parameters in C decay to `T *` — cheader
+// must surface either spelling identically so Stasha can pass a stack
+// array's address through &arr[0].
+
+fn main(void): i32 {
+    stack i32 zeros[4] = .{9, 9, 9, 9};
+    arr_zero4(&zeros[0]);
+    if zeros[0] != 0 || zeros[3] != 0 { print.("FAIL zero4\n"); ret 1; }
+
+    stack i32 idx[8] = .{};
+    arr_iota(&idx[0], 8);
+    if idx[0] != 0 || idx[7] != 7 { print.("FAIL iota\n"); ret 1; }
+
+    stack i32 nums[6] = .{3, 1, 4, 1, 5, 2};
+    stack i32 best_idx = 0;
+    if arr_max(&nums[0], 6, &best_idx) != 5 { print.("FAIL max value\n"); ret 1; }
+    if best_idx != 4 { print.("FAIL max idx={}\n", best_idx); ret 1; }
+
+    stack i32 sums[6] = .{};
+    arr_running_sum(&nums[0], 6, &sums[0]);
+    if sums[0] != 3 { print.("FAIL sum[0]\n"); ret 1; }
+    if sums[5] != 16 { print.("FAIL sum[5]={}\n", sums[5]); ret 1; }
+
+    print.("22_outarray: ok\n");
+    ret 0;
+}

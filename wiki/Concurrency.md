@@ -2,6 +2,8 @@
 
 Stasha has built-in thread parallelism using a managed thread pool and futures. The runtime is automatically initialized — you don't need to configure or start it.
 
+For coroutine tasks and streams declared with `async fn`, see [Async / Await](Async-Await). This page is about `thread.(fn)(args)` and untyped thread-pool `future` handles.
+
 ---
 
 ## Overview
@@ -10,7 +12,7 @@ Stasha's concurrency model:
 
 - **Thread pool**: A pool of worker threads (min(CPU count, 64)) is created automatically on program startup.
 - **`thread.(fn)(args)`**: Dispatch a function to the pool. Returns a `future`.
-- **`future`**: A handle to the async result. Collect the result with `future.get.(T)(f)` or just wait with `future.wait(f)`.
+- **`future`**: An untyped handle to the thread result. Collect the result with `future.get.(T)(f)` or just wait with `future.wait(f)`.
 - **No shared mutable state by default**: Use `atomic` globals for shared counters/flags, or use message-passing patterns.
 
 ---

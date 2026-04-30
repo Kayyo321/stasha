@@ -1,0 +1,21 @@
+mod target_features;
+
+// Definition-local codegen tuning.
+// Unlike a normal attribute on a struct, this changes how one function is
+// emitted for a target or CPU feature set.  `target:` sets LLVM's
+// `target-cpu`; `features:` sets `target-features`.
+
+@[[target: "x86_64", features: "+sse4.2,+popcnt"]]
+fn hash_sse(stack u8 *r text): u32 {
+    ret 0;
+}
+
+@[[target: "aarch64", features: "+neon"]]
+fn hash_neon(stack u8 *r text): u32 {
+    ret 0;
+}
+
+// `@[[if: target.arch == "..."]]` gating is used by build systems that pass
+// an explicit `--target` triple.  With the host default triple the condition
+// is resolved at codegen time; see `conditional_api.sts` for the gating
+// pattern on a body-less declaration.

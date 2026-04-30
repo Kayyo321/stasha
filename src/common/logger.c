@@ -248,8 +248,17 @@ void quit(result_t res) {
         close_logger();
 
     if (log_stderr_enabled) {
-        fprintf(stderr, "warn count: %lu, error count: %lu\n", warn_cnt, error_cnt);
-        fprintf(stderr, "exited with code %d\n", res);
+        if (error_cnt > 0) {
+            fprintf(stderr, "error: aborting due to %lu previous error%s",
+                    (unsigned long)error_cnt, error_cnt == 1 ? "" : "s");
+            if (warn_cnt > 0)
+                fprintf(stderr, "; %lu warning%s emitted",
+                        (unsigned long)warn_cnt, warn_cnt == 1 ? "" : "s");
+            fprintf(stderr, "\n");
+        } else if (warn_cnt > 0) {
+            fprintf(stderr, "%lu warning%s emitted\n",
+                    (unsigned long)warn_cnt, warn_cnt == 1 ? "" : "s");
+        }
     }
     exit(res);
 }

@@ -172,7 +172,10 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
             /* function pointers are opaque pointers in LLVM's opaque pointer model */
             return LLVMPointerTypeInContext(cg->ctx, 0);
         case TypeFuture:
-            /* future is an opaque pointer to __future_t in the thread runtime */
+            /* coroutine task handle is an opaque runtime pointer */
+            return LLVMPointerTypeInContext(cg->ctx, 0);
+        case TypeStream:
+            /* coroutine stream handle is an opaque runtime pointer */
             return LLVMPointerTypeInContext(cg->ctx, 0);
         case TypeZone:
             /* zone is an opaque void* to zone_state_t; stored as ptr in structs/params */
@@ -278,6 +281,11 @@ static usize_t payload_type_size(type_info_t ti) {
         case TypeI32:  case TypeU32: case TypeF32: return 4;
         case TypeI64:  case TypeU64: case TypeF64: return 8;
         case TypeSlice: return 16; /* ptr(8) + len(4) + cap(4) */
+        case TypeStream:
+        case TypeFuture:
+        case TypeZone:
+        case TypeFnPtr:
+            return 8;
         default: return 8; /* conservative default for user types */
     }
 }

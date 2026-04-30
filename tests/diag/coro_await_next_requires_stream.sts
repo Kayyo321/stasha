@@ -1,0 +1,10 @@
+mod coro_await_next_requires_stream;
+
+async fn task(void): i32 {
+    stack future.[i32] f = async.(task_leaf)();
+    ret await.next(f);
+}
+
+async fn task_leaf(void): i32 {
+    ret 7;
+}

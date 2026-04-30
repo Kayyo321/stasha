@@ -77,13 +77,16 @@ CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module A
 | `cg_stmt.c` (900) | `gen_local_var`, `gen_for/while/do_while/inf_loop/if/ret/debug/multi_assign/match/switch/asm_stmt/comptime_if/comptime_assert`, `gen_stmt` dispatcher, `gen_block` |
 | `cg_registry.c` (132) | `register_struct/enum/alias/lib`, `struct_add_field/field_ex` |
 | `cg_debug.c` (288) | `di_cache_lookup/set`, `get_di_named_type`, `get_di_type`, `di_make_location`, `di_set_location` |
+| `cg_coro.c` | LLVM coroutine lowering for **both** task and stream `async fn`: `sts_emit_coro_stream/task_prologue`, `sts_emit_yield_value/now`, `sts_emit_stream/task_ret`, `sts_emit_await_next`, `sts_emit_await_task`, `sts_emit_stream_done/drop/cancel`, `sts_emit_task_wait/ready/get_raw/drop`, `sts_emit_coro_cancel`. Promise header (`__sts_coro_prom_hdr`: complete/eos/item_ready/is_stream/cancelled/continuation) + inline `T` slot. `presplitcoroutine` attribute + pass pipeline `coro-early,cgscc(coro-split),coro-cleanup,globaldce`. |
 | `codegen.h` (10) | `codegen()` declaration |
 
 ### `src/runtime/`
 | File | Contents |
 |------|----------|
 | `thread_runtime.h` | Public API: `__future_t`, `__thread_dispatch`, `__future_get/wait/ready/drop`, `__thread_runtime_init/shutdown` |
-| `thread_runtime.c` | Thread pool (POSIX pthreads), ring-buffer job queue, future implementation. Auto-init/shutdown via `__attribute__((constructor/destructor))`. Compiled to `bin/thread_runtime.a` and automatically linked into every executable. |
+| `thread_runtime.c` | Thread pool (POSIX pthreads), ring-buffer job queue, future implementation. Backs `thread.(fn)(args)` only — `async fn` now uses llvm.coro.*. Auto-init/shutdown via `__attribute__((constructor/destructor))`. Compiled to `bin/thread_runtime.a` and automatically linked into every executable. |
+| `coro_runtime.h` | Executor queue for `thread.(fn)`: `__async_dispatch/get/wait/ready/cancel/drop/wait_any`. Not used by `async fn` coroutines — those are self-contained coro frames. |
+| `coro_runtime.c` | POSIX thread-pool executor. Backs `thread.(fn)` dispatch wrapper when explicit parallelism is needed. |
 
 ### `src/linker/`
 | File | Contents |
@@ -153,6 +156,30 @@ continue;   // next iteration of innermost loop (not valid in switch)
 //            & | ^ ~ << >>  && || !  < > <= >= == !=
 //            &x (addr-of)   x[i] (index)
 
+// Compound init `.{...}` — preferred over manual element-by-element fills.
+// Works for arrays AND structs (also nested).  Always prefer this over
+// `arr[0] = a; arr[1] = b; ...` — it's shorter and codegen pre-fills zeros.
+i32 a1[]  = .{1, 2, 3};                   // length inferred from initializer
+i32 b1[5] = .{1, 2};                       // remaining slots zero-filled
+i32 c1[3] = .{[1] = 5};                    // designated index: c1 = {0, 5, 0}
+stack i32 buf[16] = .{1, 2, 3, 4, 5};      // typical stack array — rest zero
+stack i32 z[64]   = .{};                    // zero-initialise the whole array
+player_t p = .{ .pos = .{ .x = 1, .y = 2 }, .hp = 100 };  // nested + designated
+player_t q = .{ ..p, .hp = 200 };          // struct merge with `..` spread
+i32 arr2[] = .{..arr1, 4, 5};              // array spread with `..`
+i8 s[]     = .{.."Hello", .." ", .."World"};  // string spread
+
+// Range expressions `start..end`, `start..=end`, `start..end:step`.
+// Half-open by default (`..` excludes end).  `..=` is inclusive.  `:step`
+// sets a stride.  Useful inside compound initializers and (where supported)
+// foreach/iteration contexts.
+i32 r1[] = .{0..5};        // 0 1 2 3 4
+i32 r2[] = .{0..=5};       // 0 1 2 3 4 5
+i32 r3[] = .{0..10:2};     // 0 2 4 6 8
+i32 mix[] = .{ ..(0..5), 10, ..(20..=25), ..(0..10:2) };  // ranges + spread compose
+
+// Slice ranges share the syntax: arr[lo:hi]  (half-open) — see foreach below.
+
 // Built-in formatted output (no import required)
 // First arg must be a string literal; {} inserts the next argument.
 // Format specs after ':' inside {}: x/X (hex), b (binary), o (octal),
@@ -183,12 +210,70 @@ stack i32 v = future.get.(i32)(f); // block and return typed result
 stack void *p = future.get(f);     // block and return raw void*
 future.drop(f);                    // wait + free future
 
+// Task coroutines (llvm.coro.* — synchronous drive on caller's thread)
+async fn add(i32 a, i32 b): i32 { ret a + b; }
+stack future.[i32] f = async.(add)(1, 2);
+stack i32 v = await(f);                  // drive to completion, return i32
+stack i32 sum = await.(add)(1, 2);       // one-shot: dispatch + drive + return
+stack i32 [a, b] = await.all(add(1,2), add(3,4));   // drive both, return in order
+stack i32 winner = await.any(add(1,2), add(3,4));    // drive first, cancel rest
+// await(f) is legal anywhere (not just inside async fn)
+
+// Stream coroutines (real LLVM coroutines lowered through llvm.coro.*)
+async fn fib(i32 n): stream.[i64] {
+    stack i64 a = 0; stack i64 b = 1; stack i32 i = 0;
+    while (i < n) { yield a; stack i64 t = a + b; a = b; b = t; i = i + 1; }
+    ret;                            // ret expr; is rejected in stream coros
+}
+stream.[i64] f = fib(10);
+inf {
+    stack i64 v = await.next(f);    // drives producer to next yield (or eos)
+    if (stream.done(f)) { break; }  // post-call eos check
+    print.('{}\n', v);
+}
+stream.drop(f);                     // destroy coro frame (safe at any state)
+stream.cancel(f);                   // set cancelled flag; producer sees at next yield
+// `yield expr;` produces an item; `yield;` is a bare cooperative reschedule.
+// `await.next(s)` is legal anywhere — synchronous drive on caller's thread.
+
 // Struct attributes: @packed  @align(N)  @c_layout
 // Fn/var attributes: @weak  @hidden  @restrict
 // Variadic: fn foo(stack i32 n, ...): void
 // Union: type U: union { i32 x; f32 y; }
 // Bitfield: i32 flags: 3;  (inside struct)
 ```
+
+### Sugar — pipeline `|>`, lambdas `lam.()`, trailing closures
+
+```
+// Lambda — non-capturing in v1.  Lifted to a module-level fn; expression
+// value is a plain function pointer (fn*(...) : ret).
+stack fn*(stack i32): i32 sq = lam.(stack i32 x): i32 { ret x * x; };
+
+// Pipeline — left-associative, low-precedence.  `a |> f`        → f.(a)
+//                                                `a |> f.(b,c)` → f.(a, b, c)
+stack i32 r = 5 |> double |> negate;          // -10
+stack i32 s = 100 |> add(50);                 // 150
+
+// Trailing closure — short-form lambda after a `.()` call.  Param types
+// are inferred from the callee's matching fn-pointer parameter slot.
+//   f.(args) { |p1, p2| body-expr-or-stmts }    // typed-param form
+//   f.(args) { stmts; }                          // zero-arg form
+// The closure is appended as the LAST argument, so write higher-order fns
+// with the fn-pointer parameter LAST: `fn map(arr, len, out, fn*(T):U f)`.
+filter(&nums[0], 5, &out[0], &out_len) { |n| n % 2 == 0 };
+sum = reduce(&arr[0], len, 0) { |acc, n| acc + n };
+run() { print.('hi\n'); };
+
+// Capture is rejected in v1 — the lambda body may reference module-scope
+// names (functions, globals, types) but NOT enclosing locals.  Capturing
+// closures land in v2 with explicit `heap`/`stack` env storage.
+//
+// Trailing-closure parsing is suppressed inside if/while/for/do-while/
+// match/switch conditions, so `if pred(x) { ... }` still parses the brace
+// as the if-body.
+```
+
 
 **Module system**: every file starts with `mod name;` (root) or `mod dir.subdir.name;` (nested). The dotted name mirrors the directory path relative to the entry file: `mod printer.typewriter;` lives at `printer/typewriter.sts`. `imp other.mod;` splices that module's types/sigs into the current AST; dots in the name are converted to path separators for lookup. `int` = module-private, `ext` = exported. Library-backed imports: `lib "x" from "libx.a"; imp x;` — codegen skips bodies, linker resolves from `.a`.
 
@@ -267,10 +352,13 @@ rem.(q);                               // rem on stack pointer — ERROR
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
 - [x] Dotted module names + sts.sproj project file
 - [x] Thread parallelism: `thread.(fn)(args)` + `future` type (thread pool, POSIX pthreads)
+- [x] Stream coroutines: `async fn ...: stream.[T]` — `yield expr;`, `yield;`, `await.next(s)`, `stream.done(s)`, `stream.drop(s)`, `stream.cancel(s)`
+- [x] Task coroutines: `async fn ...: T` lowered through `llvm.coro.*` — synchronous drive via `await(f)`, `await.all`, `await.any`, `future.[T]` ops
+- [x] Async methods: `async fn` inside struct body with `this` access (both task + stream)
+- [x] Generic async fns: `@comptime[T] async fn` (task + stream, instantiated per call site)
+- [x] Executor queue: `coro_runtime.c` thread pool retained for `thread.(fn)`; dead `__async_*` codegen path removed
+- [ ] Executor queue + real async scheduling (continuations, yield; pause semantics)
+- [ ] Cancellation propagation through `await(child_task)`
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler
-
-**Open design questions:**
-- `error` type: carry integer code alongside message?
-- Error propagation `?` suffix operator (Rust/Zig style)?

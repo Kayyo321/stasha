@@ -3,6 +3,7 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/DebugInfo.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -22,6 +23,27 @@ static LLVMCodeGenOptLevel map_opt_level(int level) {
     default:
         return LLVMCodeGenLevelDefault;
     }
+}
+
+static boolean_t ast_requires_coro_pipeline(node_t *ast) {
+    if (!ast || ast->kind != NodeModule) return False;
+    /* Any `async fn` is a coroutine after the v2 migration: tasks lower
+       through llvm.coro.* identically to streams, so the presence of any
+       async function — even one with no body await/yield — needs the
+       coroutine pass pipeline. */
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind == NodeFnDecl && decl->as.fn_decl.is_async)
+            return True;
+        if (decl->kind == NodeTypeDecl) {
+            for (usize_t j = 0; j < decl->as.type_decl.methods.count; j++) {
+                node_t *method = decl->as.type_decl.methods.items[j];
+                if (method->kind == NodeFnDecl && method->as.fn_decl.is_async)
+                    return True;
+            }
+        }
+    }
+    return False;
 }
 
 typedef struct {
@@ -181,6 +203,33 @@ typedef struct {
     type_info_t actual;
 } type_alias_t;
 
+/* ── signal dispatch (watch/send/quit) ──
+ * Per-type storage for registered handlers.  Four globals per type,
+ * all linkonce_odr so cross-TU storage merges. */
+typedef struct {
+    char *mt;                /* signal type key (e.g. "i32" or "ex_signals__sig_t") */
+    LLVMValueRef data_gv;    /* ptr: heap array of fn pointers     */
+    LLVMValueRef len_gv;     /* i64: current number of registered  */
+    LLVMValueRef cap_gv;     /* i64: current allocated capacity    */
+    LLVMValueRef lock_gv;    /* i32: atomic spinlock state         */
+} signal_storage_t;
+
+/* ── coroutine lowering context (defined before cg_t so cg_t can embed it) ── */
+
+typedef struct {
+    LLVMValueRef       handle;            /* result of llvm.coro.begin */
+    LLVMValueRef       id_token;          /* result of llvm.coro.id    */
+    LLVMValueRef       promise;           /* alloca ptr for promise    */
+    LLVMTypeRef        promise_type;      /* %__sts_stream_prom_<T>    */
+    LLVMTypeRef        hdr_type;          /* %__sts_coro_prom_hdr      */
+    LLVMTypeRef        item_type;         /* T (or i8 placeholder)     */
+    LLVMBasicBlockRef  final_suspend_bb;
+    LLVMBasicBlockRef  cleanup_bb;
+    LLVMBasicBlockRef  suspend_bb;
+    int                active;
+    int                susp_counter;
+} sts_coro_ctx_t;
+
 /* ── code generator state ── */
 
 typedef struct {
@@ -243,6 +292,13 @@ typedef struct {
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
     LLVMTypeRef hint_ret_type;      /* hint for C lib call return type (set by gen_local_var) */
 
+    /* hints for make.{...} when LHS is []T — set by gen_local_var around the
+     * init expression. hint_slice_elem.base == TypeVoid means "no slice ctx".
+     * hint_storage is the LHS storage (StorageHeap / StorageStack / Default). */
+    type_info_t hint_slice_elem;
+    storage_t   hint_storage;
+    int         hint_var_flags;     /* VdeclConst / VdeclFinal of LHS, when known */
+
     /* ── thread runtime function declarations ── */
     LLVMValueRef thread_dispatch_fn;
     LLVMTypeRef  thread_dispatch_type;
@@ -254,6 +310,8 @@ typedef struct {
     LLVMTypeRef  future_ready_type;
     LLVMValueRef future_drop_fn;
     LLVMTypeRef  future_drop_type;
+    LLVMValueRef future_wait_any_fn;
+    LLVMTypeRef  future_wait_any_type;
 
     /* ── thread wrapper cache ── */
     thr_wrapper_t *thr_wrappers;
@@ -264,6 +322,14 @@ typedef struct {
     boolean_t test_mode;            /* True when compiling in test mode */
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
+
+    /* ── active coroutine lowering context ──
+     * `cur_coro.active != 0` means the function currently being lowered is
+     * a coroutine (task or stream).  yield/yield;/ret consult these fields
+     * when they emit suspend points or branch to final-suspend. */
+    sts_coro_ctx_t cur_coro;
+    /* True when cur_coro is a task (CoroTask).  False for streams. */
+    boolean_t      current_fn_is_async_task;
 
     /* ── generics / @comptime[T] ── */
     /* names of generic template struct types (not instantiated — skipped in passes) */
@@ -345,9 +411,58 @@ typedef struct {
     LLVMTypeRef  zone_free_type;
     LLVMValueRef zone_move_fn;
     LLVMTypeRef  zone_move_type;
+
+    /* ── error deduplication ── */
+    /* Keys like "undefined:varname" suppress repeat diagnostics for the same
+     * symbol/type/member across the compilation unit. */
+    char *reported_errors[512];
+    usize_t reported_error_count;
+
+    /* ── target & fileheader state ── */
+    const char *target_triple;
+
+    /* Lifecycle blocks collected from the module for @llvm.global_ctors/dtors. */
+    node_t *init_blocks[128];
+    usize_t init_block_count;
+    node_t *exit_blocks[128];
+    usize_t exit_block_count;
+
+    /* Module-level freestanding flag (blocks auto-stdlib/runtime linking hints). */
+    boolean_t freestanding;
+
+    /* ── signal dispatch (watch/send/quit) ── */
+    signal_storage_t *signal_storages;
+    usize_t           signal_storage_count;
+    usize_t           signal_storage_cap;
+    heap_t            signal_storage_heap;
+    usize_t           signal_watcher_counter; /* unique id for synthesized handler fns */
+    LLVMValueRef      watch_register_fn;      LLVMTypeRef watch_register_type;
+    LLVMValueRef      watch_dereg_fn;         LLVMTypeRef watch_dereg_type;
+    LLVMValueRef      watch_dispatch_fn;      LLVMTypeRef watch_dispatch_type;
+    LLVMValueRef      quit_fn;                LLVMTypeRef quit_type;
+    LLVMValueRef      quitting_gv;            /* i32 atomic re-entry flag */
+    LLVMValueRef      exit_fn;                LLVMTypeRef exit_type;
+    LLVMValueRef      underscore_exit_fn;     LLVMTypeRef underscore_exit_type;
+    LLVMValueRef      fflush_fn;              LLVMTypeRef fflush_type;
+
+    /* ── lambda lifting (sugar pack v1: non-capturing only) ── */
+    int    lambda_depth;            /* > 0 while emitting a lambda body */
+    char **lambda_blocked_names;    /* outer-scope local names — capture is forbidden */
+    usize_t lambda_blocked_count;
+    usize_t lambda_counter;         /* monotonic id for synthesised lambda fn names */
 } cg_t;
 
 /* ── helpers ── */
+
+/* Returns True if this error key was already reported (and should be skipped).
+ * On first occurrence, records the key and returns False. */
+static boolean_t cg_error_already_reported(cg_t *cg, const char *key) {
+    for (usize_t i = 0; i < cg->reported_error_count; i++)
+        if (strcmp(cg->reported_errors[i], key) == 0) return True;
+    if (cg->reported_error_count < 512)
+        cg->reported_errors[cg->reported_error_count++] = strdup(key);
+    return False;
+}
 
 /* check whether a struct name is a registered generic template */
 static boolean_t is_generic_template(cg_t *cg, const char *name) {
@@ -376,18 +491,27 @@ static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti);
 static LLVMMetadataRef di_make_location(cg_t *cg, usize_t line);
 static void             di_set_location(cg_t *cg, usize_t line);
 
+/* Signal-dispatch entry points (defined in cg_signals.c, which is included
+   later).  Forward-declared so cg_stmt.c can dispatch NodeWatch/Send/Quit. */
+static void gen_watch_stmt(cg_t *cg, node_t *node);
+static void gen_send_stmt(cg_t *cg, node_t *node);
+static void gen_quit_stmt(cg_t *cg, node_t *node);
+
 #include "name_mangle.c"
 #include "cg_symtab.c"
 #include "cg_safety.c"
 #include "cg_lookup.c"
 #include "cg_dtors.c"
 #include "cg_types.c"
+#include "cg_coro.c"
 #include "cg_registry.c"
 #include "cg_interfaces.c"
 #include "cg_expr.c"
 #include "cg_stmt.c"
 #include "cg_generics.c"
 #include "cg_debug.c"
+#include "cg_fileheaders.c"
+#include "cg_signals.c"
 
 /* ── top-level codegen ── */
 
@@ -395,6 +519,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                  const char *target_triple, const char *source_file,
                  boolean_t debug_mode, int optimization_level) {
     usize_t errors_before = get_error_count();
+    result_t emit_result = Ok;
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
     cg.ast         = ast;
@@ -402,6 +527,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.test_mode   = test_mode;
     cg.debug_mode  = debug_mode;
     cg.source_file = source_file;
+    cg.target_triple = target_triple;
+    if (ast && ast->kind == NodeModule) {
+        cg.freestanding = ast->as.module.freestanding;
+    }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     cg.builder     = LLVMCreateBuilderInContext(cg.ctx);
@@ -574,6 +703,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.future_drop_type = LLVMFunctionType(void_t, fdr_params, 1, 0);
         cg.future_drop_fn   = LLVMAddFunction(cg.module, "__future_drop", cg.future_drop_type);
         symtab_add(&cg.globals, "__future_drop", cg.future_drop_fn, Null, rt_dummy2, False);
+
+        /* __future_wait_any(future_ptr *, i32) -> i32 */
+        LLVMTypeRef fwa_params[2] = { ptr_t, i32_t };
+        cg.future_wait_any_type = LLVMFunctionType(i32_t, fwa_params, 2, 0);
+        cg.future_wait_any_fn   = LLVMAddFunction(cg.module, "__future_wait_any", cg.future_wait_any_type);
+        symtab_add(&cg.globals, "__future_wait_any", cg.future_wait_any_fn, Null, rt_dummy2, False);
     }
 
     /* ── zone runtime function declarations ──
@@ -617,6 +752,32 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMSetInitializer(cg.test_pass_count, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
         cg.test_fail_count = LLVMAddGlobal(cg.module, LLVMInt32TypeInContext(cg.ctx), "__test_fail");
         LLVMSetInitializer(cg.test_fail_count, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
+    }
+
+    /* pre-pass: flatten NodeSubMod wrappers.
+       Register each submod as a module alias so greeter.fn() / greeter:fn()
+       resolve correctly, then splice its children into the top-level decl list
+       (children already have module_name set by the parser). */
+    {
+        node_list_t flat;
+        node_list_init(&flat);
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *d = ast->as.module.decls.items[i];
+            if (d->kind == NodeSubMod) {
+                /* register submod name as a module alias (like imp does) */
+                char pfx[512];
+                mangle_module_prefix(d->as.submod.name, pfx, sizeof(pfx));
+                register_lib(&cg, d->as.submod.name, d->as.submod.name, Null);
+                if (cg.lib_count > 0)
+                    cg.libs[cg.lib_count - 1].mod_prefix = ast_strdup(pfx, strlen(pfx));
+                /* splice children */
+                for (usize_t j = 0; j < d->as.submod.decls.count; j++)
+                    node_list_push(&flat, d->as.submod.decls.items[j]);
+            } else {
+                node_list_push(&flat, d);
+            }
+        }
+        ast->as.module.decls = flat;
     }
 
     /* pass 0: register type declarations, lib declarations */
@@ -667,6 +828,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
 
         if (decl->kind == NodeTypeDecl) {
+            /* @[[if: ...]] / @[[require: ...]] gating */
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
+                continue;
             if (decl->as.type_decl.decl_kind == TypeDeclInterface) {
                 /* Register interface as a fat-pointer struct { ptr, ptr } */
                 char llvm_type_name[512];
@@ -858,6 +1022,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    /* early abort: type registration errors make function codegen unreliable */
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     /* pass 1: forward-declare all globals and functions */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
@@ -878,13 +1045,36 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->from_lib && decl->as.var_decl.linkage == LinkageInternal)
                 continue;
 
+            /* @[[if: ...]] / @[[require: ...]] gating */
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
+                continue;
+
             type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
             LLVMTypeRef type = get_llvm_type(&cg, ti);
+            /* Globals declared as fixed-size arrays (e.g. `extern int32_t
+             * buf[8];` from cheader) must be laid out as LLVM array types
+             * so indexing/sizeof do the right thing.  Mirror the wrapping
+             * already done for fn params and struct fields. */
+            if (decl->as.var_decl.flags & VdeclArray) {
+                int _nd = decl->as.var_decl.array_ndim > 0
+                          ? decl->as.var_decl.array_ndim : 1;
+                for (int _d = _nd - 1; _d >= 0; _d--)
+                    type = LLVMArrayType2(type,
+                        (unsigned long long)decl->as.var_decl.array_sizes[_d]);
+            }
             /* mangle the LLVM symbol name for imported-module globals */
             char var_llvm_name[512];
             mangle_global(decl->is_c_extern ? Null : decl->module_name,
                           decl->as.var_decl.name,
                           var_llvm_name, sizeof(var_llvm_name));
+            /* fileheader: @[[export_name: "..."]] / @[[abi: c]] override */
+            char override_name[512];
+            boolean_t abi_c = False;
+            if (cg_fh_override_symbol(decl->headers, decl->as.var_decl.name,
+                                      override_name, sizeof(override_name), &abi_c)) {
+                strncpy(var_llvm_name, override_name, sizeof(var_llvm_name) - 1);
+                var_llvm_name[sizeof(var_llvm_name) - 1] = '\0';
+            }
             LLVMValueRef global = LLVMAddGlobal(cg.module, type, var_llvm_name);
 
             /* linkage: int → internal, ext → external (default) */
@@ -897,6 +1087,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* @hidden attribute */
             if (decl->as.var_decl.attr_flags & AttrHidden)
                 LLVMSetVisibility(global, LLVMHiddenVisibility);
+
+            /* fileheader: section/align/weak/hidden */
+            cg_fh_apply_to_global(&cg, global, decl->headers);
 
             /* const/final globals are LLVM-constant */
             if (decl->as.var_decl.flags & (VdeclConst | VdeclFinal))
@@ -941,7 +1134,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                would point to the same address (containing only the last name). */
             symtab_add(&cg.globals, ast_strdup(var_llvm_name, strlen(var_llvm_name)),
                        global, type, ti, sym_flags);
-            symtab_set_last_storage(&cg.globals, StorageStack, False); /* globals use static storage */
+            symtab_set_last_storage(&cg.globals, decl->as.var_decl.storage, False);
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
                                   0, -1); /* scope_depth 0 = global lifetime */
@@ -986,9 +1179,25 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         }
 
+        /* Collect @[[init]] / @[[exit]] blocks for global_ctors/global_dtors. */
+        if (decl->kind == NodeInitBlock) {
+            if (cg.init_block_count < 128)
+                cg.init_blocks[cg.init_block_count++] = decl;
+            continue;
+        }
+        if (decl->kind == NodeExitBlock) {
+            if (cg.exit_block_count < 128)
+                cg.exit_blocks[cg.exit_block_count++] = decl;
+            continue;
+        }
+
         if (decl->kind == NodeFnDecl) {
             /* library-backed internal functions live in the .a — skip */
             if (decl->from_lib && decl->as.fn_decl.linkage == LinkageInternal)
+                continue;
+
+            /* @[[if: ...]] / @[[require: ...]] gating */
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
                 continue;
 
             /* skip generic template functions (methods of generic structs) */
@@ -1017,6 +1226,16 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                               decl->as.fn_decl.name, fn_name, sizeof(fn_name));
             } else {
                 mangle_fn(fn_module, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
+            }
+            /* fileheader: @[[export_name: "..."]] / @[[abi: c]] override */
+            {
+                char override_name[512];
+                boolean_t abi_c = False;
+                if (cg_fh_override_symbol(decl->headers, decl->as.fn_decl.name,
+                                          override_name, sizeof(override_name), &abi_c)) {
+                    strncpy(fn_name, override_name, sizeof(fn_name) - 1);
+                    fn_name[sizeof(fn_name) - 1] = '\0';
+                }
             }
 
             /* in test mode, skip the user's main — we generate our own */
@@ -1057,7 +1276,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* is_main: only the root module's "main" function is the C entry point */
             boolean_t is_main = (decl->module_name == Null)
                              && strcmp(decl->as.fn_decl.name, "main") == 0;
-            if (is_main) {
+            /* Coroutines (task or stream) lower to a function returning a
+               coroutine handle (raw `ptr`).  The declared T appears as the
+               result/item type only inside the promise. */
+            boolean_t is_coro_decl = decl->as.fn_decl.is_async
+                && (decl->as.fn_decl.coro_flavor == CoroTask
+                    || decl->as.fn_decl.coro_flavor == CoroStream);
+            if (is_coro_decl) {
+                ret_type = LLVMPointerTypeInContext(cg.ctx, 0);
+            } else if (is_main) {
                 ret_type = LLVMInt32TypeInContext(cg.ctx);
             } else if (decl->as.fn_decl.return_count > 1) {
                 /* multi-return: create an anonymous struct type */
@@ -1086,6 +1313,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 LLVMSetLinkage(fn, LLVMWeakAnyLinkage);
             if (decl->as.fn_decl.attr_flags & AttrHidden)
                 LLVMSetVisibility(fn, LLVMHiddenVisibility);
+
+            /* fileheader-based fn attributes: section/align/weak/target/features */
+            cg_fh_apply_to_fn(&cg, fn, decl->headers);
 
             /* restrict pointer params → noalias attribute */
             for (usize_t j = 0; j < pc; j++) {
@@ -1167,7 +1397,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
 
             LLVMTypeRef ret_type;
-            if (method->as.fn_decl.return_count > 1) {
+            boolean_t method_is_coro = method->as.fn_decl.is_async
+                && (method->as.fn_decl.coro_flavor == CoroTask
+                    || method->as.fn_decl.coro_flavor == CoroStream);
+            if (method_is_coro) {
+                ret_type = LLVMPointerTypeInContext(cg.ctx, 0);
+            } else if (method->as.fn_decl.return_count > 1) {
                 heap_t rt_heap = allocate(method->as.fn_decl.return_count, sizeof(LLVMTypeRef));
                 LLVMTypeRef *rt_fields = rt_heap.pointer;
                 for (usize_t j = 0; j < method->as.fn_decl.return_count; j++) {
@@ -1213,6 +1448,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    /* early abort: declaration errors make body generation unreliable */
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     /* pass 2: generate function bodies */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
@@ -1227,6 +1465,13 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         if (decl->as.fn_decl.type_param_count > 0) continue;
 
+        /* @[[if: ...]] / @[[require: ...]] gating — skip body if decl elided */
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
+            continue;
+
+        /* body-less extern declaration — forward decl only, nothing to emit */
+        if (decl->as.fn_decl.body == Null) continue;
+
         /* rebuild the mangled name the same way pass 1 did */
         char fn_name[512];
         const char *fn_module2 = decl->is_c_extern ? Null : decl->module_name;
@@ -1235,6 +1480,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                           decl->as.fn_decl.name, fn_name, sizeof(fn_name));
         else
             mangle_fn(fn_module2, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
+        {
+            char override_name[512];
+            boolean_t abi_c = False;
+            if (cg_fh_override_symbol(decl->headers, decl->as.fn_decl.name,
+                                      override_name, sizeof(override_name), &abi_c)) {
+                strncpy(fn_name, override_name, sizeof(fn_name) - 1);
+                fn_name[sizeof(fn_name) - 1] = '\0';
+            }
+        }
 
         /* in test mode, skip the user's main — we generate our own */
         if (cg.test_mode && strcmp(decl->as.fn_decl.name, "main") == 0
@@ -1370,24 +1624,77 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
         }
 
+        /* Coroutine bodies: stream coroutines wrap with the streaming
+           prologue (item slot = T item, is_stream=1); task coroutines wrap
+           with the task prologue (item slot = T result, is_stream=0).
+           `gen_yield_*` and `gen_ret` consult cg.cur_coro to branch into
+           the suspend/cleanup blocks built here. */
+        boolean_t is_stream_coro = decl->as.fn_decl.is_async
+            && decl->as.fn_decl.coro_flavor == CoroStream;
+        boolean_t is_task_coro   = decl->as.fn_decl.is_async
+            && decl->as.fn_decl.coro_flavor == CoroTask;
+        sts_coro_ctx_t prev_coro = cg.cur_coro;
+        boolean_t      prev_is_task = cg.current_fn_is_async_task;
+        cg.current_fn_is_async_task = False;
+        if (is_stream_coro) {
+            sts_emit_coro_stream_prologue(&cg, decl->as.fn_decl.yield_type, &cg.cur_coro);
+        } else if (is_task_coro) {
+            type_info_t rt = decl->as.fn_decl.return_count > 0
+                ? decl->as.fn_decl.return_types[0] : NO_TYPE;
+            sts_emit_coro_task_prologue(&cg, rt, &cg.cur_coro);
+            cg.current_fn_is_async_task = True;
+        } else {
+            cg.cur_coro.active = 0;
+        }
+
         gen_block(&cg, decl->as.fn_decl.body);
 
+        /* Leak check: warn on any future.[T] local never passed to
+           await / future.* / a combinator / defer. */
+        check_unconsumed_futures(&cg, decl);
+
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
+        if (is_stream_coro || is_task_coro) {
+            sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
+            cg.cur_coro = prev_coro;
+            cg.current_fn_is_async_task = prev_is_task;
+            if (cg.debug_mode) cg.di_scope = cg.di_compile_unit;
+            continue;
+        }
+        cg.cur_coro = prev_coro;
+        cg.current_fn_is_async_task = prev_is_task;
         if (!LLVMGetBasicBlockTerminator(cur_bb)) {
             type_info_t rti = decl->as.fn_decl.return_types[0];
             if (cg.current_fn_is_entry_main)
                 LLVMBuildRet(cg.builder, LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0));
             else if (rti.base == TypeVoid && !rti.is_pointer)
                 LLVMBuildRetVoid(cg.builder);
-            else
+            else {
+                /* Missing return: function may not return a value on all paths */
+                diag_begin_optional_warning(WarnMissingReturn,
+                    "function '%s' may not return a value on all paths",
+                    decl->as.fn_decl.name);
+                diag_set_category(ErrCatOther);
+                diag_span(DIAG_NODE(decl), True,
+                          "declared to return a non-void type");
+                diag_help("add explicit 'ret' statements on all code paths");
+                diag_finish();
                 LLVMBuildRet(cg.builder,
                     LLVMConstNull(get_llvm_type(&cg, rti)));
+            }
         }
 
         /* Restore scope to compile unit after leaving the function. */
         if (cg.debug_mode)
             cg.di_scope = cg.di_compile_unit;
     }
+
+    /* Thread-pool wrappers were used by the legacy `async fn` dispatch.
+       After the v2 migration, every `async fn` is a real coroutine — the
+       function itself returns a `future.[T]` / `stream.[T]` handle directly.
+       The thread runtime stays linked for explicit `thread.(fn)(args)`,
+       which still goes through `get_or_create_thread_wrapper` lazily on its
+       first call site, so we no longer eagerly materialize wrappers here. */
 
     /* handle top-level comptime_assert (now that data layout is available) */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
@@ -1535,10 +1842,36 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 }
             }
 
+            /* Coroutine methods: same prologue/epilogue wrap as a top-level
+               coroutine; cur_coro tells gen_yield/gen_ret to branch into
+               the coroutine cleanup blocks. */
+            boolean_t method_is_stream_coro = method->as.fn_decl.is_async
+                && method->as.fn_decl.coro_flavor == CoroStream;
+            boolean_t method_is_task_coro = method->as.fn_decl.is_async
+                && method->as.fn_decl.coro_flavor == CoroTask;
+            sts_coro_ctx_t prev_method_coro = cg.cur_coro;
+            boolean_t      prev_method_is_task = cg.current_fn_is_async_task;
+            cg.current_fn_is_async_task = False;
+            if (method_is_stream_coro) {
+                sts_emit_coro_stream_prologue(&cg,
+                    method->as.fn_decl.yield_type, &cg.cur_coro);
+            } else if (method_is_task_coro) {
+                type_info_t rt = method->as.fn_decl.return_count > 0
+                    ? method->as.fn_decl.return_types[0] : NO_TYPE;
+                sts_emit_coro_task_prologue(&cg, rt, &cg.cur_coro);
+                cg.current_fn_is_async_task = True;
+            } else {
+                cg.cur_coro.active = 0;
+            }
+
             gen_block(&cg, method->as.fn_decl.body);
+            check_unconsumed_futures(&cg, method);
 
             LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
-            if (!LLVMGetBasicBlockTerminator(cur_bb)) {
+            if (method_is_stream_coro || method_is_task_coro) {
+                sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
+                cg.cur_coro = prev_method_coro;
+            } else if (!LLVMGetBasicBlockTerminator(cur_bb)) {
                 type_info_t rti = method->as.fn_decl.return_types[0];
                 if (rti.base == TypeVoid && !rti.is_pointer)
                     LLVMBuildRetVoid(cg.builder);
@@ -1546,6 +1879,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     LLVMBuildRet(cg.builder,
                         LLVMConstNull(get_llvm_type(&cg, rti)));
             }
+            cg.cur_coro = prev_method_coro;
+            cg.current_fn_is_async_task = prev_method_is_task;
 
             if (cg.debug_mode)
                 cg.di_scope = cg.di_compile_unit;
@@ -1671,6 +2006,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    /* ── @[[init]] / @[[exit]] lifecycle blocks → global_ctors/global_dtors ── */
+    cg_emit_lifecycle_blocks(&cg,
+                             cg.init_blocks, cg.init_block_count,
+                             cg.exit_blocks, cg.exit_block_count);
+
     /* ── DI: finalize before verification ──
      * Must happen after all IR is emitted and before the module is verified,
      * so that unresolved DI forward-references are resolved first. */
@@ -1681,6 +2021,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
 
     /* verify */
+    /* ── LLVM verification and emission (skipped when earlier passes had errors) ── */
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     char *error = Null;
     if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
         diag_begin_error("LLVM IR verification failed: %s", error);
@@ -1688,6 +2031,36 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMDisposeMessage(error);
     } else {
         if (error) LLVMDisposeMessage(error);
+    }
+
+    if (getenv("STS_DUMP_IR_PRE")) {
+        /* Dump IR before the coroutine pass pipeline runs. Useful when
+         * triaging an "Instruction does not dominate all uses" verifier
+         * abort that fires inside the coro passes. */
+        char *ir_str = LLVMPrintModuleToString(cg.module);
+        FILE *f = fopen(getenv("STS_DUMP_IR_PRE"), "w");
+        if (f) { fputs(ir_str, f); fclose(f); }
+        LLVMDisposeMessage(ir_str);
+    }
+
+    if (get_error_count() == errors_before && ast_requires_coro_pipeline(ast)) {
+        LLVMPassBuilderOptionsRef pb_opts = LLVMCreatePassBuilderOptions();
+        LLVMPassBuilderOptionsSetVerifyEach(pb_opts, 1);
+        LLVMErrorRef pass_err = LLVMRunPasses(
+            cg.module,
+            "coro-early,cgscc(coro-split),coro-cleanup,globaldce",
+            machine,
+            pb_opts);
+        LLVMDisposePassBuilderOptions(pb_opts);
+        if (pass_err) {
+            char *msg = LLVMGetErrorMessage(pass_err);
+            diag_begin_error("LLVM coroutine pass pipeline failed: %s", msg ? msg : "unknown error");
+            diag_finish();
+            if (msg) LLVMDisposeErrorMessage(msg);
+            LLVMConsumeError(pass_err);
+            emit_result = Err;
+            goto cg_cleanup;
+        }
     }
 
     /* debug: dump IR if STS_DUMP_IR env var is set */
@@ -1700,7 +2073,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     /* emit object file — reuse the machine created during early target init */
     error = Null;
-    result_t emit_result = Ok;
+    emit_result = Ok;
     if (LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
                                      LLVMObjectFile, &error)) {
         diag_begin_error("object file emission failed: %s", error);
@@ -1709,6 +2082,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         emit_result = Err;
     }
 
+cg_cleanup:
     LLVMDisposeTargetMachine(machine);
     LLVMDisposeMessage(triple);
     if (cg.di_data_layout) LLVMDisposeTargetData(cg.di_data_layout);
@@ -1719,6 +2093,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     symtab_free(&cg.globals);
     symtab_free(&cg.locals);
+
+    /* error dedup strings (strdup'd) are intentionally not freed here;
+     * they are small and the process is about to exit. */
 
     /* free registries */
     for (usize_t i = 0; i < cg.struct_count; i++)
@@ -1732,6 +2109,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     if (cg.dtor_stack_heap.pointer) deallocate(cg.dtor_stack_heap);
     if (cg.di_types_heap.pointer) deallocate(cg.di_types_heap);
     if (cg.thr_wrap_heap.pointer) deallocate(cg.thr_wrap_heap);
+    if (cg.signal_storage_heap.pointer) deallocate(cg.signal_storage_heap);
 
     if (emit_result != Ok) return Err;
     return get_error_count() > errors_before ? Err : Ok;

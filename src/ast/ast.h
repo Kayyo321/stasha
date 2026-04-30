@@ -22,9 +22,11 @@ typedef enum {
     TypeUser,       /* struct, enum, or alias — name stored in type_info_t */
     TypeError,      /* built-in error type: nil or message */
     TypeFnPtr,      /* function pointer with domain-tagged parameters */
-    TypeFuture,     /* future handle — opaque ptr to __future_t (thread result) */
+    TypeFuture,     /* future.[T] task handle — opaque runtime pointer */
+    TypeStream,     /* stream.[T] async stream handle — opaque runtime pointer */
     TypeSlice,      /* []T — fat pointer (ptr, len, cap) */
     TypeZone,       /* zone — opaque arena allocator handle (void* state pointer) */
+    TypeInfer,      /* sentinel: "infer me" — used for trailing-closure params */
 } type_kind_t;
 
 /* ── forward declaration for fn_ptr_desc_t and type_info_t ── */
@@ -63,6 +65,13 @@ typedef enum {
     StorageStack,
     StorageHeap,
 } storage_t;
+
+typedef enum {
+    CoroNone,
+    CoroTask,
+    CoroStream,
+    CoroUnknown,
+} coro_flavor_t;
 
 /* ── function pointer descriptor (domain-tagged parameter list) ── */
 
@@ -111,6 +120,55 @@ enum {
     AttrWeak    = (1 << 2),
     AttrHidden  = (1 << 3),
 };
+
+/* ── fileheader (@[[...]]) entries ── */
+
+typedef enum {
+    FhFlag,  /* @[[weak]] — key with no value */
+    FhStr,   /* @[[export_name: "x"]] */
+    FhInt,   /* @[[align: 64]] */
+    FhIdent, /* @[[abi: c]] / @[[diagnostic: push]] */
+    FhCond,  /* @[[if: os == "linux"]] / @[[require: pointer_width == 64]] */
+    FhCall,  /* @[[diagnostic: ignore("unused-param")]] / before("name") */
+    FhText,  /* free-form text value for doc/returns/params */
+} fh_value_kind_t;
+
+typedef enum {
+    FhCondNone,
+    FhCondOsEq,        /* os == "linux" */
+    FhCondArchEq,      /* target.arch == "x86_64" (or bare arch ==) */
+    FhCondPtrWidthEq,  /* pointer_width == 64 */
+    FhCondAlwaysFalse, /* unknown lhs — skip decl silently; error for require */
+} fh_cond_kind_t;
+
+typedef struct {
+    fh_cond_kind_t op;
+    char *str_rhs;
+    int int_rhs;
+} fh_cond_t;
+
+typedef struct {
+    char *key;
+    fh_value_kind_t vkind;
+    char *str_val;     /* FhStr / FhIdent / FhText / FhCall (call-fn name) */
+    long int_val;      /* FhInt */
+    char *call_arg;    /* FhCall: inner string argument */
+    fh_cond_t cond;    /* FhCond */
+    usize_t line;
+    usize_t col;
+} fh_entry_t;
+
+typedef struct {
+    fh_entry_t *items;
+    usize_t count;
+    usize_t capacity;
+    heap_t heap;
+} fileheader_t;
+
+void fileheader_init(fileheader_t *fh);
+void fileheader_push(fileheader_t *fh, fh_entry_t entry);
+fileheader_t *fileheader_alloc(void);
+void fileheader_merge(fileheader_t *dst, fileheader_t *src);
 
 /* ── bitfield width (0 = not a bitfield) ── */
 /* stored in var_decl.bitfield_width */
@@ -223,6 +281,34 @@ typedef enum {
 
     /* foreach slice iteration — keep at end to avoid shifting existing values */
     NodeForeachStmt,  /* foreach elem in slice { body } */
+
+    /* fileheader lifecycle blocks — @[[init]] { ... } / @[[exit]] { ... } */
+    NodeInitBlock,
+    NodeExitBlock,
+
+    /* comptime format string: @'...' / heap @'...' */
+    NodeComptimeFmt,
+
+    /* inline sub-module block: [int|ext] mod name { decls... } */
+    NodeSubMod,
+
+    /* colon static accessor: module:fn(args) or module:Type:method(args) */
+    NodeColonCall,
+
+    /* signals: type-routed synchronous dispatch */
+    NodeWatchStmt,   /* watch.(T name) => { body } */
+    NodeSendStmt,    /* send.(expr) */
+    NodeQuitStmt,    /* quit.(code) */
+
+    /* async/await — ergonomic surface over thread pool + future */
+    NodeAsyncCall,       /* async.(fn)(args) — dispatch, returns future.[T] */
+    NodeAwaitExpr,       /* await(f) / await.(fn)(args) — block, drop, return value */
+    NodeAwaitCombinator, /* await.all(...) / await.any(...) */
+    NodeYieldExpr,       /* yield expr; */
+    NodeYieldNowExpr,    /* yield;      */
+
+    /* sugar pack: lambda expression */
+    NodeLambda,          /* lam.(params): ret { body } — lifted to module-level fn */
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -235,6 +321,9 @@ typedef enum {
     FutureGet,   /* future.get.(Type)(f)        — block, return typed val  */
     FutureGetRaw,/* future.get(f)               — block, return void ptr   */
     FutureDrop,  /* future.drop(f)              — wait + free future       */
+    StreamDone,  /* stream.done(s)              — i32 1 if EOS, else 0     */
+    StreamDrop,  /* stream.drop(s)              — destroy stream coroutine */
+    StreamCancel,/* stream.cancel(s)            — request cooperative end  */
 } future_op_t;
 
 /* ── node list ── */
@@ -257,11 +346,19 @@ struct node {
     char *source_file;   /* source file that produced this node */
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */
-    boolean_t is_c_extern; /* True if symbol must not be mangled (C library symbol) */
+    boolean_t is_c_extern;        /* True if symbol must not be mangled (C library symbol) */
+    boolean_t hidden_from_import; /* True for decls inside int mod blocks — skipped by resolve_imports */
+
+    /* fileheader entries attached to the node (decls + module).
+       NULL if no @[[...]] attributes were applied to this node. */
+    fileheader_t *headers;
 
     union {
         /* ── top-level ── */
-        struct { char *name; node_list_t decls; } module;
+        struct { char *name; node_list_t decls; boolean_t freestanding; long org_addr; boolean_t has_org; } module;
+
+        /* @[[init]] / @[[exit]] blocks */
+        struct { char *title; char *before_name; char *after_name; node_t *body; int priority; } lifecycle_block;
 
         struct {
             char *name;
@@ -277,6 +374,12 @@ struct node {
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
             char *iface_qualifier;      /* non-null for "fn flyable_i.move()" inside struct body */
+            boolean_t is_async;         /* `async fn ...` marker — enables async.()/await.() shorthand */
+            coro_flavor_t coro_flavor;  /* inferred coroutine flavor for async fns */
+            type_info_t yield_type;     /* inferred stream item type for yielding async fns */
+            boolean_t has_await;
+            boolean_t has_yield_value;
+            boolean_t has_yield_now;
         } fn_decl;
 
         struct {
@@ -470,8 +573,12 @@ struct node {
         struct { node_t *object; node_t *lo; node_t *hi; } slice_expr;
 
         /* NodeMakeExpr: make.([]T, len) / make.([]T, len, cap)
-           cap==Null means cap=len */
-        struct { type_info_t elem_type; node_t *len; node_t *cap; } make_expr;
+           cap==Null means cap=len.
+           init!=Null is the inline-initialised form make.{...}; init points
+           at a NodeCompoundInit. In that form elem_type is filled in lazily
+           by codegen from cg->hint_slice_elem (LHS context); len/cap are
+           ignored. */
+        struct { type_info_t elem_type; node_t *len; node_t *cap; node_t *init; } make_expr;
 
         /* NodeAppendExpr: append.(slice, val) */
         struct { node_t *slice; node_t *val; } append_expr;
@@ -481,6 +588,62 @@ struct node {
 
         /* NodeLenExpr / NodeCapExpr — reuse len_expr for both */
         struct { node_t *operand; } len_expr;
+
+        /* NodeComptimeFmt: @'...' / heap @'...' — raw fmt stored with
+           unexpanded escapes; each {expr}/{expr:spec} span pre-parsed into args */
+        struct { char *fmt; usize_t fmt_len; node_list_t args; boolean_t on_heap; } comptime_fmt;
+
+        /* NodeWatchStmt: watch.(T name) => { body } */
+        struct { type_info_t type; char *param_name; node_t *body; } watch_stmt;
+
+        /* NodeSendStmt: send.(value) */
+        struct { node_t *value; } send_stmt;
+
+        /* NodeQuitStmt: quit.(code) */
+        struct { node_t *code; } quit_stmt;
+
+        /* NodeAsyncCall: async.(fn)(args) — typed variant of thread.() */
+        struct { char *callee; node_list_t args; } async_call;
+
+        /* NodeAwaitExpr: await(f) / await.(fn)(args) — handle is either
+           a plain expression (future handle) or a NodeAsyncCall produced by
+           await.(fn)(args) desugaring. Codegen blocks, loads typed value,
+           then drops the future. `get_type.base == TypeVoid` means "infer
+           from handle" at codegen (the usual case). */
+        struct { node_t *handle; type_info_t get_type; boolean_t is_stream_next; } await_expr;
+
+        /* NodeAwaitCombinator: await.all(...) / await.any(...) */
+        struct { boolean_t is_any; node_list_t handles; } await_combinator;
+
+        /* NodeYieldExpr: yield expr; */
+        struct { node_t *value; } yield_expr;
+
+        /* NodeYieldNowExpr: yield; */
+        struct { int unused; } yield_now_expr;
+
+        /* NodeLambda: lam.(params): ret { body }
+           Lifted to a module-level LLVM fn during codegen.  v1: non-capturing only.
+           When `inferred_params` is True, params carry TypeInfer types — gen_call
+           backfills concrete types from the callee's matching parameter slot. */
+        struct {
+            node_list_t params;       /* VarDecl nodes (name + type + storage)      */
+            type_info_t ret_type;     /* TypeInfer means infer from body's `ret`    */
+            node_t     *body;         /* Block                                       */
+            char       *mangled_name; /* assigned at codegen time                    */
+            boolean_t   inferred_params; /* True for trailing-closure short form     */
+            boolean_t   inferred_ret;    /* True when ret type was omitted           */
+        } lambda_expr;
+
+        /* NodeSubMod: [int|ext] mod name { decls... } */
+        struct { char *name; linkage_t linkage; node_list_t decls; } submod;
+
+        /* NodeColonCall: module:fn(args)  or  module:Type:method(args) */
+        struct {
+            char *module_name;  /* "greeter" */
+            char *type_name;    /* "Builder" — NULL for 2-segment form */
+            char *method_name;  /* "company" or "greet" */
+            node_list_t args;
+        } colon_call;
     } as;
 
     /* Extra fields for any-variant match arms (used on NodeMatchArm) */

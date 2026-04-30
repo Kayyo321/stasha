@@ -17,6 +17,17 @@ typedef struct {
     token_t   current;
     token_t   previous;
     boolean_t had_error;
+    boolean_t panic_mode;  /* suppress cascading errors until sync point */
+
+    /* Current top-level module under construction — used by fileheader
+       parsing to attach file-wide @[[...]] metadata.  Null outside run_parse. */
+    node_t   *current_module;
+
+    /* Sugar pack: when > 0, suppress trailing-closure parsing because the
+       brace would belong to the surrounding control-flow construct
+       (if/while/for/do-while condition, etc.).  Counter, not bool, so
+       nesting works correctly. */
+    int no_trailing_closure;
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
@@ -122,18 +133,22 @@ static token_t consume(parser_t *p, token_kind_t kind, const char *msg) {
         advance_parser(p);
         return p->previous;
     }
-    if (p->current.kind == TokEof) {
-        diag_begin_error("unexpected end of file, expected %s", msg);
-        diag_span(SRC_LOC(p->current.line, p->current.col, 1), True,
-                  "expected %s here", msg);
-    } else {
-        diag_begin_error("expected %s, found '%.*s'",
-                         msg, (int)p->current.length, p->current.start);
-        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                  True, "expected %s", msg);
+    /* Only emit diagnostic if not already in panic mode (suppress cascades) */
+    if (!p->panic_mode) {
+        if (p->current.kind == TokEof) {
+            diag_begin_error("unexpected end of file, expected %s", msg);
+            diag_span(SRC_LOC(p->current.line, p->current.col, 1), True,
+                      "expected %s here", msg);
+        } else {
+            diag_begin_error("expected %s, found '%.*s'",
+                             msg, (int)p->current.length, p->current.start);
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected %s", msg);
+        }
+        diag_finish();
     }
-    diag_finish();
-    p->had_error = True;
+    p->had_error  = True;
+    p->panic_mode = True;
     return p->current;
 }
 
@@ -144,6 +159,7 @@ static boolean_t is_builtin_type_token(token_kind_t k) {
         || k == TokU8  || k == TokU16 || k == TokU32 || k == TokU64
         || k == TokF32 || k == TokF64
         || k == TokBool || k == TokVoid || k == TokErrorType || k == TokFuture
+        || k == TokStream
         || k == TokAny || k == TokZone;
 }
 
@@ -163,6 +179,7 @@ static type_kind_t token_to_type(token_kind_t k) {
         case TokF64:  return TypeF64;
         case TokErrorType: return TypeError;
         case TokFuture:    return TypeFuture;
+        case TokStream:    return TypeStream;
         case TokZone:      return TypeZone;
         default:      return TypeVoid;
     }
@@ -186,6 +203,8 @@ static const char *comptime_type_name(type_info_t ti) {
         case TypeF32:   return "f32";
         case TypeF64:   return "f64";
         case TypeUser:  return ti.user_name ? ti.user_name : "user";
+        case TypeFuture: return "future";
+        case TypeStream: return "stream";
         case TypeSlice: return "slice";
         default:        return "type";
     }
@@ -317,8 +336,25 @@ static type_info_t parse_type(parser_t *p) {
     }
 
     if (is_builtin_type_token(p->current.kind)) {
-        info.base = token_to_type(p->current.kind);
+        token_kind_t tk = p->current.kind;
+        info.base = token_to_type(tk);
         advance_parser(p);
+
+        /* future.[T] / stream.[T] — typed coroutine handles. ABI-identical
+           to opaque pointers; T is recorded in elem_type for later passes. */
+        if ((tk == TokFuture || tk == TokStream) && check(p, TokDot)) {
+            parser_state_t snap = save_state(p);
+            advance_parser(p); /* consume '.' */
+            if (check(p, TokLBracket)) {
+                advance_parser(p); /* consume '[' */
+                type_info_t elem = parse_type(p);
+                consume(p, TokRBracket, "']'");
+                info.elem_type = alloc_type_array(1);
+                info.elem_type[0] = elem;
+            } else {
+                restore_state(p, snap);
+            }
+        }
     } else if (check(p, TokIdent)) {
         info.base = TypeUser;
         info.user_name = copy_token_text(p->current);
@@ -498,6 +534,47 @@ static token_t consume_name(parser_t *p, const char *msg) {
     return consume(p, TokIdent, msg);
 }
 
+/* ── error recovery ── */
+
+/* Synchronize to the next top-level declaration boundary.
+ * Clears panic_mode so the parser can report the next real error. */
+static void synchronize(parser_t *p) {
+    p->panic_mode = False;
+    while (!check(p, TokEof)) {
+        /* A semicolon ends the previous construct — next token starts fresh. */
+        if (p->previous.kind == TokSemicolon) return;
+        /* Tokens that typically begin a new declaration or block. */
+        switch (p->current.kind) {
+            case TokFn: case TokType: case TokLib: case TokImp:
+            case TokExt: case TokInt: case TokMod: case TokTest:
+                return;
+            default:
+                advance_parser(p);
+        }
+    }
+}
+
+/* Skip to the next statement/field boundary, respecting brace nesting.
+ * Stops after consuming a ';' at depth 0, or when hitting '}' at depth 0. */
+static void skip_to_recovery_point(parser_t *p) {
+    p->panic_mode = False;
+    int depth = 0;
+    while (!check(p, TokEof)) {
+        if (check(p, TokLBrace)) { depth++; advance_parser(p); continue; }
+        if (check(p, TokRBrace)) {
+            if (depth == 0) return;   /* don't consume — caller owns the '}' */
+            depth--;
+            advance_parser(p);
+            continue;
+        }
+        if (depth == 0 && check(p, TokSemicolon)) {
+            advance_parser(p);        /* consume the ';' */
+            return;
+        }
+        advance_parser(p);
+    }
+}
+
 static boolean_t can_start_var_decl(parser_t *p) {
     /* nullable pointer type: ?T *name */
     if (check(p, TokQuestion)) return True;
@@ -583,18 +660,65 @@ static char *parse_dotted_name(parser_t *p) {
 /* ── internal parse body (shared by both entry points) ── */
 
 static node_t *run_parse(parser_t *p) {
-    consume(p, TokMod, "'mod'");
-    char *mod_name = parse_dotted_name(p);
-    consume(p, TokSemicolon, "';'");
-
     node_t *module = make_node(NodeModule, 1);
-    module->as.module.name = mod_name;
     node_list_init(&module->as.module.decls);
+    module->as.module.name = Null;
+    module->as.module.freestanding = False;
+    module->as.module.has_org = False;
+    p->current_module = module;
 
-    while (!check(p, TokEof)) {
-        node_list_push(&module->as.module.decls, parse_top_decl(p));
+    /* Accept any leading file-wide `@[[...]];` groups before `mod`. */
+    while (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p); /* '@' */
+        if (!check(p, TokLBracket)) { restore_state(p, snap); break; }
+        advance_parser(p);
+        if (!check(p, TokLBracket)) { restore_state(p, snap); break; }
+        advance_parser(p);
+
+        fileheader_t group;
+        fileheader_init(&group);
+        parse_fileheader_entries(p, &group);
+        consume(p, TokRBracket, "']'");
+        consume(p, TokRBracket, "']'");
+
+        if (!match_tok(p, TokSemicolon)) {
+            /* Not file-wide — rewind so parse_top_decl handles it. */
+            restore_state(p, snap);
+            break;
+        }
+
+        if (module->headers == Null) module->headers = fileheader_alloc();
+        fileheader_merge(module->headers, &group);
+        apply_module_headers(module, &group);
     }
 
+    /* `mod name;` is mandatory unless the module is freestanding. */
+    if (check(p, TokMod)) {
+        advance_parser(p);
+        module->as.module.name = parse_dotted_name(p);
+        consume(p, TokSemicolon, "';'");
+    } else if (!module->as.module.freestanding) {
+        /* Emit the same diagnostic as before. */
+        consume(p, TokMod, "'mod'");
+    } else {
+        /* Freestanding modules default to an empty name — codegen skips
+           anything that needs a module identifier. */
+        module->as.module.name = ast_strdup("", 0);
+    }
+
+    while (!check(p, TokEof)) {
+        node_t *decl = parse_top_decl(p);
+        if (decl) {
+            node_list_push(&module->as.module.decls, decl);
+        } else {
+            /* Recovery: skip to the next top-level declaration boundary. */
+            synchronize(p);
+        }
+    }
+
+    /* Return partial AST even on error so codegen can report additional
+     * diagnostics.  Callers check get_error_count() for the final verdict. */
     if (p->had_error) return Null;
     return module;
 }

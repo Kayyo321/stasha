@@ -1,0 +1,59 @@
+/* ex_sugar_combo.sts — sugar pack v1: pipeline + lambda + trailing-closure
+   together.  No dynamic-array runtime — we hand-roll fixed-size i32 arrays
+   so v1 stays self-contained. */
+
+mod ex_sugar_combo;
+
+lib "stdio" = io;
+
+ext fn double(stack i32 x): i32 { ret x * 2; }
+
+/* filter — keep elements where pred(e) returns true.  In/out are bounded
+   stack arrays of length 16; `*out_len` set on return. */
+ext fn filter(stack i32 *r in_arr, stack i32 in_len,
+              stack i32 *rw out_arr, stack i32 *rw out_len,
+              stack fn*(stack i32): bool pred): void {
+    stack i32 j = 0;
+    for (stack i32 i = 0; i < in_len; i++) {
+        if pred(in_arr[i]) {
+            out_arr[j] = in_arr[i];
+            j = j + 1;
+        }
+    }
+    *out_len = j;
+}
+
+/* map — elementwise transform. */
+ext fn map(stack i32 *r in_arr, stack i32 len,
+           stack i32 *rw out_arr,
+           stack fn*(stack i32): i32 f): void {
+    for (stack i32 i = 0; i < len; i++) {
+        out_arr[i] = f(in_arr[i]);
+    }
+}
+
+/* reduce — left fold. */
+ext fn reduce(stack i32 *r in_arr, stack i32 len,
+              stack i32 init,
+              stack fn*(stack i32, stack i32): i32 f): i32 {
+    stack i32 acc = init;
+    for (stack i32 i = 0; i < len; i++) {
+        acc = f(acc, in_arr[i]);
+    }
+    ret acc;
+}
+
+ext fn main(void): i32 {
+    /* fixed-size stack arrays + compound init `.{...}` */
+    stack i32 nums[16] = .{ 1..=5 };   /* rest zero-filled */
+    stack i32 evens[16] = .{};
+    stack i32 doubled[16] = .{};
+    stack i32 ev_len = 0;
+
+    filter(&nums[0], 5, &evens[0], &ev_len) { |n| n % 2 == 0 };
+    map(&evens[0], ev_len, &doubled[0], &double);
+    stack i32 sum = reduce(&doubled[0], ev_len, 0) { |acc, n| acc + n };
+
+    io.printf('sum = %d\n', sum);
+    ret 0;
+}

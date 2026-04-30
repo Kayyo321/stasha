@@ -1,0 +1,18 @@
+mod row04_struct_byval;
+
+cheader "support/structs.h" search "tests/cinterop";
+
+// Tests struct-by-value RETURN across the FFI boundary.  Passing structs
+// by value as arguments hits a known-broken ABI lowering path (Stasha
+// emits separate i32 args instead of packing into i64 GPRs per AAPCS) —
+// see tests/cinterop/xfail/04b_struct_byval_arg.sts for the failing
+// reproducer.  Passing by pointer (row 05) works correctly.
+
+fn main(void): i32 {
+    point_t a = point_make(3, 4);
+    if a.x != 3 || a.y != 4 { print.("FAIL ret\n"); ret 1; }
+    point_t b = point_make(5, 6);
+    if b.x != 5 || b.y != 6 { print.("FAIL ret 2\n"); ret 1; }
+    print.("04_struct_byval: ok\n");
+    ret 0;
+}

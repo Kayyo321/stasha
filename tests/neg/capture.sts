@@ -1,0 +1,15 @@
+/* tests/neg/capture.sts — negative test: lambda may not capture outer locals.
+   Compiling this file MUST fail with the diagnostic
+       "lambda may not capture local 'outer'"
+   v1 lambdas are non-capturing by design (capturing closures land in v2). */
+
+mod neg_capture;
+
+ext fn apply(stack i32 x, stack fn*(stack i32): i32 f): i32 { ret f(x); }
+
+ext fn main(void): i32 {
+    stack i32 outer = 42;
+    /* Reference to `outer` from inside the lambda body — illegal in v1. */
+    stack i32 r = apply(1, lam.(stack i32 x): i32 { ret x + outer; });
+    ret r;
+}

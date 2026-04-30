@@ -51,6 +51,7 @@ SRCS = src/main.c                       \
        src/common/common.c               \
        src/lexer/lexer.c                 \
        src/ast/ast.c                     \
+       src/analysis/coroutines.c         \
        src/parser/parser.c               \
        src/preprocessor/preprocessor.c  \
        src/tooling/editor.c             \
@@ -62,14 +63,19 @@ LINKER_OBJ = build/obj/linker/linker.o
 TARGET = bin/stasha
 
 # ── Thread runtime ─────────────────────────────────────────────────────────
-THREAD_RUNTIME_SRC = src/runtime/thread_runtime.c
-THREAD_RUNTIME_OBJ = build/obj/runtime/thread_runtime.o
+THREAD_RUNTIME_SRC = src/runtime/thread_runtime.c src/runtime/executor.c
+THREAD_RUNTIME_OBJ = build/obj/runtime/thread_runtime.o build/obj/runtime/executor.o
 THREAD_RUNTIME_LIB = bin/thread_runtime.a
 
 # ── Zone runtime ────────────────────────────────────────────────────────────
 ZONE_RUNTIME_SRC = src/runtime/zone_runtime.c
 ZONE_RUNTIME_OBJ = build/obj/runtime/zone_runtime.o
 ZONE_RUNTIME_LIB = bin/zone_runtime.a
+
+# ── Coroutine/async runtime ────────────────────────────────────────────────
+CORO_RUNTIME_SRC = src/runtime/coro_runtime.c
+CORO_RUNTIME_OBJ = build/obj/runtime/coro_runtime.o
+CORO_RUNTIME_LIB = bin/coro_runtime.a
 
 # ── Thread test programs ────────────────────────────────────────────────────
 THREAD_TEST_SRCS = examples/thread_basic.sts    \
@@ -112,9 +118,9 @@ else
   endif
 endif
 
-.PHONY: all stdlib stdlib-test thread-runtime zone-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads
+.PHONY: all stdlib stdlib-test thread-runtime zone-runtime coro-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop
 
-all: $(TARGET) thread-runtime zone-runtime
+all: $(TARGET) thread-runtime zone-runtime coro-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
@@ -288,12 +294,16 @@ clean-stdlib:
 
 thread-runtime: $(THREAD_RUNTIME_LIB)
 
-$(THREAD_RUNTIME_OBJ): $(THREAD_RUNTIME_SRC) src/runtime/thread_runtime.h
+build/obj/runtime/thread_runtime.o: src/runtime/thread_runtime.c src/runtime/thread_runtime.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+
+build/obj/runtime/executor.o: src/runtime/executor.c src/runtime/executor.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
 
 $(THREAD_RUNTIME_LIB): $(THREAD_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	ar rcs $@ $^
 
 zone-runtime: $(ZONE_RUNTIME_LIB)
 
@@ -304,8 +314,71 @@ $(ZONE_RUNTIME_OBJ): $(ZONE_RUNTIME_SRC) src/runtime/zone_runtime.h
 $(ZONE_RUNTIME_LIB): $(ZONE_RUNTIME_OBJ) | bin
 	ar rcs $@ $<
 
+coro-runtime: $(CORO_RUNTIME_LIB)
+
+$(CORO_RUNTIME_OBJ): $(CORO_RUNTIME_SRC) src/runtime/coro_runtime.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+
+$(CORO_RUNTIME_LIB): $(CORO_RUNTIME_OBJ) | bin
+	ar rcs $@ $<
+
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
+
+# ── C interop test suite ───────────────────────────────────────────────────
+# Compiles every .c under tests/cinterop/support/ into a single static archive
+# linked against the .sts tests via `stasha -l`.  The shell driver runs each
+# matrix row, then the LLVM smoke capstone, then the negative tests.
+
+CINTEROP_DIR        = tests/cinterop
+CINTEROP_BUILD      = $(CINTEROP_DIR)/build
+CINTEROP_SUPPORT_C  = $(wildcard $(CINTEROP_DIR)/support/*.c)
+CINTEROP_SUPPORT_O  = $(patsubst $(CINTEROP_DIR)/support/%.c,$(CINTEROP_BUILD)/%.o,$(CINTEROP_SUPPORT_C))
+CINTEROP_SUPPORT_LIB = $(CINTEROP_BUILD)/libcinterop_support.a
+
+$(CINTEROP_BUILD)/%.o: $(CINTEROP_DIR)/support/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O0 -Wall -fPIC -c -o $@ $<
+
+$(CINTEROP_SUPPORT_LIB): $(CINTEROP_SUPPORT_O)
+	@mkdir -p $(dir $@)
+	@if [ -n "$(CINTEROP_SUPPORT_O)" ]; then \
+	    ar rcs $@ $(CINTEROP_SUPPORT_O); \
+	    ranlib $@; \
+	else \
+	    rm -f $@; \
+	fi
+
+test-cinterop: $(TARGET) $(CINTEROP_SUPPORT_LIB)
+	@bash $(CINTEROP_DIR)/run_cinterop_tests.sh $(TARGET)
+
+# LLVM C API capstone — needs the in-tree LLVM build (`make llvm`).  Uses
+# llvm-config to assemble the libfile list and drives stasha to compile +
+# link the .sts directly.  Also verifies the produced binary emits a
+# valid LLVM IR module to stdout.
+LLVM_SMOKE_SRC  = $(CINTEROP_DIR)/llvm_smoke.sts
+LLVM_SMOKE_BIN  = $(CINTEROP_BUILD)/llvm_smoke
+
+test-llvm-smoke: $(TARGET) $(LLVM_SMOKE_SRC) | $(LLVM_CFG)
+	@mkdir -p $(CINTEROP_BUILD)
+	@echo "=== LLVM C API capstone ==="
+	@LIBS=$$($(LLVM_CFG) --libfiles core analysis native lto passes option codegen bitwriter debuginfodwarf objcarcopts textapi object 2>/dev/null); \
+	LARGS=""; for L in $$LIBS; do LARGS="$$LARGS -l $$L"; done; \
+	OUT=$$($(TARGET) build $(LLVM_SMOKE_SRC) -o $(LLVM_SMOKE_BIN) $$LARGS 2>&1); \
+	if [ ! -x $(LLVM_SMOKE_BIN) ]; then \
+	    echo "  FAIL llvm_smoke (compile/link):"; echo "$$OUT" | grep -E '^error:|ld64.lld' | head -5; exit 1; \
+	fi; \
+	OUT=$$($(LLVM_SMOKE_BIN) 2>&1); \
+	if echo "$$OUT" | grep -qE 'ModuleID|target triple'; then \
+	    echo "  PASS llvm_smoke"; \
+	    echo "$$OUT" | head -3 | sed 's/^/    | /'; \
+	else \
+	    echo "  FAIL llvm_smoke (no IR in stdout):"; echo "$$OUT" | head -5; exit 1; \
+	fi
+
+clean-cinterop:
+	rm -rf $(CINTEROP_BUILD)
 
 # Run all thread-related test programs via 'stasha test'
 test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
@@ -321,10 +394,13 @@ test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
 	echo "=== All thread tests passed ==="
 
 HDRS := $(shell find src -name '*.h')
+CODEGEN_IMPLS := $(wildcard src/codegen/*.c)
 
 build/obj/%.o: src/%.c $(HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/obj/codegen/codegen.o: $(CODEGEN_IMPLS)
 
 $(LINKER_OBJ): src/linker/linker.cpp
 	@mkdir -p $(dir $@)

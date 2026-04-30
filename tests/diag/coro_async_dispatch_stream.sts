@@ -1,0 +1,11 @@
+mod coro_async_dispatch_stream;
+
+async fn numbers(void): stream.[i64] {
+    yield 1;
+    ret;
+}
+
+fn main(void): void {
+    stack future.[stream.[i64]] f = async.(numbers)();
+    future.drop(f);
+}

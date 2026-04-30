@@ -1,0 +1,12 @@
+mod neg_union_layout;
+
+cheader "support/union_layout.h" search "tests/cinterop/neg";
+
+// Negative test: a top-level C union declared in the user's cheader
+// must produce a "union"-bearing error.  Unions appearing transitively
+// in system headers (mbstate, sigval, &c.) stay quiet because they are
+// not flagged from_user_header.
+
+fn main(void): i32 {
+    ret 0;
+}

@@ -1,0 +1,10 @@
+// Diagnostic test: unused variable warning (enabled by default, also --wall)
+// Expected: warning about unused variable 'y'
+// Feature: Phase 3D optional warning conversion
+mod diag_warn_unused_wall;
+
+ext fn main(void): i32 {
+    stack i32 x = 10;
+    stack i32 y = 20;
+    ret x;
+}

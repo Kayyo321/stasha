@@ -48,9 +48,11 @@ static node_t *parse_for_stmt(parser_t *p) {
         consume(p, TokSemicolon, "';'");
     }
 
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
     consume(p, TokSemicolon, "';'");
     node_t *update = parse_expr(p);
+    p->no_trailing_closure--;
     if (guarded) consume(p, TokRParen, "')'");
     node_t *body = parse_body(p);
 
@@ -65,7 +67,9 @@ static node_t *parse_for_stmt(parser_t *p) {
 static node_t *parse_while_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
+    p->no_trailing_closure--;
     node_t *body = parse_body(p);
 
     node_t *n = make_node(NodeWhileStmt, line);
@@ -83,7 +87,9 @@ static node_t *parse_foreach_stmt(parser_t *p) {
 
     consume(p, TokIn, "'in'");
 
+    p->no_trailing_closure++;
     node_t *slice = parse_expr(p);
+    p->no_trailing_closure--;
     node_t *body  = parse_body(p);
 
     node_t *n = make_node(NodeForeachStmt, line);
@@ -100,7 +106,9 @@ static node_t *parse_do_while_stmt(parser_t *p) {
     consume(p, TokWhile, "'while'");
     /* optional guard parens: do { } while (cond); or do { } while cond; */
     boolean_t guarded = match_tok(p, TokLParen);
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
+    p->no_trailing_closure--;
     if (guarded) consume(p, TokRParen, "')'");
     consume(p, TokSemicolon, "';'");
 
@@ -122,7 +130,9 @@ static node_t *parse_inf_loop(parser_t *p) {
 static node_t *parse_if_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);
+    p->no_trailing_closure++;
     node_t *cond = parse_expr(p);
+    p->no_trailing_closure--;
     node_t *then_block = parse_body(p);
     node_t *else_block = Null;
     if (match_tok(p, TokElse)) {
@@ -168,11 +178,23 @@ static node_t *parse_print_stmt(parser_t *p) {
 
     consume(p, TokLParen, "'('");
 
+    /* Optional '@' marks an inline-expression format string:
+         print.(@'a + b = {a + b}');
+       Each {expr} / {expr:spec} is sub-parsed and added to args; the
+       stored fmt is rewritten to {} / {:spec} so gen_print stays unchanged. */
+    boolean_t inline_fmt = False;
+    if (check(p, TokAt)) {
+        advance_parser(p); /* consume '@' */
+        inline_fmt = True;
+    }
+
     if (!check(p, TokStackStr) && !check(p, TokHeapStr)) {
         diag_begin_error("print.() requires a string literal as the first argument");
         diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                   True, "expected a string literal here");
-        diag_help("example: print.('value = {x}')");
+        diag_help(inline_fmt
+            ? "example: print.(@'value = {x}')"
+            : "example: print.('value = {x}')");
         diag_finish();
         p->had_error = True;
         return make_node(NodePrintStmt, line);
@@ -181,20 +203,126 @@ static node_t *parse_print_stmt(parser_t *p) {
     token_t fmt_tok = p->current;
     advance_parser(p);
 
-    /* Store the raw format string (no escape processing): gen_print handles
-       escape sequences and placeholder scanning in a single pass so that
-       \{ can be distinguished from a real { placeholder. */
-    usize_t fmt_len = fmt_tok.length - 2;
-    char *fmt = ast_strdup(fmt_tok.start + 1, fmt_len);
+    usize_t raw_len = fmt_tok.length - 2;
+    const char *raw = fmt_tok.start + 1;
 
     node_t *n = make_node(NodePrintStmt, line);
-    n->as.print_stmt.fmt       = fmt;
-    n->as.print_stmt.fmt_len   = fmt_len;
     n->as.print_stmt.to_stderr = to_stderr;
     node_list_init(&n->as.print_stmt.args);
 
-    while (match_tok(p, TokComma))
-        node_list_push(&n->as.print_stmt.args, parse_expr(p));
+    if (inline_fmt) {
+        /* Walk raw fmt: copy literals/escapes verbatim, sub-parse each
+           {expr[:spec]} into args, emit {} or {:spec} into the output.
+           Output cannot exceed raw_len, so reuse the arena-allocated copy
+           as a scratch buffer (we overwrite from index 0). */
+        char *out = ast_strdup(raw, raw_len);
+        usize_t out_len = 0;
+
+        for (usize_t i = 0; i < raw_len; ) {
+            if (raw[i] == '\\' && i + 1 < raw_len) {
+                out[out_len++] = raw[i++];
+                out[out_len++] = raw[i++];
+                continue;
+            }
+            if (raw[i] != '{') { out[out_len++] = raw[i++]; continue; }
+
+            usize_t expr_start = i + 1;
+            usize_t j = expr_start;
+            int depth = 0;
+            usize_t colon_pos = 0;
+            boolean_t has_colon = False;
+            boolean_t found_end = False;
+            boolean_t bad = False;
+
+            while (j < raw_len) {
+                char c = raw[j];
+                if (c == '\\' && j + 1 < raw_len) { j += 2; continue; }
+                if (c == '(' || c == '[') { depth++; j++; continue; }
+                if (c == ')' || c == ']') { if (depth > 0) depth--; j++; continue; }
+                if (c == '{' && depth == 0) {
+                    diag_begin_error("nested '{' inside print format placeholder");
+                    diag_span(SRC_LOC(line, 0, 0), True,
+                              "use '\\{' for a literal '{'");
+                    diag_finish();
+                    p->had_error = True;
+                    bad = True;
+                    break;
+                }
+                if (c == '}' && depth == 0) { found_end = True; break; }
+                if (c == ':' && depth == 0 && !has_colon) {
+                    /* Treat ':' as a format-spec separator only when followed by
+                       a non-identifier char.  An ident char after ':' means this
+                       is a colon static accessor inside the expression. */
+                    char next_c = (j + 1 < raw_len) ? raw[j + 1] : '\0';
+                    boolean_t next_is_ident = (next_c >= 'a' && next_c <= 'z') ||
+                                              (next_c >= 'A' && next_c <= 'Z') || next_c == '_';
+                    if (!next_is_ident) { colon_pos = j; has_colon = True; }
+                }
+                j++;
+            }
+            if (bad) break;
+            if (!found_end) {
+                diag_begin_error("unterminated '{' in print format string");
+                diag_span(SRC_LOC(line, 0, 0), True, "missing '}' here");
+                diag_finish();
+                p->had_error = True;
+                break;
+            }
+
+            usize_t expr_end = has_colon ? colon_pos : j;
+            usize_t expr_len = expr_end - expr_start;
+            if (expr_len == 0) {
+                diag_begin_error("empty expression in print format placeholder");
+                diag_span(SRC_LOC(line, 0, 0), True,
+                          "expected an expression inside '{...}'");
+                diag_finish();
+                p->had_error = True;
+            } else {
+                char *expr_src = ast_strdup(raw + expr_start, expr_len);
+                parser_t sub;
+                memset(&sub, 0, sizeof(sub));
+                sub.stream    = Null;
+                sub.had_error = False;
+                init_lexer(&sub.lexer, expr_src);
+                advance_parser(&sub);
+                node_t *expr_node = parse_expr(&sub);
+                if (sub.had_error) p->had_error = True;
+                node_list_push(&n->as.print_stmt.args, expr_node);
+            }
+
+            out[out_len++] = '{';
+            if (has_colon) {
+                /* copy ':spec' verbatim — colon_pos points at the ':' */
+                usize_t spec_len = j - colon_pos;
+                memcpy(out + out_len, raw + colon_pos, spec_len);
+                out_len += spec_len;
+            }
+            out[out_len++] = '}';
+            i = j + 1;
+        }
+
+        out[out_len] = '\0';
+        n->as.print_stmt.fmt     = out;
+        n->as.print_stmt.fmt_len = out_len;
+    } else {
+        /* Store raw fmt; gen_print decodes escapes and scans placeholders
+           in a single pass so '\{' can be distinguished from a real '{'. */
+        n->as.print_stmt.fmt     = ast_strdup(raw, raw_len);
+        n->as.print_stmt.fmt_len = raw_len;
+    }
+
+    while (match_tok(p, TokComma)) {
+        node_t *arg = parse_expr(p);
+        if (inline_fmt) {
+            diag_begin_error("print.(@'...') does not accept trailing arguments");
+            diag_span(SRC_LOC(line, 0, 0), True,
+                      "embed values directly in the format string instead");
+            diag_finish();
+            p->had_error = True;
+        } else {
+            node_list_push(&n->as.print_stmt.args, arg);
+        }
+    }
 
     consume(p, TokRParen, "')'");
     consume(p, TokSemicolon, "';'");
@@ -207,6 +335,53 @@ static node_t *parse_expr_stmt(parser_t *p) {
     consume(p, TokSemicolon, "';'");
     node_t *n = make_node(NodeExprStmt, line);
     n->as.expr_stmt.expr = expr;
+    return n;
+}
+
+/* watch.(T name) => { body }  — register typed handler.
+   Body is parsed via parse_body so `=> stmt;` and `{ block }` both work. */
+static node_t *parse_watch_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p);                       /* consume 'watch' */
+    consume(p, TokDot,    "'.'");
+    consume(p, TokLParen, "'('");
+    type_info_t type = parse_type(p);
+    token_t name_tok = consume(p, TokIdent, "handler parameter name");
+    char *param_name = copy_token_text(name_tok);
+    consume(p, TokRParen, "')'");
+    node_t *body = parse_body(p);
+    node_t *n = make_node(NodeWatchStmt, line);
+    n->as.watch_stmt.type       = type;
+    n->as.watch_stmt.param_name = param_name;
+    n->as.watch_stmt.body       = body;
+    return n;
+}
+
+/* send.(value); — synchronous dispatch to handlers of value's static type. */
+static node_t *parse_send_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p);                       /* consume 'send' */
+    consume(p, TokDot,    "'.'");
+    consume(p, TokLParen, "'('");
+    node_t *value = parse_expr(p);
+    consume(p, TokRParen, "')'");
+    consume(p, TokSemicolon, "';'");
+    node_t *n = make_node(NodeSendStmt, line);
+    n->as.send_stmt.value = value;
+    return n;
+}
+
+/* quit.(code); — exit(code) guarded against reentry from @[[exit]] blocks. */
+static node_t *parse_quit_stmt(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p);                       /* consume 'quit' */
+    consume(p, TokDot,    "'.'");
+    consume(p, TokLParen, "'('");
+    node_t *code = parse_expr(p);
+    consume(p, TokRParen, "')'");
+    consume(p, TokSemicolon, "';'");
+    node_t *n = make_node(NodeQuitStmt, line);
+    n->as.quit_stmt.code = code;
     return n;
 }
 
@@ -278,13 +453,16 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     }
 
     if (!can_start_type(p)) {
-        diag_begin_error("expected a type in variable declaration");
-        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-                  True, "expected a type here");
-        diag_note("non-pointer variables need only a type: i32 x = 0;  pointer variables need stack/heap: stack i32 *rw p;");
-        diag_finish();
-        p->had_error = True;
-        advance_parser(p); /* skip bad token to avoid infinite loop */
+        if (!p->panic_mode) {
+            diag_begin_error("expected a type in variable declaration");
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a type here");
+            diag_note("non-pointer variables need only a type: i32 x = 0;  pointer variables need stack/heap: stack i32 *rw p;");
+            diag_finish();
+        }
+        p->had_error  = True;
+        p->panic_mode = True;
+        skip_to_recovery_point(p);
         return make_node(NodeVarDecl, line);
     }
     type_info_t type = parse_type(p);
@@ -622,6 +800,9 @@ static node_t *parse_statement(parser_t *p) {
     if (check(p, TokSwitch))       return parse_switch_stmt(p);
     if (check(p, TokAsm))          return parse_asm_stmt(p);
     if (check(p, TokComptimeIf))   return parse_comptime_if(p);
+    if (check(p, TokWatch))        return parse_watch_stmt(p);
+    if (check(p, TokSend))         return parse_send_stmt(p);
+    if (check(p, TokQuit))         return parse_quit_stmt(p);
 
     /* unsafe { body } */
     if (check(p, TokUnsafe)) {
@@ -646,9 +827,7 @@ static node_t *parse_statement(parser_t *p) {
             diag_help("mov.(zone_name, ptr, size) escapes a pointer out of a zone");
             diag_finish();
             p->had_error = True;
-            /* skip to end of statement to keep parsing */
-            while (!check(p, TokSemicolon) && !check(p, TokEof)) advance_parser(p);
-            if (check(p, TokSemicolon)) advance_parser(p);
+            skip_to_recovery_point(p);
             return make_node(NodeExprStmt, line);
         }
 
@@ -706,13 +885,44 @@ static node_t *parse_statement(parser_t *p) {
         return make_node(NodeContinueStmt, line);
     }
 
-    /* future.op(...) is an expression statement, not a var decl — peek ahead */
-    if (check(p, TokFuture)) {
+    if (check(p, TokYield)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        if (check(p, TokSemicolon)) {
+            advance_parser(p);
+            return make_node(NodeYieldNowExpr, line);
+        }
+        node_t *value = parse_expr(p);
+        consume(p, TokSemicolon, "';'");
+        node_t *n = make_node(NodeYieldExpr, line);
+        n->as.yield_expr.value = value;
+        return n;
+    }
+
+    /* future.op(...) is an expression statement, not a var decl — peek ahead.
+       Distinguish from `future.[T] name = …;` which is a typed-future decl. */
+    if (check(p, TokFuture) || check(p, TokStream)) {
         parser_state_t snap = save_state(p);
         advance_parser(p);
-        boolean_t is_future_op = check(p, TokDot);
+        boolean_t is_future_op = False;
+        if (check(p, TokDot)) {
+            advance_parser(p); /* consume '.' */
+            /* '.' followed by '[' is a typed coroutine-handle type. */
+            is_future_op = !check(p, TokLBracket);
+        }
         restore_state(p, snap);
         if (is_future_op) return parse_expr_stmt(p);
+    }
+
+    /* await(...) / await.(...) / await.all(...) / await.any(...) — expression statements */
+    if (check(p, TokAwait)) return parse_expr_stmt(p);
+    /* async.(...) in statement position is an expression statement */
+    if (check(p, TokAsync)) {
+        parser_state_t snap = save_state(p);
+        advance_parser(p);
+        boolean_t is_expr = check(p, TokDot);
+        restore_state(p, snap);
+        if (is_expr) return parse_expr_stmt(p);
     }
 
     if (can_start_var_decl(p)) return parse_var_decl(p, LinkageNone);

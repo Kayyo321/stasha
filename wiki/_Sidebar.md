@@ -20,6 +20,11 @@
 - [Enums](Enums)
 - [Interfaces](Interfaces)
 - [Generics](Generics)
+- [Compile-Time Features](Compile-Time-Features)
+- [Syntax Sugar](Sugar)
+- [Compound Initializers](Compound-Initializers)
+- [Slices](Slices)
+- [Hashing](Hashing)
 
 ---
 
@@ -32,6 +37,9 @@
 
 ### Modules & Libraries
 - [Modules and Imports](Modules-and-Imports)
+- [Submodules](Submodules)
+- [Preprocessor Macros](Preprocessor-Macros)
+- [File Headers](File-Headers)
 - [Standard Library](Standard-Library)
 - [Creating Libraries](Creating-Libraries)
 - [Using Libraries](Using-Libraries)
@@ -49,6 +57,8 @@
 
 ### Advanced
 - [Concurrency](Concurrency)
+- [Async / Await](Async-Await)
+- [Signals](Signals)
 - [C Interoperability](C-Interoperability)
 - [How the Compiler Works](How-the-Compiler-Works)
 

@@ -28,6 +28,13 @@ static const char *g_filename = "<unknown>";
 static const char *g_source   = Null;
 static boolean_t   g_render_enabled = True;
 
+/* ── Warning/error configuration ── */
+static diag_config_t g_diag_config = { False, WarnUnusedVar };
+
+void diag_set_config(diag_config_t config) { g_diag_config = config; }
+diag_config_t diag_get_config(void)        { return g_diag_config; }
+boolean_t diag_warn_enabled(warn_flag_t f) { return (g_diag_config.enabled & f) != 0; }
+
 /* In-progress diagnostic being built with diag_begin_* / diag_span / ... */
 static diagnostic_t g_pending;
 static boolean_t    g_has_pending = False;
@@ -45,6 +52,9 @@ static diag_source_entry_t g_source_registry[DIAG_MAX_REGISTERED_SOURCES];
 static int                 g_source_registry_count = 0;
 static captured_diag_t     g_captured_diags[DIAG_MAX_CAPTURED];
 static usize_t             g_captured_diag_count = 0;
+static usize_t             g_suppressed_count = 0;   /* overflow tracking */
+
+#define DIAG_ERROR_LIMIT 100
 
 void diag_register_source(const char *filename, const char *source) {
     if (!filename || !source) return;
@@ -324,9 +334,29 @@ static void render_diagnostic(const diagnostic_t *d) {
         default:          level_str = "error";   level_col = col_red();    break;
     }
 
-    fprintf(stderr, "%s%s%s%s: %s%s%s\n",
-            col_bold(), level_col, level_str, col_reset(),
-            col_bold(), d->message, col_reset());
+    /* Category tag: "error[undefined]:" or plain "error:" if no category */
+    static const char *cat_names[] = {
+        [ErrCatNone]          = Null,
+        [ErrCatSyntax]        = "syntax",
+        [ErrCatUndefined]     = "undefined",
+        [ErrCatTypeMismatch]  = "type",
+        [ErrCatStorageDomain] = "storage",
+        [ErrCatPointerSafety] = "safety",
+        [ErrCatImport]        = "import",
+        [ErrCatConcurrency]   = "concurrency",
+        [ErrCatOther]         = "other",
+    };
+    const char *cat_str = (d->category < sizeof(cat_names)/sizeof(cat_names[0]))
+                          ? cat_names[d->category] : Null;
+    if (cat_str) {
+        fprintf(stderr, "%s%s%s[%s]%s: %s%s%s\n",
+                col_bold(), level_col, level_str, cat_str, col_reset(),
+                col_bold(), d->message, col_reset());
+    } else {
+        fprintf(stderr, "%s%s%s%s: %s%s%s\n",
+                col_bold(), level_col, level_str, col_reset(),
+                col_bold(), d->message, col_reset());
+    }
 
     /* ── Location: "  --> file:line:col" ── */
     src_loc_t loc = NO_LOC;
@@ -400,6 +430,22 @@ void diag_begin_warning(const char *fmt, ...) {
     va_end(ap);
 }
 
+void diag_begin_optional_warning(warn_flag_t flag, const char *fmt, ...) {
+    if (!diag_warn_enabled(flag)) {
+        /* Silently discard: mark no pending diagnostic. */
+        g_has_pending = False;
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    begin_diag(DiagWarning, fmt, ap);
+    va_end(ap);
+}
+
+void diag_set_category(diag_category_t cat) {
+    if (g_has_pending) g_pending.category = cat;
+}
+
 void diag_span(src_loc_t loc, boolean_t primary, const char *fmt, ...) {
     if (!g_has_pending) return;
     if (g_pending.label_count >= DIAG_MAX_LABELS) return;
@@ -442,6 +488,25 @@ void diag_help(const char *fmt, ...) {
 
 void diag_finish(void) {
     if (!g_has_pending) return;
+
+    /* --strict: promote warnings to errors */
+    if (g_diag_config.strict && g_pending.level == DiagWarning)
+        g_pending.level = DiagError;
+
+    /* Error limit: stop rendering after too many errors */
+    if (error_cnt >= DIAG_ERROR_LIMIT) {
+        if (error_cnt == DIAG_ERROR_LIMIT && g_pending.level == DiagError) {
+            /* Print one final message */
+            fprintf(stderr, "error: too many errors emitted, stopping\n");
+        }
+        g_suppressed_count++;
+        if (g_pending.level == DiagError)   error_cnt++;
+        if (g_pending.level == DiagWarning) warn_cnt++;
+        memset(&g_pending, 0, sizeof(g_pending));
+        g_has_pending = False;
+        return;
+    }
+
     if (g_captured_diag_count < DIAG_MAX_CAPTURED) {
         captured_diag_t *slot = &g_captured_diags[g_captured_diag_count++];
         memset(slot, 0, sizeof(*slot));

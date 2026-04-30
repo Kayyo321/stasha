@@ -80,7 +80,178 @@ static node_t *parse_compound_init(parser_t *p, usize_t line) {
     return n;
 }
 
+/* ── comptime format string: @'...' / heap @'...' ──
+ * Called with `@` already consumed. Current token must be TokStackStr/TokHeapStr.
+ * Each {expr} / {expr:spec} span in the format is sub-parsed as a Stasha
+ * expression using a fresh legacy-mode parser over the substring. */
+static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usize_t line) {
+    token_t fmt_tok = p->current;
+    advance_parser(p); /* consume the string literal */
+
+    usize_t fmt_len = fmt_tok.length - 2;
+    char *fmt = ast_strdup(fmt_tok.start + 1, fmt_len);
+
+    node_t *n = make_node(NodeComptimeFmt, line);
+    n->as.comptime_fmt.fmt     = fmt;
+    n->as.comptime_fmt.fmt_len = fmt_len;
+    n->as.comptime_fmt.on_heap = on_heap;
+    node_list_init(&n->as.comptime_fmt.args);
+
+    for (usize_t i = 0; i < fmt_len; ) {
+        if (fmt[i] == '\\' && i + 1 < fmt_len) { i += 2; continue; }
+        if (fmt[i] != '{') { i++; continue; }
+
+        usize_t expr_start = i + 1;
+        usize_t j = expr_start;
+        int depth = 0;
+        usize_t colon_pos = 0;
+        boolean_t has_colon = False;
+        boolean_t found_end = False;
+
+        while (j < fmt_len) {
+            char c = fmt[j];
+            if (c == '\\' && j + 1 < fmt_len) { j += 2; continue; }
+            if (c == '(' || c == '[') { depth++; j++; continue; }
+            if (c == ')' || c == ']') { if (depth > 0) depth--; j++; continue; }
+            if (c == '{' && depth == 0) {
+                diag_begin_error("nested '{' inside comptime format placeholder");
+                diag_span(SRC_LOC(line, 0, 0), True,
+                          "comptime format does not support nested braces — use '\\{' for a literal");
+                diag_finish();
+                p->had_error = True;
+                return n;
+            }
+            if (c == '}' && depth == 0) { found_end = True; break; }
+            if (c == ':' && depth == 0 && !has_colon) {
+                /* Only treat ':' as a format-spec separator when followed by a
+                   non-identifier character (all valid specs start with digits,
+                   '<', '>', '+', '#', '.', etc.).  An identifier char after ':'
+                   means this is a colon static accessor inside the expression. */
+                char next_c = (j + 1 < fmt_len) ? fmt[j + 1] : '\0';
+                boolean_t next_is_ident = (next_c >= 'a' && next_c <= 'z') ||
+                                          (next_c >= 'A' && next_c <= 'Z') || next_c == '_';
+                if (!next_is_ident) { colon_pos = j; has_colon = True; }
+            }
+            j++;
+        }
+        if (!found_end) {
+            diag_begin_error("unterminated '{' in comptime format string");
+            diag_span(SRC_LOC(line, 0, 0), True, "missing '}' here");
+            diag_finish();
+            p->had_error = True;
+            return n;
+        }
+
+        usize_t expr_end = has_colon ? colon_pos : j;
+        usize_t expr_len = expr_end - expr_start;
+        if (expr_len == 0) {
+            diag_begin_error("empty expression in comptime format placeholder");
+            diag_span(SRC_LOC(line, 0, 0), True, "expected an expression inside '{...}'");
+            diag_finish();
+            p->had_error = True;
+            return n;
+        }
+
+        char *expr_src = ast_strdup(fmt + expr_start, expr_len);
+        parser_t sub;
+        memset(&sub, 0, sizeof(sub));
+        sub.stream    = Null;
+        sub.had_error = False;
+        init_lexer(&sub.lexer, expr_src);
+        advance_parser(&sub);
+        node_t *expr_node = parse_expr(&sub);
+        if (sub.had_error) p->had_error = True;
+
+        node_list_push(&n->as.comptime_fmt.args, expr_node);
+
+        i = j + 1;
+    }
+
+    return n;
+}
+
+/* ── lambda parser: lam.(params): ret { body } ──
+ * Called with TokLam already on the current token.  Produces NodeLambda. */
+static node_t *parse_lambda_expr(parser_t *p) {
+    usize_t line = p->current.line;
+    advance_parser(p); /* consume 'lam' */
+    consume(p, TokDot, "'.' after 'lam'");
+    consume(p, TokLParen, "'(' after 'lam.'");
+
+    node_list_t params;
+    node_list_init(&params);
+
+    if (!check(p, TokRParen) && !check(p, TokVoid)) {
+        type_info_t last_type = NO_TYPE;
+        storage_t last_storage = StorageDefault;
+        do {
+            storage_t param_storage = StorageDefault;
+            if (check(p, TokStack))      { param_storage = StorageStack; advance_parser(p); }
+            else if (check(p, TokHeap)) { param_storage = StorageHeap;  advance_parser(p); }
+            if (param_storage != StorageDefault) last_storage = param_storage;
+            else param_storage = last_storage;
+            if (can_start_param_type(p))
+                last_type = parse_type(p);
+            token_t pname = consume_name(p, "lambda parameter name");
+            node_t *param = make_node(NodeVarDecl, pname.line);
+            ast_set_loc(param, pname);
+            param->as.var_decl.name    = copy_token_text(pname);
+            param->as.var_decl.type    = last_type;
+            param->as.var_decl.storage = param_storage;
+            node_list_push(&params, param);
+        } while (match_tok(p, TokComma));
+    } else if (check(p, TokVoid)) {
+        advance_parser(p);
+    }
+    consume(p, TokRParen, "')'");
+
+    type_info_t ret_type = NO_TYPE; /* default void */
+    boolean_t inferred_ret = True;
+    if (match_tok(p, TokColon)) {
+        ret_type = parse_type(p);
+        inferred_ret = False;
+    }
+
+    node_t *body = parse_block(p);
+
+    node_t *n = make_node(NodeLambda, line);
+    n->as.lambda_expr.params         = params;
+    n->as.lambda_expr.ret_type       = ret_type;
+    n->as.lambda_expr.body           = body;
+    n->as.lambda_expr.mangled_name   = Null;
+    n->as.lambda_expr.inferred_params = False;
+    n->as.lambda_expr.inferred_ret   = inferred_ret;
+    return n;
+}
+
 static node_t *parse_primary(parser_t *p) {
+    /* lam.(params): ret { body } — non-capturing lambda expression */
+    if (check(p, TokLam))
+        return parse_lambda_expr(p);
+
+    /* heap @'...' — heap-allocated comptime format string */
+    if (check(p, TokHeap)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'heap' */
+        if (check(p, TokAt)) {
+            advance_parser(p); /* consume '@' */
+            if (check(p, TokStackStr) || check(p, TokHeapStr))
+                return parse_comptime_fmt_at_string(p, True, line);
+        }
+        restore_state(p, snap);
+    }
+
+    /* @'...' — stack-allocated comptime format string */
+    if (check(p, TokAt)) {
+        parser_state_t snap = save_state(p);
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume '@' */
+        if (check(p, TokStackStr) || check(p, TokHeapStr))
+            return parse_comptime_fmt_at_string(p, False, line);
+        restore_state(p, snap);
+    }
+
     if (check(p, TokDot)) {
         usize_t line = p->current.line;
         advance_parser(p);
@@ -151,8 +322,7 @@ static node_t *parse_primary(parser_t *p) {
         node_t *size = parse_expr(p);
         consume(p, TokRParen, "')'");
         /* optional: in zone_expr  (bare ident, s.field, or this.field) */
-        if (check(p, TokIdent) && p->current.length == 2
-                && memcmp(p->current.start, "in", 2) == 0) {
+        if (check(p, TokIn)) {
             advance_parser(p); /* consume 'in' */
             /* parse_postfix handles: ident, this.field, s.field, etc. */
             node_t *zone_expr = parse_postfix(p);
@@ -408,6 +578,43 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* stream.op(handle) — done(s)/drop(s) for stream.[T] coroutine handles. */
+    if (check(p, TokStream)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        token_t op_tok = consume(p, TokIdent, "stream operation (done, drop)");
+        char op_name[16];
+        usize_t op_len = op_tok.length < 15 ? op_tok.length : 15;
+        memcpy(op_name, op_tok.start, op_len);
+        op_name[op_len] = '\0';
+
+        future_op_t op;
+        if (strcmp(op_name, "done") == 0) {
+            op = StreamDone;
+        } else if (strcmp(op_name, "drop") == 0) {
+            op = StreamDrop;
+        } else if (strcmp(op_name, "cancel") == 0) {
+            op = StreamCancel;
+        } else {
+            diag_begin_error("unknown stream operation '%s'", op_name);
+            diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
+                      "expected: done, drop, cancel");
+            diag_finish();
+            op = StreamDrop; /* recover */
+        }
+
+        consume(p, TokLParen, "'('");
+        node_t *handle = parse_expr(p);
+        consume(p, TokRParen, "')'");
+
+        node_t *n = make_node(NodeFutureOp, line);
+        n->as.future_op.op       = op;
+        n->as.future_op.handle   = handle;
+        n->as.future_op.get_type = NO_TYPE;
+        return n;
+    }
+
     /* future.op(handle) / future.get.(Type)(handle) */
     if (check(p, TokFuture)) {
         usize_t line = p->current.line;
@@ -464,6 +671,124 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
+    /* async.(fn)(args) — typed dispatch to thread pool; callee must be `async fn`.
+       Structurally identical to thread.() but carries typed return info via
+       NodeAsyncCall (vs opaque NodeThreadCall). */
+    if (check(p, TokAsync)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+        consume(p, TokDot, "'.'");
+        consume(p, TokLParen, "'('");
+        token_t name_tok = consume(p, TokIdent, "function name");
+        char *name = copy_token_text(name_tok);
+        consume(p, TokRParen, "')'");
+        consume(p, TokLParen, "'('");
+        node_list_t args;
+        node_list_init(&args);
+        if (!check(p, TokRParen)) {
+            do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+        }
+        consume(p, TokRParen, "')'");
+        node_t *n = make_node(NodeAsyncCall, line);
+        n->as.async_call.callee = name;
+        n->as.async_call.args   = args;
+        return n;
+    }
+
+    /* await(f) / await.(fn)(args) / await.all(...) / await.any(...) */
+    if (check(p, TokAwait)) {
+        usize_t line = p->current.line;
+        advance_parser(p);
+
+        /* await(f) — extract value from future, auto-drop. */
+        if (check(p, TokLParen)) {
+            advance_parser(p); /* consume '(' */
+            node_t *handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeAwaitExpr, line);
+            n->as.await_expr.handle   = handle;
+            n->as.await_expr.get_type = NO_TYPE; /* inferred at codegen */
+            return n;
+        }
+
+        consume(p, TokDot, "'.' or '(' after 'await'");
+
+        /* await.(fn)(args) — one-shot: dispatch + block + drop, return typed value */
+        if (check(p, TokLParen)) {
+            advance_parser(p); /* consume '(' */
+            token_t name_tok = consume(p, TokIdent, "function name");
+            char *name = copy_token_text(name_tok);
+            consume(p, TokRParen, "')'");
+            consume(p, TokLParen, "'('");
+            node_list_t args;
+            node_list_init(&args);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+            node_t *ac = make_node(NodeAsyncCall, line);
+            ac->as.async_call.callee = name;
+            ac->as.async_call.args   = args;
+            node_t *n = make_node(NodeAwaitExpr, line);
+            n->as.await_expr.handle   = ac;
+            n->as.await_expr.get_type = NO_TYPE;
+            return n;
+        }
+
+        /* await.next(stream) — consume the next item from a stream.[T]. */
+        if (check(p, TokIdent) && p->current.length == 4
+                && memcmp(p->current.start, "next", 4) == 0) {
+            advance_parser(p); /* consume 'next' */
+            consume(p, TokLParen, "'('");
+            node_t *handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeAwaitExpr, line);
+            n->as.await_expr.handle = handle;
+            n->as.await_expr.get_type = NO_TYPE;
+            n->as.await_expr.is_stream_next = True;
+            return n;
+        }
+
+        /* await.all(f1, ...) / await.any(f1, ...).
+           Note: `any` is a lexer keyword (TokAny), `all` is an ident — accept both. */
+        if (check(p, TokIdent) || check(p, TokAny)) {
+            token_t op_tok = p->current;
+            boolean_t is_any;
+            if (check(p, TokAny)) {
+                is_any = True;
+            } else if (op_tok.length == 3 && memcmp(op_tok.start, "all", 3) == 0) {
+                is_any = False;
+            } else {
+                diag_begin_error("unknown await combinator '%.*s'",
+                                 (int)op_tok.length, op_tok.start);
+                diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
+                          "expected 'all' or 'any'");
+                diag_finish();
+                p->had_error = True;
+                return make_node(NodeNilExpr, line);
+            }
+            advance_parser(p); /* consume 'all' / 'any' */
+            consume(p, TokLParen, "'('");
+            node_list_t handles;
+            node_list_init(&handles);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&handles, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+            node_t *n = make_node(NodeAwaitCombinator, line);
+            n->as.await_combinator.is_any  = is_any;
+            n->as.await_combinator.handles = handles;
+            return n;
+        }
+
+        diag_begin_error("expected '(', '.(', '.all' or '.any' after 'await'");
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "unexpected token here");
+        diag_finish();
+        p->had_error = True;
+        return make_node(NodeNilExpr, line);
+    }
+
     /* any.(expr) — extract runtime type tag from an any.[...] value */
     if (check(p, TokAny)) {
         usize_t line = p->current.line;
@@ -478,7 +803,9 @@ static node_t *parse_primary(parser_t *p) {
     }
 
     /* make.([]T, len) / make.([]T, len, cap) — allocate an owned slice.
-       Speculative: only treat as builtin if followed by '.(' */
+       make.{ items } — inline-initialised slice (element type comes from
+       the LHS context).  Speculative: only treat as builtin when followed
+       by '.(' or '.{'. */
     if (check(p, TokMake)) {
         parser_state_t snap = save_state(p);
         usize_t line = p->current.line;
@@ -501,6 +828,16 @@ static node_t *parse_primary(parser_t *p) {
                 n->as.make_expr.elem_type = elem_ti;
                 n->as.make_expr.len       = len_expr;
                 n->as.make_expr.cap       = cap_expr;
+                n->as.make_expr.init      = Null;
+                return n;
+            }
+            if (check(p, TokLBrace)) {
+                node_t *init = parse_compound_init(p, line);
+                node_t *n = make_node(NodeMakeExpr, line);
+                n->as.make_expr.elem_type = NO_TYPE;
+                n->as.make_expr.len       = Null;
+                n->as.make_expr.cap       = Null;
+                n->as.make_expr.init      = init;
                 return n;
             }
         }
@@ -699,14 +1036,122 @@ static node_t *parse_primary(parser_t *p) {
         return expr;
     }
 
-    diag_begin_error("expected an expression, found '%.*s'",
-                     (int)p->current.length, p->current.start);
-    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
-              True, "not a valid expression start");
-    diag_finish();
-    p->had_error = True;
+    if (!p->panic_mode) {
+        diag_begin_error("expected an expression, found '%.*s'",
+                         (int)p->current.length, p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "not a valid expression start");
+        diag_finish();
+    }
+    p->had_error  = True;
+    p->panic_mode = True;
     advance_parser(p); /* skip the bad token so we don't loop forever */
     return make_node(NodeIntLitExpr, p->previous.line);
+}
+
+/* ── trailing-closure peek: { |p1, p2| body }  or  { body } ──
+ * Called after a `.( args )` call form is built.  If the next token is '{',
+ * parse a short-form lambda and append it to the call's args list.
+ * Param types are left as TypeInfer — gen_call backfills them from the
+ * callee's matching parameter slot. */
+static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
+    if (!check(p, TokLBrace)) return;
+    /* Suppressed in if/while/for/do-while conditions — the brace belongs
+       to the surrounding control-flow body. */
+    if (p->no_trailing_closure > 0) return;
+
+    usize_t lbrace_line = p->current.line;
+    /* speculative: only treat as trailing closure if we see "|...|" or
+       statement-like content (i.e., the brace is NOT a designated-init form
+       like `{ .field = ... }` — that prefix begins with TokDot). */
+    parser_state_t snap = save_state(p);
+    advance_parser(p); /* consume '{' */
+    if (check(p, TokDot)) {
+        /* Looks like `{ .field = ... }` — leave alone. */
+        restore_state(p, snap);
+        return;
+    }
+
+    node_list_t params;
+    node_list_init(&params);
+
+    if (check(p, TokPipe)) {
+        advance_parser(p); /* consume opening '|' */
+        if (!check(p, TokPipe)) {
+            do {
+                token_t pname = consume_name(p, "trailing-closure parameter name");
+                node_t *param = make_node(NodeVarDecl, pname.line);
+                ast_set_loc(param, pname);
+                param->as.var_decl.name    = copy_token_text(pname);
+                type_info_t ti = NO_TYPE;
+                ti.base = TypeInfer;
+                param->as.var_decl.type    = ti;
+                param->as.var_decl.storage = StorageStack;
+                node_list_push(&params, param);
+            } while (match_tok(p, TokComma));
+        }
+        consume(p, TokPipe, "closing '|' after parameter list");
+    }
+
+    /* parse statements until '}'.  Trailing-closure bodies accept a final
+       bare expression (no ';') as an implicit return — that's the whole
+       point of `{|x| x*2}`.  Statements that obviously start with a
+       keyword/decl are still parsed via parse_statement. */
+    node_t *body = make_node(NodeBlock, lbrace_line);
+    node_list_init(&body->as.block.stmts);
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        /* Only treat as a statement when prefix is unambiguous.  We
+           deliberately do NOT call `can_start_var_decl` here because it
+           accepts `Ident *...` forms that collide with `x * 3` inside
+           a trailing closure body. */
+        boolean_t starts_var_decl_unambig =
+               check(p, TokStack)    || check(p, TokHeap)
+            || check(p, TokLet)      || check(p, TokAtomic)
+            || check(p, TokConst)    || check(p, TokFinal)
+            || check(p, TokVolatile) || check(p, TokTls)
+            || is_builtin_type_token(p->current.kind);
+        boolean_t is_stmt_form =
+               check(p, TokRet)    || check(p, TokIf)     || check(p, TokFor)
+            || check(p, TokForeach)|| check(p, TokWhile)  || check(p, TokDo)
+            || check(p, TokInf)    || check(p, TokMatch)  || check(p, TokSwitch)
+            || check(p, TokDefer)  || check(p, TokBreak)  || check(p, TokContinue)
+            || check(p, TokPrint)  || check(p, TokLBrace) || check(p, TokUnsafe)
+            || check(p, TokZone)   || check(p, TokWith)
+            || check(p, TokWatch)  || check(p, TokSend)   || check(p, TokQuit)
+            || starts_var_decl_unambig;
+        if (is_stmt_form) {
+            node_t *stmt = parse_statement(p);
+            if (stmt) node_list_push(&body->as.block.stmts, stmt);
+            continue;
+        }
+        node_t *expr = parse_expr(p);
+        if (check(p, TokRBrace)) {
+            /* implicit-return tail */
+            node_t *ret_node = make_node(NodeRetStmt, expr->line);
+            node_list_init(&ret_node->as.ret_stmt.values);
+            node_list_push(&ret_node->as.ret_stmt.values, expr);
+            node_list_push(&body->as.block.stmts, ret_node);
+            break;
+        }
+        consume(p, TokSemicolon, "';' or '}'");
+        node_t *st = make_node(NodeExprStmt, expr->line);
+        st->as.expr_stmt.expr = expr;
+        node_list_push(&body->as.block.stmts, st);
+    }
+    consume(p, TokRBrace, "'}'");
+
+    type_info_t inferred_ret = NO_TYPE;
+    inferred_ret.base = TypeInfer;
+
+    node_t *lam = make_node(NodeLambda, lbrace_line);
+    lam->as.lambda_expr.params         = params;
+    lam->as.lambda_expr.ret_type       = inferred_ret;
+    lam->as.lambda_expr.body           = body;
+    lam->as.lambda_expr.mangled_name   = Null;
+    lam->as.lambda_expr.inferred_params = True;
+    lam->as.lambda_expr.inferred_ret   = True;
+
+    node_list_push(args_dest, lam);
 }
 
 /* ── postfix: calls, indexing, member access, ++/-- ── */
@@ -731,6 +1176,7 @@ static node_t *parse_postfix(parser_t *p) {
             n->as.self_method_call.type_name = type_name;
             n->as.self_method_call.method = method_name;
             n->as.self_method_call.args = args;
+            parse_trailing_closure(p, &n->as.self_method_call.args);
             expr = n;
             continue;
         }
@@ -751,6 +1197,7 @@ static node_t *parse_postfix(parser_t *p) {
             n->source_file = expr->source_file;
             n->as.call.callee = name;
             n->as.call.args = args;
+            parse_trailing_closure(p, &n->as.call.args);
             expr = n;
             continue;
         }
@@ -950,6 +1397,7 @@ static node_t *parse_postfix(parser_t *p) {
                 node_t *n = make_node(NodeConstructorCall, line);
                 n->as.ctor_call.type_name = type_name;
                 n->as.ctor_call.args = args;
+                parse_trailing_closure(p, &n->as.ctor_call.args);
                 expr = n;
                 continue;
             }
@@ -990,6 +1438,7 @@ static node_t *parse_postfix(parser_t *p) {
                 n->as.method_call.object = expr;
                 n->as.method_call.method = field_name;
                 n->as.method_call.args = args;
+                parse_trailing_closure(p, &n->as.method_call.args);
                 expr = n;
                 continue;
             }
@@ -1000,6 +1449,46 @@ static node_t *parse_postfix(parser_t *p) {
             n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
             n->as.member_expr.object = expr;
             n->as.member_expr.field = field_name;
+            expr = n;
+            continue;
+        }
+
+        /* colon static accessor: ident:fn(args)  or  ident:Type:method(args)
+           Only valid when the LHS is a plain identifier (module/submod alias).
+           Disambiguated from arr[lo:hi] because we are outside '[...]' here. */
+        if (check(p, TokColon) && expr->kind == NodeIdentExpr) {
+            usize_t line = p->current.line;
+            advance_parser(p); /* consume ':' */
+
+            token_t seg1_tok = consume(p, TokIdent, "static member name after ':'");
+            char *seg1 = copy_token_text(seg1_tok);
+
+            char *module_name = expr->as.ident.name;
+            char *type_name   = Null;
+            char *method_name = seg1;
+
+            /* optional second ':' — module:Type:method */
+            if (check(p, TokColon)) {
+                advance_parser(p); /* consume second ':' */
+                token_t seg2_tok = consume(p, TokIdent, "method name after ':'");
+                type_name   = seg1;
+                method_name = copy_token_text(seg2_tok);
+            }
+
+            consume(p, TokLParen, "'(' after colon accessor");
+            node_list_t args;
+            node_list_init(&args);
+            if (!check(p, TokRParen)) {
+                do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRParen, "')'");
+
+            node_t *n = make_node(NodeColonCall, line);
+            n->as.colon_call.module_name = module_name;
+            n->as.colon_call.type_name   = type_name;
+            n->as.colon_call.method_name = method_name;
+            n->as.colon_call.args        = args;
+            parse_trailing_closure(p, &n->as.colon_call.args);
             expr = n;
             continue;
         }
@@ -1421,6 +1910,106 @@ static node_t *parse_ternary(parser_t *p) {
     return cond;
 }
 
+/* ── pipeline: a |> f.(b, c)  →  f.(a, b, c) ──
+ * Pure parser desugar — no new AST node.  Left-associative.  Precedence sits
+ * between assignment and ternary, so chained `|>` reads top-to-bottom.
+ *
+ *   a |> f.(b, c)        → f.(a, b, c)
+ *   a |> f               → f.(a)
+ *   a |> obj.method.(b)  → obj.method.(a, b)
+ *   a |> Type.method     → Type.method.(a)              (member auto-call)
+ *   a |> mod:fn          → mod:fn(a)                    (colon auto-call)
+ *   a |> lam.(x){...}    → (lam.(x){...}).(a)           (rare — wraps lambda)
+ */
+static node_list_t prepend_arg(node_t *first, node_list_t orig) {
+    node_list_t out;
+    node_list_init(&out);
+    node_list_push(&out, first);
+    for (usize_t i = 0; i < orig.count; i++)
+        node_list_push(&out, orig.items[i]);
+    return out;
+}
+
+static node_t *parse_pipeline(parser_t *p) {
+    node_t *left = parse_ternary(p);
+    while (check(p, TokPipeline)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume '|>' */
+        node_t *right = parse_ternary(p);
+
+        switch (right->kind) {
+            case NodeCallExpr:
+                right->as.call.args = prepend_arg(left, right->as.call.args);
+                left = right;
+                break;
+            case NodeMethodCall:
+                right->as.method_call.args = prepend_arg(left, right->as.method_call.args);
+                left = right;
+                break;
+            case NodeColonCall:
+                right->as.colon_call.args = prepend_arg(left, right->as.colon_call.args);
+                left = right;
+                break;
+            case NodeConstructorCall:
+                right->as.ctor_call.args = prepend_arg(left, right->as.ctor_call.args);
+                left = right;
+                break;
+            case NodeSelfMethodCall:
+                right->as.self_method_call.args = prepend_arg(left, right->as.self_method_call.args);
+                left = right;
+                break;
+            case NodeIdentExpr: {
+                /* bare ident pipes auto-call: a |> f → f.(a) */
+                node_t *n = make_node(NodeCallExpr, line);
+                n->as.call.callee = right->as.ident.name;
+                node_list_init(&n->as.call.args);
+                node_list_push(&n->as.call.args, left);
+                left = n;
+                break;
+            }
+            case NodeMemberExpr: {
+                /* obj.field |>  → method-call on the member chain with single arg */
+                node_t *n = make_node(NodeMethodCall, line);
+                n->as.method_call.object = right->as.member_expr.object;
+                n->as.method_call.method = right->as.member_expr.field;
+                node_list_init(&n->as.method_call.args);
+                node_list_push(&n->as.method_call.args, left);
+                left = n;
+                break;
+            }
+            case NodeLambda: {
+                /* (lam.(x){...}).(a) — wrap as direct call.  The lambda is
+                   lifted to a top-level fn at codegen, so we synthesize a
+                   NodeCallExpr with a placeholder callee that gen_pipeline_call
+                   would resolve.  To keep v1 simple, we emit a method-shaped
+                   call where the object is the lambda itself.  Codegen of
+                   NodeMethodCall already evaluates `object`; we need a tiny
+                   special path.  Easier approach: produce a method-style call
+                   that gen_call can handle by direct invocation. */
+                /* Strategy: use NodeMethodCall with a synthetic empty method,
+                   where the object expr is the lambda — and we emit a special
+                   marker.  Simpler: don't allow lam on RHS in v1. */
+                diag_begin_error("lambda on the right of '|>' is not supported in v1");
+                diag_span(SRC_LOC(line, p->previous.col, 2), True,
+                          "bind the lambda to a variable and pipe into it instead");
+                diag_finish();
+                p->had_error = True;
+                left = right;
+                break;
+            }
+            default:
+                diag_begin_error("right side of '|>' must be a call or callable");
+                diag_span(SRC_LOC(line, p->previous.col, 2), True,
+                          "expected a call like f.(b) or a callable identifier");
+                diag_finish();
+                p->had_error = True;
+                left = right;
+                break;
+        }
+    }
+    return left;
+}
+
 /* ── assignment: = += -= *= /= %= &= |= ^= <<= >>= ── */
 
 static boolean_t is_compound_assign(token_kind_t k) {
@@ -1431,7 +2020,7 @@ static boolean_t is_compound_assign(token_kind_t k) {
 }
 
 static node_t *parse_assignment(parser_t *p) {
-    node_t *expr = parse_ternary(p);
+    node_t *expr = parse_pipeline(p);
 
     if (expr->kind == NodeIdentExpr || expr->kind == NodeIndexExpr
         || expr->kind == NodeMemberExpr || expr->kind == NodeSelfMemberExpr

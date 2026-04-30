@@ -1,0 +1,18 @@
+mod section_placement;
+
+// Put selected definitions into linker-visible sections.
+// This feels like a strong fit for fileheaders because it is about codegen,
+// not type semantics.
+
+@[[section: "__TEXT,__vectors"]]
+int fn reset_vector(void): i32 {
+    ret 0;
+}
+
+@[[section: "__DATA,__boot_config"]]
+int stack u32 boot_magic = 0x53545348; // 'STSH' packed little-endian
+
+@[[section: "__TEXT,__fastcode", align: 64]]
+fn crc32_step(stack u32 state, stack u32 byte): u32 {
+    ret (state << 1) ^ byte;
+}

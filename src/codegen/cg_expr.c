@@ -49,10 +49,73 @@ static boolean_t const_int_value(node_t *node, long *out) {
     return False;
 }
 
+static boolean_t const_float_value(node_t *node, double *out) {
+    if (!node) return False;
+    if (node->kind == NodeFloatLitExpr) {
+        if (out) *out = node->as.float_lit.value;
+        return True;
+    }
+    if (node->kind == NodeIntLitExpr) {
+        if (out) *out = (double)node->as.int_lit.value;
+        return True;
+    }
+    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokMinus
+            && node->as.unary.operand) {
+        node_t *op = node->as.unary.operand;
+        if (op->kind == NodeFloatLitExpr) {
+            if (out) *out = -op->as.float_lit.value;
+            return True;
+        }
+        if (op->kind == NodeIntLitExpr) {
+            if (out) *out = -(double)op->as.int_lit.value;
+            return True;
+        }
+    }
+    return False;
+}
+
+static boolean_t range_has_float_bound(node_t *node) {
+    if (!node || node->kind != NodeRangeExpr) return False;
+    node_t *parts[3] = { node->as.range_expr.start, node->as.range_expr.end, node->as.range_expr.step };
+    for (int i = 0; i < 3; i++) {
+        node_t *p = parts[i];
+        if (!p) continue;
+        if (p->kind == NodeFloatLitExpr) return True;
+        if (p->kind == NodeUnaryPrefixExpr && p->as.unary.op == TokMinus
+                && p->as.unary.operand
+                && p->as.unary.operand->kind == NodeFloatLitExpr) return True;
+    }
+    return False;
+}
+
 static long count_range_values(node_t *node, boolean_t *ok) {
+    if (!node || node->kind != NodeRangeExpr) {
+        if (ok) *ok = False;
+        return 0;
+    }
+    if (range_has_float_bound(node)) {
+        double start = 0.0, end = 0.0, step = 1.0;
+        if (!const_float_value(node->as.range_expr.start, &start)
+                || !const_float_value(node->as.range_expr.end, &end)
+                || (node->as.range_expr.step && !const_float_value(node->as.range_expr.step, &step))
+                || step == 0.0) {
+            if (ok) *ok = False;
+            return 0;
+        }
+        long count = 0;
+        if (step > 0.0) {
+            double limit = node->as.range_expr.inclusive ? end + (step * 0.5) : end;
+            for (double v = start; v < limit; v += step) count++;
+        } else {
+            double limit = node->as.range_expr.inclusive ? end + (step * 0.5) : end;
+            for (double v = start; v > limit; v += step) count++;
+        }
+        if (ok) *ok = True;
+        return count;
+    }
+
     long start = 0, end = 0, step = 1;
-    if (!node || node->kind != NodeRangeExpr
-            || !const_int_value(node->as.range_expr.start, &start)
+    if (!const_int_value(node->as.range_expr.start, &start)
             || !const_int_value(node->as.range_expr.end, &end)) {
         if (ok) *ok = False;
         return 0;
@@ -155,12 +218,19 @@ static long count_spread_values(cg_t *cg, node_t *node, boolean_t *ok) {
 
 static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node);
 
-static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
-                              LLVMTypeRef elem_ty, long idx, node_t *value_node) {
-    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-    LLVMValueRef idx_val = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)idx, 0);
-    LLVMValueRef indices[2] = { zero, idx_val };
-    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.idx");
+/* Element-store helpers come in two flavours:
+ *   *_at(base, elem_ty, ...)  — base is a T* pointing to slot 0 of a flat
+ *       buffer (either heap-malloc'd or a GEP'd alloca). Used by both the
+ *       array-init path (via thin wrappers below) and gen_make_init.
+ *   plain wrappers (tmp, arr_ty, elem_ty, ...) — preserve the previous API
+ *       for callers that own an alloca [N x T]. They GEP to slot 0 then
+ *       delegate to *_at. */
+
+static void store_array_value_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef elem_ty,
+                                 long idx, node_t *value_node) {
+    LLVMValueRef idx_val = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
+                                        (unsigned long long)idx, 0);
+    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &idx_val, 1, "init.idx");
     LLVMTypeRef saved_hint = cg->hint_ret_type;
     cg->hint_ret_type = elem_ty;
     LLVMValueRef val = gen_expr(cg, value_node);
@@ -170,8 +240,87 @@ static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
     LLVMBuildStore(cg->builder, val, gep);
 }
 
-static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
-                                   LLVMTypeRef elem_ty, long *cursor, node_t *node) {
+static void store_array_value(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                              LLVMTypeRef elem_ty, long idx, node_t *value_node) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef indices[2] = { zero, zero };
+    LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.base");
+    store_array_value_at(cg, base, elem_ty, idx, value_node);
+}
+
+/* Above this count, comptime ranges expand to a runtime loop instead of an
+ * unrolled sequence of stores. Keeps IR small for ranges like 0..=10000.
+ * Picked so that small typical ranges (vectors, weeks-of-year, RGB tables)
+ * still unroll cleanly. */
+#define MAKE_INIT_LOOP_THRESHOLD 64
+
+static boolean_t emit_range_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef elem_ty,
+                                      long *cursor, node_t *node) {
+    if (range_has_float_bound(node)) {
+        double start = 0.0, end = 0.0, step = 1.0;
+        if (!const_float_value(node->as.range_expr.start, &start)
+                || !const_float_value(node->as.range_expr.end, &end)
+                || (node->as.range_expr.step && !const_float_value(node->as.range_expr.step, &step))
+                || step == 0.0) {
+            diag_begin_error("range bounds and step must be compile-time literals");
+            diag_span(DIAG_NODE(node), True, "range used here");
+            diag_finish();
+            return False;
+        }
+        boolean_t ok = True;
+        long count = count_range_values(node, &ok);
+        if (!ok) return False;
+
+        if (count > MAKE_INIT_LOOP_THRESHOLD) {
+            /* runtime loop: for (i64 i=0; i<count; i++)
+             *   base[cursor+i] = (T)(start + (double)i * step) */
+            LLVMTypeRef i64_ty   = LLVMInt64TypeInContext(cg->ctx);
+            LLVMTypeRef dbl_ty   = LLVMDoubleTypeInContext(cg->ctx);
+            LLVMValueRef count_v = LLVMConstInt(i64_ty, (unsigned long long)count, 0);
+            LLVMValueRef start_v = LLVMConstReal(dbl_ty, start);
+            LLVMValueRef step_v  = LLVMConstReal(dbl_ty, step);
+            LLVMValueRef cur_v   = LLVMConstInt(i64_ty, (unsigned long long)(*cursor), 0);
+
+            LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rng.cond");
+            LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rng.body");
+            LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rng.end");
+
+            LLVMValueRef i_slot = alloc_in_entry(cg, i64_ty, "rng.i");
+            LLVMBuildStore(cg->builder, LLVMConstInt(i64_ty, 0, 0), i_slot);
+            LLVMBuildBr(cg->builder, cond_bb);
+
+            LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
+            LLVMValueRef i_v = LLVMBuildLoad2(cg->builder, i64_ty, i_slot, "rng.iv");
+            LLVMValueRef cmp = LLVMBuildICmp(cg->builder, LLVMIntULT, i_v, count_v, "rng.cmp");
+            LLVMBuildCondBr(cg->builder, cmp, body_bb, end_bb);
+
+            LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+            LLVMValueRef ifp     = LLVMBuildSIToFP(cg->builder, i_v, dbl_ty, "rng.if");
+            LLVMValueRef mul     = LLVMBuildFMul(cg->builder, ifp, step_v, "rng.mul");
+            LLVMValueRef val_dbl = LLVMBuildFAdd(cg->builder, start_v, mul, "rng.v");
+            LLVMValueRef val     = coerce_int(cg, val_dbl, elem_ty);
+            LLVMValueRef off     = LLVMBuildAdd(cg->builder, cur_v, i_v, "rng.off");
+            LLVMValueRef gep     = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &off, 1, "rng.gep");
+            LLVMBuildStore(cg->builder, val, gep);
+            LLVMValueRef inc = LLVMBuildAdd(cg->builder, i_v, LLVMConstInt(i64_ty, 1, 0), "rng.inc");
+            LLVMBuildStore(cg->builder, inc, i_slot);
+            LLVMBuildBr(cg->builder, cond_bb);
+
+            LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+            *cursor += count;
+            return True;
+        }
+
+        for (long i = 0; i < count; i++) {
+            node_t fake = {0};
+            fake.kind = NodeFloatLitExpr;
+            fake.as.float_lit.value = start + (double)i * step;
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
+            (*cursor)++;
+        }
+        return True;
+    }
+
     long start = 0, end = 0, step = 1;
     if (!const_int_value(node->as.range_expr.start, &start)
             || !const_int_value(node->as.range_expr.end, &end)
@@ -183,13 +332,53 @@ static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_t
         return False;
     }
 
+    boolean_t ok = True;
+    long count = count_range_values(node, &ok);
+    if (count > MAKE_INIT_LOOP_THRESHOLD) {
+        /* runtime loop: for (i64 i=0; i<count; i++)
+         *   base[cursor+i] = (T)(start + i*step) */
+        LLVMTypeRef i64_ty   = LLVMInt64TypeInContext(cg->ctx);
+        LLVMValueRef count_v = LLVMConstInt(i64_ty, (unsigned long long)count, 0);
+        LLVMValueRef start_v = LLVMConstInt(i64_ty, (unsigned long long)start, 1);
+        LLVMValueRef step_v  = LLVMConstInt(i64_ty, (unsigned long long)step, 1);
+        LLVMValueRef cur_v   = LLVMConstInt(i64_ty, (unsigned long long)(*cursor), 0);
+
+        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rng.cond");
+        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rng.body");
+        LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rng.end");
+
+        LLVMValueRef i_slot = alloc_in_entry(cg, i64_ty, "rng.i");
+        LLVMBuildStore(cg->builder, LLVMConstInt(i64_ty, 0, 0), i_slot);
+        LLVMBuildBr(cg->builder, cond_bb);
+
+        LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
+        LLVMValueRef i_v = LLVMBuildLoad2(cg->builder, i64_ty, i_slot, "rng.iv");
+        LLVMValueRef cmp = LLVMBuildICmp(cg->builder, LLVMIntULT, i_v, count_v, "rng.cmp");
+        LLVMBuildCondBr(cg->builder, cmp, body_bb, end_bb);
+
+        LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+        LLVMValueRef mul    = LLVMBuildMul(cg->builder, i_v, step_v, "rng.mul");
+        LLVMValueRef val_i64 = LLVMBuildAdd(cg->builder, start_v, mul, "rng.v");
+        LLVMValueRef val    = coerce_int(cg, val_i64, elem_ty);
+        LLVMValueRef off    = LLVMBuildAdd(cg->builder, cur_v, i_v, "rng.off");
+        LLVMValueRef gep    = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &off, 1, "rng.gep");
+        LLVMBuildStore(cg->builder, val, gep);
+        LLVMValueRef inc = LLVMBuildAdd(cg->builder, i_v, LLVMConstInt(i64_ty, 1, 0), "rng.inc");
+        LLVMBuildStore(cg->builder, inc, i_slot);
+        LLVMBuildBr(cg->builder, cond_bb);
+
+        LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+        *cursor += count;
+        return True;
+    }
+
     if (step > 0) {
         long limit = node->as.range_expr.inclusive ? end + 1 : end;
         for (long v = start; v < limit; v += step) {
             node_t fake = {0};
             fake.kind = NodeIntLitExpr;
             fake.as.int_lit.value = v;
-            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
             (*cursor)++;
         }
     } else {
@@ -198,15 +387,23 @@ static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_t
             node_t fake = {0};
             fake.kind = NodeIntLitExpr;
             fake.as.int_lit.value = v;
-            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
             (*cursor)++;
         }
     }
     return True;
 }
 
-static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
-                                    LLVMTypeRef elem_ty, long *cursor, node_t *expr) {
+static boolean_t emit_range_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                                   LLVMTypeRef elem_ty, long *cursor, node_t *node) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef indices[2] = { zero, zero };
+    LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.base");
+    return emit_range_values_at(cg, base, elem_ty, cursor, node);
+}
+
+static boolean_t emit_spread_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef elem_ty,
+                                       long *cursor, node_t *expr) {
     if (!expr) return False;
 
     if (expr->kind == NodeStrLitExpr) {
@@ -214,14 +411,14 @@ static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_
             node_t fake = {0};
             fake.kind = NodeCharLitExpr;
             fake.as.char_lit.value = expr->as.str_lit.value[i];
-            store_array_value(cg, tmp, arr_ty, elem_ty, *cursor, &fake);
+            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
             (*cursor)++;
         }
         return True;
     }
 
     if (expr->kind == NodeRangeExpr)
-        return emit_range_values(cg, tmp, arr_ty, elem_ty, cursor, expr);
+        return emit_range_values_at(cg, base_ptr, elem_ty, cursor, expr);
 
     if (expr->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, expr->as.ident.name);
@@ -234,9 +431,10 @@ static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_
                 LLVMValueRef src_gep = LLVMBuildGEP2(cg->builder, sym->type, sym->value, src_indices, 2, "spread.src");
                 LLVMValueRef val = LLVMBuildLoad2(cg->builder, src_elem_ty, src_gep, "spread.val");
 
-                LLVMValueRef dst_idx = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)(*cursor), 0);
-                LLVMValueRef dst_indices[2] = { zero, dst_idx };
-                LLVMValueRef dst_gep = LLVMBuildGEP2(cg->builder, arr_ty, tmp, dst_indices, 2, "spread.dst");
+                LLVMValueRef dst_idx = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
+                                                    (unsigned long long)(*cursor), 0);
+                LLVMValueRef dst_gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr,
+                                                    &dst_idx, 1, "spread.dst");
                 if (src_elem_ty != elem_ty)
                     val = coerce_int(cg, val, elem_ty);
                 LLVMBuildStore(cg->builder, val, dst_gep);
@@ -250,6 +448,14 @@ static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_
     diag_span(DIAG_NODE(expr), True, "cannot spread this value");
     diag_finish();
     return False;
+}
+
+static boolean_t emit_spread_values(cg_t *cg, LLVMValueRef tmp, LLVMTypeRef arr_ty,
+                                    LLVMTypeRef elem_ty, long *cursor, node_t *expr) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef indices[2] = { zero, zero };
+    LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, tmp, indices, 2, "init.base");
+    return emit_spread_values_at(cg, base, elem_ty, cursor, expr);
 }
 
 static boolean_t store_struct_field(cg_t *cg, LLVMValueRef tmp, struct_reg_t *sr,
@@ -408,22 +614,47 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         sym = cg_lookup(cg, mangled);
     }
     if (!sym) {
-        diag_begin_error("undefined variable '%s'", node->as.ident.name);
-        diag_span(DIAG_NODE(node), True, "not found in this scope");
-        diag_note("variables must be declared before use");
-        /* Levenshtein suggestion: scan symbol table for close name */
-        usize_t best_dist = 3; /* max edit distance to suggest */
-        const char *best = Null;
-        for (usize_t i = 0; i < cg->locals.count; i++) {
-            usize_t d = levenshtein(node->as.ident.name, cg->locals.entries[i].name);
-            if (d < best_dist) { best_dist = d; best = cg->locals.entries[i].name; }
+        /* Inside a lambda body (v1: non-capturing only): if the name matches
+           an outer-scope local that was hidden when entering the lambda,
+           emit a specific "may not capture" error. */
+        if (cg->lambda_depth > 0 && cg->lambda_blocked_names) {
+            for (usize_t i = 0; i < cg->lambda_blocked_count; i++) {
+                if (strcmp(cg->lambda_blocked_names[i], node->as.ident.name) == 0) {
+                    char dedup_key[600];
+                    snprintf(dedup_key, sizeof(dedup_key), "lam_capture:%s", node->as.ident.name);
+                    if (!cg_error_already_reported(cg, dedup_key)) {
+                        diag_begin_error("lambda may not capture local '%s' from enclosing scope",
+                                         node->as.ident.name);
+                        diag_set_category(ErrCatOther);
+                        diag_span(DIAG_NODE(node), True, "captured here");
+                        diag_note("capturing closures land in v2 with explicit `heap`/`stack` env storage");
+                        diag_finish();
+                    }
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+            }
         }
-        for (usize_t i = 0; i < cg->globals.count; i++) {
-            usize_t d = levenshtein(node->as.ident.name, cg->globals.entries[i].name);
-            if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+        char dedup_key[600];
+        snprintf(dedup_key, sizeof(dedup_key), "undef_var:%s", node->as.ident.name);
+        if (!cg_error_already_reported(cg, dedup_key)) {
+            diag_begin_error("undefined variable '%s'", node->as.ident.name);
+            diag_set_category(ErrCatUndefined);
+            diag_span(DIAG_NODE(node), True, "not found in this scope");
+            diag_note("variables must be declared before use");
+            /* Levenshtein suggestion: scan symbol table for close name */
+            usize_t best_dist = 3; /* max edit distance to suggest */
+            const char *best = Null;
+            for (usize_t i = 0; i < cg->locals.count; i++) {
+                usize_t d = levenshtein(node->as.ident.name, cg->locals.entries[i].name);
+                if (d < best_dist) { best_dist = d; best = cg->locals.entries[i].name; }
+            }
+            for (usize_t i = 0; i < cg->globals.count; i++) {
+                usize_t d = levenshtein(node->as.ident.name, cg->globals.entries[i].name);
+                if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+            }
+            if (best) diag_help("did you mean '%s'?", best);
+            diag_finish();
         }
-        if (best) diag_help("did you mean '%s'?", best);
-        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     if (sym->flags & SymHeapVar) {
@@ -975,7 +1206,258 @@ static LLVMValueRef try_coerce_arg_to_iface(cg_t *cg, LLVMValueRef arg_val,
     return construct_fat_ptr(cg, struct_name, cg->interfaces[iface_ii].name, tmp);
 }
 
+/* ── lambda expressions (sugar pack v1) ──
+ * lam.(params): ret { body } — non-capturing.  Lifted to a module-level LLVM
+ * function with internal linkage; the expression evaluates to a fn pointer.
+ * Param/ret types may be TypeInfer when the lambda came from a trailing
+ * closure: gen_call backfills concrete types before invoking gen_lambda. */
+
+/* Forward declaration — needed by infer_trailing_closure_types. */
+static LLVMValueRef gen_lambda(cg_t *cg, node_t *node);
+
+/* Walk the AST decl list for a callee fn and yank out its source-level
+   parameter type at slot `slot` (0-based, no implicit-this offset).  Returns
+   True on success. */
+static boolean_t lookup_callee_param_type(cg_t *cg, const char *callee,
+                                          usize_t slot, type_info_t *out_param_ti,
+                                          type_info_t *out_ret_ti) {
+    node_t *fn = find_fn_decl(cg, callee);
+    if (!fn) {
+        /* Try mangled (intra-module) name */
+        if (cg->current_module_prefix[0]) {
+            char mangled[512];
+            snprintf(mangled, sizeof(mangled), "%s__%s",
+                     cg->current_module_prefix, callee);
+            fn = find_fn_decl(cg, mangled);
+        }
+    }
+    if (!fn || fn->kind != NodeFnDecl) return False;
+    if (slot >= fn->as.fn_decl.params.count) return False;
+    node_t *param = fn->as.fn_decl.params.items[slot];
+    type_info_t pti = param->as.var_decl.type;
+    if (pti.base != TypeFnPtr || !pti.fn_ptr_desc) return False;
+    if (out_ret_ti) *out_ret_ti = pti.fn_ptr_desc->ret_type;
+    /* For trailing-closure inference we copy the fn-pointer descriptor as a
+       whole — the lambda's params are inferred from desc->params.  We
+       overload `out_param_ti` to mean "the full fn-ptr descriptor for the
+       slot".  Caller distinguishes via base == TypeFnPtr. */
+    if (out_param_ti) *out_param_ti = pti;
+    return True;
+}
+
+/* Backfill TypeInfer params/ret on a NodeLambda from the callee's matching
+   fn-pointer parameter slot.  Caller must already know the matching fn
+   parameter is a fn pointer with the right arity. */
+static void apply_inferred_lambda_types(node_t *lam, fn_ptr_desc_t *desc) {
+    if (!lam || lam->kind != NodeLambda || !desc) return;
+    usize_t lp = lam->as.lambda_expr.params.count;
+    /* Be lenient if arities mismatch: assign what we can. */
+    for (usize_t i = 0; i < lp && i < desc->param_count; i++) {
+        node_t *p = lam->as.lambda_expr.params.items[i];
+        if (p->as.var_decl.type.base == TypeInfer) {
+            p->as.var_decl.type = desc->params[i].type;
+            if (p->as.var_decl.storage == StorageDefault)
+                p->as.var_decl.storage = desc->params[i].storage != StorageDefault
+                                       ? desc->params[i].storage
+                                       : StorageStack;
+        }
+    }
+    if (lam->as.lambda_expr.ret_type.base == TypeInfer)
+        lam->as.lambda_expr.ret_type = desc->ret_type;
+    lam->as.lambda_expr.inferred_params = False;
+    lam->as.lambda_expr.inferred_ret    = False;
+}
+
+/* When passing a lambda as an argument to a call, fix up its inferred types
+   from the callee's signature before lowering.  Operates on the full args
+   list of a NodeCall; for trailing-closure cases the lambda is the last arg. */
+static void infer_call_lambda_args(cg_t *cg, const char *callee, node_list_t args) {
+    for (usize_t i = 0; i < args.count; i++) {
+        node_t *a = args.items[i];
+        if (a && a->kind == NodeLambda &&
+            (a->as.lambda_expr.inferred_params || a->as.lambda_expr.inferred_ret)) {
+            type_info_t pti, rti;
+            if (lookup_callee_param_type(cg, callee, i, &pti, &rti) &&
+                pti.base == TypeFnPtr && pti.fn_ptr_desc) {
+                apply_inferred_lambda_types(a, pti.fn_ptr_desc);
+            } else {
+                /* Could not resolve callee signature; default any remaining
+                   TypeInfer to i32/void so codegen still produces something
+                   usable and the user gets a downstream error if mismatched. */
+                for (usize_t j = 0; j < a->as.lambda_expr.params.count; j++) {
+                    node_t *p = a->as.lambda_expr.params.items[j];
+                    if (p->as.var_decl.type.base == TypeInfer) {
+                        type_info_t ti = NO_TYPE;
+                        ti.base = TypeI32;
+                        p->as.var_decl.type = ti;
+                        if (p->as.var_decl.storage == StorageDefault)
+                            p->as.var_decl.storage = StorageStack;
+                    }
+                }
+                if (a->as.lambda_expr.ret_type.base == TypeInfer) {
+                    type_info_t ti = NO_TYPE;
+                    ti.base = TypeI32;
+                    a->as.lambda_expr.ret_type = ti;
+                }
+                a->as.lambda_expr.inferred_params = False;
+                a->as.lambda_expr.inferred_ret    = False;
+            }
+        }
+    }
+}
+
+static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
+    /* If we still have unresolved inferred types (lambda used outside a
+       call argument context), default them to i32/void so we can still
+       produce code — produces a typed fn whose signature may not match
+       what the user expects, but avoids a crash. */
+    {
+        for (usize_t i = 0; i < node->as.lambda_expr.params.count; i++) {
+            node_t *p = node->as.lambda_expr.params.items[i];
+            if (p->as.var_decl.type.base == TypeInfer) {
+                diag_begin_error("trailing-closure parameter '%s' has unknown type",
+                                 p->as.var_decl.name ? p->as.var_decl.name : "?");
+                diag_span(DIAG_NODE(node), True,
+                          "callee signature could not be resolved for inference");
+                diag_note("annotate the parameter type explicitly via lam.(stack T x)");
+                diag_finish();
+                type_info_t ti = NO_TYPE;
+                ti.base = TypeI32;
+                p->as.var_decl.type = ti;
+                if (p->as.var_decl.storage == StorageDefault)
+                    p->as.var_decl.storage = StorageStack;
+            }
+        }
+        if (node->as.lambda_expr.ret_type.base == TypeInfer) {
+            type_info_t ti = NO_TYPE;
+            ti.base = TypeVoid;
+            node->as.lambda_expr.ret_type = ti;
+        }
+    }
+
+    /* synthesize a unique mangled name */
+    char buf[64];
+    snprintf(buf, sizeof(buf), "__lam_%lu",
+             (unsigned long)cg->lambda_counter++);
+    char *mangled = ast_strdup(buf, strlen(buf));
+    node->as.lambda_expr.mangled_name = mangled;
+
+    /* build LLVM param types */
+    usize_t pc = node->as.lambda_expr.params.count;
+    LLVMTypeRef *ptypes = Null;
+    heap_t pt_heap = NullHeap;
+    if (pc > 0) {
+        pt_heap = allocate(pc, sizeof(LLVMTypeRef));
+        ptypes = pt_heap.pointer;
+        for (usize_t i = 0; i < pc; i++) {
+            node_t *p = node->as.lambda_expr.params.items[i];
+            type_info_t pti = resolve_alias(cg, p->as.var_decl.type);
+            ptypes[i] = get_llvm_type(cg, pti);
+        }
+    }
+    type_info_t rti_resolved = resolve_alias(cg, node->as.lambda_expr.ret_type);
+    LLVMTypeRef ret_type = get_llvm_type(cg, rti_resolved);
+
+    LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes, (unsigned)pc, 0);
+    LLVMValueRef fn = LLVMAddFunction(cg->module, mangled, fn_type);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+
+    /* register in the global symtab so further references can resolve */
+    type_info_t dummy = NO_TYPE;
+    symtab_add(&cg->globals, ast_strdup(mangled, strlen(mangled)),
+               fn, Null, dummy, False);
+
+    if (pc > 0) deallocate(pt_heap);
+
+    /* ── save outer codegen state ── */
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
+    LLVMValueRef saved_fn = cg->current_fn;
+    char *saved_struct = cg->current_struct_name;
+    boolean_t saved_inline_method = cg->current_fn_is_inline_method;
+    boolean_t saved_entry_main = cg->current_fn_is_entry_main;
+    linkage_t saved_linkage = cg->current_fn_linkage;
+    LLVMBasicBlockRef saved_break = cg->break_target;
+    LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_locals_count = cg->locals.count;
+    usize_t saved_dtor_depth = cg->dtor_depth;
+
+    /* snapshot outer local NAMES so capture detection in gen_ident can
+       distinguish "captured outer local" from generic "undefined" */
+    char **saved_blocked = cg->lambda_blocked_names;
+    usize_t saved_blocked_count = cg->lambda_blocked_count;
+    char **new_blocked = Null;
+    heap_t blocked_heap = NullHeap;
+    if (saved_locals_count > 0) {
+        blocked_heap = allocate(saved_locals_count, sizeof(char *));
+        new_blocked = blocked_heap.pointer;
+        for (usize_t i = 0; i < saved_locals_count; i++)
+            new_blocked[i] = cg->locals.entries[i].name;
+    }
+    cg->lambda_blocked_names = new_blocked;
+    cg->lambda_blocked_count = saved_locals_count;
+    cg->lambda_depth++;
+
+    /* hide outer locals; set current_fn to the lambda */
+    cg->locals.count = 0;
+    cg->current_fn = fn;
+    cg->current_fn_is_inline_method = False;
+    cg->current_fn_is_entry_main = False;
+    cg->current_struct_name = Null;
+    cg->break_target = Null;
+    cg->continue_target = Null;
+    cg->dtor_depth = 0;
+
+    LLVMBasicBlockRef entry =
+        LLVMAppendBasicBlockInContext(cg->ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(cg->builder, entry);
+
+    /* register lambda params as locals */
+    for (usize_t i = 0; i < pc; i++) {
+        node_t *p = node->as.lambda_expr.params.items[i];
+        type_info_t pti = resolve_alias(cg, p->as.var_decl.type);
+        LLVMTypeRef ptype = get_llvm_type(cg, pti);
+        LLVMValueRef alloca_val = LLVMBuildAlloca(cg->builder, ptype,
+                                                   p->as.var_decl.name);
+        LLVMBuildStore(cg->builder, LLVMGetParam(fn, (unsigned)i), alloca_val);
+        symtab_add(&cg->locals, p->as.var_decl.name, alloca_val, ptype, pti, 0);
+    }
+
+    /* generate the body */
+    gen_block(cg, node->as.lambda_expr.body);
+
+    /* default ret if missing */
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg->builder);
+    if (!LLVMGetBasicBlockTerminator(cur_bb)) {
+        if (rti_resolved.base == TypeVoid && !rti_resolved.is_pointer)
+            LLVMBuildRetVoid(cg->builder);
+        else
+            LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
+    }
+
+    /* ── restore outer state ── */
+    cg->lambda_depth--;
+    if (blocked_heap.pointer) deallocate(blocked_heap);
+    cg->lambda_blocked_names = saved_blocked;
+    cg->lambda_blocked_count = saved_blocked_count;
+    cg->locals.count = saved_locals_count;
+    cg->dtor_depth = saved_dtor_depth;
+    cg->current_fn = saved_fn;
+    cg->current_struct_name = saved_struct;
+    cg->current_fn_is_inline_method = saved_inline_method;
+    cg->current_fn_is_entry_main = saved_entry_main;
+    cg->current_fn_linkage = saved_linkage;
+    cg->break_target = saved_break;
+    cg->continue_target = saved_cont;
+    if (saved_bb) LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
+
+    /* expression value: the function pointer (an opaque LLVM ptr) */
+    return fn;
+}
+
 static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
+    /* sugar pack: backfill any TypeInfer params on lambda args */
+    infer_call_lambda_args(cg, node->as.call.callee, node->as.call.args);
+
     symbol_t *sym = cg_lookup(cg, node->as.call.callee);
 
     /* intra-module unqualified call: try module__callee when inside an
@@ -1008,17 +1490,22 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         sym = try_instantiate_generic_fn(cg, node->as.call.callee);
     }
     if (!sym) {
-        diag_begin_error("undefined function or function pointer '%s'", node->as.call.callee);
-        diag_span(DIAG_NODE(node), True, "not defined in this module");
-        /* Suggest close names */
-        usize_t best_dist = 3;
-        const char *best = Null;
-        for (usize_t i = 0; i < cg->globals.count; i++) {
-            usize_t d = levenshtein(node->as.call.callee, cg->globals.entries[i].name);
-            if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+        char dedup_key[600];
+        snprintf(dedup_key, sizeof(dedup_key), "undef_fn:%s", node->as.call.callee);
+        if (!cg_error_already_reported(cg, dedup_key)) {
+            diag_begin_error("undefined function or function pointer '%s'", node->as.call.callee);
+            diag_set_category(ErrCatUndefined);
+            diag_span(DIAG_NODE(node), True, "not defined in this module");
+            /* Suggest close names */
+            usize_t best_dist = 3;
+            const char *best = Null;
+            for (usize_t i = 0; i < cg->globals.count; i++) {
+                usize_t d = levenshtein(node->as.call.callee, cg->globals.entries[i].name);
+                if (d < best_dist) { best_dist = d; best = cg->globals.entries[i].name; }
+            }
+            if (best) diag_help("did you mean '%s'?", best);
+            diag_finish();
         }
-        if (best) diag_help("did you mean '%s'?", best);
-        diag_finish();
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     usize_t user_argc = node->as.call.args.count;
@@ -1681,16 +2168,33 @@ static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
         LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, free_args, 1, "");
     }
 
-    /* call the original function */
+    /* call the original function.  After the v2 coroutine migration `async fn`
+       returns a coroutine handle (ptr) instead of T directly.  When the
+       caller dispatches such a function via `thread.(fn)(args)`, the worker
+       must drive the coroutine to completion and unwrap the typed result so
+       the future buffer holds T (matching the wrapper's `result_size`). */
     LLVMTypeRef  orig_fn_type = LLVMGlobalGetValueType(sym->value);
+    boolean_t fn_is_async_coro = fn_decl
+        && fn_decl->as.fn_decl.is_async
+        && fn_decl->as.fn_decl.coro_flavor != CoroNone;
     if (void_return) {
-        LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
-                       call_args, (unsigned)param_count, "");
+        LLVMValueRef ret_val = LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
+                                               call_args, (unsigned)param_count, "");
+        if (fn_is_async_coro) {
+            /* drive the void task to completion, then destroy. */
+            type_info_t void_ti = NO_TYPE;
+            (void)sts_emit_await_task(cg, ret_val, void_ti, Null);
+        }
     } else {
         LLVMValueRef ret_val = LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
                                                call_args, (unsigned)param_count, "tret");
-        /* store result into result buffer */
-        LLVMBuildStore(cg->builder, ret_val, result_param);
+        if (fn_is_async_coro) {
+            type_info_t rti = fn_decl->as.fn_decl.return_types[0];
+            LLVMValueRef typed = sts_emit_await_task(cg, ret_val, rti, Null);
+            LLVMBuildStore(cg->builder, typed, result_param);
+        } else {
+            LLVMBuildStore(cg->builder, ret_val, result_param);
+        }
     }
     LLVMBuildRetVoid(cg->builder);
 
@@ -1721,35 +2225,33 @@ static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
     return w;
 }
 
-static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
-    const char *callee = node->as.thread_call.callee;
-
-    /* look up the function in the symbol table */
+/* Shared lowering for thread.() and async.(): pack args on the heap, call
+   the provided runtime dispatch function, return the opaque handle. */
+static LLVMValueRef gen_dispatch_to_pool(cg_t *cg, node_t *diag_node,
+        const char *callee, node_list_t *args,
+        LLVMValueRef dispatch_fn, LLVMTypeRef dispatch_type, const char *result_name) {
     symbol_t *sym = cg_lookup(cg, callee);
     if (!sym) {
         diag_begin_error("undefined function '%s'", callee);
-        diag_span(DIAG_NODE(node), True, "not defined in this module");
+        diag_span(DIAG_NODE(diag_node), True, "not defined in this module");
         diag_note("thread dispatch requires the function to be visible in this module");
         diag_finish();
         return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
-    /* find AST declaration for param / return type info */
     node_t *fn_decl = find_fn_decl(cg, callee);
     if (!fn_decl) {
         diag_begin_error("cannot find declaration of '%s' for thread dispatch", callee);
-        diag_span(DIAG_NODE(node), True, "dispatched here");
+        diag_span(DIAG_NODE(diag_node), True, "dispatched here");
         diag_note("function must be declared in the same compilation unit");
         diag_finish();
         return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
-    /* get / lazily create the wrapper function */
     thr_wrapper_t *w = get_or_create_thread_wrapper(cg, callee, sym, fn_decl);
 
-    /* ── pack arguments into a heap-allocated struct ── */
     LLVMValueRef args_ptr;
-    usize_t argc = node->as.thread_call.args.count;
+    usize_t argc = args ? args->count : 0;
 
     if (argc > 0 && w->args_struct_type) {
         LLVMValueRef sz = LLVMSizeOf(w->args_struct_type);
@@ -1758,7 +2260,7 @@ static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
         args_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
                                    cg->malloc_fn, malloc_args, 1, "thr_args");
         for (usize_t i = 0; i < argc; i++) {
-            LLVMValueRef val = gen_expr(cg, node->as.thread_call.args.items[i]);
+            LLVMValueRef val = gen_expr(cg, args->items[i]);
             LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, w->args_struct_type,
                                                     args_ptr, (unsigned)i, "af");
             LLVMBuildStore(cg->builder, val, gep);
@@ -1767,25 +2269,582 @@ static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
         args_ptr = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
-    /* ── call __thread_dispatch(wrapper_fn, args_ptr, result_size) ── */
     LLVMValueRef result_sz = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx),
                                            (unsigned long long)w->result_size, 0);
     LLVMValueRef dispatch_args[3] = { w->wrapper_fn, args_ptr, result_sz };
-    LLVMValueRef future = LLVMBuildCall2(cg->builder,
-                                          cg->thread_dispatch_type,
-                                          cg->thread_dispatch_fn,
-                                          dispatch_args, 3, "future");
-    return future;
+    return LLVMBuildCall2(cg->builder,
+                          dispatch_type,
+                          dispatch_fn,
+                          dispatch_args, 3, result_name);
+}
+
+static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
+    return gen_dispatch_to_pool(cg, node,
+        node->as.thread_call.callee, &node->as.thread_call.args,
+        cg->thread_dispatch_fn, cg->thread_dispatch_type, "thread_future");
+}
+
+static LLVMValueRef gen_async_call(cg_t *cg, node_t *node) {
+    /* `async.(fn)(args)` is now a synonym for a direct call.  The callee
+       (an `async fn`) is itself a coroutine that returns a `future.[T]`
+       handle.  Keeping the spelling alive lets old code keep compiling and
+       documents intent ("treat this call as async").  Rejecting it on a
+       non-async target is preserved so the legacy diagnostics still fire. */
+    const char *callee = node->as.async_call.callee;
+    node_t *fn_decl = find_fn_decl(cg, callee);
+    if (fn_decl && !fn_decl->as.fn_decl.is_async) {
+        diag_begin_warning("'async.()' used on non-async function '%s'", callee);
+        diag_span(DIAG_NODE(node), True, "dispatched here");
+        diag_help("declare '%s' as 'async fn'", callee);
+        diag_finish();
+    }
+    /* Build a synthetic NodeCallExpr and dispatch through gen_call so the
+       full standard call lowering (param coercion, generics, libimp resolution)
+       handles us.  Done via local copy to avoid mutating the AST. */
+    node_t fake;
+    memset(&fake, 0, sizeof(fake));
+    fake.kind = NodeCallExpr;
+    fake.line = node->line;
+    fake.as.call.callee = node->as.async_call.callee;
+    fake.as.call.args   = node->as.async_call.args;
+    return gen_expr(cg, &fake);
+}
+
+/* Resolve the element type `T` of a `future.[T]` handle expression. Returns
+   NO_TYPE when the type cannot be determined statically (void future or
+   unresolved handle); caller falls back to the wait-and-drop lowering. */
+static type_info_t resolve_future_elem_type(cg_t *cg, node_t *handle) {
+    if (!handle) return NO_TYPE;
+    if (handle->kind == NodeAsyncCall) {
+        const char *callee = handle->as.async_call.callee;
+        node_t *fn = find_fn_decl(cg, callee);
+        if (fn && fn->as.fn_decl.return_count > 0) {
+            type_info_t rt = fn->as.fn_decl.return_types[0];
+            if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
+            return resolve_alias(cg, rt);
+        }
+        return NO_TYPE;
+    }
+    if (handle->kind == NodeCallExpr) {
+        /* `await(fn(args))` — resolve via the callee's declared return T.
+           Generic instantiations like `one_shot_G_i64` carry the concrete T
+           in the mangled callee name; fall back to the template's declared
+           return type and substitute the parsed `_G_<arg>` portion. */
+        const char *callee = handle->as.call.callee;
+        node_t *fn = find_fn_decl(cg, callee);
+        char generic_arg[64] = {0};
+        if (!fn && callee) {
+            const char *gp = strstr(callee, "_G_");
+            if (gp) {
+                char tmpl[256];
+                usize_t plen = (usize_t)(gp - callee);
+                if (plen < sizeof(tmpl)) {
+                    memcpy(tmpl, callee, plen); tmpl[plen] = '\0';
+                    fn = find_fn_decl(cg, tmpl);
+                    const char *arg = gp + 3;
+                    usize_t alen = strlen(arg);
+                    if (alen < sizeof(generic_arg)) {
+                        memcpy(generic_arg, arg, alen);
+                        generic_arg[alen] = '\0';
+                    }
+                }
+            }
+        }
+        if (fn && fn->as.fn_decl.return_count > 0) {
+            type_info_t rt = fn->as.fn_decl.return_types[0];
+            /* If the template's return type is a bare type-param T whose
+               name matches the first declared generic parameter, swap T for
+               the instantiation's concrete type encoded in the callee. */
+            if (generic_arg[0] && rt.base == TypeUser && rt.user_name
+                    && fn->as.fn_decl.type_param_count > 0
+                    && strcmp(rt.user_name, fn->as.fn_decl.type_params[0]) == 0) {
+                if      (strcmp(generic_arg, "i8")  == 0) rt.base = TypeI8;
+                else if (strcmp(generic_arg, "i16") == 0) rt.base = TypeI16;
+                else if (strcmp(generic_arg, "i32") == 0) rt.base = TypeI32;
+                else if (strcmp(generic_arg, "i64") == 0) rt.base = TypeI64;
+                else if (strcmp(generic_arg, "u8")  == 0) rt.base = TypeU8;
+                else if (strcmp(generic_arg, "u16") == 0) rt.base = TypeU16;
+                else if (strcmp(generic_arg, "u32") == 0) rt.base = TypeU32;
+                else if (strcmp(generic_arg, "u64") == 0) rt.base = TypeU64;
+                else if (strcmp(generic_arg, "f32") == 0) rt.base = TypeF32;
+                else if (strcmp(generic_arg, "f64") == 0) rt.base = TypeF64;
+                else if (strcmp(generic_arg, "bool")== 0) rt.base = TypeBool;
+                if (rt.base != TypeUser) rt.user_name = Null;
+            }
+            if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
+            return resolve_alias(cg, rt);
+        }
+        return NO_TYPE;
+    }
+    if (handle->kind == NodeMethodCall) {
+        /* `await(receiver.method(args))` — look up the method on the
+           receiver's struct type. */
+        node_t *obj = handle->as.method_call.object;
+        const char *meth = handle->as.method_call.method;
+        struct_reg_t *sr = Null;
+        if (obj && obj->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+            if (sym && sym->stype.base == TypeUser && sym->stype.user_name)
+                sr = find_struct(cg, sym->stype.user_name);
+        }
+        if (sr) {
+            for (usize_t i = 0; i < cg->ast->as.module.decls.count; i++) {
+                node_t *decl = cg->ast->as.module.decls.items[i];
+                if (decl->kind != NodeTypeDecl) continue;
+                if (strcmp(decl->as.type_decl.name, sr->name) != 0) continue;
+                for (usize_t j = 0; j < decl->as.type_decl.methods.count; j++) {
+                    node_t *m = decl->as.type_decl.methods.items[j];
+                    if (m->as.fn_decl.name && strcmp(m->as.fn_decl.name, meth) == 0
+                            && m->as.fn_decl.return_count > 0) {
+                        type_info_t rt = m->as.fn_decl.return_types[0];
+                        if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
+                        return resolve_alias(cg, rt);
+                    }
+                }
+            }
+        }
+        return NO_TYPE;
+    }
+    if (handle->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, handle->as.ident.name);
+        if (sym && sym->stype.base == TypeFuture && sym->stype.elem_type)
+            return resolve_alias(cg, sym->stype.elem_type[0]);
+        return NO_TYPE;
+    }
+    return NO_TYPE;
+}
+
+/* await(f) / await.(fn)(args) / await.next(s) — drive handle, load value. */
+static LLVMValueRef gen_await(cg_t *cg, node_t *node) {
+    node_t *handle = node->as.await_expr.handle;
+    type_info_t et = node->as.await_expr.get_type;
+
+    /* await.next(s) — stream consumer: drive coro.resume until yield/eos. */
+    if (node->as.await_expr.is_stream_next) {
+        type_info_t item_ti = NO_TYPE;
+        if (handle && handle->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, handle->as.ident.name);
+            if (sym && sym->stype.base == TypeStream && sym->stype.elem_type)
+                item_ti = resolve_alias(cg, sym->stype.elem_type[0]);
+        }
+        if (item_ti.base == TypeVoid && !item_ti.is_pointer) {
+            diag_begin_error("await.next(...) requires a stream.[T] handle with a known item type");
+            diag_span(DIAG_NODE(node), True, "stream item type could not be resolved");
+            diag_finish();
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        LLVMValueRef hh = gen_expr(cg, handle);
+        return sts_emit_await_next(cg, hh, item_ti);
+    }
+
+    if (et.base == TypeVoid && !et.is_pointer)
+        et = resolve_future_elem_type(cg, handle);
+
+    LLVMValueRef h = gen_expr(cg, handle);
+
+    /* Coroutine task await: drive the coroutine to completion, load result,
+       destroy.  When emitted inside another coroutine, install the calling
+       coroutine's handle as the awaitee's continuation so a future v2
+       executor can wake the right awaiter without polling. */
+    LLVMValueRef caller_handle = cg->cur_coro.active ? cg->cur_coro.handle : Null;
+    return sts_emit_await_task(cg, h, et, caller_handle);
+}
+
+static LLVMValueRef sts_awaitc_array_elem_ptr(cg_t *cg, LLVMTypeRef arr_ty,
+                                              LLVMValueRef arr_ptr, usize_t i,
+                                              const char *name) {
+    LLVMValueRef idxs[2] = {
+        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0),
+        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)i, 0),
+    };
+    return LLVMBuildInBoundsGEP2(cg->builder, arr_ty, arr_ptr, idxs, 2, name);
+}
+
+static LLVMValueRef sts_awaitc_task_complete(cg_t *cg, LLVMTypeRef prom_ty,
+                                             LLVMValueRef task_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMValueRef cmp_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_COMPLETE);
+    LLVMValueRef cmp_v = LLVMBuildLoad2(cg->builder, i32_t, cmp_p, "awaitc.complete");
+    return LLVMBuildICmp(cg->builder, LLVMIntNE, cmp_v,
+        LLVMConstInt(i32_t, 0, 0), "awaitc.is_done");
+}
+
+static LLVMValueRef sts_awaitc_task_result(cg_t *cg, LLVMTypeRef prom_ty,
+                                           LLVMTypeRef elem_lt,
+                                           LLVMValueRef task_h) {
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMValueRef item_p = sts_gep_item(cg, prom_ty, prom);
+    return LLVMBuildLoad2(cg->builder, elem_lt, item_p, "awaitc.result");
+}
+
+static void sts_awaitc_resume_once(cg_t *cg, LLVMValueRef task_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMBasicBlockRef bb_run_pending = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "awaitc.run_pending");
+    LLVMBasicBlockRef bb_resume_target = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "awaitc.resume_target");
+    LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, "awaitc.resume_done");
+    LLVMValueRef pending_v = LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_pending(cg)),
+        sts_rt_executor_pending(cg), Null, 0, "awaitc.pending");
+    LLVMValueRef has_pending = LLVMBuildICmp(cg->builder, LLVMIntNE, pending_v,
+        LLVMConstInt(i32_t, 0, 0), "awaitc.has_pending");
+    LLVMBuildCondBr(cg->builder, has_pending, bb_run_pending, bb_resume_target);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_run_pending);
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_rt_executor_run_pending(cg)),
+        sts_rt_executor_run_pending(cg), Null, 0, "");
+    LLVMBuildBr(cg->builder, bb_done);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume_target);
+    sts_executor_remove_handle(cg, task_h);
+    LLVMValueRef rargs[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
+        sts_intrinsic_coro_resume(cg), rargs, 1, "");
+    LLVMBuildBr(cg->builder, bb_done);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+}
+
+static void sts_awaitc_destroy(cg_t *cg, LLVMValueRef task_h) {
+    sts_executor_remove_handle(cg, task_h);
+    LLVMValueRef args[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
+        sts_intrinsic_coro_destroy(cg), args, 1, "");
+}
+
+/* await.all(f1, ..., fN) / await.any(f1, ..., fN).
+   v2: all handles must still share one element type T, but progress is now
+   round-robin on the calling thread rather than sequentially draining
+   task[0], then task[1], etc. */
+static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
+    node_list_t *hs = &node->as.await_combinator.handles;
+    boolean_t    is_any = node->as.await_combinator.is_any;
+    usize_t      n = hs->count;
+
+    if (n == 0) {
+        diag_begin_error("await.%s() requires at least one future",
+                         is_any ? "any" : "all");
+        diag_span(DIAG_NODE(node), True, "empty argument list");
+        diag_finish();
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    /* Resolve element types up front and verify homogeneity. */
+    type_info_t et0 = resolve_future_elem_type(cg, hs->items[0]);
+    boolean_t et0_void = (et0.base == TypeVoid && !et0.is_pointer);
+    for (usize_t i = 1; i < n; i++) {
+        type_info_t eti = resolve_future_elem_type(cg, hs->items[i]);
+        boolean_t eti_void = (eti.base == TypeVoid && !eti.is_pointer);
+        if (eti_void != et0_void
+                || eti.base != et0.base
+                || eti.is_pointer != et0.is_pointer) {
+            diag_begin_error("await.%s() futures must share one element type",
+                             is_any ? "any" : "all");
+            diag_span(DIAG_NODE(node), True, "handles differ in T");
+            diag_note("v1 requires all futures passed to await.all/await.any to be future.[T] for the same T");
+            diag_finish();
+            break;
+        }
+    }
+
+    LLVMTypeRef  ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef  i32_t = LLVMInt32TypeInContext(cg->ctx);
+
+    /* Evaluate each handle once into a local slot so we can get/drop without
+       re-evaluating the source expression (which may have side effects). */
+    heap_t slots_h = allocate(n, sizeof(LLVMValueRef));
+    LLVMValueRef *slots = slots_h.pointer;
+    for (usize_t i = 0; i < n; i++) {
+        slots[i] = alloc_in_entry(cg, ptr_t, "awaitc_h");
+        LLVMValueRef hv = gen_expr(cg, hs->items[i]);
+        LLVMBuildStore(cg->builder, hv, slots[i]);
+    }
+
+    LLVMTypeRef elem_lt = et0_void ? i32_t : get_llvm_type(cg, et0);
+    LLVMValueRef caller_h = cg->cur_coro.active ? cg->cur_coro.handle : Null;
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, et0, Null);
+
+    if (caller_h != Null) {
+        for (usize_t i = 0; i < n; i++) {
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "awaitc.init_h");
+            LLVMValueRef prom = sts_call_coro_promise(cg, hv);
+            LLVMBuildStore(cg->builder, caller_h,
+                sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_CONTINUATION));
+        }
+    }
+
+    LLVMValueRef pending_slot = alloc_in_entry(cg, i32_t, "awaitc.pending");
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, (unsigned long long)n, 0), pending_slot);
+
+    if (!is_any) {
+        /* await.all — one cooperative step per live task per pass until all
+           handles have completed, preserving input order in the result. */
+        LLVMValueRef results_arr = Null;
+        LLVMTypeRef agg_t = Null;
+        LLVMTypeRef results_arr_ty = Null;
+        heap_t tys_h = allocate(n, sizeof(LLVMTypeRef));
+        LLVMTypeRef *tys = tys_h.pointer;
+        for (usize_t i = 0; i < n; i++) tys[i] = elem_lt;
+        if (!et0_void) {
+            results_arr_ty = LLVMArrayType2(elem_lt, (unsigned long long)n);
+            results_arr = alloc_in_entry(cg, results_arr_ty, "awaitall.results");
+            agg_t = LLVMStructTypeInContext(cg->ctx, tys, (unsigned)n, 0);
+        }
+        deallocate(tys_h);
+
+        LLVMBasicBlockRef bb_check = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitall.check");
+        LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitall.done");
+        LLVMBuildBr(cg->builder, bb_check);
+
+        heap_t slot_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+        heap_t next_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+        LLVMBasicBlockRef *slot_blocks = slot_blocks_h.pointer;
+        LLVMBasicBlockRef *next_blocks = next_blocks_h.pointer;
+        for (usize_t i = 0; i < n; i++) {
+            char name_slot[32], name_next[32];
+            snprintf(name_slot, sizeof(name_slot), "awaitall.slot_%llu", (unsigned long long)i);
+            snprintf(name_next, sizeof(name_next), "awaitall.next_%llu", (unsigned long long)i);
+            slot_blocks[i] = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_slot);
+            next_blocks[i] = (i + 1 == n) ? bb_check
+                : LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_next);
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_check);
+        LLVMValueRef pending_v = LLVMBuildLoad2(cg->builder, i32_t, pending_slot, "awaitall.pending");
+        LLVMValueRef done_v = LLVMBuildICmp(cg->builder, LLVMIntEQ, pending_v,
+            LLVMConstInt(i32_t, 0, 0), "awaitall.all_done");
+        LLVMBuildCondBr(cg->builder, done_v, bb_done, slot_blocks[0]);
+
+        for (usize_t i = 0; i < n; i++) {
+            char name_complete[32], name_resume[32], name_live[32];
+            snprintf(name_complete, sizeof(name_complete), "awaitall.complete_%llu", (unsigned long long)i);
+            snprintf(name_resume, sizeof(name_resume), "awaitall.resume_%llu", (unsigned long long)i);
+            snprintf(name_live, sizeof(name_live), "awaitall.live_%llu", (unsigned long long)i);
+            LLVMBasicBlockRef bb_complete = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_complete);
+            LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_resume);
+            LLVMBasicBlockRef bb_live = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_live);
+
+            LLVMPositionBuilderAtEnd(cg->builder, slot_blocks[i]);
+            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "awaitall.h");
+            LLVMValueRef is_null = LLVMBuildICmp(cg->builder, LLVMIntEQ, hv,
+                LLVMConstNull(ptr_t), "awaitall.is_null");
+            LLVMBuildCondBr(cg->builder, is_null, next_blocks[i], bb_live);
+
+            LLVMPositionBuilderAtEnd(cg->builder, bb_live);
+            LLVMValueRef is_done = sts_awaitc_task_complete(cg, prom_ty, hv);
+            LLVMBuildCondBr(cg->builder, is_done, bb_complete, bb_resume);
+
+            LLVMPositionBuilderAtEnd(cg->builder, bb_complete);
+            if (!et0_void) {
+                LLVMValueRef result_p = sts_awaitc_array_elem_ptr(cg, results_arr_ty, results_arr, i,
+                    "awaitall.result_p");
+                LLVMValueRef rv = sts_awaitc_task_result(cg, prom_ty, elem_lt, hv);
+                LLVMBuildStore(cg->builder, rv, result_p);
+            }
+            sts_awaitc_destroy(cg, hv);
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), slots[i]);
+            LLVMValueRef pending_v = LLVMBuildLoad2(cg->builder, i32_t, pending_slot, "awaitall.pending");
+            LLVMValueRef pending_dec = LLVMBuildSub(cg->builder, pending_v,
+                LLVMConstInt(i32_t, 1, 0), "awaitall.pending_dec");
+            LLVMBuildStore(cg->builder, pending_dec, pending_slot);
+            LLVMBuildBr(cg->builder, next_blocks[i]);
+
+            LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+            sts_set_current_child_handle(cg, hv);
+            sts_awaitc_resume_once(cg, hv);
+            LLVMBuildBr(cg->builder, next_blocks[i]);
+
+            if (i + 1 < n) {
+                LLVMPositionBuilderAtEnd(cg->builder, next_blocks[i]);
+                LLVMBuildBr(cg->builder, slot_blocks[i + 1]);
+            }
+        }
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+        sts_set_current_child_handle(cg, Null);
+        deallocate(slot_blocks_h);
+        deallocate(next_blocks_h);
+        deallocate(slots_h);
+        if (et0_void)
+            return LLVMConstInt(i32_t, 0, 0);
+
+        LLVMValueRef agg = LLVMGetUndef(agg_t);
+        for (usize_t i = 0; i < n; i++) {
+            LLVMValueRef result_p = sts_awaitc_array_elem_ptr(cg, results_arr_ty, results_arr, i,
+                "awaitall.result_p");
+            LLVMValueRef rv = LLVMBuildLoad2(cg->builder, elem_lt, result_p, "awaitall.result");
+            agg = LLVMBuildInsertValue(cg->builder, agg, rv, (unsigned)i, "awall");
+        }
+        return agg;
+    }
+
+    /* await.any — round-robin each live task until one completes, then
+       cancel+drop the losers and return the winner's result. */
+    LLVMBasicBlockRef bb_check = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.check");
+    LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.done");
+    LLVMBuildBr(cg->builder, bb_check);
+
+    LLVMValueRef any_result_slot = et0_void ? Null : alloc_in_entry(cg, elem_lt, "awaitany.result");
+
+    heap_t any_slot_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+    heap_t any_next_blocks_h = allocate(n, sizeof(LLVMBasicBlockRef));
+    LLVMBasicBlockRef *slot_blocks = any_slot_blocks_h.pointer;
+    LLVMBasicBlockRef *next_blocks = any_next_blocks_h.pointer;
+    for (usize_t i = 0; i < n; i++) {
+        char name_slot[32], name_next[32];
+        snprintf(name_slot, sizeof(name_slot), "awaitany.slot_%llu", (unsigned long long)i);
+        snprintf(name_next, sizeof(name_next), "awaitany.next_%llu", (unsigned long long)i);
+        slot_blocks[i] = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_slot);
+        next_blocks[i] = (i + 1 == n) ? bb_check
+            : LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_next);
+    }
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_check);
+    LLVMValueRef pending_v = LLVMBuildLoad2(cg->builder, i32_t, pending_slot, "awaitany.pending");
+    LLVMValueRef none_left = LLVMBuildICmp(cg->builder, LLVMIntEQ, pending_v,
+        LLVMConstInt(i32_t, 0, 0), "awaitany.none_left");
+    LLVMBuildCondBr(cg->builder, none_left, bb_done, slot_blocks[0]);
+
+    for (usize_t i = 0; i < n; i++) {
+        char name_live[32], name_resume[32], name_post[32], name_winner[32];
+        snprintf(name_live, sizeof(name_live), "awaitany.live_%llu", (unsigned long long)i);
+        snprintf(name_resume, sizeof(name_resume), "awaitany.resume_%llu", (unsigned long long)i);
+        snprintf(name_post, sizeof(name_post), "awaitany.post_%llu", (unsigned long long)i);
+        snprintf(name_winner, sizeof(name_winner), "awaitany.winner_%llu", (unsigned long long)i);
+
+        LLVMBasicBlockRef bb_live = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_live);
+        LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_resume);
+        LLVMBasicBlockRef bb_post = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_post);
+        LLVMBasicBlockRef bb_winner = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, name_winner);
+
+        LLVMPositionBuilderAtEnd(cg->builder, slot_blocks[i]);
+        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "awaitany.h");
+        LLVMValueRef is_null = LLVMBuildICmp(cg->builder, LLVMIntEQ, hv,
+            LLVMConstNull(ptr_t), "awaitany.is_null");
+        LLVMBuildCondBr(cg->builder, is_null, next_blocks[i], bb_live);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_live);
+        LLVMValueRef done_now = sts_awaitc_task_complete(cg, prom_ty, hv);
+        LLVMBuildCondBr(cg->builder, done_now, bb_winner, bb_resume);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+        sts_set_current_child_handle(cg, hv);
+        sts_awaitc_resume_once(cg, hv);
+        LLVMBuildBr(cg->builder, bb_post);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_post);
+        LLVMValueRef done_after = sts_awaitc_task_complete(cg, prom_ty, hv);
+        LLVMBuildCondBr(cg->builder, done_after, bb_winner, next_blocks[i]);
+
+        LLVMPositionBuilderAtEnd(cg->builder, bb_winner);
+        if (!et0_void) {
+            LLVMValueRef rv = sts_awaitc_task_result(cg, prom_ty, elem_lt, hv);
+            LLVMBuildStore(cg->builder, rv, any_result_slot);
+        }
+        sts_awaitc_destroy(cg, hv);
+        LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), slots[i]);
+        for (usize_t j = 0; j < n; j++) {
+            if (j == i) continue;
+            LLVMValueRef other_h = LLVMBuildLoad2(cg->builder, ptr_t, slots[j], "awaitany.other");
+            LLVMValueRef other_live = LLVMBuildICmp(cg->builder, LLVMIntNE, other_h,
+                LLVMConstNull(ptr_t), "awaitany.other_live");
+            LLVMBasicBlockRef bb_cancel = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.cancel");
+            LLVMBasicBlockRef bb_after_cancel = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awaitany.after_cancel");
+            LLVMBuildCondBr(cg->builder, other_live, bb_cancel, bb_after_cancel);
+            LLVMPositionBuilderAtEnd(cg->builder, bb_cancel);
+            sts_emit_coro_cancel(cg, other_h);
+            sts_emit_task_drop(cg, other_h);
+            LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), slots[j]);
+            LLVMBuildBr(cg->builder, bb_after_cancel);
+            LLVMPositionBuilderAtEnd(cg->builder, bb_after_cancel);
+        }
+        LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0), pending_slot);
+        LLVMBuildBr(cg->builder, bb_done);
+
+        if (i + 1 < n) {
+            LLVMPositionBuilderAtEnd(cg->builder, next_blocks[i]);
+            LLVMBuildBr(cg->builder, slot_blocks[i + 1]);
+        }
+    }
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+    sts_set_current_child_handle(cg, Null);
+    deallocate(any_slot_blocks_h);
+    deallocate(any_next_blocks_h);
+    deallocate(slots_h);
+    if (et0_void) return LLVMConstInt(i32_t, 0, 0);
+    return LLVMBuildLoad2(cg->builder, elem_lt, any_result_slot, "awaitany.result");
 }
 
 static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
-    LLVMValueRef handle = gen_expr(cg, node->as.future_op.handle);
-    LLVMValueRef call_args[1] = { handle };
+    /* stream.* ops route to the coroutine intrinsic helpers regardless of
+       which `op` the parser tagged them with — the handle's TypeStream
+       binding is the source of truth. */
+    if (node->as.future_op.op == StreamDone
+        || node->as.future_op.op == StreamDrop
+        || node->as.future_op.op == StreamCancel) {
+        type_info_t item_ti = NO_TYPE;
+        if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, node->as.future_op.handle->as.ident.name);
+            if (sym && sym->stype.base == TypeStream && sym->stype.elem_type)
+                item_ti = resolve_alias(cg, sym->stype.elem_type[0]);
+        }
+        LLVMValueRef sh = gen_expr(cg, node->as.future_op.handle);
+        if (node->as.future_op.op == StreamDrop) {
+            sts_emit_stream_drop(cg, sh);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        if (node->as.future_op.op == StreamCancel) {
+            sts_emit_coro_cancel(cg, sh);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        return sts_emit_stream_done(cg, sh, item_ti);
+    }
 
+    LLVMValueRef handle = gen_expr(cg, node->as.future_op.handle);
+    /* future.[T] handle = coroutine frame ptr; untyped `future` (thread.(fn)) = thread-pool ptr */
+    boolean_t use_coro_runtime = False;
+    if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeIdentExpr) {
+        symbol_t *sym = cg_lookup(cg, node->as.future_op.handle->as.ident.name);
+        if (sym && sym->stype.base == TypeFuture && sym->stype.elem_type)
+            use_coro_runtime = True;
+    } else if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeAsyncCall) {
+        use_coro_runtime = True;
+    }
+
+    if (use_coro_runtime) {
+        switch (node->as.future_op.op) {
+            case FutureWait:
+                sts_emit_task_wait(cg, handle);
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            case FutureReady:
+                return sts_emit_task_ready(cg, handle);
+            case FutureGetRaw:
+                return sts_emit_task_get_raw(cg, handle);
+            case FutureGet: {
+                LLVMValueRef raw = sts_emit_task_get_raw(cg, handle);
+                LLVMTypeRef lt = get_llvm_type(cg, node->as.future_op.get_type);
+                return LLVMBuildLoad2(cg->builder, lt, raw, "fget_val");
+            }
+            case FutureDrop:
+                sts_emit_task_drop(cg, handle);
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            default:
+                break;
+        }
+    }
+
+    /* Untyped `future` from thread.(fn): use thread_runtime (__future_*) */
+    LLVMValueRef call_args[1] = { handle };
     switch (node->as.future_op.op) {
         case FutureWait:
-            LLVMBuildCall2(cg->builder, cg->future_wait_type,
-                           cg->future_wait_fn, call_args, 1, "");
+            LLVMBuildCall2(cg->builder, cg->future_wait_type, cg->future_wait_fn, call_args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 
         case FutureReady:
@@ -1797,17 +2856,14 @@ static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
                                    cg->future_get_fn, call_args, 1, "fget");
 
         case FutureGet: {
-            /* block and get the void* result pointer */
             LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
                                                cg->future_get_fn, call_args, 1, "fget_raw");
-            /* load the typed value from the result buffer */
             LLVMTypeRef llvm_ret_type = get_llvm_type(cg, node->as.future_op.get_type);
             return LLVMBuildLoad2(cg->builder, llvm_ret_type, raw, "fget_val");
         }
 
         case FutureDrop:
-            LLVMBuildCall2(cg->builder, cg->future_drop_type,
-                           cg->future_drop_fn, call_args, 1, "");
+            LLVMBuildCall2(cg->builder, cg->future_drop_type, cg->future_drop_fn, call_args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
@@ -2018,6 +3074,10 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
             if (ak != 0)
                 check_storage_domain(cg, sym->storage, ak == 1, ak == -1, node->line);
         }
+
+        /* slice-LHS domain check */
+        if (sym->stype.base == TypeSlice)
+            check_slice_domain(cg, sym->storage, node->as.assign.value, node->line);
 
         /* pointer safety checks on assignment */
         check_const_addr_of(cg, node->as.assign.value, sym->stype, node->line);
@@ -2691,9 +3751,34 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
         }
     }
 
-    diag_begin_error("cannot resolve member '%s'", field);
-    diag_span(DIAG_NODE(node), True, "member not found");
-    diag_finish();
+    {
+        char dedup_key[600];
+        /* Include object name in dedup key when available */
+        const char *obj_name = (obj->kind == NodeIdentExpr) ? obj->as.ident.name : "";
+        snprintf(dedup_key, sizeof(dedup_key), "undef_member:%s.%s", obj_name, field);
+        if (!cg_error_already_reported(cg, dedup_key)) {
+            diag_begin_error("cannot resolve member '%s'", field);
+            diag_set_category(ErrCatUndefined);
+            diag_span(DIAG_NODE(node), True, "member not found");
+            /* Levenshtein suggestion: scan struct fields for close name */
+            if (obj->kind == NodeIdentExpr) {
+                symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+                if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
+                    struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
+                    if (sr) {
+                        usize_t best_dist = 3;
+                        const char *best = Null;
+                        for (usize_t i = 0; i < sr->field_count; i++) {
+                            usize_t d = levenshtein(field, sr->fields[i].name);
+                            if (d < best_dist) { best_dist = d; best = sr->fields[i].name; }
+                        }
+                        if (best) diag_help("did you mean '%s'?", best);
+                    }
+                }
+            }
+            diag_finish();
+        }
+    }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
 
@@ -3525,6 +4610,236 @@ static LLVMValueRef gen_error_expr(cg_t *cg, node_t *node) {
     return err;
 }
 
+/* ── comptime format string: @'...' / heap @'...' ──
+ * Produces an i8 * pointing to a freshly-formatted string.
+ *   on_heap=False: buffer is alloca'd in the current frame (no cleanup).
+ *   on_heap=True:  buffer is malloc'd; caller must rem.(). */
+static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
+    const char  *fmt     = node->as.comptime_fmt.fmt;
+    usize_t      flen    = node->as.comptime_fmt.fmt_len;
+    node_list_t *args    = &node->as.comptime_fmt.args;
+    boolean_t    on_heap = node->as.comptime_fmt.on_heap;
+
+    /* Fast path: no args + stack → global string pointer, zero runtime cost. */
+    if (args->count == 0 && !on_heap) {
+        heap_t bh = allocate(flen + 1, 1);
+        char *buf = bh.pointer;
+        usize_t blen = 0;
+        for (usize_t i = 0; i < flen; ) {
+            if (fmt[i] == '\\' && i + 1 < flen) {
+                char d = error_decode_esc(fmt[i + 1]);
+                if (d != '\0') buf[blen++] = d;
+                i += 2;
+            } else {
+                buf[blen++] = fmt[i++];
+            }
+        }
+        buf[blen] = '\0';
+        LLVMValueRef ptr = LLVMBuildGlobalStringPtr(cg->builder, buf, "cfmt.lit");
+        deallocate(bh);
+        return ptr;
+    }
+
+    usize_t argc = args->count;
+
+    /* Evaluate all arg expressions up front. */
+    heap_t vh = argc ? allocate(argc, sizeof(LLVMValueRef)) : NullHeap;
+    LLVMValueRef *vals = argc ? vh.pointer : Null;
+    for (usize_t i = 0; i < argc; i++)
+        vals[i] = gen_expr(cg, args->items[i]);
+
+    /* Walk the raw fmt once to: (a) build the C printf format,
+     * (b) accumulate the compile-time buffer bound. */
+    heap_t fh = allocate(flen * 4 + 64, 1);
+    char *cfmt = fh.pointer;
+    usize_t cfmt_len = 0;
+    usize_t arg_idx = 0;
+    usize_t buf_bound = 1; /* null terminator */
+
+    for (usize_t i = 0; i < flen; ) {
+        if (fmt[i] == '\\' && i + 1 < flen) {
+            char ec = fmt[i + 1];
+            if (ec == '{' || ec == '}') { cfmt[cfmt_len++] = ec; buf_bound++; }
+            else if (ec == '%')         { cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%'; buf_bound++; }
+            else {
+                char d = error_decode_esc(ec);
+                if (d != '\0') { cfmt[cfmt_len++] = d; buf_bound++; }
+            }
+            i += 2; continue;
+        }
+        if (fmt[i] == '%') {
+            cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%';
+            buf_bound++;
+            i++; continue;
+        }
+        if (fmt[i] == '{' && arg_idx < argc) {
+            /* scan to matching '}' respecting ()/[] nesting */
+            usize_t j = i + 1;
+            int depth = 0;
+            usize_t colon_pos = 0;
+            boolean_t has_colon = False;
+            while (j < flen) {
+                char c = fmt[j];
+                if (c == '\\' && j + 1 < flen) { j += 2; continue; }
+                if (c == '(' || c == '[') { depth++; j++; continue; }
+                if (c == ')' || c == ']') { if (depth > 0) depth--; j++; continue; }
+                if (c == '}' && depth == 0) break;
+                if (c == ':' && depth == 0 && !has_colon) { colon_pos = j; has_colon = True; }
+                j++;
+            }
+            if (j >= flen) { cfmt[cfmt_len++] = fmt[i++]; buf_bound++; continue; }
+
+            const char *spec = Null; usize_t slen = 0;
+            if (has_colon) {
+                spec = fmt + colon_pos + 1;
+                slen = j - (colon_pos + 1);
+            }
+
+            /* Extract numeric width from spec (for buffer sizing). */
+            usize_t width = 0;
+            if (slen > 0) {
+                usize_t k = 0;
+                while (k < slen && (spec[k] == '+' || spec[k] == '-'
+                        || spec[k] == '#' || spec[k] == ' ')) k++;
+                if (k < slen && spec[k] == '0'
+                        && k + 1 < slen && spec[k + 1] >= '0' && spec[k + 1] <= '9') k++;
+                while (k < slen && spec[k] >= '0' && spec[k] <= '9') {
+                    width = width * 10 + (spec[k] - '0'); k++;
+                }
+                if (k < slen && spec[k] == '.') {
+                    k++;
+                    usize_t prec = 0;
+                    while (k < slen && spec[k] >= '0' && spec[k] <= '9') {
+                        prec = prec * 10 + (spec[k] - '0'); k++;
+                    }
+                    if (prec + 20 > width) width = prec + 20;
+                }
+            }
+
+            LLVMTypeRef ty = LLVMTypeOf(vals[arg_idx]);
+            usize_t arg_bound;
+            if (llvm_is_ptr(ty)) {
+                if (width == 0 && !on_heap) {
+                    diag_begin_error("comptime format of pointer requires an explicit width, e.g. {p:64}");
+                    diag_set_category(ErrCatPointerSafety);
+                    diag_span(SRC_LOC(node->line, node->col, 0), True,
+                              "pointer argument here has no '{:N}' width spec");
+                    diag_note("stack-allocated comptime formats need each pointer's max length at compile time");
+                    diag_help("either add a width like '{p:64}' or use 'heap @'...'' to malloc a larger buffer");
+                    diag_finish();
+                    arg_bound = 64;
+                } else {
+                    arg_bound = width > 0 ? width : 512;
+                }
+            } else if (llvm_is_float(ty)) {
+                arg_bound = width > 32 ? width : 32;
+            } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+                arg_bound = width > 20 ? width : 20;
+            } else if (ty == LLVMInt32TypeInContext(cg->ctx)) {
+                arg_bound = width > 11 ? width : 11;
+            } else if (ty == LLVMInt16TypeInContext(cg->ctx)) {
+                arg_bound = width > 6 ? width : 6;
+            } else if (ty == LLVMInt8TypeInContext(cg->ctx)
+                    || ty == LLVMInt1TypeInContext(cg->ctx)) {
+                arg_bound = width > 4 ? width : 4;
+            } else {
+                arg_bound = width > 32 ? width : 32;
+            }
+            buf_bound += arg_bound;
+
+            /* Emit %spec or type-default (mirrors gen_error_expr mapping). */
+            cfmt[cfmt_len++] = '%';
+            if (slen > 0) {
+                for (usize_t k = 0; k < slen; k++) cfmt[cfmt_len++] = spec[k];
+                /* widen scalars as printf ABI requires */
+                if (llvm_is_float(ty) && ty == LLVMFloatTypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
+                                                    LLVMDoubleTypeInContext(cg->ctx), "fpext");
+                else if (ty == LLVMInt8TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "cext");
+                else if (ty == LLVMInt1TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildZExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "bext");
+                else if (ty == LLVMInt16TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "iext");
+            } else if (llvm_is_ptr(ty)) {
+                cfmt[cfmt_len++] = 's';
+            } else if (llvm_is_float(ty)) {
+                cfmt[cfmt_len++] = 'g';
+                if (ty == LLVMFloatTypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
+                                                    LLVMDoubleTypeInContext(cg->ctx), "fpext");
+            } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
+                cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'd';
+            } else if (ty == LLVMInt8TypeInContext(cg->ctx)) {
+                cfmt[cfmt_len++] = 'c';
+                vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                               LLVMInt32TypeInContext(cg->ctx), "cext");
+            } else if (ty == LLVMInt1TypeInContext(cg->ctx)) {
+                cfmt[cfmt_len++] = 'd';
+                vals[arg_idx] = LLVMBuildZExt(cg->builder, vals[arg_idx],
+                                               LLVMInt32TypeInContext(cg->ctx), "bext");
+            } else {
+                cfmt[cfmt_len++] = 'd';
+                if (ty != LLVMInt32TypeInContext(cg->ctx))
+                    vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
+                                                   LLVMInt32TypeInContext(cg->ctx), "iext");
+            }
+            arg_idx++;
+            i = j + 1;
+            continue;
+        }
+        cfmt[cfmt_len++] = fmt[i++]; buf_bound++;
+    }
+    cfmt[cfmt_len] = '\0';
+
+    /* Declare snprintf once per module. */
+    LLVMValueRef snprintf_fn = LLVMGetNamedFunction(cg->module, "snprintf");
+    if (!snprintf_fn) {
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+        LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
+        LLVMTypeRef fixed[3] = { ptr_ty, i64_ty, ptr_ty };
+        LLVMTypeRef snfty = LLVMFunctionType(
+            LLVMInt32TypeInContext(cg->ctx), fixed, 3, /*varargs=*/True);
+        snprintf_fn = LLVMAddFunction(cg->module, "snprintf", snfty);
+    }
+    LLVMTypeRef snprintf_type = LLVMGlobalGetValueType(snprintf_fn);
+
+    /* Allocate buffer — alloca for stack, malloc for heap. */
+    usize_t final_size = on_heap ? (buf_bound > 512 ? buf_bound : 512) : buf_bound;
+    if (final_size < 16) final_size = 16;
+    LLVMValueRef buf_size_v = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), final_size, 0);
+    LLVMValueRef buf;
+    if (on_heap) {
+        buf = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
+                             &buf_size_v, 1, "cfmt.buf");
+    } else {
+        LLVMTypeRef arr_ty = LLVMArrayType(
+            LLVMInt8TypeInContext(cg->ctx), (unsigned)final_size);
+        buf = alloc_in_entry(cg, arr_ty, "cfmt.buf");
+    }
+
+    /* snprintf(buf, size, cfmt, args...) */
+    usize_t sn_argc = 3 + arg_idx;
+    heap_t sah = allocate(sn_argc, sizeof(LLVMValueRef));
+    LLVMValueRef *sn_args = sah.pointer;
+    sn_args[0] = buf;
+    sn_args[1] = buf_size_v;
+    sn_args[2] = LLVMBuildGlobalStringPtr(cg->builder, cfmt, "cfmt.str");
+    for (usize_t i = 0; i < arg_idx; i++)
+        sn_args[3 + i] = vals[i];
+    LLVMBuildCall2(cg->builder, snprintf_type, snprintf_fn,
+                   sn_args, (unsigned)sn_argc, "");
+
+    deallocate(sah);
+    deallocate(fh);
+    if (argc) deallocate(vh);
+
+    return buf;
+}
+
 /* ── any type helpers ── */
 
 /* Map a short type name to type_info_t (for any_G_... mangled names). */
@@ -3950,9 +5265,420 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
     return result;
 }
 
-/* ── NodeMakeExpr: make.([]T, len) / make.([]T, len, cap) ── */
+/* ── NodeMakeExpr: make.([]T, len) / make.([]T, len, cap) / make.{ items } ── */
+
+/* True when this make.{} item is a plain compile-time scalar (int/float/char/bool).
+ * Used to gate the const-global fast path. Does not accept spreads, ranges,
+ * or designators — those are handled by the regular per-item store path. */
+static boolean_t item_is_const_scalar(node_t *it) {
+    if (!it) return False;
+    if (it->kind == NodeIntLitExpr) return True;
+    if (it->kind == NodeFloatLitExpr) return True;
+    if (it->kind == NodeCharLitExpr) return True;
+    if (it->kind == NodeBoolLitExpr) return True;
+    if (it->kind == NodeUnaryPrefixExpr && it->as.unary.op == TokMinus
+            && it->as.unary.operand
+            && (it->as.unary.operand->kind == NodeIntLitExpr
+                || it->as.unary.operand->kind == NodeFloatLitExpr))
+        return True;
+    return False;
+}
+
+/* Build an LLVMConstant of elem_ty from a const-scalar AST node. */
+static LLVMValueRef const_from_scalar(cg_t *cg, LLVMTypeRef elem_ty, node_t *it) {
+    LLVMTypeKind tk = LLVMGetTypeKind(elem_ty);
+    if (tk == LLVMIntegerTypeKind) {
+        long long v = 0;
+        if (it->kind == NodeIntLitExpr) v = (long long)it->as.int_lit.value;
+        else if (it->kind == NodeCharLitExpr) v = (long long)(unsigned char)it->as.char_lit.value;
+        else if (it->kind == NodeBoolLitExpr) v = it->as.bool_lit.value ? 1 : 0;
+        else if (it->kind == NodeUnaryPrefixExpr && it->as.unary.operand
+                && it->as.unary.operand->kind == NodeIntLitExpr)
+            v = -(long long)it->as.unary.operand->as.int_lit.value;
+        return LLVMConstInt(elem_ty, (unsigned long long)v, 1);
+    }
+    if (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind) {
+        double d = 0.0;
+        if (it->kind == NodeFloatLitExpr) d = it->as.float_lit.value;
+        else if (it->kind == NodeIntLitExpr) d = (double)it->as.int_lit.value;
+        else if (it->kind == NodeUnaryPrefixExpr && it->as.unary.operand) {
+            if (it->as.unary.operand->kind == NodeFloatLitExpr)
+                d = -it->as.unary.operand->as.float_lit.value;
+            else if (it->as.unary.operand->kind == NodeIntLitExpr)
+                d = -(double)it->as.unary.operand->as.int_lit.value;
+        }
+        return LLVMConstReal(elem_ty, d);
+    }
+    return LLVMConstNull(elem_ty);
+}
+
+/* True when an item is a spread of a runtime-length slice (not a fixed-size
+ * array — those are still classified comptime and counted by sym->array_size). */
+static boolean_t is_runtime_slice_spread(cg_t *cg, node_t *item) {
+    if (!item || item->kind != NodeSpreadExpr) return False;
+    node_t *e = item->as.spread_expr.expr;
+    if (!e || e->kind != NodeIdentExpr) return False;
+    symbol_t *sym = cg_lookup(cg, e->as.ident.name);
+    if (!sym) return False;
+    if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind && sym->array_size >= 0) return False;
+    return sym->stype.base == TypeSlice;
+}
+
+/* Comptime-known contribution of one item, when classified comptime.
+ * Returns 0 for runtime slice spreads (caller adds runtime length separately). */
+static long item_comptime_count(cg_t *cg, node_t *item, boolean_t *ok) {
+    if (is_runtime_slice_spread(cg, item)) { *ok = True; return 0; }
+    if (item->kind == NodeRangeExpr)   return count_range_values(item, ok);
+    if (item->kind == NodeSpreadExpr)  return count_spread_values(cg, item->as.spread_expr.expr, ok);
+    if (item->kind == NodeInitIndex) {
+        long idx = 0;
+        if (!const_int_value(item->as.init_index.index, &idx) || idx < 0) {
+            *ok = False; return 0;
+        }
+        *ok = True; return idx + 1;        /* contributes max-index for sizing */
+    }
+    *ok = True;
+    return 1;                              /* positional literal */
+}
+
+/* Emit a memcpy of len_v elements from src_ptr to base+off_v. */
+static void emit_memcpy_slice(cg_t *cg, LLVMValueRef base, LLVMTypeRef elem_ty,
+                              LLVMValueRef off_v, LLVMValueRef src_ptr, LLVMValueRef len_v_i64) {
+    LLVMValueRef bytes = LLVMBuildMul(cg->builder, len_v_i64, LLVMSizeOf(elem_ty), "spr.bytes");
+    LLVMValueRef dst   = LLVMBuildGEP2(cg->builder, elem_ty, base, &off_v, 1, "spr.dst");
+    LLVMBuildMemCpy(cg->builder, dst, 0, src_ptr, 0, bytes);
+}
+
+/* Runtime path: at least one item is a runtime-length slice spread.
+ * Length is computed at codegen via add of comptime constant + runtime slice.lens. */
+static LLVMValueRef gen_make_init_runtime(cg_t *cg, node_t *node, type_info_t elem_ti) {
+    node_t *init = node->as.make_expr.init;
+    LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
+    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
+    LLVMTypeRef sl_ty   = slice_struct_type(cg);
+
+    /* 1) sum lengths: comptime constant + each runtime slice's len */
+    long comptime_n = 0;
+    LLVMValueRef rt_total = LLVMConstInt(i64_ty, 0, 0);
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        node_t *it = init->as.compound_init.items.items[i];
+        if (is_runtime_slice_spread(cg, it)) {
+            symbol_t *sym = cg_lookup(cg, it->as.spread_expr.expr->as.ident.name);
+            LLVMValueRef sl_v = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "spr.sl");
+            LLVMValueRef len  = LLVMBuildExtractValue(cg->builder, sl_v, 1, "spr.len");
+            LLVMValueRef len64 = LLVMBuildZExt(cg->builder, len, i64_ty, "spr.len64");
+            rt_total = LLVMBuildAdd(cg->builder, rt_total, len64, "rt.acc");
+            continue;
+        }
+        boolean_t ok = True;
+        long n = item_comptime_count(cg, it, &ok);
+        if (!ok) {
+            diag_begin_error("'make.{}' item is not compile-time-knowable");
+            diag_span(DIAG_NODE(it), True, "item here");
+            diag_finish();
+            return LLVMConstNull(sl_ty);
+        }
+        comptime_n += n;
+    }
+    LLVMValueRef total_v = LLVMBuildAdd(cg->builder, rt_total,
+        LLVMConstInt(i64_ty, (unsigned long long)comptime_n, 0), "mk.total");
+
+    /* 2) allocate */
+    boolean_t on_heap = (cg->hint_storage == StorageHeap);
+    LLVMValueRef bytes = LLVMBuildMul(cg->builder, total_v, LLVMSizeOf(elem_ty), "mk.bytes");
+    LLVMValueRef base_ptr;
+    if (on_heap) {
+        LLVMValueRef margs[1] = { bytes };
+        base_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn, margs, 1, "mk.ptr");
+    } else {
+        base_ptr = LLVMBuildArrayAlloca(cg->builder, elem_ty, total_v, "mk.alloca");
+    }
+    LLVMBuildMemSet(cg->builder, base_ptr,
+                    LLVMConstInt(LLVMInt8TypeInContext(cg->ctx), 0, 0),
+                    bytes, 0);
+
+    /* 3) cursor i64 = 0 (alloca, in case loop blocks need PHI-style updates) */
+    LLVMValueRef cursor_slot = alloc_in_entry(cg, i64_ty, "mk.cursor");
+    LLVMBuildStore(cg->builder, LLVMConstInt(i64_ty, 0, 0), cursor_slot);
+
+    /* push nested hint for inner make.{} (mirrors comptime path) */
+    type_info_t saved_hse = cg->hint_slice_elem;
+    storage_t   saved_hs  = cg->hint_storage;
+    if (elem_ti.base == TypeSlice && elem_ti.elem_type) {
+        cg->hint_slice_elem = elem_ti.elem_type[0];
+        cg->hint_storage    = StorageHeap;
+    } else {
+        cg->hint_slice_elem = NO_TYPE;
+        cg->hint_storage    = StorageDefault;
+    }
+
+    /* 4) walk items */
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        node_t *it = init->as.compound_init.items.items[i];
+        LLVMValueRef cur = LLVMBuildLoad2(cg->builder, i64_ty, cursor_slot, "cur");
+
+        if (is_runtime_slice_spread(cg, it)) {
+            symbol_t *sym = cg_lookup(cg, it->as.spread_expr.expr->as.ident.name);
+            LLVMTypeRef src_elem_ty = elem_type_from_sym(cg, sym);
+            if (src_elem_ty != elem_ty) {
+                diag_begin_error("'make.{}' runtime slice spread element type does not match LHS");
+                diag_span(DIAG_NODE(it), True, "spread here");
+                diag_finish();
+                return LLVMConstNull(sl_ty);
+            }
+            LLVMValueRef sl_v   = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "spr.sl");
+            LLVMValueRef sptr   = LLVMBuildExtractValue(cg->builder, sl_v, 0, "spr.ptr");
+            LLVMValueRef slen   = LLVMBuildExtractValue(cg->builder, sl_v, 1, "spr.len");
+            LLVMValueRef slen64 = LLVMBuildZExt(cg->builder, slen, i64_ty, "spr.len64");
+            emit_memcpy_slice(cg, base_ptr, elem_ty, cur, sptr, slen64);
+            LLVMValueRef next = LLVMBuildAdd(cg->builder, cur, slen64, "cur.next");
+            LLVMBuildStore(cg->builder, next, cursor_slot);
+            continue;
+        }
+
+        if (it->kind == NodeInitIndex) {
+            long idx = 0;
+            const_int_value(it->as.init_index.index, &idx);
+            LLVMValueRef off = LLVMConstInt(i64_ty, (unsigned long long)idx, 0);
+            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &off, 1, "init.idx");
+            LLVMTypeRef saved = cg->hint_ret_type;
+            cg->hint_ret_type = elem_ty;
+            LLVMValueRef val = gen_expr(cg, it->as.init_index.value);
+            cg->hint_ret_type = saved;
+            if (LLVMTypeOf(val) != elem_ty) val = coerce_int(cg, val, elem_ty);
+            LLVMBuildStore(cg->builder, val, gep);
+            /* designators do NOT advance cursor — they're absolute */
+            continue;
+        }
+
+        if (it->kind == NodeRangeExpr || it->kind == NodeSpreadExpr) {
+            /* comptime range / fixed-array spread / string spread: emit at offset cur,
+             * then advance cursor by item's comptime count.
+             * Reuse existing _at helpers by GEPing base+cur first. */
+            LLVMValueRef sub_base = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &cur, 1, "sub.base");
+            long sub_cursor = 0;
+            if (it->kind == NodeRangeExpr) {
+                emit_range_values_at(cg, sub_base, elem_ty, &sub_cursor, it);
+            } else {
+                emit_spread_values_at(cg, sub_base, elem_ty, &sub_cursor, it->as.spread_expr.expr);
+            }
+            LLVMValueRef adv = LLVMConstInt(i64_ty, (unsigned long long)sub_cursor, 0);
+            LLVMValueRef next = LLVMBuildAdd(cg->builder, cur, adv, "cur.next");
+            LLVMBuildStore(cg->builder, next, cursor_slot);
+            continue;
+        }
+
+        /* positional literal */
+        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &cur, 1, "init.pos");
+        LLVMTypeRef saved = cg->hint_ret_type;
+        cg->hint_ret_type = elem_ty;
+        LLVMValueRef val = gen_expr(cg, it);
+        cg->hint_ret_type = saved;
+        if (LLVMTypeOf(val) != elem_ty) val = coerce_int(cg, val, elem_ty);
+        LLVMBuildStore(cg->builder, val, gep);
+        LLVMValueRef next = LLVMBuildAdd(cg->builder, cur, LLVMConstInt(i64_ty, 1, 0), "cur.next");
+        LLVMBuildStore(cg->builder, next, cursor_slot);
+    }
+
+    cg->hint_slice_elem = saved_hse;
+    cg->hint_storage    = saved_hs;
+
+    /* 5) build slice header */
+    LLVMValueRef len32 = LLVMBuildTrunc(cg->builder, total_v, i32_ty, "mk.len32");
+    LLVMValueRef result = LLVMGetUndef(sl_ty);
+    result = LLVMBuildInsertValue(cg->builder, result, base_ptr, 0, "mk.0");
+    result = LLVMBuildInsertValue(cg->builder, result, len32,    1, "mk.1");
+    result = LLVMBuildInsertValue(cg->builder, result, len32,    2, "mk.2");
+    return result;
+}
+
+/* make.{ items } — element type & storage come from the LHS via
+ * cg->hint_slice_elem / cg->hint_storage (set by gen_local_var). */
+static LLVMValueRef gen_make_init(cg_t *cg, node_t *node) {
+    node_t *init = node->as.make_expr.init;
+    LLVMTypeRef sl_ty  = slice_struct_type(cg);
+
+    type_info_t elem_ti = cg->hint_slice_elem;
+    if (elem_ti.base == TypeVoid) {
+        diag_begin_error("'make.{}' requires a slice element type from context");
+        diag_span(DIAG_NODE(node), True, "no LHS slice type to infer T");
+        diag_note("declare the variable with an explicit type, e.g. 'heap []i32 xs = make.{1, 2, 3};'");
+        diag_finish();
+        return LLVMConstNull(sl_ty);
+    }
+
+    /* Note: struct elements with destructors and nested heap slices are
+     * supported. rem.() walks the slice and runs per-element cleanup —
+     * see the NodeRemStmt slice branch. */
+
+    LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
+    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
+
+    /* if any item is a runtime-length slice spread, take the runtime path */
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        if (is_runtime_slice_spread(cg, init->as.compound_init.items.items[i]))
+            return gen_make_init_runtime(cg, node, elem_ti);
+    }
+
+    /* validate items: reject designators; gate string spread on byte-sized elem */
+    boolean_t bad = False;
+    boolean_t elem_is_byte = (LLVMGetTypeKind(elem_ty) == LLVMIntegerTypeKind
+                              && LLVMGetIntTypeWidth(elem_ty) == 8);
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        node_t *it = init->as.compound_init.items.items[i];
+        if (it->kind == NodeInitField) {
+            diag_begin_error("'make.{}' does not accept '.field = ...' designators (slices have no named fields)");
+            diag_span(DIAG_NODE(it), True, "designator here");
+            diag_finish();
+            bad = True;
+        } else if (it->kind == NodeInitIndex) {
+            long idx = -1;
+            if (!const_int_value(it->as.init_index.index, &idx) || idx < 0) {
+                diag_begin_error("'make.{}' designated index must be a non-negative compile-time integer");
+                diag_span(DIAG_NODE(it), True, "designator here");
+                diag_finish();
+                bad = True;
+            }
+        } else if (it->kind == NodeSpreadExpr && it->as.spread_expr.expr
+                   && it->as.spread_expr.expr->kind == NodeStrLitExpr
+                   && !elem_is_byte) {
+            diag_begin_error("string spread '..\"...\"' requires []i8 or []u8 element type");
+            diag_span(DIAG_NODE(it), True, "spread here");
+            diag_finish();
+            bad = True;
+        }
+    }
+    if (bad) return LLVMConstNull(sl_ty);
+
+    /* comptime element count */
+    boolean_t needs_nul = False, ok = True;
+    long n = count_compound_init_values(cg, init, &needs_nul, &ok);
+    if (!ok) {
+        diag_begin_error("'make.{}' requires a compile-time-knowable length");
+        diag_span(DIAG_NODE(node), True, "non-comptime length");
+        diag_note("range bounds and step must be integer literals; spread sources must be fixed-size arrays");
+        diag_finish();
+        return LLVMConstNull(sl_ty);
+    }
+
+    /* empty form → null slice */
+    if (n == 0) {
+        LLVMValueRef result = LLVMGetUndef(sl_ty);
+        LLVMValueRef zptr   = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+        LLVMValueRef zlen   = LLVMConstInt(i32_ty, 0, 0);
+        result = LLVMBuildInsertValue(cg->builder, result, zptr, 0, "mk.0");
+        result = LLVMBuildInsertValue(cg->builder, result, zlen, 1, "mk.1");
+        result = LLVMBuildInsertValue(cg->builder, result, zlen, 2, "mk.2");
+        return result;
+    }
+
+    LLVMValueRef len_v   = LLVMConstInt(i32_ty, (unsigned long long)n, 0);
+    boolean_t    on_heap = (cg->hint_storage == StorageHeap);
+
+    /* const-global fast path: stack `final/const []T = make.{ literals }`.
+     * Lower the slice to a private constant global instead of an alloca +
+     * per-element stores. Heap path is excluded (it must own a malloc'd
+     * buffer). Falls through to the regular path on any non-scalar item. */
+    if (!on_heap && (cg->hint_var_flags & (VdeclConst | VdeclFinal)) != 0) {
+        boolean_t all_scalar = True;
+        for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+            if (!item_is_const_scalar(init->as.compound_init.items.items[i])) {
+                all_scalar = False;
+                break;
+            }
+        }
+        if (all_scalar && init->as.compound_init.items.count == (usize_t)n) {
+            heap_t vals_h = allocate((usize_t)n, sizeof(LLVMValueRef));
+            LLVMValueRef *vals = (LLVMValueRef *)vals_h.pointer;
+            for (long i = 0; i < n; i++)
+                vals[i] = const_from_scalar(cg, elem_ty, init->as.compound_init.items.items[(usize_t)i]);
+            LLVMTypeRef arr_ty = LLVMArrayType2(elem_ty, (unsigned long long)n);
+            LLVMValueRef arr_init = LLVMConstArray2(elem_ty, vals, (unsigned long long)n);
+            deallocate(vals_h);
+            LLVMValueRef g = LLVMAddGlobal(cg->module, arr_ty, "mk.const");
+            LLVMSetInitializer(g, arr_init);
+            LLVMSetGlobalConstant(g, 1);
+            LLVMSetLinkage(g, LLVMPrivateLinkage);
+            LLVMSetUnnamedAddr(g, 1);
+
+            LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+            LLVMValueRef idx[2] = { zero, zero };
+            LLVMValueRef base = LLVMBuildGEP2(cg->builder, arr_ty, g, idx, 2, "mk.gbase");
+
+            LLVMValueRef result = LLVMGetUndef(sl_ty);
+            result = LLVMBuildInsertValue(cg->builder, result, base,  0, "mk.0");
+            result = LLVMBuildInsertValue(cg->builder, result, len_v, 1, "mk.1");
+            result = LLVMBuildInsertValue(cg->builder, result, len_v, 2, "mk.2");
+            return result;
+        }
+    }
+
+    LLVMValueRef base_ptr;
+    if (on_heap) {
+        LLVMValueRef bytes = LLVMBuildMul(cg->builder,
+            LLVMConstInt(i64_ty, (unsigned long long)n, 0),
+            LLVMSizeOf(elem_ty), "mk.bytes");
+        LLVMValueRef margs[1] = { bytes };
+        base_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
+                                  margs, 1, "mk.ptr");
+        LLVMBuildMemSet(cg->builder, base_ptr,
+                        LLVMConstInt(LLVMInt8TypeInContext(cg->ctx), 0, 0),
+                        bytes, 0);
+    } else {
+        LLVMTypeRef arr_ty = LLVMArrayType2(elem_ty, (unsigned long long)n);
+        LLVMValueRef arr   = alloc_in_entry(cg, arr_ty, "mk.alloca");
+        LLVMBuildStore(cg->builder, LLVMConstNull(arr_ty), arr);
+        LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+        LLVMValueRef idx[2] = { zero, zero };
+        base_ptr = LLVMBuildGEP2(cg->builder, arr_ty, arr, idx, 2, "mk.base");
+    }
+
+    /* push nested hint for inner make.{}: when LHS elem is itself []T, each
+     * slot's compound init should infer its own elem type, not the outer's. */
+    type_info_t saved_hse = cg->hint_slice_elem;
+    storage_t   saved_hs  = cg->hint_storage;
+    if (elem_ti.base == TypeSlice && elem_ti.elem_type) {
+        cg->hint_slice_elem = elem_ti.elem_type[0];
+        cg->hint_storage    = StorageHeap;   /* inner allocations own heap memory */
+    } else {
+        cg->hint_slice_elem = NO_TYPE;
+        cg->hint_storage    = StorageDefault;
+    }
+
+    /* fill items — designated index jumps cursor; positional advances it */
+    long cursor = 0;
+    for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {
+        node_t *it = init->as.compound_init.items.items[i];
+        if (it->kind == NodeInitIndex) {
+            long idx = 0;
+            const_int_value(it->as.init_index.index, &idx);
+            store_array_value_at(cg, base_ptr, elem_ty, idx, it->as.init_index.value);
+            cursor = idx + 1;
+        } else if (it->kind == NodeSpreadExpr) {
+            emit_spread_values_at(cg, base_ptr, elem_ty, &cursor, it->as.spread_expr.expr);
+        } else if (it->kind == NodeRangeExpr) {
+            emit_range_values_at(cg, base_ptr, elem_ty, &cursor, it);
+        } else {
+            store_array_value_at(cg, base_ptr, elem_ty, cursor++, it);
+        }
+    }
+
+    cg->hint_slice_elem = saved_hse;
+    cg->hint_storage    = saved_hs;
+
+    LLVMValueRef result = LLVMGetUndef(sl_ty);
+    result = LLVMBuildInsertValue(cg->builder, result, base_ptr, 0, "mk.0");
+    result = LLVMBuildInsertValue(cg->builder, result, len_v,    1, "mk.1");
+    result = LLVMBuildInsertValue(cg->builder, result, len_v,    2, "mk.2");
+    return result;
+}
 
 static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
+    if (node->as.make_expr.init)
+        return gen_make_init(cg, node);
+
     type_info_t elem_ti = node->as.make_expr.elem_type;
     LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
 
@@ -4143,6 +5869,68 @@ static LLVMValueRef gen_any_type_expr(cg_t *cg, node_t *node) {
     return LLVMBuildExtractValue(cg->builder, val, 0, "any_tag");
 }
 
+static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
+    const char *mod_alias = node->as.colon_call.module_name;
+    const char *type_name = node->as.colon_call.type_name;   /* NULL for 2-segment form */
+    const char *meth_name = node->as.colon_call.method_name;
+    usize_t     argc      = node->as.colon_call.args.count;
+
+    lib_entry_t *lib_ent = find_lib_entry(cg, mod_alias);
+    if (!lib_ent || !lib_ent->mod_prefix || !lib_ent->mod_prefix[0]) {
+        log_err("'%s' is not a known module alias", mod_alias);
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    char mangled_sym[512];
+    if (type_name)
+        snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s__%s",
+                 lib_ent->mod_prefix, type_name, meth_name);
+    else
+        snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s",
+                 lib_ent->mod_prefix, meth_name);
+
+    symbol_t *fn_sym = cg_lookup(cg, mangled_sym);
+    if (!fn_sym) {
+        log_err("undefined static '%s' (looked up as '%s')", meth_name, mangled_sym);
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+
+    LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+    unsigned n_params   = LLVMCountParamTypes(fn_type);
+
+    /* All non-"new" methods are forward-declared with a leading `this` slot.
+       For static-style colon calls the user supplies no `this`, so detect the
+       mismatch and pass null as the implicit first argument. */
+    boolean_t has_this  = ((usize_t)n_params == argc + 1);
+    usize_t   total_args = has_this ? argc + 1 : argc;
+
+    heap_t args_heap = NullHeap;
+    LLVMValueRef *args = Null;
+    if (total_args > 0) {
+        args_heap = allocate(total_args, sizeof(LLVMValueRef));
+        args = args_heap.pointer;
+        usize_t offset = 0;
+        if (has_this) {
+            args[0] = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+            offset = 1;
+        }
+        for (usize_t i = 0; i < argc; i++)
+            args[i + offset] = gen_expr(cg, node->as.colon_call.args.items[i]);
+    }
+    if (total_args > 0 && n_params > 0) {
+        heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
+        LLVMTypeRef *ptypes = pt_heap.pointer;
+        LLVMGetParamTypes(fn_type, ptypes);
+        for (usize_t i = 0; i < total_args && i < (usize_t)n_params; i++)
+            args[i] = coerce_int(cg, args[i], ptypes[i]);
+        deallocate(pt_heap);
+    }
+    LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type,
+                                       fn_sym->value, args, (unsigned)total_args, "");
+    if (total_args > 0) deallocate(args_heap);
+    return ret;
+}
+
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
     switch (node->kind) {
         case NodeIntLitExpr:       return gen_int_lit(cg, node);
@@ -4157,6 +5945,9 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeCallExpr:         return gen_call(cg, node);
         case NodeMethodCall:       return gen_method_call(cg, node);
         case NodeThreadCall:       return gen_thread_call(cg, node);
+        case NodeAsyncCall:        return gen_async_call(cg, node);
+        case NodeAwaitExpr:        return gen_await(cg, node);
+        case NodeAwaitCombinator:  return gen_await_combinator(cg, node);
         case NodeFutureOp:         return gen_future_op(cg, node);
         case NodeCompoundAssign:   return gen_compound_assign(cg, node);
         case NodeAssignExpr:       return gen_assign(cg, node);
@@ -4173,7 +5964,10 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeNilExpr:          return gen_nil(cg);
         case NodeMovExpr:          return gen_mov(cg, node);
         case NodeAddrOf:           return gen_addr_of(cg, node);
+        case NodeLambda:           return gen_lambda(cg, node);
         case NodeErrorExpr:        return gen_error_expr(cg, node);
+        case NodeComptimeFmt:      return gen_comptime_fmt(cg, node);
+        case NodeColonCall:        return gen_colon_call(cg, node);
         case NodeExpectExpr: {
             /* expect.(expr) — if !expr, print failure and increment fail count */
             LLVMValueRef val = gen_expr(cg, node->as.expect_expr.expr);
@@ -4372,14 +6166,65 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
                     diag_finish();
                     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
                 }
-                /* heap []T slice: load slice struct, extract data ptr, call free */
+                /* heap []T slice: load slice struct, walk elements (if elem
+                 * type owns resources), then free the data ptr. */
                 if (hsym && hsym->stype.base == TypeSlice && hsym->storage == StorageHeap) {
                     LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(cg->ctx, 0);
                     LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+                    LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
                     LLVMTypeRef sfields[3] = { ptr_ty, i32_ty, i32_ty };
                     LLVMTypeRef sl_ty   = LLVMStructTypeInContext(cg->ctx, sfields, 3, 0);
                     LLVMValueRef sl     = LLVMBuildLoad2(cg->builder, sl_ty, hsym->value, "sl");
                     LLVMValueRef dptr   = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
+                    LLVMValueRef slen   = LLVMBuildExtractValue(cg->builder, sl, 1, "sl.len");
+
+                    /* per-element cleanup: struct dtor or inner-slice free */
+                    type_info_t elem_ti = hsym->stype.elem_type
+                        ? hsym->stype.elem_type[0] : NO_TYPE;
+                    struct_reg_t *elem_sr = Null;
+                    boolean_t want_loop = False;
+                    if (elem_ti.base == TypeUser && elem_ti.user_name && !elem_ti.is_pointer) {
+                        elem_sr = find_struct(cg, elem_ti.user_name);
+                        if (elem_sr && elem_sr->destructor) want_loop = True;
+                    }
+                    if (elem_ti.base == TypeSlice) want_loop = True;
+
+                    if (want_loop) {
+                        LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
+                        LLVMValueRef len64  = LLVMBuildZExt(cg->builder, slen, i64_ty, "sl.len64");
+                        LLVMValueRef i_slot = alloc_in_entry(cg, i64_ty, "rem.i");
+                        LLVMBuildStore(cg->builder, LLVMConstInt(i64_ty, 0, 0), i_slot);
+
+                        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rem.cond");
+                        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rem.body");
+                        LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "rem.end");
+                        LLVMBuildBr(cg->builder, cond_bb);
+
+                        LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
+                        LLVMValueRef i_v = LLVMBuildLoad2(cg->builder, i64_ty, i_slot, "rem.iv");
+                        LLVMValueRef cmp = LLVMBuildICmp(cg->builder, LLVMIntULT, i_v, len64, "rem.cmp");
+                        LLVMBuildCondBr(cg->builder, cmp, body_bb, end_bb);
+
+                        LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+                        LLVMValueRef elem_addr = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &i_v, 1, "rem.gep");
+                        if (elem_ti.base == TypeUser && elem_sr && elem_sr->destructor) {
+                            LLVMTypeRef fn_type = LLVMGlobalGetValueType(elem_sr->destructor);
+                            LLVMValueRef ca[1] = { elem_addr };
+                            LLVMBuildCall2(cg->builder, fn_type, elem_sr->destructor, ca, 1, "");
+                        } else if (elem_ti.base == TypeSlice) {
+                            /* inner slice: load header, free its ptr */
+                            LLVMValueRef inner = LLVMBuildLoad2(cg->builder, sl_ty, elem_addr, "rem.inner");
+                            LLVMValueRef iptr  = LLVMBuildExtractValue(cg->builder, inner, 0, "rem.iptr");
+                            LLVMValueRef ifa[1] = { iptr };
+                            LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, ifa, 1, "");
+                        }
+                        LLVMValueRef inc = LLVMBuildAdd(cg->builder, i_v, LLVMConstInt(i64_ty, 1, 0), "rem.inc");
+                        LLVMBuildStore(cg->builder, inc, i_slot);
+                        LLVMBuildBr(cg->builder, cond_bb);
+
+                        LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+                    }
+
                     LLVMValueRef fargs[1] = { dptr };
                     LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, fargs, 1, "");
                     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);

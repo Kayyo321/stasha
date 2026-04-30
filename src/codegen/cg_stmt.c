@@ -6,6 +6,7 @@ static boolean_t is_primitive_type(type_info_t ti) {
     if (ti.base == TypeUser)   return False;
     if (ti.base == TypeFnPtr)  return False; /* function pointers are not heap primitives */
     if (ti.base == TypeFuture) return False; /* future is an opaque pointer — never heap-wrap */
+    if (ti.base == TypeStream) return False; /* stream is an opaque pointer — never heap-wrap */
     return True;
 }
 
@@ -23,6 +24,28 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         LLVMValueRef init_val = gen_expr(cg, node->as.var_decl.init);
         LLVMTypeRef  inferred = LLVMTypeOf(init_val);
         type_info_t  ti       = llvm_type_to_ti(inferred);
+        /* Infer future.[T] / stream.[T] when the RHS is a thread/async
+           dispatch, so later lowering can recover the carried element type. */
+        node_t *init_n = node->as.var_decl.init;
+        if (init_n && init_n->kind == NodeAsyncCall) {
+            const char *callee = init_n->as.async_call.callee;
+            node_t *fn = find_fn_decl(cg, callee);
+            ti.base       = TypeFuture;
+            ti.is_pointer = False;
+            ti.ptr_perm   = PtrNone;
+            ti.ptr_depth  = 0;
+            if (fn && fn->as.fn_decl.coro_flavor == CoroStream) ti.base = TypeStream;
+            if (fn && fn->as.fn_decl.return_count > 0) {
+                type_info_t rt = fn->as.fn_decl.return_types[0];
+                if (ti.base == TypeStream && rt.base == TypeStream && rt.elem_type) {
+                    ti.elem_type = alloc_type_array(1);
+                    ti.elem_type[0] = rt.elem_type[0];
+                } else {
+                    ti.elem_type = alloc_type_array(1);
+                    ti.elem_type[0] = rt;
+                }
+            }
+        }
         LLVMValueRef alloca_val = alloc_in_entry(cg, inferred, node->as.var_decl.name);
         LLVMBuildStore(cg->builder, init_val, alloca_val);
         {
@@ -32,6 +55,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             /* zone-allocated: rem.() must be a no-op — zone owns the memory */
             if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
                 sym_flags |= SymZoneAlloc;
+            check_shadow(cg, node->as.var_decl.name, node->line);
             symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, inferred, ti, sym_flags);
         }
         symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -78,10 +102,27 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             else if (strstr(ti.user_name, "_G_"))
                 try_instantiate_generic(cg, ti.user_name);
             if (!find_struct(cg, ti.user_name) && !find_enum(cg, ti.user_name)) {
-                diag_begin_error("unknown type '%s'", ti.user_name);
-                diag_span(DIAG_NODE(node), True, "type used here");
-                diag_note("did you forget to define or import the type?");
-                diag_finish();
+                char dedup_key[600];
+                snprintf(dedup_key, sizeof(dedup_key), "undef_type:%s", ti.user_name);
+                if (!cg_error_already_reported(cg, dedup_key)) {
+                    diag_begin_error("unknown type '%s'", ti.user_name);
+                    diag_set_category(ErrCatUndefined);
+                    diag_span(DIAG_NODE(node), True, "type used here");
+                    diag_note("did you forget to define or import the type?");
+                    /* Levenshtein suggestion: scan registered structs and enums */
+                    usize_t best_dist = 3;
+                    const char *best = Null;
+                    for (usize_t i = 0; i < cg->struct_count; i++) {
+                        usize_t d = levenshtein(ti.user_name, cg->structs[i].name);
+                        if (d < best_dist) { best_dist = d; best = cg->structs[i].name; }
+                    }
+                    for (usize_t i = 0; i < cg->enum_count; i++) {
+                        usize_t d = levenshtein(ti.user_name, cg->enums[i].name);
+                        if (d < best_dist) { best_dist = d; best = cg->enums[i].name; }
+                    }
+                    if (best) diag_help("did you mean '%s'?", best);
+                    diag_finish();
+                }
             }
         }
     }
@@ -198,6 +239,10 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             check_storage_domain(cg, node->as.var_decl.storage, ak == 1, ak == -1, node->line);
     }
 
+    /* slice-LHS domain check at declaration */
+    if (node->as.var_decl.init && ti.base == TypeSlice)
+        check_slice_domain(cg, node->as.var_decl.storage, node->as.var_decl.init, node->line);
+
     if (node->as.var_decl.init) {
         LLVMValueRef init;
         /* nil → error type produces a nil error struct */
@@ -207,9 +252,20 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             /* nil → zero-initialised slice { null, 0, 0 } */
             init = LLVMConstNull(type);
         } else {
+            type_info_t saved_slice_elem = cg->hint_slice_elem;
+            storage_t   saved_storage    = cg->hint_storage;
+            int         saved_var_flags  = cg->hint_var_flags;
+            if (ti.base == TypeSlice && ti.elem_type) {
+                cg->hint_slice_elem = ti.elem_type[0];
+                cg->hint_storage    = node->as.var_decl.storage;
+                cg->hint_var_flags  = node->as.var_decl.flags;
+            }
             cg->hint_ret_type = type;
             init = gen_expr(cg, node->as.var_decl.init);
-            cg->hint_ret_type = Null;
+            cg->hint_ret_type   = Null;
+            cg->hint_slice_elem = saved_slice_elem;
+            cg->hint_storage    = saved_storage;
+            cg->hint_var_flags  = saved_var_flags;
             if (!(node->as.var_decl.flags & VdeclArray))
                 init = coerce_int(cg, init, type);
         }
@@ -223,6 +279,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* zone-allocated: rem.() must be a no-op — zone owns the memory */
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
             sym_flags |= SymZoneAlloc;
+        check_shadow(cg, node->as.var_decl.name, node->line);
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -521,6 +578,27 @@ static void gen_if(cg_t *cg, node_t *node) {
 }
 
 static void gen_ret(cg_t *cg, node_t *node) {
+    /* Coroutine ret:
+         - Stream coroutine: `ret;` only (analysis rejects `ret expr;`); jump to
+           final-suspend, which sets eos/complete + runs coro.end.
+         - Task coroutine: `ret expr;` stores the result into the promise's
+           item slot, sets complete=1, then jumps to final-suspend.  `ret;`
+           on a void-returning task just sets complete=1 and finalizes. */
+    if (cg->cur_coro.active) {
+        emit_all_dtor_calls(cg);
+        if (cg->current_fn && cg->current_fn_is_async_task) {
+            if (node->as.ret_stmt.values.count == 0) {
+                sts_emit_task_void_ret(cg, &cg->cur_coro);
+            } else {
+                LLVMValueRef rv = gen_expr(cg, node->as.ret_stmt.values.items[0]);
+                sts_emit_task_ret(cg, &cg->cur_coro, rv);
+            }
+        } else {
+            sts_emit_stream_ret(cg, &cg->cur_coro);
+        }
+        return;
+    }
+
     /* pointer safety: check each return value */
     for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
         node_t *rv = node->as.ret_stmt.values.items[i];
@@ -1095,37 +1173,54 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         && (targets->items[0]->as.var_decl.flags & VdeclLet);
 
     if (is_let && values->count == 1) {
-        /* Extract the callee name from the single RHS expression.
-           Supports plain calls, instance method calls, and self-method calls. */
         node_t *rhs = values->items[0];
-        const char *callee = Null;
-        if (rhs->kind == NodeCallExpr)
-            callee = rhs->as.call.callee;
-        else if (rhs->kind == NodeMethodCall)
-            callee = rhs->as.method_call.method;
-        else if (rhs->kind == NodeSelfMethodCall)
-            callee = rhs->as.self_method_call.method;
 
-        node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
+        /* await.all(f1, ..., fN) destructuring: each target takes the
+           corresponding future's element type (same T across all in v1). */
+        if (rhs->kind == NodeAwaitCombinator
+                && !rhs->as.await_combinator.is_any) {
+            node_list_t *hs = &rhs->as.await_combinator.handles;
+            for (usize_t i = 0; i < targets->count; i++) {
+                node_t *tgt = targets->items[i];
+                if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
+                    continue;
+                if (i < hs->count)
+                    tgt->as.var_decl.type = resolve_future_elem_type(cg, hs->items[i]);
+                else
+                    tgt->as.var_decl.type = NO_TYPE;
+            }
+        } else {
+            /* Extract the callee name from the single RHS expression.
+               Supports plain calls, instance method calls, and self-method calls. */
+            const char *callee = Null;
+            if (rhs->kind == NodeCallExpr)
+                callee = rhs->as.call.callee;
+            else if (rhs->kind == NodeMethodCall)
+                callee = rhs->as.method_call.method;
+            else if (rhs->kind == NodeSelfMethodCall)
+                callee = rhs->as.self_method_call.method;
 
-        if (!fn_decl || fn_decl->as.fn_decl.return_count < 1) {
-            diag_begin_error("'let' binding requires a multi-return function call");
-            diag_span(DIAG_NODE(node), True, "not a multi-return call");
-            diag_note("'let' binds the results of a function that returns multiple values");
-            diag_help("example: stack i32 [lo, hi] = min_max(a, b);");
-            diag_finish();
-            return;
-        }
+            node_t *fn_decl = callee ? find_fn_decl(cg, callee) : Null;
 
-        /* Assign inferred types to each non-blank target */
-        for (usize_t i = 0; i < targets->count; i++) {
-            node_t *tgt = targets->items[i];
-            if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
-                continue;
-            if (i < fn_decl->as.fn_decl.return_count)
-                tgt->as.var_decl.type = fn_decl->as.fn_decl.return_types[i];
-            else
-                tgt->as.var_decl.type = NO_TYPE;
+            if (!fn_decl || fn_decl->as.fn_decl.return_count < 1) {
+                diag_begin_error("'let' binding requires a multi-return function call");
+                diag_span(DIAG_NODE(node), True, "not a multi-return call");
+                diag_note("'let' binds the results of a function that returns multiple values");
+                diag_help("example: stack i32 [lo, hi] = min_max(a, b);");
+                diag_finish();
+                return;
+            }
+
+            /* Assign inferred types to each non-blank target */
+            for (usize_t i = 0; i < targets->count; i++) {
+                node_t *tgt = targets->items[i];
+                if (tgt->as.var_decl.name && strcmp(tgt->as.var_decl.name, "_") == 0)
+                    continue;
+                if (i < fn_decl->as.fn_decl.return_count)
+                    tgt->as.var_decl.type = fn_decl->as.fn_decl.return_types[i];
+                else
+                    tgt->as.var_decl.type = NO_TYPE;
+            }
         }
     }
 
@@ -1868,16 +1963,39 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeComptimeIf:   gen_comptime_if(cg, node); break;
         case NodeComptimeAssert: gen_comptime_assert(cg, node); break;
         case NodeWithStmt:     gen_with_stmt(cg, node); break;
+        case NodeYieldExpr: {
+            if (!cg->cur_coro.active) {
+                diag_begin_error("'yield' is only legal inside a stream coroutine");
+                diag_span(DIAG_NODE(node), True, "yield used in non-stream context");
+                diag_finish();
+                break;
+            }
+            LLVMValueRef yv = gen_expr(cg, node->as.yield_expr.value);
+            sts_emit_yield_value(cg, &cg->cur_coro, yv, LLVMTypeOf(yv));
+            break;
+        }
+        case NodeYieldNowExpr:
+            if (!cg->cur_coro.active) {
+                diag_begin_error("'yield;' is only legal inside a stream coroutine");
+                diag_span(DIAG_NODE(node), True, "scheduler-yield used outside coroutine");
+                diag_finish();
+                break;
+            }
+            sts_emit_yield_now(cg, &cg->cur_coro);
+            break;
         case NodeBreakStmt:
             if (cg->break_target)
                 LLVMBuildBr(cg->builder, cg->break_target);
             else {
-                diag_begin_error("'break' used outside of a loop or switch");
+                diag_begin_error("'break' used outside of a loop, switch, or watch handler");
                 diag_span(DIAG_NODE(node), True, "break here");
-                diag_note("'break' can only appear inside for, while, do-while, inf, or switch");
+                diag_note("'break' can only appear inside for, while, do-while, inf, switch, or watch handlers");
                 diag_finish();
             }
             break;
+        case NodeWatchStmt:    gen_watch_stmt(cg, node); break;
+        case NodeSendStmt:     gen_send_stmt(cg, node); break;
+        case NodeQuitStmt:     gen_quit_stmt(cg, node); break;
         case NodeContinueStmt:
             if (cg->continue_target)
                 LLVMBuildBr(cg->builder, cg->continue_target);
@@ -1980,13 +2098,29 @@ static void gen_stmt(cg_t *cg, node_t *node) {
 static void gen_block(cg_t *cg, node_t *node) {
     usize_t old_count = cg->locals.count;
     push_dtor_scope(cg);
-    for (usize_t i = 0; i < node->as.block.stmts.count; i++)
+    boolean_t block_terminated = False;
+    for (usize_t i = 0; i < node->as.block.stmts.count; i++) {
+        if (block_terminated) {
+            /* Warn on first unreachable statement only */
+            node_t *unreachable = node->as.block.stmts.items[i];
+            diag_begin_optional_warning(WarnUnreachableCode,
+                "unreachable code after return/break/continue");
+            diag_set_category(ErrCatOther);
+            diag_span(DIAG_NODE(unreachable), True, "this code will never execute");
+            diag_finish();
+            break;  /* stop generating unreachable stmts */
+        }
         gen_stmt(cg, node->as.block.stmts.items[i]);
+        /* Check if the current basic block now has a terminator */
+        LLVMBasicBlockRef cur = LLVMGetInsertBlock(cg->builder);
+        if (cur && LLVMGetBasicBlockTerminator(cur))
+            block_terminated = True;
+    }
     /* emit unused variable warnings for locals added in this block */
     for (usize_t i = old_count; i < cg->locals.count; i++) {
         symbol_t *entry = &cg->locals.entries[i];
         if (!entry->used && entry->name && entry->name[0] != '_') {
-            diag_begin_warning("unused variable '%s'", entry->name);
+            diag_begin_optional_warning(WarnUnusedVar, "unused variable '%s'", entry->name);
             if (entry->line > 0)
                 diag_span(SRC_LOC(entry->line, 0, strlen(entry->name)), True,
                           "variable declared here");

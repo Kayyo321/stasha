@@ -6,6 +6,7 @@
 typedef enum {
     CTypeUnsupported = 0,
     CTypeVoid,
+    CTypeBool,
     CTypeChar,
     CTypeSChar,
     CTypeUChar,
@@ -19,6 +20,7 @@ typedef enum {
     CTypeULongLong,
     CTypeFloat,
     CTypeDouble,
+    CTypeLongDouble,
     CTypeStructRef,
     CTypeUnionRef,
     CTypeTypedefRef,
@@ -41,6 +43,8 @@ typedef struct {
     char *name;
     c_type_t type;
     long array_len;
+    boolean_t is_bitfield;
+    long bit_width;
 } c_field_t;
 
 typedef struct {
@@ -54,6 +58,7 @@ typedef struct {
     c_param_t *params;
     usize_t param_count;
     boolean_t is_variadic;
+    boolean_t from_user_header;
     heap_t params_heap; /* internal */
 } c_fn_t;
 
@@ -62,12 +67,16 @@ typedef struct {
     c_field_t *fields;
     usize_t field_count;
     boolean_t is_union;
+    boolean_t from_user_header; /* true iff defined in the cheader path
+                                   the user wrote, vs. transitively
+                                   pulled in via #include */
     heap_t fields_heap; /* internal */
 } c_struct_t;
 
 typedef struct {
     char *name;
     c_type_t actual;
+    boolean_t from_user_header;
 } c_typedef_t;
 
 typedef struct {
@@ -88,6 +97,13 @@ typedef struct {
 } c_const_t;
 
 typedef struct {
+    char *name;
+    c_type_t type;
+    long array_len;
+    boolean_t from_user_header;
+} c_global_t;
+
+typedef struct {
     c_fn_t      *fns;
     usize_t      fn_count;
     c_struct_t  *structs;
@@ -98,11 +114,14 @@ typedef struct {
     usize_t      enum_count;
     c_const_t   *consts;
     usize_t      const_count;
+    c_global_t  *globals;
+    usize_t      global_count;
     heap_t       fns_heap;     /* internal */
     heap_t       structs_heap; /* internal */
     heap_t       tdefs_heap;   /* internal */
     heap_t       enums_heap;   /* internal */
     heap_t       consts_heap;  /* internal */
+    heap_t       globals_heap; /* internal */
     heap_t      *owned_heaps;  /* internal */
     usize_t      owned_heap_count;
     usize_t      owned_heap_cap;

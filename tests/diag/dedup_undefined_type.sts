@@ -1,0 +1,14 @@
+// Diagnostic test: error deduplication — undefined type used in multiple declarations
+// Expected: only ONE "unknown type 'Widget'" error, not two
+// Feature: Phase 1 error deduplication + Levenshtein on types
+mod diag_dedup_type;
+
+type Widgt: struct {
+    ext i32 value;
+};
+
+ext fn main(void): i32 {
+    stack Widget a;
+    stack Widget b;
+    ret 0;
+}

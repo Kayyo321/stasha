@@ -1,0 +1,387 @@
+mod ex_coro_tasks;
+
+lib "stdio" = io;
+
+// ── basic task coroutines ──────────────────────────────────────────────────
+
+async fn sum_to(i32 n): i32 {
+    stack i32 acc = 0;
+    stack i32 i = 0;
+    while (i <= n) {
+        acc = acc + i;
+        i = i + 1;
+    }
+    ret acc;
+}
+
+async fn fib(i32 n): i32 {
+    if (n <= 1) { ret n; }
+    stack i32 a = await(fib(n - 1));
+    stack i32 b = await(fib(n - 2));
+    ret a + b;
+}
+
+// ── stream coroutines ──────────────────────────────────────────────────────
+
+async fn range(i32 lo, i32 hi): stream.[i32] {
+    stack i32 i = lo;
+    while (i < hi) {
+        yield i;
+        i = i + 1;
+    }
+    ret;
+}
+
+async fn squares(i32 n): stream.[i32] {
+    stack i32 i = 0;
+    while (i < n) {
+        yield i * i;
+        i = i + 1;
+    }
+    ret;
+}
+
+async fn infinite_ints(void): stream.[i32] {
+    stack i32 i = 0;
+    inf {
+        yield i;
+        i = i + 1;
+    }
+    ret;
+}
+
+// ── async methods + struct ─────────────────────────────────────────────────
+
+type Accumulator: struct {
+    ext i32 total;
+    ext async fn add_range(i32 lo, i32 hi): i32 {
+        stack i32 i = lo;
+        while (i <= hi) {
+            this.total = this.total + i;
+            i = i + 1;
+        }
+        ret this.total;
+    }
+    ext async fn stream_vals(i32 n): stream.[i32] {
+        stack i32 i = 0;
+        while (i < n) {
+            yield this.total + i;
+            i = i + 1;
+        }
+        ret;
+    }
+}
+
+fn Accumulator.new(void): Accumulator {
+    stack Accumulator a = .{ .total = 0 };
+    ret a;
+}
+
+// ── generic async fns ──────────────────────────────────────────────────────
+
+async fn @comptime[T] identity_task(stack T x): T { ret x; }
+
+async fn @comptime[T] repeat_stream(stack T x, stack i32 n): stream.[T] {
+    stack i32 i = 0;
+    while (i < n) {
+        yield x;
+        i = i + 1;
+    }
+    ret;
+}
+
+// ── await.all / await.any ──────────────────────────────────────────────────
+
+async fn slow(i32 x): i32 {
+    stack i32 i = 0;
+    while (i < x * 100) { i = i + 1; }
+    ret x;
+}
+
+int i32 rr_first_phase = 0;
+int i32 rr_second_phase = 0;
+int i32 rr_observed = 0;
+
+async fn round_robin_probe(i32 which): i32 {
+    if (which == 0) {
+        rr_first_phase = 1;
+        yield;
+        if (rr_second_phase == 1) { rr_observed = rr_observed + 1; }
+        rr_first_phase = 2;
+        yield;
+        if (rr_second_phase == 2) { rr_observed = rr_observed + 1; }
+        ret 10;
+    }
+
+    rr_second_phase = 1;
+    yield;
+    if (rr_first_phase == 1) { rr_observed = rr_observed + 1; }
+    rr_second_phase = 2;
+    yield;
+    if (rr_first_phase == 2) { rr_observed = rr_observed + 1; }
+    ret 20;
+}
+
+int i32 any_slow_steps = 0;
+
+async fn any_slow_forever(void): i32 {
+    inf {
+        any_slow_steps = any_slow_steps + 1;
+        yield;
+    }
+    ret 99;
+}
+
+async fn any_fast_value(void): i32 {
+    yield;
+    ret 7;
+}
+
+fn main(void): i32 {
+    // basic task await
+    stack i32 s = await(sum_to(10));
+    io.printf('sum_to(10) = %d\n', s);
+
+    stack i32 f7 = await(fib(7));
+    io.printf('fib(7) = %d\n', f7);
+
+    // stream: range
+    stream.[i32] r = range(3, 7);
+    io.printf('range(3,7):');
+    inf {
+        stack i32 v = await.next(r);
+        if (stream.done(r)) { break; }
+        io.printf(' %d', v);
+    }
+    io.printf('\n');
+    stream.drop(r);
+
+    // stream: squares
+    stream.[i32] sq = squares(5);
+    io.printf('squares(5):');
+    inf {
+        stack i32 v = await.next(sq);
+        if (stream.done(sq)) { break; }
+        io.printf(' %d', v);
+    }
+    io.printf('\n');
+    stream.drop(sq);
+
+    // stream: cancel infinite
+    stream.[i32] inf_s = infinite_ints();
+    stack i32 taken = 0;
+    io.printf('first 5 ints:');
+    while (taken < 5) {
+        stack i32 v = await.next(inf_s);
+        if (stream.done(inf_s)) { break; }
+        io.printf(' %d', v);
+        taken = taken + 1;
+    }
+    io.printf('\n');
+    stream.cancel(inf_s);
+    inf {
+        stack i32 _v = await.next(inf_s);
+        if (stream.done(inf_s)) { break; }
+    }
+    stream.drop(inf_s);
+    io.printf('infinite stream cancelled cleanly\n');
+
+    // async method
+    stack Accumulator acc = Accumulator.new();
+    stack i32 total = await(acc.add_range(1, 5));
+    io.printf('acc.add_range(1,5) = %d\n', total);
+
+    stream.[i32] sv = acc.stream_vals(3);
+    io.printf('acc.stream_vals(3):');
+    inf {
+        stack i32 v = await.next(sv);
+        if (stream.done(sv)) { break; }
+        io.printf(' %d', v);
+    }
+    io.printf('\n');
+    stream.drop(sv);
+
+    // generic task
+    stack i32 gi = await(identity_task.[i32](99));
+    io.printf('identity_task[i32](99) = %d\n', gi);
+
+    stack i64 gl = await(identity_task.[i64](12345678));
+    io.printf('identity_task[i64](12345678) = %lld\n', gl);
+
+    // generic stream
+    stream.[i32] rep = repeat_stream.[i32](7, 4);
+    io.printf('repeat_stream[i32](7,4):');
+    inf {
+        stack i32 v = await.next(rep);
+        if (stream.done(rep)) { break; }
+        io.printf(' %d', v);
+    }
+    io.printf('\n');
+    stream.drop(rep);
+
+    // await.all
+    stack i32 [r0, r1, r2] = await.all(sum_to(3), sum_to(4), sum_to(5));
+    io.printf('await.all(sum_to(3),sum_to(4),sum_to(5)) = [%d, %d, %d]\n', r0, r1, r2);
+
+    // await.any
+    stack i32 winner = await.any(slow(1), slow(100));
+    io.printf('await.any = %d\n', winner);
+
+    ret 0;
+}
+
+// ── test blocks ────────────────────────────────────────────────────────────
+
+test 'sum_to correctness' {
+    expect_eq.(await(sum_to(0)), 0);
+    expect_eq.(await(sum_to(1)), 1);
+    expect_eq.(await(sum_to(5)), 15);
+    expect_eq.(await(sum_to(10)), 55);
+    expect_eq.(await(sum_to(100)), 5050);
+}
+
+test 'fib correctness' {
+    expect_eq.(await(fib(0)), 0);
+    expect_eq.(await(fib(1)), 1);
+    expect_eq.(await(fib(6)), 8);
+    expect_eq.(await(fib(8)), 21);
+}
+
+test 'range stream values' {
+    stream.[i32] s = range(0, 5);
+    stack i32 i = 0;
+    inf {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        expect_eq.(v, i);
+        i = i + 1;
+    }
+    expect_eq.(i, 5);
+    stream.drop(s);
+}
+
+test 'squares stream values' {
+    stream.[i32] s = squares(4);
+    stack i32 expected[4] = .{0, 1, 4, 9};
+    stack i32 i = 0;
+    inf {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        expect_eq.(v, expected[i]);
+        i = i + 1;
+    }
+    expect_eq.(i, 4);
+    stream.drop(s);
+}
+
+test 'cancel infinite stream' {
+    stream.[i32] s = infinite_ints();
+    stack i32 count = 0;
+    while (count < 10) {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        expect_eq.(v, count);
+        count = count + 1;
+    }
+    stream.cancel(s);
+    inf {
+        stack i32 _v = await.next(s);
+        if (stream.done(s)) { break; }
+    }
+    expect.(stream.done(s) != 0);
+    stream.drop(s);
+}
+
+test 'pre-cancel stream yields nothing or finalizes fast' {
+    stream.[i32] s = infinite_ints();
+    stream.cancel(s);
+    stack i32 count = 0;
+    inf {
+        stack i32 _v = await.next(s);
+        if (stream.done(s)) { break; }
+        count = count + 1;
+        if (count > 5) { break; }
+    }
+    stream.drop(s);
+    expect.(count <= 1);
+}
+
+test 'async method add_range' {
+    stack Accumulator a = Accumulator.new();
+    expect_eq.(await(a.add_range(0, 4)), 10);
+    expect_eq.(await(a.add_range(1, 1)), 11);
+}
+
+test 'async method stream_vals' {
+    stack Accumulator a = Accumulator.new();
+    a.total = 100;
+    stream.[i32] s = a.stream_vals(3);
+    stack i32 expected[3] = .{100, 101, 102};
+    stack i32 i = 0;
+    inf {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        expect_eq.(v, expected[i]);
+        i = i + 1;
+    }
+    expect_eq.(i, 3);
+    stream.drop(s);
+}
+
+test 'generic identity task' {
+    expect_eq.(await(identity_task.[i32](0)), 0);
+    expect_eq.(await(identity_task.[i32](42)), 42);
+    expect_eq.(await(identity_task.[i32](-1)), -1);
+}
+
+test 'generic repeat stream' {
+    stream.[i32] s = repeat_stream.[i32](5, 3);
+    stack i32 count = 0;
+    inf {
+        stack i32 v = await.next(s);
+        if (stream.done(s)) { break; }
+        expect_eq.(v, 5);
+        count = count + 1;
+    }
+    expect_eq.(count, 3);
+    stream.drop(s);
+}
+
+test 'await.all preserves order' {
+    stack i32 [a, b, c] = await.all(sum_to(1), sum_to(2), sum_to(3));
+    expect_eq.(a, 1);
+    expect_eq.(b, 3);
+    expect_eq.(c, 6);
+}
+
+test 'await.any returns first result' {
+    stack i32 w = await.any(slow(1), slow(200));
+    expect_eq.(w, 1);
+}
+
+test 'await.all advances tasks round-robin' {
+    rr_first_phase = 0;
+    rr_second_phase = 0;
+    rr_observed = 0;
+    stack i32 [a, b] = await.all(round_robin_probe(0), round_robin_probe(1));
+    expect_eq.(a, 10);
+    expect_eq.(b, 20);
+    expect.(rr_observed >= 3);
+}
+
+test 'await.any can return a later fast task' {
+    any_slow_steps = 0;
+    stack i32 w = await.any(any_slow_forever(), any_fast_value());
+    expect_eq.(w, 7);
+    expect.(any_slow_steps >= 1);
+}
+
+test 'task reuse: multiple sequential awaits' {
+    stack i32 i = 0;
+    while (i < 5) {
+        stack i32 v = await(sum_to(i));
+        stack i32 expected = i * (i + 1) / 2;
+        expect_eq.(v, expected);
+        i = i + 1;
+    }
+}

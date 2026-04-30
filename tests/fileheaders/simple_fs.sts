@@ -1,0 +1,12 @@
+@[[freestanding]];
+
+// with the freestanding at the top, stasha will compile a non-module
+// / non-mangled object file. Freestanding files have no access to the stsstdlib,
+// and have to compile libraries without any imp or libimp to avoid 
+// compiling freestanding files with non-freestanding files.
+// lib (link with .a) and cheader only
+
+ext fn main(void): i32 {
+    print.('Hello, Freestanding!\n');
+    ret 0;
+}

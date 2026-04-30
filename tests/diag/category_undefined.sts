@@ -1,0 +1,9 @@
+// Diagnostic test: error category tag in output
+// Expected: "error[undefined]:" prefix on undefined variable error
+// Feature: Phase 4 error categories
+mod diag_category_undef;
+
+ext fn main(void): i32 {
+    stack i32 x = missing_var;
+    ret x;
+}

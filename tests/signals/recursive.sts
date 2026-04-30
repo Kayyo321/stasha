@@ -1,0 +1,24 @@
+mod recursive;
+
+type sig_t: struct {
+    i32 code;
+}
+
+int stack i32 depth = 0;
+
+fn main(void): i32 {
+    watch.(sig_t s) => {
+        depth = depth + 1;
+        print.('d={} c={}\n', depth, s.code);
+        if (s.code > 0) {
+            /* register a new watcher mid-dispatch; per snapshot semantics
+             * the outer dispatch must NOT invoke it. */
+            watch.(sig_t s2) => {
+                print.('NEW:{}\n', s2.code);
+            }
+            send.(sig_t{.code = 0}); /* recursive send; snapshot len=1, only outer fires, not NEW */
+        }
+    }
+    send.(sig_t{.code = 5});
+    ret 0;
+}
