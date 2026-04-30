@@ -204,20 +204,14 @@ static void analyze_expr(coro_analysis_t *ca, node_t *expr) {
             analyze_node_list(ca, &expr->as.async_call.args, False);
             break;
         case NodeAwaitExpr:
-            /* `await.next(s)` synchronously drives a stream — legal anywhere.
-               Other forms still require an enclosing `async fn`. */
-            if (expr->as.await_expr.is_stream_next) {
-                if (ca->current_fn && ca->current_fn->as.fn_decl.is_async)
-                    ca->current_fn->as.fn_decl.has_await = True;
-            } else if (!ca->current_fn || !ca->current_fn->as.fn_decl.is_async) {
-                diag_begin_error("'await' is only legal inside 'async fn'");
-                diag_span(DIAG_NODE(expr), True, "await used here");
-                diag_help("wrap this logic in an 'async fn' and await from there");
-                diag_finish();
-                note_error(ca);
-            } else {
+            /* After the v2 migration, both `await(future)` and `await.next(stream)`
+               drive a coroutine handle synchronously — they are legal at any
+               call site, including plain (non-async) functions and module
+               top-level test blocks.  `has_await` is still tracked when we
+               see one inside an `async fn` so the codegen can install the
+               caller as the awaitee's continuation. */
+            if (ca->current_fn && ca->current_fn->as.fn_decl.is_async)
                 ca->current_fn->as.fn_decl.has_await = True;
-            }
             analyze_expr(ca, expr->as.await_expr.handle);
             if (expr->as.await_expr.is_stream_next && expr->as.await_expr.handle
                     && expr->as.await_expr.handle->kind == NodeIdentExpr) {
@@ -231,14 +225,10 @@ static void analyze_expr(coro_analysis_t *ca, node_t *expr) {
             }
             break;
         case NodeAwaitCombinator:
-            if (!ca->current_fn || !ca->current_fn->as.fn_decl.is_async) {
-                diag_begin_error("'await' is only legal inside 'async fn'");
-                diag_span(DIAG_NODE(expr), True, "await combinator used here");
-                diag_finish();
-                note_error(ca);
-            } else {
+            /* Same v2 reasoning as NodeAwaitExpr — combinators drive the
+               argument futures synchronously, so they are legal anywhere. */
+            if (ca->current_fn && ca->current_fn->as.fn_decl.is_async)
                 ca->current_fn->as.fn_decl.has_await = True;
-            }
             analyze_node_list(ca, &expr->as.await_combinator.handles, False);
             break;
         case NodeBinaryExpr:

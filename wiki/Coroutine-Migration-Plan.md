@@ -1,29 +1,38 @@
 # Coro Plan
 
-## Status (2026-04-29)
+## Status (2026-04-30)
 
-The plan has shipped the **stream-coroutine** half of the migration end-to-end. The matrix below reflects the in-tree state; everything else is still v2 work.
+Full migration is **complete**. Both stream and task coroutines use `llvm.coro.*`. The `__async_*` intermediate dispatch layer has been removed.
 
 | stage | item | status |
 |---|---|---|
-| 1 | AST + parser + analysis pass for `yield`, `stream.[T]`, `coro_flavor` | done |
-| 2 | renamed thread runtime → async runtime (`__async_*`) + reroute legacy task await | done |
-| 3 | LLVM `coro.*` intrinsic declarations + `presplitcoroutine` attribute | done |
-| 4 | stream-coro prologue / epilogue (`coro.id` → `coro.begin` → final-suspend → `coro.end`) | done |
-| 5 | `yield expr;` and `yield;` lowered as `coro.suspend` points | done |
-| 6 | `ret;` in a stream coroutine routes to the final-suspend block | done |
-| 7 | `await.next(s)` consumer drive loop + `stream.done(s)` + `stream.drop(s)` | done |
-| 8 | promise layout (header + inline `T`) accessed through `llvm.coro.promise(hdl, 8, false)` | done |
-| 9 | pass pipeline `coro-early , cgscc(coro-split) , coro-cleanup , globaldce` | done |
-| 10 | examples + wiki refresh | done |
-| 11 | task coroutines (`async fn` returning `T` lowered through `llvm.coro.*`) | not yet — tasks still ride the thread pool |
-| 12 | executor queue + cross-coroutine continuations | not yet |
-| 13 | true `await(future)` suspension inside a coroutine | not yet — still blocking get on the thread future |
-| 14 | `await.all` / `await.any` rebuilt on coroutine futures | not yet — still pthread futures |
-| 15 | cancellation propagation through await | not yet |
-| 16 | async fn methods + generic `@comptime[T] async fn` | not yet |
+| 1 | AST + parser + analysis pass for `yield`, `stream.[T]`, `coro_flavor` | ✓ done |
+| 2 | `coro_runtime` executor queue (thread pool for `thread.(fn)`); dead `__async_*` codegen removed | ✓ done |
+| 3 | LLVM `coro.*` intrinsic declarations + `presplitcoroutine` attribute | ✓ done |
+| 4 | stream-coro prologue/epilogue (`coro.id` → `coro.begin` → final-suspend → `coro.end`) | ✓ done |
+| 5 | `yield expr;` and `yield;` lowered as `coro.suspend` points | ✓ done |
+| 6 | `ret;` in stream coroutine routes to final-suspend block | ✓ done |
+| 7 | `await.next(s)`, `stream.done(s)`, `stream.drop(s)`, `stream.cancel(s)` | ✓ done |
+| 8 | promise layout (header + inline `T`) via `llvm.coro.promise(hdl, 8, false)` | ✓ done |
+| 9 | pass pipeline `coro-early , cgscc(coro-split) , coro-cleanup , globaldce` | ✓ done |
+| 10 | stream examples + wiki refresh (ex_coroutine_surface.sts, 19 tests) | ✓ done |
+| 11 | task coroutines via `llvm.coro.*` (synchronous drive, no thread dispatch) | ✓ done |
+| 12 | executor queue retained for `thread.(fn)`; dead `__async_dispatch` codegen path removed | ✓ done |
+| 13 | `await(task)` drives coroutine synchronously; legal anywhere (not just inside `async fn`) | ✓ done |
+| 14 | `await.all` / `await.any` rebuilt on coroutine task handles | ✓ done |
+| 15 | `stream.cancel(s)` — sets `cancelled` flag, checked at every resume edge | ✓ done |
+| 16 | `async fn` methods + generic `@comptime[T] async fn` (tasks + streams) | ✓ done |
 
-The "Truth Now" section below is the original v1 plan as written. The "Status" table above supersedes it where they conflict.
+**v2 deferred work** (not yet implemented):
+
+| item | notes |
+|---|---|
+| Executor queue + real async scheduling | `yield;` currently resumes immediately; no green-thread scheduler |
+| Cross-coroutine continuations | promise has `continuation` slot; nothing wires it up |
+| Cancellation propagation through `await(child)` | cancel flag is stream-local, does not propagate to awaited tasks |
+| Parallel `await.all` / racing `await.any` | currently sequential drive; use `thread.(fn)` for true parallelism |
+
+The "Truth Now" section below is the original pre-migration plan. The status table above supersedes it.
 
 ## Big Goal
 

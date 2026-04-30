@@ -1,13 +1,16 @@
-/* ── Stasha Coroutine/Async Runtime ────────────────────────────────────────
+/* ── Stasha Executor-Queue Runtime ─────────────────────────────────────────
  *
- * Dedicated executor-backed runtime for `async fn` task handles.
- * This replaces the old thread runtime as the backing implementation for
- * `async.()` / `await(...)` / `await.all(...)` / `await.any(...)`.
+ * Thread-pool executor for `thread.(fn)(args)` dispatch.
+ * `async fn` coroutines use llvm.coro.* and drive themselves synchronously —
+ * they do NOT go through this queue.
  *
- * v1 of the runtime still executes each spawned task to completion on a
- * worker thread. It does not yet expose compiler-lowered in-function suspend
- * points, but it provides the task-handle ABI, executor queue, cancellation
- * flag, and destruction semantics needed by the coroutine migration.
+ * API surface:
+ *   __async_dispatch  — submit a work item, get back a future handle
+ *   __async_get/wait  — block until done, retrieve result pointer
+ *   __async_ready     — non-blocking done check
+ *   __async_cancel    — request cancellation (checked before job starts)
+ *   __async_drop      — wait + free the future
+ *   __async_wait_any  — wait for the first of N futures to complete
  * ── */
 
 #ifndef STASHA_CORO_RUNTIME_H

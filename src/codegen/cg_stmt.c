@@ -578,12 +578,24 @@ static void gen_if(cg_t *cg, node_t *node) {
 }
 
 static void gen_ret(cg_t *cg, node_t *node) {
-    /* Stream coroutine: `ret;` jumps to the final-suspend block, which
-       sets eos/complete and runs the coro.end epilogue.  Coroutine analysis
-       already rejects `ret expr;` in stream context, so we only see void rets. */
+    /* Coroutine ret:
+         - Stream coroutine: `ret;` only (analysis rejects `ret expr;`); jump to
+           final-suspend, which sets eos/complete + runs coro.end.
+         - Task coroutine: `ret expr;` stores the result into the promise's
+           item slot, sets complete=1, then jumps to final-suspend.  `ret;`
+           on a void-returning task just sets complete=1 and finalizes. */
     if (cg->cur_coro.active) {
         emit_all_dtor_calls(cg);
-        sts_emit_stream_ret(cg, &cg->cur_coro);
+        if (cg->current_fn && cg->current_fn_is_async_task) {
+            if (node->as.ret_stmt.values.count == 0) {
+                sts_emit_task_void_ret(cg, &cg->cur_coro);
+            } else {
+                LLVMValueRef rv = gen_expr(cg, node->as.ret_stmt.values.items[0]);
+                sts_emit_task_ret(cg, &cg->cur_coro, rv);
+            }
+        } else {
+            sts_emit_stream_ret(cg, &cg->cur_coro);
+        }
         return;
     }
 

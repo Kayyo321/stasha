@@ -77,14 +77,16 @@ CLI parsing, subcommand dispatch, `resolve_imports()` (splices imported module A
 | `cg_stmt.c` (900) | `gen_local_var`, `gen_for/while/do_while/inf_loop/if/ret/debug/multi_assign/match/switch/asm_stmt/comptime_if/comptime_assert`, `gen_stmt` dispatcher, `gen_block` |
 | `cg_registry.c` (132) | `register_struct/enum/alias/lib`, `struct_add_field/field_ex` |
 | `cg_debug.c` (288) | `di_cache_lookup/set`, `get_di_named_type`, `get_di_type`, `di_make_location`, `di_set_location` |
-| `cg_coro.c` | LLVM coroutine intrinsic declarations + stream coroutine lowering: `sts_emit_coro_stream_prologue`, `sts_emit_yield_value`, `sts_emit_yield_now`, `sts_emit_stream_ret`, `sts_finish_coro_body_if_open`, `sts_emit_await_next`, `sts_emit_stream_done`, `sts_emit_stream_drop`. Promise layout (`__sts_coro_prom_hdr` + inline `T`) and `presplitcoroutine` attribute applied here. |
+| `cg_coro.c` | LLVM coroutine lowering for **both** task and stream `async fn`: `sts_emit_coro_stream/task_prologue`, `sts_emit_yield_value/now`, `sts_emit_stream/task_ret`, `sts_emit_await_next`, `sts_emit_await_task`, `sts_emit_stream_done/drop/cancel`, `sts_emit_task_wait/ready/get_raw/drop`, `sts_emit_coro_cancel`. Promise header (`__sts_coro_prom_hdr`: complete/eos/item_ready/is_stream/cancelled/continuation) + inline `T` slot. `presplitcoroutine` attribute + pass pipeline `coro-early,cgscc(coro-split),coro-cleanup,globaldce`. |
 | `codegen.h` (10) | `codegen()` declaration |
 
 ### `src/runtime/`
 | File | Contents |
 |------|----------|
 | `thread_runtime.h` | Public API: `__future_t`, `__thread_dispatch`, `__future_get/wait/ready/drop`, `__thread_runtime_init/shutdown` |
-| `thread_runtime.c` | Thread pool (POSIX pthreads), ring-buffer job queue, future implementation. Auto-init/shutdown via `__attribute__((constructor/destructor))`. Compiled to `bin/thread_runtime.a` and automatically linked into every executable. |
+| `thread_runtime.c` | Thread pool (POSIX pthreads), ring-buffer job queue, future implementation. Backs `thread.(fn)(args)` only — `async fn` now uses llvm.coro.*. Auto-init/shutdown via `__attribute__((constructor/destructor))`. Compiled to `bin/thread_runtime.a` and automatically linked into every executable. |
+| `coro_runtime.h` | Executor queue for `thread.(fn)`: `__async_dispatch/get/wait/ready/cancel/drop/wait_any`. Not used by `async fn` coroutines — those are self-contained coro frames. |
+| `coro_runtime.c` | POSIX thread-pool executor. Backs `thread.(fn)` dispatch wrapper when explicit parallelism is needed. |
 
 ### `src/linker/`
 | File | Contents |
@@ -208,13 +210,14 @@ stack i32 v = future.get.(i32)(f); // block and return typed result
 stack void *p = future.get(f);     // block and return raw void*
 future.drop(f);                    // wait + free future
 
-// Async tasks (typed thread-pool dispatch; legacy runtime path)
+// Task coroutines (llvm.coro.* — synchronous drive on caller's thread)
 async fn add(i32 a, i32 b): i32 { ret a + b; }
 stack future.[i32] f = async.(add)(1, 2);
-stack i32 v = await(f);                  // block, load i32, drop
-stack i32 sum = await.(add)(1, 2);       // dispatch + block + drop in one
-stack [i32, i32] both = await.all(async.(add)(1,2), async.(add)(3,4));
-stack i32 winner = await.any(async.(add)(1,2), async.(add)(3,4));
+stack i32 v = await(f);                  // drive to completion, return i32
+stack i32 sum = await.(add)(1, 2);       // one-shot: dispatch + drive + return
+stack i32 [a, b] = await.all(add(1,2), add(3,4));   // drive both, return in order
+stack i32 winner = await.any(add(1,2), add(3,4));    // drive first, cancel rest
+// await(f) is legal anywhere (not just inside async fn)
 
 // Stream coroutines (real LLVM coroutines lowered through llvm.coro.*)
 async fn fib(i32 n): stream.[i64] {
@@ -229,8 +232,9 @@ inf {
     print.('{}\n', v);
 }
 stream.drop(f);                     // destroy coro frame (safe at any state)
+stream.cancel(f);                   // set cancelled flag; producer sees at next yield
 // `yield expr;` produces an item; `yield;` is a bare cooperative reschedule.
-// `await.next(s)` is legal anywhere — it drives the producer synchronously.
+// `await.next(s)` is legal anywhere — synchronous drive on caller's thread.
 
 // Struct attributes: @packed  @align(N)  @c_layout
 // Fn/var attributes: @weak  @hidden  @restrict
@@ -348,9 +352,13 @@ rem.(q);                               // rem on stack pointer — ERROR
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
 - [x] Dotted module names + sts.sproj project file
 - [x] Thread parallelism: `thread.(fn)(args)` + `future` type (thread pool, POSIX pthreads)
-- [x] Stream coroutines: `async fn ...: stream.[T]` lowered through `llvm.coro.*` — `yield expr;`, `yield;`, `await.next(s)`, `stream.done(s)`, `stream.drop(s)`
-- [ ] Task coroutines: lower `async fn ...: T` through `llvm.coro.*` (today only stream coroutines run on the coroutine pipeline; tasks still ride the thread pool)
-- [ ] Coroutine executor queue + cross-coroutine continuations (so `await(child_future)` inside an async fn becomes a real `coro.suspend`)
+- [x] Stream coroutines: `async fn ...: stream.[T]` — `yield expr;`, `yield;`, `await.next(s)`, `stream.done(s)`, `stream.drop(s)`, `stream.cancel(s)`
+- [x] Task coroutines: `async fn ...: T` lowered through `llvm.coro.*` — synchronous drive via `await(f)`, `await.all`, `await.any`, `future.[T]` ops
+- [x] Async methods: `async fn` inside struct body with `this` access (both task + stream)
+- [x] Generic async fns: `@comptime[T] async fn` (task + stream, instantiated per call site)
+- [x] Executor queue: `coro_runtime.c` thread pool retained for `thread.(fn)`; dead `__async_*` codegen path removed
+- [ ] Executor queue + real async scheduling (continuations, yield; pause semantics)
+- [ ] Cancellation propagation through `await(child_task)`
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler

@@ -529,6 +529,14 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             }
         }
 
+        /* `async fn` inline method — same as `fn` but flagged is_async,
+           which makes the method a coroutine (task or stream). */
+        boolean_t method_is_async = False;
+        if (check(p, TokAsync)) {
+            advance_parser(p);
+            method_is_async = True;
+        }
+
         /* inline method — not allowed in @comptime: section */
         if (check(p, TokFn)) {
             advance_parser(p);
@@ -647,6 +655,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             method->as.fn_decl.params = params;
             method->as.fn_decl.body = body;
             method->as.fn_decl.is_method = True;
+            method->as.fn_decl.is_async = method_is_async;
             method->as.fn_decl.struct_name = decl->as.type_decl.name;
             method->as.fn_decl.iface_qualifier = iface_qual;
             node_list_push(&decl->as.type_decl.methods, method);

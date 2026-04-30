@@ -594,10 +594,12 @@ static node_t *parse_primary(parser_t *p) {
             op = StreamDone;
         } else if (strcmp(op_name, "drop") == 0) {
             op = StreamDrop;
+        } else if (strcmp(op_name, "cancel") == 0) {
+            op = StreamCancel;
         } else {
             diag_begin_error("unknown stream operation '%s'", op_name);
             diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
-                      "expected: done, drop");
+                      "expected: done, drop, cancel");
             diag_finish();
             op = StreamDrop; /* recover */
         }

@@ -2168,16 +2168,33 @@ static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
         LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, free_args, 1, "");
     }
 
-    /* call the original function */
+    /* call the original function.  After the v2 coroutine migration `async fn`
+       returns a coroutine handle (ptr) instead of T directly.  When the
+       caller dispatches such a function via `thread.(fn)(args)`, the worker
+       must drive the coroutine to completion and unwrap the typed result so
+       the future buffer holds T (matching the wrapper's `result_size`). */
     LLVMTypeRef  orig_fn_type = LLVMGlobalGetValueType(sym->value);
+    boolean_t fn_is_async_coro = fn_decl
+        && fn_decl->as.fn_decl.is_async
+        && fn_decl->as.fn_decl.coro_flavor != CoroNone;
     if (void_return) {
-        LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
-                       call_args, (unsigned)param_count, "");
+        LLVMValueRef ret_val = LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
+                                               call_args, (unsigned)param_count, "");
+        if (fn_is_async_coro) {
+            /* drive the void task to completion, then destroy. */
+            type_info_t void_ti = NO_TYPE;
+            (void)sts_emit_await_task(cg, ret_val, void_ti, Null);
+        }
     } else {
         LLVMValueRef ret_val = LLVMBuildCall2(cg->builder, orig_fn_type, sym->value,
                                                call_args, (unsigned)param_count, "tret");
-        /* store result into result buffer */
-        LLVMBuildStore(cg->builder, ret_val, result_param);
+        if (fn_is_async_coro) {
+            type_info_t rti = fn_decl->as.fn_decl.return_types[0];
+            LLVMValueRef typed = sts_emit_await_task(cg, ret_val, rti, Null);
+            LLVMBuildStore(cg->builder, typed, result_param);
+        } else {
+            LLVMBuildStore(cg->builder, ret_val, result_param);
+        }
     }
     LLVMBuildRetVoid(cg->builder);
 
@@ -2268,17 +2285,29 @@ static LLVMValueRef gen_thread_call(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_async_call(cg_t *cg, node_t *node) {
+    /* `async.(fn)(args)` is now a synonym for a direct call.  The callee
+       (an `async fn`) is itself a coroutine that returns a `future.[T]`
+       handle.  Keeping the spelling alive lets old code keep compiling and
+       documents intent ("treat this call as async").  Rejecting it on a
+       non-async target is preserved so the legacy diagnostics still fire. */
     const char *callee = node->as.async_call.callee;
     node_t *fn_decl = find_fn_decl(cg, callee);
     if (fn_decl && !fn_decl->as.fn_decl.is_async) {
         diag_begin_warning("'async.()' used on non-async function '%s'", callee);
         diag_span(DIAG_NODE(node), True, "dispatched here");
-        diag_help("declare '%s' as 'async fn' or use 'thread.(%s)(…)' for opaque dispatch",
-                  callee, callee);
+        diag_help("declare '%s' as 'async fn'", callee);
         diag_finish();
     }
-    return gen_dispatch_to_pool(cg, node, callee, &node->as.async_call.args,
-        cg->async_dispatch_fn, cg->async_dispatch_type, "async_future");
+    /* Build a synthetic NodeCallExpr and dispatch through gen_call so the
+       full standard call lowering (param coercion, generics, libimp resolution)
+       handles us.  Done via local copy to avoid mutating the AST. */
+    node_t fake;
+    memset(&fake, 0, sizeof(fake));
+    fake.kind = NodeCallExpr;
+    fake.line = node->line;
+    fake.as.call.callee = node->as.async_call.callee;
+    fake.as.call.args   = node->as.async_call.args;
+    return gen_expr(cg, &fake);
 }
 
 /* Resolve the element type `T` of a `future.[T]` handle expression. Returns
@@ -2293,6 +2322,86 @@ static type_info_t resolve_future_elem_type(cg_t *cg, node_t *handle) {
             type_info_t rt = fn->as.fn_decl.return_types[0];
             if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
             return resolve_alias(cg, rt);
+        }
+        return NO_TYPE;
+    }
+    if (handle->kind == NodeCallExpr) {
+        /* `await(fn(args))` — resolve via the callee's declared return T.
+           Generic instantiations like `one_shot_G_i64` carry the concrete T
+           in the mangled callee name; fall back to the template's declared
+           return type and substitute the parsed `_G_<arg>` portion. */
+        const char *callee = handle->as.call.callee;
+        node_t *fn = find_fn_decl(cg, callee);
+        char generic_arg[64] = {0};
+        if (!fn && callee) {
+            const char *gp = strstr(callee, "_G_");
+            if (gp) {
+                char tmpl[256];
+                usize_t plen = (usize_t)(gp - callee);
+                if (plen < sizeof(tmpl)) {
+                    memcpy(tmpl, callee, plen); tmpl[plen] = '\0';
+                    fn = find_fn_decl(cg, tmpl);
+                    const char *arg = gp + 3;
+                    usize_t alen = strlen(arg);
+                    if (alen < sizeof(generic_arg)) {
+                        memcpy(generic_arg, arg, alen);
+                        generic_arg[alen] = '\0';
+                    }
+                }
+            }
+        }
+        if (fn && fn->as.fn_decl.return_count > 0) {
+            type_info_t rt = fn->as.fn_decl.return_types[0];
+            /* If the template's return type is a bare type-param T whose
+               name matches the first declared generic parameter, swap T for
+               the instantiation's concrete type encoded in the callee. */
+            if (generic_arg[0] && rt.base == TypeUser && rt.user_name
+                    && fn->as.fn_decl.type_param_count > 0
+                    && strcmp(rt.user_name, fn->as.fn_decl.type_params[0]) == 0) {
+                if      (strcmp(generic_arg, "i8")  == 0) rt.base = TypeI8;
+                else if (strcmp(generic_arg, "i16") == 0) rt.base = TypeI16;
+                else if (strcmp(generic_arg, "i32") == 0) rt.base = TypeI32;
+                else if (strcmp(generic_arg, "i64") == 0) rt.base = TypeI64;
+                else if (strcmp(generic_arg, "u8")  == 0) rt.base = TypeU8;
+                else if (strcmp(generic_arg, "u16") == 0) rt.base = TypeU16;
+                else if (strcmp(generic_arg, "u32") == 0) rt.base = TypeU32;
+                else if (strcmp(generic_arg, "u64") == 0) rt.base = TypeU64;
+                else if (strcmp(generic_arg, "f32") == 0) rt.base = TypeF32;
+                else if (strcmp(generic_arg, "f64") == 0) rt.base = TypeF64;
+                else if (strcmp(generic_arg, "bool")== 0) rt.base = TypeBool;
+                if (rt.base != TypeUser) rt.user_name = Null;
+            }
+            if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
+            return resolve_alias(cg, rt);
+        }
+        return NO_TYPE;
+    }
+    if (handle->kind == NodeMethodCall) {
+        /* `await(receiver.method(args))` — look up the method on the
+           receiver's struct type. */
+        node_t *obj = handle->as.method_call.object;
+        const char *meth = handle->as.method_call.method;
+        struct_reg_t *sr = Null;
+        if (obj && obj->kind == NodeIdentExpr) {
+            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
+            if (sym && sym->stype.base == TypeUser && sym->stype.user_name)
+                sr = find_struct(cg, sym->stype.user_name);
+        }
+        if (sr) {
+            for (usize_t i = 0; i < cg->ast->as.module.decls.count; i++) {
+                node_t *decl = cg->ast->as.module.decls.items[i];
+                if (decl->kind != NodeTypeDecl) continue;
+                if (strcmp(decl->as.type_decl.name, sr->name) != 0) continue;
+                for (usize_t j = 0; j < decl->as.type_decl.methods.count; j++) {
+                    node_t *m = decl->as.type_decl.methods.items[j];
+                    if (m->as.fn_decl.name && strcmp(m->as.fn_decl.name, meth) == 0
+                            && m->as.fn_decl.return_count > 0) {
+                        type_info_t rt = m->as.fn_decl.return_types[0];
+                        if (rt.base == TypeVoid && !rt.is_pointer) return NO_TYPE;
+                        return resolve_alias(cg, rt);
+                    }
+                }
+            }
         }
         return NO_TYPE;
     }
@@ -2332,25 +2441,13 @@ static LLVMValueRef gen_await(cg_t *cg, node_t *node) {
         et = resolve_future_elem_type(cg, handle);
 
     LLVMValueRef h = gen_expr(cg, handle);
-    LLVMValueRef call_args[1] = { h };
 
-    if (et.base == TypeVoid && !et.is_pointer) {
-        /* void future: wait + drop, no typed result */
-        LLVMBuildCall2(cg->builder, cg->async_wait_type,
-                       cg->async_wait_fn, call_args, 1, "");
-        LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                       cg->async_drop_fn, call_args, 1, "");
-        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-    }
-
-    /* typed: __future_get → raw ptr, load T, __future_drop (frees buffer) */
-    LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->async_get_type,
-                                       cg->async_get_fn, call_args, 1, "await_raw");
-    LLVMTypeRef lt = get_llvm_type(cg, et);
-    LLVMValueRef val = LLVMBuildLoad2(cg->builder, lt, raw, "await_val");
-    LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                   cg->async_drop_fn, call_args, 1, "");
-    return val;
+    /* Coroutine task await: drive the coroutine to completion, load result,
+       destroy.  When emitted inside another coroutine, install the calling
+       coroutine's handle as the awaitee's continuation so a future v2
+       executor can wake the right awaiter without polling. */
+    LLVMValueRef caller_handle = cg->cur_coro.active ? cg->cur_coro.handle : Null;
+    return sts_emit_await_task(cg, h, et, caller_handle);
 }
 
 /* await.all(f1, ..., fN) / await.any(f1, ..., fN).
@@ -2402,110 +2499,48 @@ static LLVMValueRef gen_await_combinator(cg_t *cg, node_t *node) {
     }
 
     LLVMTypeRef elem_lt = et0_void ? i32_t : get_llvm_type(cg, et0);
+    LLVMValueRef caller_h = cg->cur_coro.active ? cg->cur_coro.handle : Null;
 
     if (!is_any) {
-        /* await.all — sequential get+load+drop into aggregate { T, T, ..., T } */
+        /* await.all — drive each task to completion sequentially, collect
+           results in argument order.  Coroutine task awaits run on the
+           caller's thread; v2 will replace this with a parallel scheduler. */
         if (et0_void) {
             for (usize_t i = 0; i < n; i++) {
                 LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-                LLVMValueRef ca[1] = { hv };
-                LLVMBuildCall2(cg->builder, cg->async_wait_type,
-                               cg->async_wait_fn, ca, 1, "");
-                LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                               cg->async_drop_fn, ca, 1, "");
+                (void)sts_emit_await_task(cg, hv, et0, caller_h);
             }
             deallocate(slots_h);
             return LLVMConstInt(i32_t, 0, 0);
         }
-
         heap_t tys_h = allocate(n, sizeof(LLVMTypeRef));
         LLVMTypeRef *tys = tys_h.pointer;
         for (usize_t i = 0; i < n; i++) tys[i] = elem_lt;
         LLVMTypeRef agg_t = LLVMStructTypeInContext(cg->ctx, tys, (unsigned)n, 0);
-
         LLVMValueRef agg = LLVMGetUndef(agg_t);
         for (usize_t i = 0; i < n; i++) {
             LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-            LLVMValueRef ca[1] = { hv };
-            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->async_get_type,
-                                               cg->async_get_fn, ca, 1, "awall_raw");
-            LLVMValueRef v = LLVMBuildLoad2(cg->builder, elem_lt, raw, "awall_v");
+            LLVMValueRef v = sts_emit_await_task(cg, hv, et0, caller_h);
             agg = LLVMBuildInsertValue(cg->builder, agg, v, (unsigned)i, "awall");
-            LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                           cg->async_drop_fn, ca, 1, "");
         }
         deallocate(tys_h);
         deallocate(slots_h);
         return agg;
     }
 
-    /* await.any — block on the runtime wait_any primitive. Workers broadcast
-       a global cv after every completion, so this has no spin overhead. */
-    LLVMTypeRef arr_ty = LLVMArrayType2(ptr_t, (unsigned long long)n);
-    LLVMValueRef arr   = alloc_in_entry(cg, arr_ty, "awany_fs");
-    for (usize_t i = 0; i < n; i++) {
-        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-        LLVMValueRef idx[2] = {
-            LLVMConstInt(i32_t, 0, 0),
-            LLVMConstInt(i32_t, i, 0),
-        };
-        LLVMValueRef ep = LLVMBuildInBoundsGEP2(cg->builder, arr_ty, arr, idx, 2, "ep");
-        LLVMBuildStore(cg->builder, hv, ep);
+    /* await.any — single-threaded coroutine model can't actually race; we
+       drive the first handle to completion, drop the rest, and return its
+       result.  The two-arg form ends up equivalent to `await(args[0])` plus
+       cancellation of the others.  Multi-threaded racing is v2 work. */
+    LLVMValueRef h0 = LLVMBuildLoad2(cg->builder, ptr_t, slots[0], "any.h0");
+    LLVMValueRef result = sts_emit_await_task(cg, h0, et0, caller_h);
+    for (usize_t i = 1; i < n; i++) {
+        LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "any.drop");
+        sts_emit_coro_cancel(cg, hv);
+        sts_emit_task_drop(cg, hv);
     }
-    LLVMValueRef wa_args[2] = { arr, LLVMConstInt(i32_t, n, 0) };
-    LLVMValueRef win_i = LLVMBuildCall2(cg->builder, cg->async_wait_any_type,
-                                         cg->async_wait_any_fn, wa_args, 2, "awany_win");
-
-    /* Drop losers: for i in 0..N if i != win_i → drop(slots[i]). Winner:
-       get+load+drop, stash value in a slot reused as return. */
-    LLVMValueRef result_slot = et0_void ? Null : alloc_in_entry(cg, elem_lt, "awany_v");
-
-    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.done");
-    for (usize_t i = 0; i < n; i++) {
-        LLVMBasicBlockRef is_win = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.win");
-        LLVMBasicBlockRef is_lose = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.lose");
-        LLVMBasicBlockRef after_i = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "awany.aft");
-
-        LLVMValueRef ii = LLVMConstInt(i32_t, i, 0);
-        LLVMValueRef eq = LLVMBuildICmp(cg->builder, LLVMIntEQ, win_i, ii, "is_win");
-        LLVMBuildCondBr(cg->builder, eq, is_win, is_lose);
-
-        LLVMPositionBuilderAtEnd(cg->builder, is_win);
-        {
-            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-            LLVMValueRef ca[1] = { hv };
-            if (et0_void) {
-                LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                               cg->async_drop_fn, ca, 1, "");
-            } else {
-                LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->async_get_type,
-                                                   cg->async_get_fn, ca, 1, "awany_raw");
-                LLVMValueRef v = LLVMBuildLoad2(cg->builder, elem_lt, raw, "awany_vload");
-                LLVMBuildStore(cg->builder, v, result_slot);
-                LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                               cg->async_drop_fn, ca, 1, "");
-            }
-            LLVMBuildBr(cg->builder, after_i);
-        }
-
-        LLVMPositionBuilderAtEnd(cg->builder, is_lose);
-        {
-            LLVMValueRef hv = LLVMBuildLoad2(cg->builder, ptr_t, slots[i], "ah");
-            LLVMValueRef ca[1] = { hv };
-            LLVMBuildCall2(cg->builder, cg->async_drop_type,
-                           cg->async_drop_fn, ca, 1, "");
-            LLVMBuildBr(cg->builder, after_i);
-        }
-
-        LLVMPositionBuilderAtEnd(cg->builder, after_i);
-    }
-    LLVMBuildBr(cg->builder, done_bb);
-
-    LLVMPositionBuilderAtEnd(cg->builder, done_bb);
-    LLVMValueRef result = et0_void
-        ? LLVMConstInt(i32_t, 0, 0)
-        : LLVMBuildLoad2(cg->builder, elem_lt, result_slot, "awany_ret");
     deallocate(slots_h);
+    if (et0_void) return LLVMConstInt(i32_t, 0, 0);
     return result;
 }
 
@@ -2513,7 +2548,9 @@ static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
     /* stream.* ops route to the coroutine intrinsic helpers regardless of
        which `op` the parser tagged them with — the handle's TypeStream
        binding is the source of truth. */
-    if (node->as.future_op.op == StreamDone || node->as.future_op.op == StreamDrop) {
+    if (node->as.future_op.op == StreamDone
+        || node->as.future_op.op == StreamDrop
+        || node->as.future_op.op == StreamCancel) {
         type_info_t item_ti = NO_TYPE;
         if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeIdentExpr) {
             symbol_t *sym = cg_lookup(cg, node->as.future_op.handle->as.ident.name);
@@ -2525,53 +2562,70 @@ static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
             sts_emit_stream_drop(cg, sh);
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
+        if (node->as.future_op.op == StreamCancel) {
+            sts_emit_coro_cancel(cg, sh);
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
         return sts_emit_stream_done(cg, sh, item_ti);
     }
 
     LLVMValueRef handle = gen_expr(cg, node->as.future_op.handle);
-    LLVMValueRef call_args[1] = { handle };
-    boolean_t use_async_runtime = False;
+    /* future.[T] handle = coroutine frame ptr; untyped `future` (thread.(fn)) = thread-pool ptr */
+    boolean_t use_coro_runtime = False;
     if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, node->as.future_op.handle->as.ident.name);
         if (sym && sym->stype.base == TypeFuture && sym->stype.elem_type)
-            use_async_runtime = True;
+            use_coro_runtime = True;
     } else if (node->as.future_op.handle && node->as.future_op.handle->kind == NodeAsyncCall) {
-        use_async_runtime = True;
+        use_coro_runtime = True;
     }
 
-    LLVMTypeRef wait_ty  = use_async_runtime ? cg->async_wait_type  : cg->future_wait_type;
-    LLVMValueRef wait_fn = use_async_runtime ? cg->async_wait_fn    : cg->future_wait_fn;
-    LLVMTypeRef ready_ty = use_async_runtime ? cg->async_ready_type : cg->future_ready_type;
-    LLVMValueRef ready_fn= use_async_runtime ? cg->async_ready_fn   : cg->future_ready_fn;
-    LLVMTypeRef get_ty   = use_async_runtime ? cg->async_get_type   : cg->future_get_type;
-    LLVMValueRef get_fn  = use_async_runtime ? cg->async_get_fn     : cg->future_get_fn;
-    LLVMTypeRef drop_ty  = use_async_runtime ? cg->async_drop_type  : cg->future_drop_type;
-    LLVMValueRef drop_fn = use_async_runtime ? cg->async_drop_fn    : cg->future_drop_fn;
+    if (use_coro_runtime) {
+        switch (node->as.future_op.op) {
+            case FutureWait:
+                sts_emit_task_wait(cg, handle);
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            case FutureReady:
+                return sts_emit_task_ready(cg, handle);
+            case FutureGetRaw:
+                return sts_emit_task_get_raw(cg, handle);
+            case FutureGet: {
+                LLVMValueRef raw = sts_emit_task_get_raw(cg, handle);
+                LLVMTypeRef lt = get_llvm_type(cg, node->as.future_op.get_type);
+                return LLVMBuildLoad2(cg->builder, lt, raw, "fget_val");
+            }
+            case FutureDrop:
+                sts_emit_task_drop(cg, handle);
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            default:
+                break;
+        }
+    }
 
+    /* Untyped `future` from thread.(fn): use thread_runtime (__future_*) */
+    LLVMValueRef call_args[1] = { handle };
     switch (node->as.future_op.op) {
         case FutureWait:
-            LLVMBuildCall2(cg->builder, wait_ty, wait_fn, call_args, 1, "");
+            LLVMBuildCall2(cg->builder, cg->future_wait_type, cg->future_wait_fn, call_args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 
         case FutureReady:
-            return LLVMBuildCall2(cg->builder, ready_ty,
-                                   ready_fn, call_args, 1, "fready");
+            return LLVMBuildCall2(cg->builder, cg->future_ready_type,
+                                   cg->future_ready_fn, call_args, 1, "fready");
 
         case FutureGetRaw:
-            return LLVMBuildCall2(cg->builder, get_ty,
-                                   get_fn, call_args, 1, "fget");
+            return LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                   cg->future_get_fn, call_args, 1, "fget");
 
         case FutureGet: {
-            /* block and get the void* result pointer */
-            LLVMValueRef raw = LLVMBuildCall2(cg->builder, get_ty,
-                                               get_fn, call_args, 1, "fget_raw");
-            /* load the typed value from the result buffer */
+            LLVMValueRef raw = LLVMBuildCall2(cg->builder, cg->future_get_type,
+                                               cg->future_get_fn, call_args, 1, "fget_raw");
             LLVMTypeRef llvm_ret_type = get_llvm_type(cg, node->as.future_op.get_type);
             return LLVMBuildLoad2(cg->builder, llvm_ret_type, raw, "fget_val");
         }
 
         case FutureDrop:
-            LLVMBuildCall2(cg->builder, drop_ty, drop_fn, call_args, 1, "");
+            LLVMBuildCall2(cg->builder, cg->future_drop_type, cg->future_drop_fn, call_args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);

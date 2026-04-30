@@ -27,22 +27,18 @@ static LLVMCodeGenOptLevel map_opt_level(int level) {
 
 static boolean_t ast_requires_coro_pipeline(node_t *ast) {
     if (!ast || ast->kind != NodeModule) return False;
+    /* Any `async fn` is a coroutine after the v2 migration: tasks lower
+       through llvm.coro.* identically to streams, so the presence of any
+       async function — even one with no body await/yield — needs the
+       coroutine pass pipeline. */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind == NodeFnDecl
-                && decl->as.fn_decl.is_async
-                && (decl->as.fn_decl.has_await
-                    || decl->as.fn_decl.has_yield_value
-                    || decl->as.fn_decl.has_yield_now))
+        if (decl->kind == NodeFnDecl && decl->as.fn_decl.is_async)
             return True;
         if (decl->kind == NodeTypeDecl) {
             for (usize_t j = 0; j < decl->as.type_decl.methods.count; j++) {
                 node_t *method = decl->as.type_decl.methods.items[j];
-                if (method->kind == NodeFnDecl
-                        && method->as.fn_decl.is_async
-                        && (method->as.fn_decl.has_await
-                            || method->as.fn_decl.has_yield_value
-                            || method->as.fn_decl.has_yield_now))
+                if (method->kind == NodeFnDecl && method->as.fn_decl.is_async)
                     return True;
             }
         }
@@ -303,24 +299,6 @@ typedef struct {
     storage_t   hint_storage;
     int         hint_var_flags;     /* VdeclConst / VdeclFinal of LHS, when known */
 
-    /* ── async runtime function declarations ── */
-    LLVMValueRef async_dispatch_fn;
-    LLVMTypeRef  async_dispatch_type;
-    LLVMValueRef async_get_fn;
-    LLVMTypeRef  async_get_type;
-    LLVMValueRef async_wait_fn;
-    LLVMTypeRef  async_wait_type;
-    LLVMValueRef async_ready_fn;
-    LLVMTypeRef  async_ready_type;
-    LLVMValueRef async_drop_fn;
-    LLVMTypeRef  async_drop_type;
-    LLVMValueRef async_wait_any_fn;
-    LLVMTypeRef  async_wait_any_type;
-    LLVMValueRef async_cancel_fn;
-    LLVMTypeRef  async_cancel_type;
-    LLVMValueRef async_cancelled_fn;
-    LLVMTypeRef  async_cancelled_type;
-
     /* ── thread runtime function declarations ── */
     LLVMValueRef thread_dispatch_fn;
     LLVMTypeRef  thread_dispatch_type;
@@ -347,9 +325,11 @@ typedef struct {
 
     /* ── active coroutine lowering context ──
      * `cur_coro.active != 0` means the function currently being lowered is
-     * a stream coroutine: yield/yield;/ret consult these fields when they
-     * emit suspend points or branch to the final-suspend block. */
+     * a coroutine (task or stream).  yield/yield;/ret consult these fields
+     * when they emit suspend points or branch to final-suspend. */
     sts_coro_ctx_t cur_coro;
+    /* True when cur_coro is a task (CoroTask).  False for streams. */
+    boolean_t      current_fn_is_async_task;
 
     /* ── generics / @comptime[T] ── */
     /* names of generic template struct types (not instantiated — skipped in passes) */
@@ -685,55 +665,6 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                         realloc_params, 2, 0);
     cg.realloc_fn = LLVMAddFunction(cg.module, "realloc", cg.realloc_type);
     symtab_add(&cg.globals, "realloc", cg.realloc_fn, Null, rt_dummy, False);
-
-    /* ── async runtime function declarations ── */
-    {
-        LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg.ctx, 0);
-        LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg.ctx);
-        LLVMTypeRef i32_t  = LLVMInt32TypeInContext(cg.ctx);
-        LLVMTypeRef void_t = LLVMVoidTypeInContext(cg.ctx);
-        type_info_t rt_dummy2 = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
-
-        LLVMTypeRef ad_params[3] = { ptr_t, ptr_t, i64_t };
-        cg.async_dispatch_type = LLVMFunctionType(ptr_t, ad_params, 3, 0);
-        cg.async_dispatch_fn   = LLVMAddFunction(cg.module, "__async_dispatch", cg.async_dispatch_type);
-        symtab_add(&cg.globals, "__async_dispatch", cg.async_dispatch_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef ag_params[1] = { ptr_t };
-        cg.async_get_type = LLVMFunctionType(ptr_t, ag_params, 1, 0);
-        cg.async_get_fn   = LLVMAddFunction(cg.module, "__async_get", cg.async_get_type);
-        symtab_add(&cg.globals, "__async_get", cg.async_get_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef aw_params[1] = { ptr_t };
-        cg.async_wait_type = LLVMFunctionType(void_t, aw_params, 1, 0);
-        cg.async_wait_fn   = LLVMAddFunction(cg.module, "__async_wait", cg.async_wait_type);
-        symtab_add(&cg.globals, "__async_wait", cg.async_wait_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef ar_params[1] = { ptr_t };
-        cg.async_ready_type = LLVMFunctionType(i32_t, ar_params, 1, 0);
-        cg.async_ready_fn   = LLVMAddFunction(cg.module, "__async_ready", cg.async_ready_type);
-        symtab_add(&cg.globals, "__async_ready", cg.async_ready_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef adr_params[1] = { ptr_t };
-        cg.async_drop_type = LLVMFunctionType(void_t, adr_params, 1, 0);
-        cg.async_drop_fn   = LLVMAddFunction(cg.module, "__async_drop", cg.async_drop_type);
-        symtab_add(&cg.globals, "__async_drop", cg.async_drop_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef awa_params[2] = { ptr_t, i32_t };
-        cg.async_wait_any_type = LLVMFunctionType(i32_t, awa_params, 2, 0);
-        cg.async_wait_any_fn   = LLVMAddFunction(cg.module, "__async_wait_any", cg.async_wait_any_type);
-        symtab_add(&cg.globals, "__async_wait_any", cg.async_wait_any_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef ac_params[1] = { ptr_t };
-        cg.async_cancel_type = LLVMFunctionType(void_t, ac_params, 1, 0);
-        cg.async_cancel_fn   = LLVMAddFunction(cg.module, "__async_cancel", cg.async_cancel_type);
-        symtab_add(&cg.globals, "__async_cancel", cg.async_cancel_fn, Null, rt_dummy2, False);
-
-        LLVMTypeRef acd_params[1] = { ptr_t };
-        cg.async_cancelled_type = LLVMFunctionType(i32_t, acd_params, 1, 0);
-        cg.async_cancelled_fn   = LLVMAddFunction(cg.module, "__async_cancelled", cg.async_cancelled_type);
-        symtab_add(&cg.globals, "__async_cancelled", cg.async_cancelled_fn, Null, rt_dummy2, False);
-    }
 
     /* ── thread runtime function declarations ── */
     {
@@ -1345,7 +1276,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* is_main: only the root module's "main" function is the C entry point */
             boolean_t is_main = (decl->module_name == Null)
                              && strcmp(decl->as.fn_decl.name, "main") == 0;
-            if (is_main) {
+            /* Coroutines (task or stream) lower to a function returning a
+               coroutine handle (raw `ptr`).  The declared T appears as the
+               result/item type only inside the promise. */
+            boolean_t is_coro_decl = decl->as.fn_decl.is_async
+                && (decl->as.fn_decl.coro_flavor == CoroTask
+                    || decl->as.fn_decl.coro_flavor == CoroStream);
+            if (is_coro_decl) {
+                ret_type = LLVMPointerTypeInContext(cg.ctx, 0);
+            } else if (is_main) {
                 ret_type = LLVMInt32TypeInContext(cg.ctx);
             } else if (decl->as.fn_decl.return_count > 1) {
                 /* multi-return: create an anonymous struct type */
@@ -1458,7 +1397,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
 
             LLVMTypeRef ret_type;
-            if (method->as.fn_decl.return_count > 1) {
+            boolean_t method_is_coro = method->as.fn_decl.is_async
+                && (method->as.fn_decl.coro_flavor == CoroTask
+                    || method->as.fn_decl.coro_flavor == CoroStream);
+            if (method_is_coro) {
+                ret_type = LLVMPointerTypeInContext(cg.ctx, 0);
+            } else if (method->as.fn_decl.return_count > 1) {
                 heap_t rt_heap = allocate(method->as.fn_decl.return_count, sizeof(LLVMTypeRef));
                 LLVMTypeRef *rt_fields = rt_heap.pointer;
                 for (usize_t j = 0; j < method->as.fn_decl.return_count; j++) {
@@ -1680,14 +1624,25 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
         }
 
-        /* Stream coroutine: wrap the body with the LLVM coro prologue/epilogue.
-           `gen_yield_*` and `gen_ret` consult cg.cur_coro to branch into the
-           suspend/cleanup blocks built here. */
+        /* Coroutine bodies: stream coroutines wrap with the streaming
+           prologue (item slot = T item, is_stream=1); task coroutines wrap
+           with the task prologue (item slot = T result, is_stream=0).
+           `gen_yield_*` and `gen_ret` consult cg.cur_coro to branch into
+           the suspend/cleanup blocks built here. */
         boolean_t is_stream_coro = decl->as.fn_decl.is_async
             && decl->as.fn_decl.coro_flavor == CoroStream;
+        boolean_t is_task_coro   = decl->as.fn_decl.is_async
+            && decl->as.fn_decl.coro_flavor == CoroTask;
         sts_coro_ctx_t prev_coro = cg.cur_coro;
+        boolean_t      prev_is_task = cg.current_fn_is_async_task;
+        cg.current_fn_is_async_task = False;
         if (is_stream_coro) {
             sts_emit_coro_stream_prologue(&cg, decl->as.fn_decl.yield_type, &cg.cur_coro);
+        } else if (is_task_coro) {
+            type_info_t rt = decl->as.fn_decl.return_count > 0
+                ? decl->as.fn_decl.return_types[0] : NO_TYPE;
+            sts_emit_coro_task_prologue(&cg, rt, &cg.cur_coro);
+            cg.current_fn_is_async_task = True;
         } else {
             cg.cur_coro.active = 0;
         }
@@ -1699,13 +1654,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         check_unconsumed_futures(&cg, decl);
 
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
-        if (is_stream_coro) {
+        if (is_stream_coro || is_task_coro) {
             sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
             cg.cur_coro = prev_coro;
+            cg.current_fn_is_async_task = prev_is_task;
             if (cg.debug_mode) cg.di_scope = cg.di_compile_unit;
             continue;
         }
         cg.cur_coro = prev_coro;
+        cg.current_fn_is_async_task = prev_is_task;
         if (!LLVMGetBasicBlockTerminator(cur_bb)) {
             type_info_t rti = decl->as.fn_decl.return_types[0];
             if (cg.current_fn_is_entry_main)
@@ -1732,26 +1689,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             cg.di_scope = cg.di_compile_unit;
     }
 
-    /* Eagerly materialize the thread-pool wrapper for every `async fn`.
-       The wrapper is what worker threads actually call (it unpacks args and
-       invokes the real fn). Forcing creation here — instead of only at first
-       `async.()` call-site — lets separate-compilation callers of this
-       module find `__thr_wrap_<fn>` by name in the object file. */
-    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
-        node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeFnDecl) continue;
-        if (!decl->as.fn_decl.is_async) continue;
-        if (decl->from_lib) continue;
-        if (decl->as.fn_decl.body == Null) continue;
-        if (decl->as.fn_decl.is_method) continue;       /* async methods not supported in v1 */
-        if (decl->as.fn_decl.type_param_count > 0) continue;
-        if (decl->as.fn_decl.coro_flavor == CoroStream) continue; /* stream coros aren't dispatched */
-        const char *name = decl->as.fn_decl.name;
-        if (!name) continue;
-        symbol_t *sym = cg_lookup(&cg, name);
-        if (!sym) continue;
-        (void)get_or_create_thread_wrapper(&cg, name, sym, decl);
-    }
+    /* Thread-pool wrappers were used by the legacy `async fn` dispatch.
+       After the v2 migration, every `async fn` is a real coroutine — the
+       function itself returns a `future.[T]` / `stream.[T]` handle directly.
+       The thread runtime stays linked for explicit `thread.(fn)(args)`,
+       which still goes through `get_or_create_thread_wrapper` lazily on its
+       first call site, so we no longer eagerly materialize wrappers here. */
 
     /* handle top-level comptime_assert (now that data layout is available) */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
@@ -1899,11 +1842,36 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 }
             }
 
+            /* Coroutine methods: same prologue/epilogue wrap as a top-level
+               coroutine; cur_coro tells gen_yield/gen_ret to branch into
+               the coroutine cleanup blocks. */
+            boolean_t method_is_stream_coro = method->as.fn_decl.is_async
+                && method->as.fn_decl.coro_flavor == CoroStream;
+            boolean_t method_is_task_coro = method->as.fn_decl.is_async
+                && method->as.fn_decl.coro_flavor == CoroTask;
+            sts_coro_ctx_t prev_method_coro = cg.cur_coro;
+            boolean_t      prev_method_is_task = cg.current_fn_is_async_task;
+            cg.current_fn_is_async_task = False;
+            if (method_is_stream_coro) {
+                sts_emit_coro_stream_prologue(&cg,
+                    method->as.fn_decl.yield_type, &cg.cur_coro);
+            } else if (method_is_task_coro) {
+                type_info_t rt = method->as.fn_decl.return_count > 0
+                    ? method->as.fn_decl.return_types[0] : NO_TYPE;
+                sts_emit_coro_task_prologue(&cg, rt, &cg.cur_coro);
+                cg.current_fn_is_async_task = True;
+            } else {
+                cg.cur_coro.active = 0;
+            }
+
             gen_block(&cg, method->as.fn_decl.body);
             check_unconsumed_futures(&cg, method);
 
             LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
-            if (!LLVMGetBasicBlockTerminator(cur_bb)) {
+            if (method_is_stream_coro || method_is_task_coro) {
+                sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
+                cg.cur_coro = prev_method_coro;
+            } else if (!LLVMGetBasicBlockTerminator(cur_bb)) {
                 type_info_t rti = method->as.fn_decl.return_types[0];
                 if (rti.base == TypeVoid && !rti.is_pointer)
                     LLVMBuildRetVoid(cg.builder);
@@ -1911,6 +1879,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     LLVMBuildRet(cg.builder,
                         LLVMConstNull(get_llvm_type(&cg, rti)));
             }
+            cg.cur_coro = prev_method_coro;
+            cg.current_fn_is_async_task = prev_method_is_task;
 
             if (cg.debug_mode)
                 cg.di_scope = cg.di_compile_unit;

@@ -87,13 +87,17 @@
  *        i8 1, label %coro.cleanup]
  * ── */
 
-/* ── header constants — must match coro_runtime.h ── */
+/* ── header constants — must match coro_runtime.h ──
+ * The header is a fixed 40-byte LLVM struct.  Cross-coroutine state lives
+ * in `continuation` (the awaiter to resume on completion / yield).  All
+ * suspend points consult `cancelled` and, if set, abort by jumping to the
+ * coroutine's final-suspend block. */
 #define STS_PROM_OFF_COMPLETE      0u
 #define STS_PROM_OFF_EOS           1u
 #define STS_PROM_OFF_ITEM_READY    2u
 #define STS_PROM_OFF_HAS_ERROR     3u
 #define STS_PROM_OFF_IS_STREAM     4u
-#define STS_PROM_OFF_PADDING       5u
+#define STS_PROM_OFF_CANCELLED     5u
 #define STS_PROM_OFF_CONTINUATION  6u
 #define STS_PROM_OFF_ERROR_MSG     7u
 #define STS_PROM_HDR_NUM_FIELDS    8u
@@ -242,9 +246,11 @@ static LLVMValueRef sts_gep_item(cg_t *cg, LLVMTypeRef prom_ty,
  * blocks but leaves the builder positioned in a fresh "coro.body" block so
  * the caller can lower the user body afterwards.
  *
- * On return, *out_ctx is filled with all the state needed by yield/ret. */
-static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
-                                          sts_coro_ctx_t *out_ctx) {
+ * `is_stream` toggles the `is_stream` promise flag.  Tasks and streams
+ * share an identical promise layout — the only difference is the meaning
+ * of the trailing `item` slot (result for tasks, current item for streams). */
+static void sts_emit_coro_prologue(cg_t *cg, type_info_t item_ti,
+                                   int is_stream, sts_coro_ctx_t *out_ctx) {
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
 
@@ -337,12 +343,15 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
             LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0), gep);
     }
     LLVMBuildStore(cg->builder,
-                   LLVMConstInt(i32_t, 1, 0),
+                   LLVMConstInt(i32_t, is_stream ? 1 : 0, 0),
                    sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_IS_STREAM));
 
     LLVMBuildBr(cg->builder, bb_body);
 
-    /* coro.final_suspend */
+    /* coro.final_suspend
+       Mark eos+complete, clear item_ready, and — if a continuation was
+       installed by an awaiting coroutine — resume it before suspending so
+       the awaiter sees `complete=1` on its next drive iteration. */
     LLVMPositionBuilderAtEnd(cg->builder, bb_final);
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0),
                    sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_EOS));
@@ -350,6 +359,26 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
                    sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_COMPLETE));
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0),
                    sts_gep_hdr_field(cg, prom_ty, prom_via_hdl, STS_PROM_OFF_ITEM_READY));
+    {
+        LLVMValueRef cont_ptr = sts_gep_hdr_field(cg, prom_ty, prom_via_hdl,
+            STS_PROM_OFF_CONTINUATION);
+        LLVMValueRef cont = LLVMBuildLoad2(cg->builder, ptr_t, cont_ptr, "fs.cont");
+        LLVMValueRef has_cont = LLVMBuildICmp(cg->builder, LLVMIntNE, cont,
+            LLVMConstNull(ptr_t), "fs.has_cont");
+        LLVMBasicBlockRef bb_resume_cont = LLVMAppendBasicBlockInContext(cg->ctx,
+            cg->current_fn, "coro.fs_resume_cont");
+        LLVMBasicBlockRef bb_after_cont = LLVMAppendBasicBlockInContext(cg->ctx,
+            cg->current_fn, "coro.fs_after_cont");
+        LLVMBuildCondBr(cg->builder, has_cont, bb_resume_cont, bb_after_cont);
+        LLVMPositionBuilderAtEnd(cg->builder, bb_resume_cont);
+        LLVMValueRef rargs[1] = { cont };
+        LLVMBuildCall2(cg->builder,
+            LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
+            sts_intrinsic_coro_resume(cg), rargs, 1, "");
+        LLVMBuildStore(cg->builder, LLVMConstNull(ptr_t), cont_ptr);
+        LLVMBuildBr(cg->builder, bb_after_cont);
+        LLVMPositionBuilderAtEnd(cg->builder, bb_after_cont);
+    }
     LLVMValueRef fs_args[2] = {
         LLVMConstNull(sts_token_ty(cg)),
         LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0)
@@ -409,10 +438,94 @@ static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
     out_ctx->susp_counter     = 0;
 }
 
+/* Resume the awaiting coroutine (if any) without unwinding self.  Used at
+ * `yield expr;` and final-suspend so the awaiter is woken before we
+ * suspend. */
+static void sts_resume_continuation_if_set(cg_t *cg, sts_coro_ctx_t *cx,
+                                           const char *label_prefix) {
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMValueRef cont_ptr = sts_gep_hdr_field(cg, cx->promise_type, cx->promise,
+        STS_PROM_OFF_CONTINUATION);
+    LLVMValueRef cont = LLVMBuildLoad2(cg->builder, ptr_t, cont_ptr, "y.cont");
+    LLVMValueRef has_cont = LLVMBuildICmp(cg->builder, LLVMIntNE, cont,
+        LLVMConstNull(ptr_t), "y.has_cont");
+    char nm_resume[80], nm_after[80];
+    snprintf(nm_resume, sizeof(nm_resume), "%s.resume_cont_%d", label_prefix, cx->susp_counter);
+    snprintf(nm_after,  sizeof(nm_after),  "%s.after_cont_%d",  label_prefix, cx->susp_counter);
+    LLVMBasicBlockRef bb_resume_cont = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, nm_resume);
+    LLVMBasicBlockRef bb_after_cont = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, nm_after);
+    LLVMBuildCondBr(cg->builder, has_cont, bb_resume_cont, bb_after_cont);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume_cont);
+    LLVMValueRef rargs[1] = { cont };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
+        sts_intrinsic_coro_resume(cg), rargs, 1, "");
+    LLVMBuildBr(cg->builder, bb_after_cont);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_after_cont);
+}
+
+/* Branch to final-suspend when the producer's `cancelled` flag has been set
+ * by an outside caller of `task.cancel`/`stream.cancel`.  Called at the
+ * resume edge of every suspend point. */
+static void sts_check_cancelled_and_finalize(cg_t *cg, sts_coro_ctx_t *cx,
+                                             const char *label_prefix) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef c_ptr = sts_gep_hdr_field(cg, cx->promise_type, cx->promise,
+        STS_PROM_OFF_CANCELLED);
+    LLVMValueRef c_v = LLVMBuildLoad2(cg->builder, i32_t, c_ptr, "cx.cancel");
+    LLVMValueRef is_c = LLVMBuildICmp(cg->builder, LLVMIntNE, c_v,
+        LLVMConstInt(i32_t, 0, 0), "cx.is_cancel");
+    char nm_continue[80];
+    snprintf(nm_continue, sizeof(nm_continue), "%s.live_%d", label_prefix, cx->susp_counter);
+    LLVMBasicBlockRef bb_live = LLVMAppendBasicBlockInContext(cg->ctx,
+        cg->current_fn, nm_continue);
+    LLVMBuildCondBr(cg->builder, is_c, cx->final_suspend_bb, bb_live);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_live);
+}
+
+static void sts_emit_coro_stream_prologue(cg_t *cg, type_info_t item_ti,
+                                          sts_coro_ctx_t *out_ctx) {
+    sts_emit_coro_prologue(cg, item_ti, /*is_stream=*/1, out_ctx);
+}
+
+static void sts_emit_coro_task_prologue(cg_t *cg, type_info_t result_ti,
+                                        sts_coro_ctx_t *out_ctx) {
+    sts_emit_coro_prologue(cg, result_ti, /*is_stream=*/0, out_ctx);
+}
+
+/* `ret expr;` inside a task coroutine — store the produced result into the
+ * promise's item slot, mark `complete=1`, wake any awaiter, and branch to
+ * the final-suspend block (which itself wakes the continuation as well; the
+ * extra resume in this path is a fast-path for the common case where an
+ * awaiter is suspended waiting for completion). */
+static void sts_emit_task_ret(cg_t *cg, sts_coro_ctx_t *cx,
+                              LLVMValueRef value) {
+    if (!cx || !cx->active) return;
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef item_ptr = sts_gep_item(cg, cx->promise_type, cx->promise);
+    LLVMValueRef stored   = coerce_int(cg, value, cx->item_type);
+    LLVMBuildStore(cg->builder, stored, item_ptr);
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0),
+        sts_gep_hdr_field(cg, cx->promise_type, cx->promise, STS_PROM_OFF_COMPLETE));
+    LLVMBuildBr(cg->builder, cx->final_suspend_bb);
+}
+
+/* `ret;` inside a void task coroutine — same as above but no value stored. */
+static void sts_emit_task_void_ret(cg_t *cg, sts_coro_ctx_t *cx) {
+    if (!cx || !cx->active) return;
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0),
+        sts_gep_hdr_field(cg, cx->promise_type, cx->promise, STS_PROM_OFF_COMPLETE));
+    LLVMBuildBr(cg->builder, cx->final_suspend_bb);
+}
+
 /* Emit a `yield expr;` suspend point.  Stores the produced item, marks
- * item_ready=1, and suspends.  After the suspend, the producer's resume
- * lands at the new "coro.after_yield_<n>" block which becomes the current
- * insertion point. */
+ * item_ready=1, resumes any installed awaiter, and suspends.  After resume
+ * the producer checks `cancelled` first — a cancel between yields lets the
+ * coroutine wind down through its final-suspend block instead of running
+ * one more iteration. */
 static void sts_emit_yield_value(cg_t *cg, sts_coro_ctx_t *cx,
                                  LLVMValueRef value, LLVMTypeRef value_ty) {
     if (!cx || !cx->active) return;
@@ -426,6 +539,9 @@ static void sts_emit_yield_value(cg_t *cg, sts_coro_ctx_t *cx,
     LLVMBuildStore(cg->builder, stored, item_ptr);
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0),
         sts_gep_hdr_field(cg, cx->promise_type, cx->promise, STS_PROM_OFF_ITEM_READY));
+
+    /* wake any installed awaiter (e.g. parent coroutine that did `await.next`) */
+    sts_resume_continuation_if_set(cg, cx, "yield");
 
     /* suspend point */
     char nm[64];
@@ -442,10 +558,11 @@ static void sts_emit_yield_value(cg_t *cg, sts_coro_ctx_t *cx,
     LLVMAddCase(sw, LLVMConstInt(i8_t, 0, 0), bb_after);
     LLVMAddCase(sw, LLVMConstInt(i8_t, 1, 0), cx->cleanup_bb);
 
-    /* resume edge: clear item_ready so the next yield round-trips cleanly */
+    /* resume edge: clear item_ready, then check cancelled */
     LLVMPositionBuilderAtEnd(cg->builder, bb_after);
     LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 0, 0),
         sts_gep_hdr_field(cg, cx->promise_type, cx->promise, STS_PROM_OFF_ITEM_READY));
+    sts_check_cancelled_and_finalize(cg, cx, "yield");
 }
 
 /* Emit a bare `yield;` cooperative reschedule (no item produced). */
@@ -466,6 +583,7 @@ static void sts_emit_yield_now(cg_t *cg, sts_coro_ctx_t *cx) {
     LLVMAddCase(sw, LLVMConstInt(i8_t, 0, 0), bb_after);
     LLVMAddCase(sw, LLVMConstInt(i8_t, 1, 0), cx->cleanup_bb);
     LLVMPositionBuilderAtEnd(cg->builder, bb_after);
+    sts_check_cancelled_and_finalize(cg, cx, "ynow");
 }
 
 /* `ret;` inside a stream coroutine — branch to the final suspend block. */
@@ -571,6 +689,120 @@ static LLVMValueRef sts_emit_await_next(cg_t *cg, LLVMValueRef stream_h,
     return phi;
 }
 
+/* await(t) where t is a task coroutine future.[T].
+ *
+ * Drives `coro.resume(t)` until promise->complete is set, loads T from the
+ * item slot, then destroys the coroutine.  Eager-start tasks complete on
+ * the call so the loop usually resolves on the first probe.
+ *
+ * If `t_caller_handle` is non-NULL, this is being emitted inside another
+ * coroutine; in that case we install the caller's handle as the task's
+ * continuation so a future async-IO suspension wakes the right awaiter.
+ * The drive loop is still synchronous in v1, but the IR is correct. */
+static LLVMValueRef sts_emit_await_task(cg_t *cg, LLVMValueRef task_h,
+                                        type_info_t result_ti,
+                                        LLVMValueRef caller_handle) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef item_lt;
+    boolean_t  result_is_void = (result_ti.base == TypeVoid && !result_ti.is_pointer);
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, result_ti, &item_lt);
+
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+
+    /* Install caller as continuation if we're inside a coroutine. */
+    if (caller_handle != Null) {
+        LLVMBuildStore(cg->builder, caller_handle,
+            sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_CONTINUATION));
+    }
+
+    LLVMBasicBlockRef bb_loop = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "atask.loop");
+    LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "atask.done");
+    LLVMBuildBr(cg->builder, bb_loop);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_loop);
+    LLVMValueRef cmp_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_COMPLETE);
+    LLVMValueRef cmp_v = LLVMBuildLoad2(cg->builder, i32_t, cmp_p, "atask.complete");
+    LLVMValueRef is_done = LLVMBuildICmp(cg->builder, LLVMIntNE, cmp_v,
+        LLVMConstInt(i32_t, 0, 0), "atask.is_done");
+
+    LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "atask.resume");
+    LLVMBuildCondBr(cg->builder, is_done, bb_done, bb_resume);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+    LLVMValueRef rargs[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
+        sts_intrinsic_coro_resume(cg), rargs, 1, "");
+    LLVMBuildBr(cg->builder, bb_loop);
+
+    LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+    LLVMValueRef result_val = Null;
+    if (!result_is_void) {
+        LLVMValueRef item_p = sts_gep_item(cg, prom_ty, prom);
+        result_val = LLVMBuildLoad2(cg->builder, item_lt, item_p, "atask.r");
+    }
+    /* Destroy the task — its frame is no longer needed. */
+    LLVMValueRef destroy_args[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
+        sts_intrinsic_coro_destroy(cg), destroy_args, 1, "");
+    return result_val ? result_val
+                      : LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+}
+
+/* future.ready(t) — non-blocking probe: load `complete` from the promise. */
+static LLVMValueRef sts_emit_task_ready(cg_t *cg, LLVMValueRef task_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    type_info_t void_ti = NO_TYPE;
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, void_ti, Null);
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMValueRef gep = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_COMPLETE);
+    return LLVMBuildLoad2(cg->builder, i32_t, gep, "task.ready");
+}
+
+/* future.wait(t) — drive without loading the result. */
+static void sts_emit_task_wait(cg_t *cg, LLVMValueRef task_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    type_info_t void_ti = NO_TYPE;
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, void_ti, Null);
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMBasicBlockRef bb_loop = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "wait.loop");
+    LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "wait.done");
+    LLVMBuildBr(cg->builder, bb_loop);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_loop);
+    LLVMValueRef gep = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_COMPLETE);
+    LLVMValueRef v = LLVMBuildLoad2(cg->builder, i32_t, gep, "wait.complete");
+    LLVMValueRef is_done = LLVMBuildICmp(cg->builder, LLVMIntNE, v,
+        LLVMConstInt(i32_t, 0, 0), "wait.is_done");
+    LLVMBasicBlockRef bb_resume = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "wait.resume");
+    LLVMBuildCondBr(cg->builder, is_done, bb_done, bb_resume);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_resume);
+    LLVMValueRef rargs[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_resume(cg)),
+        sts_intrinsic_coro_resume(cg), rargs, 1, "");
+    LLVMBuildBr(cg->builder, bb_loop);
+    LLVMPositionBuilderAtEnd(cg->builder, bb_done);
+}
+
+/* future.get(t) raw — drive and return ptr to item slot in the frame. */
+static LLVMValueRef sts_emit_task_get_raw(cg_t *cg, LLVMValueRef task_h) {
+    type_info_t void_ti = NO_TYPE;
+    sts_emit_task_wait(cg, task_h);
+    LLVMValueRef prom = sts_call_coro_promise(cg, task_h);
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, void_ti, Null);
+    return sts_gep_item(cg, prom_ty, prom);
+}
+
+/* future.drop(t) — wait for completion, then destroy. */
+static void sts_emit_task_drop(cg_t *cg, LLVMValueRef task_h) {
+    sts_emit_task_wait(cg, task_h);
+    LLVMValueRef args[1] = { task_h };
+    LLVMBuildCall2(cg->builder,
+        LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
+        sts_intrinsic_coro_destroy(cg), args, 1, "");
+}
+
 /* stream.done(s) — load the eos flag.  Returns i32 (1 == done). */
 static LLVMValueRef sts_emit_stream_done(cg_t *cg, LLVMValueRef stream_h,
                                          type_info_t item_ti) {
@@ -587,4 +819,20 @@ static void sts_emit_stream_drop(cg_t *cg, LLVMValueRef stream_h) {
     LLVMBuildCall2(cg->builder,
         LLVMGlobalGetValueType(sts_intrinsic_coro_destroy(cg)),
         sts_intrinsic_coro_destroy(cg), args, 1, "");
+}
+
+/* stream.cancel(s) / task.cancel(t) — set the promise's `cancelled` flag.
+ * The producer sees it at the next resume edge (yield, yield;, await) and
+ * winds itself down through final-suspend.  Safe to call before, during,
+ * or after the producer has hit eos. */
+static void sts_emit_coro_cancel(cg_t *cg, LLVMValueRef coro_h) {
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef prom = sts_call_coro_promise(cg, coro_h);
+    /* Promise type is layout-uniform between tasks and streams; the i8
+       placeholder for item_type is fine for the GEP because we're only
+       reaching into the header section. */
+    type_info_t void_ti = NO_TYPE;
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, void_ti, Null);
+    LLVMValueRef gep = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_CANCELLED);
+    LLVMBuildStore(cg->builder, LLVMConstInt(i32_t, 1, 0), gep);
 }
