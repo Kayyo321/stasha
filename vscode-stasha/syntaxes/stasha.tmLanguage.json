@@ -1,0 +1,184 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Stasha",
+  "scopeName": "source.stasha",
+  "fileTypes": ["sts"],
+  "patterns": [
+    { "include": "#comment-line" },
+    { "include": "#comment-block" },
+    { "include": "#string-dollar" },
+    { "include": "#string-single" },
+    { "include": "#string-double" },
+    { "include": "#char-literal" },
+    { "include": "#number" },
+    { "include": "#attributes" },
+    { "include": "#comptime-generic" },
+    { "include": "#pointer-perm" },
+    { "include": "#builtin-calls" },
+    { "include": "#keyword-control" },
+    { "include": "#keyword-declaration" },
+    { "include": "#storage-qualifier" },
+    { "include": "#keyword-async" },
+    { "include": "#keyword-misc" },
+    { "include": "#type-primitive" },
+    { "include": "#type-name" },
+    { "include": "#generic-instantiation" },
+    { "include": "#operator-special" },
+    { "include": "#operator" },
+    { "include": "#function-call" },
+    { "include": "#this-keyword" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment-line": {
+      "name": "comment.line.double-slash.stasha",
+      "match": "//.*$"
+    },
+    "comment-block": {
+      "name": "comment.block.stasha",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [{ "include": "#comment-block" }]
+    },
+    "string-dollar": {
+      "name": "string.quoted.dollar.stasha",
+      "begin": "\\$\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.stasha", "match": "\\\\." },
+        { "name": "punctuation.section.interpolation.stasha", "match": "\\{[^}]*\\}" }
+      ]
+    },
+    "string-double": {
+      "name": "string.quoted.double.stasha",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.stasha", "match": "\\\\[\\\\\"nrtbf0]" },
+        { "name": "meta.format-spec.stasha", "match": "\\{[^}]*\\}" }
+      ]
+    },
+    "string-single": {
+      "name": "string.quoted.single.stasha",
+      "begin": "'(?=[^'\\\\]*(\\\\.[^'\\\\]*)*')",
+      "end": "'",
+      "patterns": [
+        { "name": "constant.character.escape.stasha", "match": "\\\\[\\\\nrtbf0']" },
+        { "name": "meta.format-spec.stasha", "match": "\\{[^}]*\\}" }
+      ]
+    },
+    "char-literal": {
+      "name": "string.quoted.single.char.stasha",
+      "match": "'(?:\\\\.|[^'\\\\])'"
+    },
+    "number": {
+      "patterns": [
+        { "name": "constant.numeric.hex.stasha", "match": "\\b0[xX][0-9a-fA-F][0-9a-fA-F_]*\\b" },
+        { "name": "constant.numeric.binary.stasha", "match": "\\b0[bB][01][01_]*\\b" },
+        { "name": "constant.numeric.float.stasha", "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9]+)?\\b" },
+        { "name": "constant.numeric.integer.stasha", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "name": "entity.other.attribute-name.stasha",
+          "match": "@(?:comptime|packed|align|c_layout|weak|hidden|restrict|frees|foreach)\\b"
+        },
+        {
+          "name": "entity.other.attribute-name.stasha",
+          "match": "#(?:if|include)\\b"
+        }
+      ]
+    },
+    "comptime-generic": {
+      "name": "meta.generic.stasha",
+      "match": "@comptime\\[([A-Za-z_][A-Za-z0-9_,\\s]*)\\]",
+      "captures": {
+        "0": { "name": "entity.other.attribute-name.stasha" },
+        "1": { "name": "entity.name.type.parameter.stasha" }
+      }
+    },
+    "pointer-perm": {
+      "name": "storage.modifier.pointer.stasha",
+      "match": "\\*(?:rw\\+|r\\+|w\\+|rw|r|w|\\+)"
+    },
+    "builtin-calls": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.stasha",
+          "match": "\\b(?:print|rem|new|mov|sizeof|expect|expect_eq|expect_neq|test_fail|lam|make|append|copy|len|cap)\\.(?=\\(|\\.\\(|\\[)"
+        },
+        {
+          "name": "support.function.builtin.stasha",
+          "match": "\\b(?:future|stream|await|async|thread)\\."
+        }
+      ]
+    },
+    "keyword-control": {
+      "name": "keyword.control.stasha",
+      "match": "\\b(?:if|else|for|while|do|inf|match|switch|case|default|break|continue|ret|defer|yield|with|foreach|in)\\b"
+    },
+    "keyword-declaration": {
+      "name": "keyword.declaration.stasha",
+      "match": "\\b(?:fn|type|mod|imp|lib|libimp|ext|int|test|struct|enum|union|interface|let|zone|unsafe|unchecked)\\b"
+    },
+    "storage-qualifier": {
+      "name": "storage.type.stasha",
+      "match": "\\b(?:stack|heap|atomic|const|final|volatile|tls|restrict)\\b"
+    },
+    "keyword-async": {
+      "name": "keyword.other.async.stasha",
+      "match": "\\b(?:async|await|thread|future|stream|yield)\\b"
+    },
+    "keyword-misc": {
+      "patterns": [
+        { "name": "keyword.other.stasha", "match": "\\b(?:from|std|asm|watch|send|quit|any|macro)\\b" },
+        { "name": "constant.language.boolean.stasha", "match": "\\b(?:true|false)\\b" },
+        { "name": "constant.language.null.stasha", "match": "\\b(?:nil)\\b" }
+      ]
+    },
+    "type-primitive": {
+      "name": "support.type.primitive.stasha",
+      "match": "\\b(?:i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|void|error|future|stream)\\b"
+    },
+    "type-name": {
+      "name": "entity.name.type.stasha",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "generic-instantiation": {
+      "name": "meta.generic.instantiation.stasha",
+      "match": "\\.\\[(?:[A-Za-z_][A-Za-z0-9_,\\s]*)\\]",
+      "captures": {
+        "0": { "name": "entity.name.type.parameter.stasha" }
+      }
+    },
+    "operator-special": {
+      "patterns": [
+        { "name": "keyword.operator.wrapping.stasha", "match": "[+\\-\\*]%" },
+        { "name": "keyword.operator.trapping.stasha", "match": "[+\\-\\*]!" },
+        { "name": "keyword.operator.pipeline.stasha", "match": "\\|>" },
+        { "name": "keyword.operator.spread.stasha", "match": "\\.\\." },
+        { "name": "keyword.operator.range.stasha", "match": "\\.\\.(=)" },
+        { "name": "keyword.operator.fat-arrow.stasha", "match": "=>" },
+        { "name": "keyword.operator.addr.stasha", "match": "&(?=[a-zA-Z_])" }
+      ]
+    },
+    "operator": {
+      "name": "keyword.operator.stasha",
+      "match": "\\+\\+|--|[+\\-*/%]|[&|^~]|<<|>>|&&|\\|\\||!|[<>]=?|==|!=|\\.==|[+\\-*/%&|^<>]=|="
+    },
+    "function-call": {
+      "name": "entity.name.function.stasha",
+      "match": "\\b([a-z_][a-zA-Z0-9_]*)(?=\\.?\\()"
+    },
+    "this-keyword": {
+      "name": "variable.language.this.stasha",
+      "match": "\\bthis\\b"
+    },
+    "identifier": {
+      "name": "variable.other.stasha",
+      "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+    }
+  }
+}

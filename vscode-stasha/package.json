@@ -1,0 +1,183 @@
+{
+  "name": "vscode-stasha",
+  "displayName": "Stasha",
+  "description": "Stasha language support: syntax highlighting, diagnostics, go to definition, debugging, and project tools",
+  "version": "0.1.0",
+  "publisher": "stasha",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Debuggers"],
+  "activationEvents": ["onLanguage:stasha"],
+  "main": "./out/extension.js",
+  "extensionDependencies": ["vadimcn.vscode-lldb"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "stasha",
+        "aliases": ["Stasha", "sts"],
+        "extensions": [".sts"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "stasha",
+        "scopeName": "source.stasha",
+        "path": "./syntaxes/stasha.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "stasha.newProject",
+        "title": "Stasha: New Project"
+      },
+      {
+        "command": "stasha.initProject",
+        "title": "Stasha: Initialize Project in Current Folder"
+      },
+      {
+        "command": "stasha.build",
+        "title": "Stasha: Build"
+      },
+      {
+        "command": "stasha.buildRelease",
+        "title": "Stasha: Build (Release)"
+      },
+      {
+        "command": "stasha.test",
+        "title": "Stasha: Test"
+      },
+      {
+        "command": "stasha.run",
+        "title": "Stasha: Run"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "stasha",
+        "required": [],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The Stasha task to run (build, buildRelease, test, run)"
+          },
+          "file": {
+            "type": "string",
+            "description": "Source file to compile (optional if sts.sproj present)"
+          }
+        }
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "stasha",
+        "label": "Stasha",
+        "languages": ["stasha"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the Stasha source file (.sts) to compile and debug",
+                "default": "${workspaceFolder}/src/main.sts"
+              },
+              "output": {
+                "type": "string",
+                "description": "Output binary path",
+                "default": "${workspaceFolder}/bin/debug_out"
+              },
+              "args": {
+                "type": "array",
+                "description": "Arguments to pass to the program",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "default": {}
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "stasha",
+            "request": "launch",
+            "name": "Debug Stasha Program",
+            "program": "${workspaceFolder}/src/main.sts",
+            "output": "${workspaceFolder}/bin/debug_out",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Stasha: Launch",
+            "description": "Compile and debug a Stasha program",
+            "body": {
+              "type": "stasha",
+              "request": "launch",
+              "name": "Debug Stasha Program",
+              "program": "^\"\\${workspaceFolder}/src/main.sts\"",
+              "output": "^\"\\${workspaceFolder}/bin/debug_out\"",
+              "args": [],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "stasha",
+        "owner": "stasha",
+        "fileLocation": ["absolute"],
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Stasha",
+      "properties": {
+        "stasha.compilerPath": {
+          "type": "string",
+          "default": "stasha",
+          "description": "Path to the Stasha compiler binary. Defaults to 'stasha' (must be on PATH)."
+        },
+        "stasha.checkOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run type-checking diagnostics as you type."
+        },
+        "stasha.checkDelay": {
+          "type": "number",
+          "default": 400,
+          "description": "Debounce delay in milliseconds before running diagnostics after typing."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}
