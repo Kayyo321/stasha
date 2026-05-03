@@ -52,6 +52,7 @@ void ast_set_loc(node_t *node, token_t tok) {
     if (!node) return;
     node->line = tok.line;
     node->col = tok.col;
+    node->len = tok.length;
     if (tok.file)
         node->source_file = ast_strdup(tok.file, strlen(tok.file));
 }

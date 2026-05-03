@@ -86,6 +86,8 @@ typedef struct {
     long long const_int_val; /* compile-time value of a const integer, -1 if not known */
     boolean_t used;         /* True if the variable has been read at least once */
     usize_t line;           /* source line where the variable was declared (0 = unknown) */
+    usize_t col;            /* source column (1-based, 0 = unknown) */
+    usize_t len;            /* name span in bytes */
 } symbol_t;
 
 typedef struct {

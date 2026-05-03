@@ -55,14 +55,14 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             /* zone-allocated: rem.() must be a no-op — zone owns the memory */
             if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
                 sym_flags |= SymZoneAlloc;
-            check_shadow(cg, node->as.var_decl.name, node->line);
+            check_shadow(cg, node->as.var_decl.name, node->line, node->col, node->len);
             symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, inferred, ti, sym_flags);
         }
         symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
                               node->as.var_decl.flags & VdeclFinal,
                               node->as.var_decl.linkage, cg->dtor_depth, -1);
-        symtab_set_last_line(&cg->locals, node->line);
+        symtab_set_last_loc(&cg->locals, node->line, node->col, node->len);
         if (ti.base == TypeUser && ti.user_name && !ti.is_pointer) {
             struct_reg_t *sr = find_struct(cg, ti.user_name);
             if (sr && sr->destructor)
@@ -279,7 +279,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* zone-allocated: rem.() must be a no-op — zone owns the memory */
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
             sym_flags |= SymZoneAlloc;
-        check_shadow(cg, node->as.var_decl.name, node->line);
+        check_shadow(cg, node->as.var_decl.name, node->line, node->col, node->len);
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -288,7 +288,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
                               node->as.var_decl.flags & VdeclFinal, node->as.var_decl.linkage,
                               cg->dtor_depth, arr_sz);
-        symtab_set_last_line(&cg->locals, node->line);
+        symtab_set_last_loc(&cg->locals, node->line, node->col, node->len);
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNilExpr)
             symtab_set_last_nil(&cg->locals, True);
         /* Record compile-time value for const integer locals so array dimension
@@ -2037,7 +2037,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             symtab_set_last_storage(&cg->locals, StorageStack, False);
             symtab_set_last_extra(&cg->locals, False, False, LinkageNone,
                                   cg->dtor_depth, -1);
-            symtab_set_last_line(&cg->locals, node->line);
+            symtab_set_last_loc(&cg->locals, node->line, node->col, node->len);
             break;
         }
 
@@ -2055,7 +2055,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             symtab_set_last_storage(&cg->locals, StorageStack, False);
             symtab_set_last_extra(&cg->locals, False, False, LinkageNone,
                                   cg->dtor_depth, -1);
-            symtab_set_last_line(&cg->locals, node->line);
+            symtab_set_last_loc(&cg->locals, node->line, node->col, node->len);
             /* generate the zone body */
             gen_block(cg, node->as.zone_decl.body);
             /* emit __zone_free(&zone_ptr) at lexical scope exit.
@@ -2122,7 +2122,8 @@ static void gen_block(cg_t *cg, node_t *node) {
         if (!entry->used && entry->name && entry->name[0] != '_') {
             diag_begin_optional_warning(WarnUnusedVar, "unused variable '%s'", entry->name);
             if (entry->line > 0)
-                diag_span(SRC_LOC(entry->line, 0, strlen(entry->name)), True,
+                diag_span(SRC_LOC(entry->line, entry->col,
+                                  entry->len > 0 ? entry->len : strlen(entry->name)), True,
                           "variable declared here");
             diag_note("prefix the name with '_' to suppress this warning");
             diag_finish();

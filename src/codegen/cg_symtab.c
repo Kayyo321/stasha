@@ -45,7 +45,7 @@ static symbol_t *cg_lookup(cg_t *cg, const char *name) {
 
 /* Check if adding a local with `name` shadows an existing local at an outer
  * scope depth.  Called before symtab_add for --wall shadow warnings. */
-static void check_shadow(cg_t *cg, const char *name, usize_t line) {
+static void check_shadow(cg_t *cg, const char *name, usize_t line, usize_t col, usize_t len) {
     if (!name || name[0] == '_') return; /* _ prefix = intentional shadow */
     symbol_t *existing = symtab_lookup(&cg->locals, name);
     if (!existing) existing = symtab_lookup(&cg->globals, name);
@@ -54,10 +54,12 @@ static void check_shadow(cg_t *cg, const char *name, usize_t line) {
             "variable '%s' shadows previous declaration", name);
         diag_set_category(ErrCatOther);
         if (line > 0)
-            diag_span(SRC_LOC(line, 0, strlen(name)), True, "new declaration here");
+            diag_span(SRC_LOC(line, col, len > 0 ? len : strlen(name)), True,
+                      "new declaration here");
         if (existing->line > 0)
-            diag_span(SRC_LOC(existing->line, 0, strlen(existing->name)), False,
-                      "previously declared here");
+            diag_span(SRC_LOC(existing->line, existing->col,
+                               existing->len > 0 ? existing->len : strlen(existing->name)),
+                      False, "previously declared here");
         diag_finish();
     }
 }
@@ -65,6 +67,14 @@ static void check_shadow(cg_t *cg, const char *name, usize_t line) {
 static void symtab_set_last_line(symtab_t *st, usize_t line) {
     if (st->count > 0)
         st->entries[st->count - 1].line = line;
+}
+
+static void symtab_set_last_loc(symtab_t *st, usize_t line, usize_t col, usize_t len) {
+    if (st->count > 0) {
+        st->entries[st->count - 1].line = line;
+        st->entries[st->count - 1].col  = col;
+        st->entries[st->count - 1].len  = len;
+    }
 }
 
 static void symtab_set_last_storage(symtab_t *st, storage_t storage, boolean_t is_heap_var) {

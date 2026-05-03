@@ -170,8 +170,8 @@ usize_t levenshtein(const char *a, const char *b);
 /* Build src_loc_t from a token_t (requires col field added to token_t) */
 #define DIAG_TOK(tok)   SRC_LOC((tok).line, (tok).col, (tok).length)
 
-/* Build src_loc_t from a node_t (col may be 0 for older AST nodes) */
-#define DIAG_NODE(n)    SRC_LOC((n)->line, (n)->col, 0)
+/* Build src_loc_t from a node_t */
+#define DIAG_NODE(n)    SRC_LOC((n)->line, (n)->col, (n)->len)
 
 /* Emit a simple error at a node with one label message */
 #define DIAG_ERR(node, msg_fmt, ...) do { \

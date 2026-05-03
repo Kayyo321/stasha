@@ -100,14 +100,20 @@ class StashaDiagnosticProvider {
         const proc = (0, child_process_1.spawn)(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
+        let hadSpawnError = false;
         proc.stdout.on('data', (d) => { stdout += d.toString(); });
         proc.stderr.on('data', (d) => { stderr += d.toString(); });
         proc.on('error', (err) => {
-            if (err.code === 'ENOENT') {
-                this.collection.set(doc.uri, [new vscode.Diagnostic(new vscode.Range(0, 0, 0, 0), `Stasha compiler not found ('${bin}'). Set stasha.compilerPath in settings.`, vscode.DiagnosticSeverity.Error)]);
-            }
+            hadSpawnError = true;
+            const msg = err.code === 'ENOENT'
+                ? `Stasha compiler not found at '${bin}'. Set stasha.compilerPath in settings.`
+                : `Failed to launch Stasha compiler: ${err.message}`;
+            this.collection.set(doc.uri, [new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), msg, vscode.DiagnosticSeverity.Error)]);
+            this._onDidUpdate.fire(doc.uri);
         });
         proc.on('close', () => {
+            if (hadSpawnError)
+                return;
             const diags = [];
             try {
                 const response = JSON.parse(stdout);
@@ -123,7 +129,6 @@ class StashaDiagnosticProvider {
                     if (d.labels && d.labels.length > 0) {
                         diag.relatedInformation = d.labels.map(lbl => new vscode.DiagnosticRelatedInformation(new vscode.Location(doc.uri, makeRange(lbl.line, lbl.col, lbl.len)), lbl.message));
                     }
-                    // Attach raw notes for code actions
                     if (d.notes) {
                         diag.__stashaNotes = d.notes;
                     }
@@ -131,9 +136,8 @@ class StashaDiagnosticProvider {
                 }
             }
             catch {
-                // Not valid JSON — show raw stderr as a single error if non-empty
                 if (stderr.trim()) {
-                    diags.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 0), stderr.trim(), vscode.DiagnosticSeverity.Error));
+                    diags.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), stderr.trim(), vscode.DiagnosticSeverity.Error));
                 }
             }
             this.collection.set(doc.uri, diags);

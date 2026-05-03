@@ -343,6 +343,7 @@ struct node {
     node_kind_t kind;
     usize_t line;        /* 1-based source line (0 = unknown)   */
     usize_t col;         /* 1-based source column (0 = unknown) */
+    usize_t len;         /* token span in bytes (0 = unknown)   */
     char *source_file;   /* source file that produced this node */
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */

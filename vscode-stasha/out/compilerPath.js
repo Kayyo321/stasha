@@ -36,10 +36,23 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getCompilerPath = getCompilerPath;
 exports.isCompilerAvailable = isCompilerAvailable;
 const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
 const child_process_1 = require("child_process");
 function getCompilerPath() {
     const cfg = vscode.workspace.getConfiguration('stasha');
-    return cfg.get('compilerPath') ?? 'stasha';
+    const configured = cfg.get('compilerPath');
+    if (configured && configured.trim() !== '' && configured !== 'stasha') {
+        return configured;
+    }
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders && folders.length > 0) {
+        const candidate = path.join(folders[0].uri.fsPath, 'bin', 'stasha');
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return configured ?? 'stasha';
 }
 function isCompilerAvailable() {
     const bin = getCompilerPath();

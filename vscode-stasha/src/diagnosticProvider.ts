@@ -88,20 +88,26 @@ export class StashaDiagnosticProvider {
 
         let stdout = '';
         let stderr = '';
+        let hadSpawnError = false;
+
         proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
         proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
         proc.on('error', (err) => {
-            if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-                this.collection.set(doc.uri, [new vscode.Diagnostic(
-                    new vscode.Range(0, 0, 0, 0),
-                    `Stasha compiler not found ('${bin}'). Set stasha.compilerPath in settings.`,
-                    vscode.DiagnosticSeverity.Error
-                )]);
-            }
+            hadSpawnError = true;
+            const msg = (err as NodeJS.ErrnoException).code === 'ENOENT'
+                ? `Stasha compiler not found at '${bin}'. Set stasha.compilerPath in settings.`
+                : `Failed to launch Stasha compiler: ${err.message}`;
+            this.collection.set(doc.uri, [new vscode.Diagnostic(
+                new vscode.Range(0, 0, 0, 1),
+                msg,
+                vscode.DiagnosticSeverity.Error
+            )]);
+            this._onDidUpdate.fire(doc.uri);
         });
 
         proc.on('close', () => {
+            if (hadSpawnError) return;
             const diags: vscode.Diagnostic[] = [];
             try {
                 const response: DiagnosticsResponse = JSON.parse(stdout);
@@ -120,17 +126,15 @@ export class StashaDiagnosticProvider {
                             lbl.message
                         ));
                     }
-                    // Attach raw notes for code actions
                     if (d.notes) {
                         (diag as any).__stashaNotes = d.notes;
                     }
                     diags.push(diag);
                 }
             } catch {
-                // Not valid JSON — show raw stderr as a single error if non-empty
                 if (stderr.trim()) {
                     diags.push(new vscode.Diagnostic(
-                        new vscode.Range(0, 0, 0, 0),
+                        new vscode.Range(0, 0, 0, 1),
                         stderr.trim(),
                         vscode.DiagnosticSeverity.Error
                     ));
