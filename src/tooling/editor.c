@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 static void json_puts_escaped(const char *text) {
     if (!text) return;
@@ -950,4 +951,621 @@ void editor_print_definition_json(const node_t *ast, const char *path, usize_t l
     printf(",\"kind\":");
     json_put_string(symbol_kind_name(def));
     printf("}}\n");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Completion  (stasha complete <file> --line <n> --col <n>)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+static const char *completion_kind_for_node(const node_t *n) {
+    if (!n) return "variable";
+    switch (n->kind) {
+        case NodeFnDecl:    return n->as.fn_decl.is_method ? "method" : "function";
+        case NodeTypeDecl:  return "type";
+        case NodeVarDecl:   return "variable";
+        case NodeEnumVariant: return "enumMember";
+        default: return "variable";
+    }
+}
+
+/* Determine whether the character before (line,col) (1-based) is '.' */
+static boolean_t context_is_member_access(const char *source, usize_t line, usize_t col) {
+    if (!source || line == 0) return False;
+    /* walk to the target line */
+    usize_t cur_line = 1;
+    const char *p = source;
+    while (*p && cur_line < line) {
+        if (*p == '\n') cur_line++;
+        p++;
+    }
+    /* now p is at start of target line; col is 1-based */
+    usize_t target_col = col > 1 ? col - 1 : 0; /* one char before cursor */
+    const char *line_start = p;
+    while (*p && (usize_t)(p - line_start) < target_col && *p != '\n') p++;
+    /* scan backward skipping spaces */
+    while (p > line_start && (*(p-1) == ' ' || *(p-1) == '\t')) p--;
+    return (p > line_start && *(p-1) == '.');
+}
+
+/* Collect the identifier before the '.' to determine type */
+static void get_object_name_before_dot(const char *source, usize_t line, usize_t col,
+                                        char *out, size_t out_size) {
+    if (!source || !out || out_size == 0) return;
+    out[0] = '\0';
+    usize_t cur_line = 1;
+    const char *p = source;
+    while (*p && cur_line < line) {
+        if (*p == '\n') cur_line++;
+        p++;
+    }
+    const char *line_start = p;
+    usize_t target_col = col > 1 ? col - 1 : 0;
+    while (*p && (usize_t)(p - line_start) < target_col && *p != '\n') p++;
+    /* backward past spaces and the dot itself */
+    while (p > line_start && (*(p-1) == ' ' || *(p-1) == '\t')) p--;
+    if (p > line_start && *(p-1) == '.') p--;
+    /* backward past spaces again */
+    while (p > line_start && (*(p-1) == ' ' || *(p-1) == '\t')) p--;
+    /* now collect the identifier */
+    const char *end = p;
+    while (p > line_start && (isalnum((unsigned char)*(p-1)) || *(p-1) == '_')) p--;
+    size_t len = (size_t)(end - p);
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, p, len);
+    out[len] = '\0';
+}
+
+void editor_print_completions_json(const node_t *ast, const char *source, const char *path,
+                                    usize_t line, usize_t col) {
+    printf("{\"completions\":[");
+    boolean_t first = True;
+
+    if (!ast || ast->kind != NodeModule) {
+        printf("]}\n");
+        return;
+    }
+
+    boolean_t member = context_is_member_access(source, line + 1, col + 1);
+
+    if (member) {
+        /* Member completion: find the type of the object before the dot */
+        char obj_name[256];
+        get_object_name_before_dot(source, line + 1, col + 1, obj_name, sizeof(obj_name));
+
+        /* Find the type declaration for obj_name (look up as variable, then get its type) */
+        const node_t *type_decl = Null;
+        /* First try: is obj_name itself a type? */
+        for (usize_t i = 0; i < ast->as.module.decls.count && !type_decl; i++) {
+            const node_t *d = ast->as.module.decls.items[i];
+            if (d->kind == NodeTypeDecl && d->as.type_decl.name
+                && strcmp(d->as.type_decl.name, obj_name) == 0)
+                type_decl = d;
+        }
+        /* Second try: obj_name is a variable; get its declared type */
+        if (!type_decl) {
+            for (usize_t i = 0; i < ast->as.module.decls.count && !type_decl; i++) {
+                const node_t *d = ast->as.module.decls.items[i];
+                if (d->kind == NodeVarDecl && d->as.var_decl.name
+                    && strcmp(d->as.var_decl.name, obj_name) == 0
+                    && d->as.var_decl.type.user_name) {
+                    for (usize_t j = 0; j < ast->as.module.decls.count; j++) {
+                        const node_t *td = ast->as.module.decls.items[j];
+                        if (td->kind == NodeTypeDecl && td->as.type_decl.name
+                            && strcmp(td->as.type_decl.name, d->as.var_decl.type.user_name) == 0) {
+                            type_decl = td;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (type_decl) {
+            /* Emit fields */
+            for (usize_t i = 0; i < type_decl->as.type_decl.fields.count; i++) {
+                const node_t *f = type_decl->as.type_decl.fields.items[i];
+                if (!f || f->kind != NodeVarDecl || !f->as.var_decl.name) continue;
+                if (!first) printf(",");
+                first = False;
+                printf("{\"label\":");
+                json_put_string(f->as.var_decl.name);
+                printf(",\"kind\":\"field\",\"detail\":\"\"}");
+            }
+            /* Emit methods */
+            for (usize_t i = 0; i < type_decl->as.type_decl.methods.count; i++) {
+                const node_t *m = type_decl->as.type_decl.methods.items[i];
+                if (!m || m->kind != NodeFnDecl || !m->as.fn_decl.name) continue;
+                if (!first) printf(",");
+                first = False;
+                printf("{\"label\":");
+                json_put_string(m->as.fn_decl.name);
+                printf(",\"kind\":\"method\",\"detail\":\"\"}");
+            }
+        }
+    } else {
+        /* Scope completion: all top-level names */
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            const node_t *d = ast->as.module.decls.items[i];
+            const char *name = decl_name_for_lookup(d);
+            if (!name || name[0] == '\0') continue;
+            if (!first) printf(",");
+            first = False;
+            printf("{\"label\":");
+            json_put_string(name);
+            printf(",\"kind\":");
+            json_put_string(completion_kind_for_node(d));
+            printf(",\"detail\":\"\"}");
+        }
+    }
+
+    printf("]}\n");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Inlay Hints  (stasha hints <file>)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+static const char *base_type_name(type_kind_t base) {
+    switch (base) {
+        case TypeI8:   return "i8";
+        case TypeI16:  return "i16";
+        case TypeI32:  return "i32";
+        case TypeI64:  return "i64";
+        case TypeU8:   return "u8";
+        case TypeU16:  return "u16";
+        case TypeU32:  return "u32";
+        case TypeU64:  return "u64";
+        case TypeF32:  return "f32";
+        case TypeF64:  return "f64";
+        case TypeBool: return "bool";
+        case TypeVoid: return "void";
+        default:       return Null;
+    }
+}
+
+static void emit_hint(usize_t line, usize_t col, const char *label, const char *kind,
+                       boolean_t *first) {
+    if (!label || label[0] == '\0') return;
+    if (!*first) printf(",");
+    *first = False;
+    printf("{\"line\":%lu,\"col\":%lu,\"label\":",
+           (unsigned long)(line > 0 ? line - 1 : 0),
+           (unsigned long)(col > 0 ? col - 1 : 0));
+    json_put_string(label);
+    printf(",\"kind\":");
+    json_put_string(kind);
+    printf("}");
+}
+
+static void emit_type_hint_for_var(const node_t *decl, resolve_ctx_t *ctx, boolean_t *first) {
+    if (!decl || decl->kind != NodeVarDecl) return;
+    /* Only emit if there's no explicit type annotation */
+    if (type_is_known(decl->as.var_decl.type)) return;
+    if (!decl->as.var_decl.init) return;
+
+    type_info_t ti = infer_expr_type(ctx, decl->as.var_decl.init);
+    char label[64] = "";
+
+    if (ti.user_name) {
+        snprintf(label, sizeof(label), ": %s", ti.user_name);
+    } else {
+        const char *tn = base_type_name(ti.base);
+        if (tn) snprintf(label, sizeof(label), ": %s", tn);
+    }
+
+    if (label[0] != '\0' && decl->as.var_decl.name) {
+        /* Place hint after the variable name */
+        usize_t name_len = strlen(decl->as.var_decl.name);
+        emit_hint(decl->line, decl->col + name_len + 1, label, "type", first);
+    }
+}
+
+static void collect_hints_in_stmt(const node_t *stmt, resolve_ctx_t *ctx, boolean_t *first);
+static void collect_hints_in_block(const node_t *block, resolve_ctx_t *ctx, boolean_t *first);
+
+static void collect_hints_in_stmt(const node_t *stmt, resolve_ctx_t *ctx, boolean_t *first) {
+    if (!stmt) return;
+    switch (stmt->kind) {
+        case NodeVarDecl:
+            scope_add(ctx, stmt);
+            emit_type_hint_for_var(stmt, ctx, first);
+            break;
+        case NodeBlock:
+            collect_hints_in_block(stmt, ctx, first);
+            break;
+        case NodeIfStmt:
+            collect_hints_in_stmt(stmt->as.if_stmt.then_block, ctx, first);
+            collect_hints_in_stmt(stmt->as.if_stmt.else_block, ctx, first);
+            break;
+        case NodeForStmt:
+            collect_hints_in_stmt(stmt->as.for_stmt.init, ctx, first);
+            collect_hints_in_stmt(stmt->as.for_stmt.body, ctx, first);
+            break;
+        case NodeWhileStmt:
+            collect_hints_in_stmt(stmt->as.while_stmt.body, ctx, first);
+            break;
+        case NodeInfLoop:
+            collect_hints_in_stmt(stmt->as.inf_loop.body, ctx, first);
+            break;
+        case NodeDoWhileStmt:
+            collect_hints_in_stmt(stmt->as.do_while_stmt.body, ctx, first);
+            break;
+        default:
+            break;
+    }
+}
+
+static void collect_hints_in_block(const node_t *block, resolve_ctx_t *ctx, boolean_t *first) {
+    if (!block || block->kind != NodeBlock) return;
+    scope_push(ctx);
+    for (usize_t i = 0; i < block->as.block.stmts.count; i++)
+        collect_hints_in_stmt(block->as.block.stmts.items[i], ctx, first);
+    scope_pop(ctx);
+}
+
+void editor_print_hints_json(const node_t *ast, const char *path) {
+    printf("{\"hints\":[");
+    boolean_t first = True;
+
+    if (!ast || ast->kind != NodeModule) {
+        printf("]}\n");
+        return;
+    }
+
+    resolve_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.ast = ast;
+    scope_push(&ctx);
+
+    /* Register top-level names */
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        const node_t *d = ast->as.module.decls.items[i];
+        if (d->kind == NodeFnDecl || d->kind == NodeVarDecl || d->kind == NodeTypeDecl)
+            scope_add(&ctx, d);
+    }
+
+    /* Walk fn bodies */
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        const node_t *d = ast->as.module.decls.items[i];
+        if (d->kind == NodeFnDecl && d->as.fn_decl.body) {
+            scope_push(&ctx);
+            for (usize_t j = 0; j < d->as.fn_decl.params.count; j++)
+                scope_add(&ctx, d->as.fn_decl.params.items[j]);
+            collect_hints_in_block(d->as.fn_decl.body, &ctx, &first);
+            scope_pop(&ctx);
+        } else if (d->kind == NodeTypeDecl) {
+            for (usize_t j = 0; j < d->as.type_decl.methods.count; j++) {
+                const node_t *m = d->as.type_decl.methods.items[j];
+                if (m->kind == NodeFnDecl && m->as.fn_decl.body) {
+                    scope_push(&ctx);
+                    for (usize_t k = 0; k < m->as.fn_decl.params.count; k++)
+                        scope_add(&ctx, m->as.fn_decl.params.items[k]);
+                    collect_hints_in_block(m->as.fn_decl.body, &ctx, &first);
+                    scope_pop(&ctx);
+                }
+            }
+        }
+    }
+
+    scope_pop(&ctx);
+    printf("]}\n");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Format  (stasha format <file>)
+   Token-stream based formatter: re-emits canonical spacing.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+void editor_print_format(const char *source) {
+    if (!source) return;
+    lexer_t lex;
+    init_lexer(&lex, source);
+
+    int indent = 0;
+    boolean_t at_line_start = True;
+    boolean_t last_was_newline = False;
+    token_t prev = {0};
+    token_t tok = next_token(&lex);
+
+    while (tok.kind != TokEof && tok.kind != TokError) {
+        token_t next_tok = next_token(&lex);
+
+        /* Track brace depth for indentation */
+        if (tok.kind == TokRBrace && indent > 0) indent--;
+
+        /* Emit newline before '}' if not at line start */
+        if (tok.kind == TokRBrace && !at_line_start) {
+            fputc('\n', stdout);
+            at_line_start = True;
+        }
+
+        /* Indentation */
+        if (at_line_start) {
+            for (int i = 0; i < indent; i++) fputs("    ", stdout);
+            at_line_start = False;
+        }
+
+        /* Emit the token text */
+        fwrite(tok.start, 1, tok.length, stdout);
+
+        /* Post-token spacing decisions */
+        if (tok.kind == TokLBrace) {
+            indent++;
+            fputc('\n', stdout);
+            at_line_start = True;
+        } else if (tok.kind == TokSemicolon) {
+            fputc('\n', stdout);
+            at_line_start = True;
+        } else if (tok.kind == TokRBrace) {
+            fputc('\n', stdout);
+            at_line_start = True;
+        } else if (next_tok.kind == TokEof || next_tok.kind == TokError) {
+            /* nothing */
+        } else if (tok.kind == TokLParen || tok.kind == TokLBracket) {
+            /* no space after opening delimiters */
+        } else if (next_tok.kind == TokRParen || next_tok.kind == TokRBracket
+                   || next_tok.kind == TokSemicolon || next_tok.kind == TokComma
+                   || next_tok.kind == TokLParen || next_tok.kind == TokLBracket
+                   || tok.kind == TokDot || next_tok.kind == TokDot
+                   || tok.kind == TokAt || tok.kind == TokHash) {
+            /* no space */
+        } else {
+            fputc(' ', stdout);
+        }
+
+        prev = tok;
+        tok = next_tok;
+    }
+
+    /* Ensure trailing newline */
+    if (!at_line_start) fputc('\n', stdout);
+    (void)prev;
+    (void)last_was_newline;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   References  (stasha refs <file> --line <n> --col <n>)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    usize_t line;
+    usize_t col;
+    usize_t len;
+} ref_loc_t;
+
+typedef struct {
+    ref_loc_t *items;
+    size_t count;
+    size_t cap;
+} ref_list_t;
+
+static void ref_list_push(ref_list_t *list, usize_t line, usize_t col, usize_t len) {
+    if (line == 0) return;
+    if (list->count >= list->cap) {
+        size_t next_cap = list->cap ? list->cap * 2 : 16;
+        ref_loc_t *next = realloc(list->items, next_cap * sizeof(ref_loc_t));
+        if (!next) return;
+        list->items = next;
+        list->cap = next_cap;
+    }
+    list->items[list->count++] = (ref_loc_t){ line, col, len };
+}
+
+static void collect_refs_in_expr(const node_t *expr, const char *name, ref_list_t *out);
+static void collect_refs_in_stmt(const node_t *stmt, const char *name, ref_list_t *out);
+
+static void check_ref(const node_t *n, const char *id_name, const char *target_name, ref_list_t *out) {
+    if (!n || !id_name || !target_name) return;
+    if (strcmp(id_name, target_name) != 0) return;
+    ref_list_push(out, n->line, n->col, strlen(id_name));
+}
+
+static void collect_refs_in_expr(const node_t *expr, const char *name, ref_list_t *out) {
+    if (!expr) return;
+    switch (expr->kind) {
+        case NodeIdentExpr:
+            check_ref(expr, expr->as.ident.name, name, out);
+            return;
+        case NodeCallExpr:
+            check_ref(expr, expr->as.call.callee, name, out);
+            for (usize_t i = 0; i < expr->as.call.args.count; i++)
+                collect_refs_in_expr(expr->as.call.args.items[i], name, out);
+            return;
+        case NodeMethodCall:
+            collect_refs_in_expr(expr->as.method_call.object, name, out);
+            for (usize_t i = 0; i < expr->as.method_call.args.count; i++)
+                collect_refs_in_expr(expr->as.method_call.args.items[i], name, out);
+            return;
+        case NodeMemberExpr:
+            collect_refs_in_expr(expr->as.member_expr.object, name, out);
+            return;
+        case NodeBinaryExpr:
+            collect_refs_in_expr(expr->as.binary.left, name, out);
+            collect_refs_in_expr(expr->as.binary.right, name, out);
+            return;
+        case NodeUnaryPrefixExpr:
+        case NodeUnaryPostfixExpr:
+            collect_refs_in_expr(expr->as.unary.operand, name, out);
+            return;
+        case NodeIndexExpr:
+            collect_refs_in_expr(expr->as.index_expr.object, name, out);
+            collect_refs_in_expr(expr->as.index_expr.index, name, out);
+            return;
+        case NodeTernaryExpr:
+            collect_refs_in_expr(expr->as.ternary.cond, name, out);
+            collect_refs_in_expr(expr->as.ternary.then_expr, name, out);
+            collect_refs_in_expr(expr->as.ternary.else_expr, name, out);
+            return;
+        case NodeAssignExpr:
+            collect_refs_in_expr(expr->as.assign.target, name, out);
+            collect_refs_in_expr(expr->as.assign.value, name, out);
+            return;
+        case NodeCompoundAssign:
+            collect_refs_in_expr(expr->as.compound_assign.target, name, out);
+            collect_refs_in_expr(expr->as.compound_assign.value, name, out);
+            return;
+        case NodeCastExpr:
+            collect_refs_in_expr(expr->as.cast_expr.expr, name, out);
+            return;
+        case NodeAddrOf:
+            collect_refs_in_expr(expr->as.addr_of.operand, name, out);
+            return;
+        case NodeNewExpr:
+            collect_refs_in_expr(expr->as.new_expr.size, name, out);
+            return;
+        case NodeConstructorCall:
+            for (usize_t i = 0; i < expr->as.ctor_call.args.count; i++)
+                collect_refs_in_expr(expr->as.ctor_call.args.items[i], name, out);
+            return;
+        case NodeCompoundInit:
+            for (usize_t i = 0; i < expr->as.compound_init.items.count; i++)
+                collect_refs_in_expr(expr->as.compound_init.items.items[i], name, out);
+            return;
+        case NodeInitField:
+            collect_refs_in_expr(expr->as.init_field.value, name, out);
+            return;
+        case NodeInitIndex:
+            collect_refs_in_expr(expr->as.init_index.index, name, out);
+            collect_refs_in_expr(expr->as.init_index.value, name, out);
+            return;
+        default:
+            return;
+    }
+}
+
+static void collect_refs_in_stmt(const node_t *stmt, const char *name, ref_list_t *out) {
+    if (!stmt) return;
+    switch (stmt->kind) {
+        case NodeVarDecl:
+            if (stmt->as.var_decl.init)
+                collect_refs_in_expr(stmt->as.var_decl.init, name, out);
+            return;
+        case NodeBlock:
+            for (usize_t i = 0; i < stmt->as.block.stmts.count; i++)
+                collect_refs_in_stmt(stmt->as.block.stmts.items[i], name, out);
+            return;
+        case NodeExprStmt:
+            collect_refs_in_expr(stmt->as.expr_stmt.expr, name, out);
+            return;
+        case NodeRetStmt:
+            for (usize_t i = 0; i < stmt->as.ret_stmt.values.count; i++)
+                collect_refs_in_expr(stmt->as.ret_stmt.values.items[i], name, out);
+            return;
+        case NodeIfStmt:
+            collect_refs_in_expr(stmt->as.if_stmt.cond, name, out);
+            collect_refs_in_stmt(stmt->as.if_stmt.then_block, name, out);
+            collect_refs_in_stmt(stmt->as.if_stmt.else_block, name, out);
+            return;
+        case NodeForStmt:
+            collect_refs_in_stmt(stmt->as.for_stmt.init, name, out);
+            collect_refs_in_expr(stmt->as.for_stmt.cond, name, out);
+            collect_refs_in_expr(stmt->as.for_stmt.update, name, out);
+            collect_refs_in_stmt(stmt->as.for_stmt.body, name, out);
+            return;
+        case NodeWhileStmt:
+            collect_refs_in_expr(stmt->as.while_stmt.cond, name, out);
+            collect_refs_in_stmt(stmt->as.while_stmt.body, name, out);
+            return;
+        case NodeDoWhileStmt:
+            collect_refs_in_stmt(stmt->as.do_while_stmt.body, name, out);
+            collect_refs_in_expr(stmt->as.do_while_stmt.cond, name, out);
+            return;
+        case NodePrintStmt:
+            for (usize_t i = 0; i < stmt->as.print_stmt.args.count; i++)
+                collect_refs_in_expr(stmt->as.print_stmt.args.items[i], name, out);
+            return;
+        case NodeMatchStmt:
+            collect_refs_in_expr(stmt->as.match_stmt.expr, name, out);
+            for (usize_t i = 0; i < stmt->as.match_stmt.arms.count; i++)
+                collect_refs_in_stmt(stmt->as.match_stmt.arms.items[i], name, out);
+            return;
+        case NodeMatchArm:
+            collect_refs_in_stmt(stmt->as.match_arm.body, name, out);
+            return;
+        case NodeSwitchStmt:
+            collect_refs_in_expr(stmt->as.switch_stmt.expr, name, out);
+            for (usize_t i = 0; i < stmt->as.switch_stmt.cases.count; i++)
+                collect_refs_in_stmt(stmt->as.switch_stmt.cases.items[i], name, out);
+            return;
+        case NodeSwitchCase:
+            collect_refs_in_stmt(stmt->as.switch_case.body, name, out);
+            return;
+        default:
+            return;
+    }
+}
+
+static ref_list_t collect_all_refs(const node_t *ast, const char *name) {
+    ref_list_t out = {0};
+    if (!ast || !name || ast->kind != NodeModule) return out;
+
+    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+        const node_t *d = ast->as.module.decls.items[i];
+        if (!d) continue;
+
+        const char *decl_name = decl_name_for_lookup(d);
+        if (decl_name && strcmp(decl_name, name) == 0)
+            ref_list_push(&out, d->line, d->col, strlen(name));
+
+        if (d->kind == NodeFnDecl && d->as.fn_decl.body)
+            collect_refs_in_stmt(d->as.fn_decl.body, name, &out);
+        else if (d->kind == NodeVarDecl && d->as.var_decl.init)
+            collect_refs_in_expr(d->as.var_decl.init, name, &out);
+        else if (d->kind == NodeTypeDecl) {
+            for (usize_t j = 0; j < d->as.type_decl.methods.count; j++) {
+                const node_t *m = d->as.type_decl.methods.items[j];
+                if (m->kind == NodeFnDecl && m->as.fn_decl.body)
+                    collect_refs_in_stmt(m->as.fn_decl.body, name, &out);
+            }
+        }
+    }
+    return out;
+}
+
+void editor_print_refs_json(const node_t *ast, const char *path, usize_t line, usize_t col) {
+    const node_t *def = resolve_definition_node(ast, line + 1, col + 1);
+    const char *name = def ? decl_name_for_lookup(def) : Null;
+
+    printf("{\"refs\":[");
+    if (!name) { printf("]}\n"); return; }
+
+    ref_list_t refs = collect_all_refs(ast, name);
+    for (size_t i = 0; i < refs.count; i++) {
+        if (i > 0) printf(",");
+        printf("{\"file\":");
+        json_put_string(path);
+        printf(",\"line\":%lu,\"col\":%lu,\"len\":%lu}",
+               (unsigned long)(refs.items[i].line > 0 ? refs.items[i].line - 1 : 0),
+               (unsigned long)(refs.items[i].col > 0 ? refs.items[i].col - 1 : 0),
+               (unsigned long)refs.items[i].len);
+    }
+    if (refs.items) free(refs.items);
+    printf("]}\n");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Rename  (stasha rename <file> --line <n> --col <n> --name <new>)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+void editor_print_rename_json(const node_t *ast, const char *path, usize_t line, usize_t col,
+                               const char *new_name) {
+    const node_t *def = resolve_definition_node(ast, line + 1, col + 1);
+    const char *old_name = def ? decl_name_for_lookup(def) : Null;
+
+    printf("{\"edits\":[");
+    if (!old_name || !new_name || new_name[0] == '\0') { printf("]}\n"); return; }
+
+    ref_list_t refs = collect_all_refs(ast, old_name);
+    for (size_t i = 0; i < refs.count; i++) {
+        if (i > 0) printf(",");
+        printf("{\"file\":");
+        json_put_string(path);
+        printf(",\"line\":%lu,\"col\":%lu,\"len\":%lu,\"newText\":",
+               (unsigned long)(refs.items[i].line > 0 ? refs.items[i].line - 1 : 0),
+               (unsigned long)(refs.items[i].col > 0 ? refs.items[i].col - 1 : 0),
+               (unsigned long)refs.items[i].len);
+        json_put_string(new_name);
+        printf("}");
+    }
+    if (refs.items) free(refs.items);
+    printf("]}\n");
 }

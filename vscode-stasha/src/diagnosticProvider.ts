@@ -7,6 +7,12 @@ interface DiagLabel {
     col: number;
     len: number;
     message: string;
+    primary?: boolean;
+}
+
+interface DiagNote {
+    kind: 'note' | 'help';
+    message: string;
 }
 
 interface CompilerDiag {
@@ -17,6 +23,11 @@ interface CompilerDiag {
     col: number;
     len: number;
     labels?: DiagLabel[];
+    notes?: DiagNote[];
+}
+
+interface DiagnosticsResponse {
+    diagnostics: CompilerDiag[];
 }
 
 function toVscodeSeverity(s: string): vscode.DiagnosticSeverity {
@@ -33,6 +44,8 @@ function makeRange(line: number, col: number, len: number): vscode.Range {
 
 export class StashaDiagnosticProvider {
     private timers = new Map<string, NodeJS.Timeout>();
+    private _onDidUpdate = new vscode.EventEmitter<vscode.Uri>();
+    readonly onDidUpdate = this._onDidUpdate.event;
 
     constructor(private collection: vscode.DiagnosticCollection) {
         this._register();
@@ -91,16 +104,25 @@ export class StashaDiagnosticProvider {
         proc.on('close', () => {
             const diags: vscode.Diagnostic[] = [];
             try {
-                const parsed: CompilerDiag[] = JSON.parse(stdout);
-                for (const d of parsed) {
+                const response: DiagnosticsResponse = JSON.parse(stdout);
+                const items: CompilerDiag[] = response.diagnostics ?? [];
+                for (const d of items) {
                     const range = makeRange(d.line, d.col, d.len);
-                    const diag = new vscode.Diagnostic(range, d.message, toVscodeSeverity(d.severity));
+                    let msg = d.message;
+                    if (d.notes && d.notes.length > 0) {
+                        msg += '\n' + d.notes.map(n => `${n.kind}: ${n.message}`).join('\n');
+                    }
+                    const diag = new vscode.Diagnostic(range, msg, toVscodeSeverity(d.severity));
                     diag.source = 'stasha';
                     if (d.labels && d.labels.length > 0) {
                         diag.relatedInformation = d.labels.map(lbl => new vscode.DiagnosticRelatedInformation(
                             new vscode.Location(doc.uri, makeRange(lbl.line, lbl.col, lbl.len)),
                             lbl.message
                         ));
+                    }
+                    // Attach raw notes for code actions
+                    if (d.notes) {
+                        (diag as any).__stashaNotes = d.notes;
                     }
                     diags.push(diag);
                 }
@@ -115,6 +137,7 @@ export class StashaDiagnosticProvider {
                 }
             }
             this.collection.set(doc.uri, diags);
+            this._onDidUpdate.fire(doc.uri);
         });
 
         proc.stdin.write(doc.getText());
@@ -124,5 +147,6 @@ export class StashaDiagnosticProvider {
     dispose() {
         for (const t of this.timers.values()) clearTimeout(t);
         this.timers.clear();
+        this._onDidUpdate.dispose();
     }
 }

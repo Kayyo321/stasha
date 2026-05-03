@@ -1401,6 +1401,113 @@ static result_t run_editor_definition(const char *source, const char *input_path
     return Ok;
 }
 
+static result_t run_editor_complete(const char *source, const char *input_path,
+                                     usize_t line, usize_t col) {
+    diag_set_file(input_path);
+    diag_register_source(input_path, source);
+    diag_clear_captured();
+
+    int imp_macro_count = 0;
+    pp_macro_set_t **imp_macros = gather_import_macro_sets(source, input_path,
+                                                           &imp_macro_count);
+    pp_stream_t *pp = pp_process(source, input_path, imp_macros, imp_macro_count);
+    node_t *ast = pp ? parse_from_stream(pp) : Null;
+    pp_stream_free(pp);
+    free_pp_imp_streams();
+    if (ast) {
+        resolve_imports(ast, input_path);
+        process_cheader_decls(ast, input_path);
+    }
+    free_imp_sources();
+
+    if (ast)
+        editor_print_completions_json(ast, source, input_path, line, col);
+    else
+        printf("{\"completions\":[]}\n");
+
+    return Ok;
+}
+
+static result_t run_editor_hints(const char *source, const char *input_path) {
+    diag_set_file(input_path);
+    diag_register_source(input_path, source);
+    diag_clear_captured();
+
+    int imp_macro_count = 0;
+    pp_macro_set_t **imp_macros = gather_import_macro_sets(source, input_path,
+                                                           &imp_macro_count);
+    pp_stream_t *pp = pp_process(source, input_path, imp_macros, imp_macro_count);
+    node_t *ast = pp ? parse_from_stream(pp) : Null;
+    pp_stream_free(pp);
+    free_pp_imp_streams();
+    if (ast) {
+        resolve_imports(ast, input_path);
+        process_cheader_decls(ast, input_path);
+    }
+    free_imp_sources();
+
+    if (ast)
+        editor_print_hints_json(ast, input_path);
+    else
+        printf("{\"hints\":[]}\n");
+
+    return Ok;
+}
+
+static result_t run_editor_refs(const char *source, const char *input_path,
+                                 usize_t line, usize_t col) {
+    diag_set_file(input_path);
+    diag_register_source(input_path, source);
+    diag_clear_captured();
+
+    int imp_macro_count = 0;
+    pp_macro_set_t **imp_macros = gather_import_macro_sets(source, input_path,
+                                                           &imp_macro_count);
+    pp_stream_t *pp = pp_process(source, input_path, imp_macros, imp_macro_count);
+    node_t *ast = pp ? parse_from_stream(pp) : Null;
+    pp_stream_free(pp);
+    free_pp_imp_streams();
+    if (ast) {
+        resolve_imports(ast, input_path);
+        process_cheader_decls(ast, input_path);
+    }
+    free_imp_sources();
+
+    if (ast)
+        editor_print_refs_json(ast, input_path, line, col);
+    else
+        printf("{\"refs\":[]}\n");
+
+    return Ok;
+}
+
+static result_t run_editor_rename(const char *source, const char *input_path,
+                                   usize_t line, usize_t col, const char *new_name) {
+    diag_set_file(input_path);
+    diag_register_source(input_path, source);
+    diag_clear_captured();
+
+    int imp_macro_count = 0;
+    pp_macro_set_t **imp_macros = gather_import_macro_sets(source, input_path,
+                                                           &imp_macro_count);
+    pp_stream_t *pp = pp_process(source, input_path, imp_macros, imp_macro_count);
+    node_t *ast = pp ? parse_from_stream(pp) : Null;
+    pp_stream_free(pp);
+    free_pp_imp_streams();
+    if (ast) {
+        resolve_imports(ast, input_path);
+        process_cheader_decls(ast, input_path);
+    }
+    free_imp_sources();
+
+    if (ast)
+        editor_print_rename_json(ast, input_path, line, col, new_name ? new_name : "");
+    else
+        printf("{\"edits\":[]}\n");
+
+    return Ok;
+}
+
 /* ── core compilation pipeline ── */
 
 /*
@@ -1824,6 +1931,16 @@ int main(int argc, char **argv) {
         editor_mode = EditorModeSymbols;    file_arg = 2;
     } else if (strcmp(argv[1], "definition") == 0) {
         editor_mode = EditorModeDefinition; file_arg = 2;
+    } else if (strcmp(argv[1], "complete") == 0) {
+        editor_mode = EditorModeComplete;   file_arg = 2;
+    } else if (strcmp(argv[1], "hints") == 0) {
+        editor_mode = EditorModeHints;      file_arg = 2;
+    } else if (strcmp(argv[1], "format") == 0 || strcmp(argv[1], "fmt") == 0) {
+        editor_mode = EditorModeFormat;     file_arg = 2;
+    } else if (strcmp(argv[1], "refs") == 0) {
+        editor_mode = EditorModeRefs;       file_arg = 2;
+    } else if (strcmp(argv[1], "rename") == 0) {
+        editor_mode = EditorModeRename;     file_arg = 2;
     }
     /* else: argv[1] is the file — default EmitExe */
 
@@ -1833,6 +1950,7 @@ int main(int argc, char **argv) {
     usize_t    editor_col   = 0;
     boolean_t  has_editor_line = False;
     boolean_t  has_editor_col  = False;
+    const char *editor_new_name = Null;
 
     if (editor_mode != EditorModeNone) {
         log_set_stderr_enabled(False);
@@ -1868,6 +1986,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--col") == 0 && i + 1 < argc) {
             editor_col = (usize_t)strtoul(argv[++i], NULL, 10);
             has_editor_col = True;
+        } else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
+            editor_new_name = argv[++i];
         } else if (strncmp(argv[i], "-o=", 3) == 0) {
             const char *level = argv[i] + 3;
             if (level[0] >= '0' && level[0] <= '3' && level[1] == '\0')
@@ -2115,6 +2235,37 @@ int main(int argc, char **argv) {
     }
     if (editor_mode == EditorModeDefinition) {
         result_t res = run_editor_definition(source, input_path, editor_line, editor_col);
+        compile_cleanup();
+        if (stdin_buffer) editor_free_buffer(stdin_buffer);
+        quit(res);
+    }
+    if (editor_mode == EditorModeComplete) {
+        result_t res = run_editor_complete(source, input_path, editor_line, editor_col);
+        compile_cleanup();
+        if (stdin_buffer) editor_free_buffer(stdin_buffer);
+        quit(res);
+    }
+    if (editor_mode == EditorModeHints) {
+        result_t res = run_editor_hints(source, input_path);
+        compile_cleanup();
+        if (stdin_buffer) editor_free_buffer(stdin_buffer);
+        quit(res);
+    }
+    if (editor_mode == EditorModeFormat) {
+        editor_print_format(source);
+        compile_cleanup();
+        if (stdin_buffer) editor_free_buffer(stdin_buffer);
+        quit(Ok);
+    }
+    if (editor_mode == EditorModeRefs) {
+        result_t res = run_editor_refs(source, input_path, editor_line, editor_col);
+        compile_cleanup();
+        if (stdin_buffer) editor_free_buffer(stdin_buffer);
+        quit(res);
+    }
+    if (editor_mode == EditorModeRename) {
+        result_t res = run_editor_rename(source, input_path, editor_line, editor_col,
+                                          editor_new_name);
         compile_cleanup();
         if (stdin_buffer) editor_free_buffer(stdin_buffer);
         quit(res);

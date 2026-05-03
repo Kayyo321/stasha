@@ -1,0 +1,207 @@
+{
+  "Function Declaration": {
+    "prefix": "fn",
+    "body": ["ext fn ${1:name}(${2:args}): ${3:void} {", "\t$0", "}"],
+    "description": "External function declaration"
+  },
+  "Internal Function": {
+    "prefix": "ifn",
+    "body": ["int fn ${1:name}(${2:args}): ${3:void} {", "\t$0", "}"],
+    "description": "Module-private function declaration"
+  },
+  "Struct Type": {
+    "prefix": "struct",
+    "body": ["type ${1:Name}: struct {", "\text ${2:i32} ${3:field};", "\t$0", "}"],
+    "description": "Struct type declaration"
+  },
+  "Enum Type": {
+    "prefix": "enum",
+    "body": ["type ${1:Name}: enum { ${2:VariantA}, ${3:VariantB} }"],
+    "description": "Enum type declaration"
+  },
+  "Enum with Payloads": {
+    "prefix": "enump",
+    "body": ["type ${1:Name}: enum {", "\t${2:A}(${3:stack i32}),", "\t${4:B}(${5:heap u8 *rw}),", "}"],
+    "description": "Enum with payload variants"
+  },
+  "For Loop": {
+    "prefix": "for",
+    "body": ["for (stack i32 ${1:i} = 0; ${1:i} < ${2:n}; ${1:i}++) {", "\t$0", "}"],
+    "description": "For loop"
+  },
+  "While Loop": {
+    "prefix": "while",
+    "body": ["while (${1:cond}) {", "\t$0", "}"],
+    "description": "While loop"
+  },
+  "Do-While Loop": {
+    "prefix": "do",
+    "body": ["do {", "\t$0", "} while (${1:cond});"],
+    "description": "Do-while loop"
+  },
+  "Infinite Loop": {
+    "prefix": "inf",
+    "body": ["inf {", "\t$0", "}"],
+    "description": "Infinite loop"
+  },
+  "If Statement": {
+    "prefix": "if",
+    "body": ["if (${1:cond}) {", "\t$0", "}"],
+    "description": "If statement"
+  },
+  "If-Else Statement": {
+    "prefix": "ife",
+    "body": ["if (${1:cond}) {", "\t$0", "} else {", "\t", "}"],
+    "description": "If-else statement"
+  },
+  "Match Statement": {
+    "prefix": "match",
+    "body": ["match ${1:val} {", "\t${2:Type}.${3:Variant}(${4:v}) => { $0 }", "\t_ => {}", "}"],
+    "description": "Match statement"
+  },
+  "Match Integer": {
+    "prefix": "matchi",
+    "body": ["match ${1:n} {", "\t0 => { $0 }", "\t1 => { }", "\t_ => {}", "}"],
+    "description": "Match on integer literals"
+  },
+  "Test Block": {
+    "prefix": "test",
+    "body": ["test '${1:name}' {", "\t${2:expect_eq.(${3:a}, ${4:b})};", "}"],
+    "description": "Test block"
+  },
+  "Async Task Function": {
+    "prefix": "async",
+    "body": ["async fn ${1:name}(${2:args}): ${3:i32} {", "\t$0", "\tret ${4:0};", "}"],
+    "description": "Async task function (returns a future)"
+  },
+  "Async Stream Function": {
+    "prefix": "stream",
+    "body": ["async fn ${1:name}(${2:args}): stream.[${3:i32}] {", "\t${4:yield 0;}", "\t$0", "\tret;", "}"],
+    "description": "Async stream function (yields values)"
+  },
+  "Heap Pointer Allocation": {
+    "prefix": "heap",
+    "body": ["heap ${1:i32} *rw ${2:p} = new.(sizeof.(${1:i32}));"],
+    "description": "Heap pointer allocation (must call rem)"
+  },
+  "Heap Array Allocation": {
+    "prefix": "heapa",
+    "body": ["heap ${1:i32} *rw ${2:arr} = new.(sizeof.(${1:i32}) * ${3:n});"],
+    "description": "Heap array allocation"
+  },
+  "Thread Dispatch": {
+    "prefix": "thread",
+    "body": ["stack future ${1:f} = thread.(${2:fn_name})(${3:args});"],
+    "description": "Dispatch function to thread pool"
+  },
+  "Future Await": {
+    "prefix": "await",
+    "body": ["stack ${1:i32} ${2:v} = await.(${3:fn_name})(${4:args});"],
+    "description": "One-shot async dispatch and await"
+  },
+  "Await All": {
+    "prefix": "awaita",
+    "body": ["stack ${1:i32} [${2:a}, ${3:b}] = await.all(${4:fn1}(${5:args1}), ${6:fn2}(${7:args2}));"],
+    "description": "Await all tasks in parallel"
+  },
+  "Module Declaration": {
+    "prefix": "mod",
+    "body": ["mod ${1:name};"],
+    "description": "Module declaration"
+  },
+  "Import": {
+    "prefix": "imp",
+    "body": ["imp ${1:module};"],
+    "description": "Import module"
+  },
+  "C Library Import": {
+    "prefix": "lib",
+    "body": ["lib \"${1:stdio}\" = ${2:io};"],
+    "description": "C library import"
+  },
+  "Combined Lib+Import": {
+    "prefix": "libimp",
+    "body": ["libimp \"${1:name}\" from \"${2:path/libname.a}\";"],
+    "description": "Combined lib+imp shorthand"
+  },
+  "Stdlib Import": {
+    "prefix": "libstd",
+    "body": ["libimp \"${1:name}\" from std;"],
+    "description": "Import from stdlib"
+  },
+  "Generic Struct": {
+    "prefix": "gstruct",
+    "body": ["type ${1:Container}_t: @comptime[T] struct {", "\text T *rw ${2:data};", "\text i32 ${3:len};", "\text fn ${4:method}(${5:args}): ${6:void} { $0 }", "}"],
+    "description": "Generic struct with @comptime[T]"
+  },
+  "Generic Function": {
+    "prefix": "gfn",
+    "body": ["fn @comptime[T] ${1:name}(stack T ${2:val}): T {", "\t$0", "\tret ${2:val};", "}"],
+    "description": "Generic standalone function"
+  },
+  "Comptime If": {
+    "prefix": "cif",
+    "body": ["#if ${1:os} == \"${2:macos}\" {", "\t$0", "}"],
+    "description": "Compile-time conditional"
+  },
+  "Comptime Assert": {
+    "prefix": "cassert",
+    "body": ["comptime_assert.(${1:sizeof.(${2:Type})} == ${3:8});"],
+    "description": "Compile-time assertion"
+  },
+  "Inline Assembly": {
+    "prefix": "asm",
+    "body": ["asm { \"${1:nop}\" }"],
+    "description": "Inline assembly block"
+  },
+  "Defer Statement": {
+    "prefix": "defer",
+    "body": ["defer rem.(${1:ptr});"],
+    "description": "Defer statement (runs at scope exit)"
+  },
+  "Storage Group": {
+    "prefix": "sg",
+    "body": ["stack (${1:i32} ${2:a} = 0; ${3:i32} ${4:b} = 0;)"],
+    "description": "Storage group block"
+  },
+  "Compound Init": {
+    "prefix": "init",
+    "body": ["${1:i32} ${2:arr}[] = .{${3:1, 2, 3}};"],
+    "description": "Compound array initializer"
+  },
+  "Struct Init": {
+    "prefix": "sinit",
+    "body": ["${1:Type} ${2:val} = .{ .${3:field} = ${4:value} };"],
+    "description": "Struct compound initializer"
+  },
+  "Pipeline": {
+    "prefix": "pipe",
+    "body": ["${1:val} |> ${2:fn1} |> ${3:fn2}"],
+    "description": "Pipeline expression"
+  },
+  "Lambda": {
+    "prefix": "lam",
+    "body": ["stack fn*(stack ${1:i32}): ${2:i32} ${3:f} = lam.(stack ${1:i32} ${4:x}): ${2:i32} { ret ${4:x}; };"],
+    "description": "Lambda expression"
+  },
+  "Project File": {
+    "prefix": "sproj",
+    "body": ["main     = \"src/main.sts\"", "binary   = \"bin/${1:myapp}\"", "ext_libs = []"],
+    "description": "sts.sproj project file skeleton"
+  },
+  "Print Statement": {
+    "prefix": "print",
+    "body": ["print.('${1:message}\\n');"],
+    "description": "Print statement"
+  },
+  "Print Formatted": {
+    "prefix": "printf",
+    "body": ["print.('${1:val} = {}\\n', ${2:val});"],
+    "description": "Formatted print statement"
+  },
+  "Struct with Destructor": {
+    "prefix": "strucd",
+    "body": ["type ${1:Name}: struct {", "\text ${2:i32} ${3:field};", "\text fn rem(void): void {", "\t\t$0", "\t}", "}"],
+    "description": "Struct with destructor method"
+  }
+}

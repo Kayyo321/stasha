@@ -1,12 +1,11 @@
 {
   "name": "vscode-stasha",
   "displayName": "Stasha",
-  "description": "Stasha language support: syntax highlighting, diagnostics, go to definition, debugging, and project tools",
-  "version": "0.1.0",
+  "description": "Stasha language support: syntax highlighting, diagnostics, IntelliSense, go to definition, formatting, refactoring, debug, testing, and project tools",
+  "version": "0.2.0",
   "publisher": "stasha",
   "engines": { "vscode": "^1.85.0" },
-  "categories": ["Programming Languages", "Debuggers"],
-  "activationEvents": ["onLanguage:stasha"],
+  "categories": ["Programming Languages", "Debuggers", "Snippets", "Formatters"],
   "main": "./out/extension.js",
   "extensionDependencies": ["vadimcn.vscode-lldb"],
   "contributes": {
@@ -25,32 +24,101 @@
         "path": "./syntaxes/stasha.tmLanguage.json"
       }
     ],
-    "commands": [
+    "snippets": [
       {
-        "command": "stasha.newProject",
-        "title": "Stasha: New Project"
-      },
-      {
-        "command": "stasha.initProject",
-        "title": "Stasha: Initialize Project in Current Folder"
-      },
-      {
-        "command": "stasha.build",
-        "title": "Stasha: Build"
-      },
-      {
-        "command": "stasha.buildRelease",
-        "title": "Stasha: Build (Release)"
-      },
-      {
-        "command": "stasha.test",
-        "title": "Stasha: Test"
-      },
-      {
-        "command": "stasha.run",
-        "title": "Stasha: Run"
+        "language": "stasha",
+        "path": "./snippets/stasha.json"
       }
     ],
+    "semanticTokenTypes": [
+      { "id": "keyword",    "description": "Language keyword" },
+      { "id": "type",       "description": "Type name" },
+      { "id": "function",   "description": "Function name" },
+      { "id": "variable",   "description": "Variable name" },
+      { "id": "parameter",  "description": "Function parameter" },
+      { "id": "property",   "description": "Field or property" },
+      { "id": "string",     "description": "String literal" },
+      { "id": "number",     "description": "Number literal" },
+      { "id": "comment",    "description": "Comment" },
+      { "id": "operator",   "description": "Operator" },
+      { "id": "decorator",  "description": "Attribute or decorator" },
+      { "id": "enumMember", "description": "Enum member" }
+    ],
+    "semanticTokenScopes": [
+      {
+        "scopes": {
+          "keyword":    ["keyword.control.stasha", "keyword.other.stasha"],
+          "type":       ["entity.name.type.stasha"],
+          "function":   ["entity.name.function.stasha"],
+          "variable":   ["variable.other.stasha"],
+          "parameter":  ["variable.parameter.stasha"],
+          "property":   ["variable.other.property.stasha"],
+          "string":     ["string.quoted.stasha"],
+          "number":     ["constant.numeric.stasha"],
+          "comment":    ["comment.line.stasha", "comment.block.stasha"],
+          "operator":   ["keyword.operator.stasha"],
+          "decorator":  ["entity.name.tag.stasha"],
+          "enumMember": ["variable.other.enummember.stasha"]
+        }
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "stashaExplorer",
+          "title": "Stasha",
+          "icon": "$(tools)"
+        }
+      ]
+    },
+    "views": {
+      "stashaExplorer": [
+        {
+          "id": "stashaProject",
+          "name": "Project",
+          "when": "workbenchState != empty"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "stasha.newProject",       "title": "Stasha: New Project" },
+      { "command": "stasha.initProject",      "title": "Stasha: Initialize Project in Current Folder" },
+      { "command": "stasha.build",            "title": "Stasha: Build" },
+      { "command": "stasha.buildRelease",     "title": "Stasha: Build (Release)" },
+      { "command": "stasha.test",             "title": "Stasha: Test" },
+      { "command": "stasha.run",              "title": "Stasha: Run" },
+      { "command": "stasha.openProjectPanel", "title": "Stasha: Open Project Panel", "icon": "$(gear)" },
+      { "command": "stasha.refreshProject",   "title": "Stasha: Refresh Project",    "icon": "$(refresh)" },
+      { "command": "stasha.setMain",          "title": "Stasha: Set Entry Point" },
+      { "command": "stasha.removeExtLib",     "title": "Stasha: Remove Library" },
+      { "command": "stasha.openProjectFile",  "title": "Stasha: Open File" }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "stasha.refreshProject",
+          "when": "view == stashaProject",
+          "group": "navigation"
+        },
+        {
+          "command": "stasha.openProjectPanel",
+          "when": "view == stashaProject",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "stasha.removeExtLib",
+          "when": "view == stashaProject && viewItem == stashaExtLib",
+          "group": "inline"
+        },
+        {
+          "command": "stasha.setMain",
+          "when": "view == stashaProject && viewItem == stashaMain",
+          "group": "inline"
+        }
+      ]
+    },
     "taskDefinitions": [
       {
         "type": "stasha",
@@ -164,6 +232,31 @@
           "type": "number",
           "default": 400,
           "description": "Debounce delay in milliseconds before running diagnostics after typing."
+        },
+        "stasha.enableCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable code completion (IntelliSense)."
+        },
+        "stasha.enableInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inlay hints for inferred types and parameter names."
+        },
+        "stasha.enableSemanticTokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic syntax highlighting (supplements TextMate grammar)."
+        },
+        "stasha.enableFormat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable document formatting via 'stasha format'."
+        },
+        "stasha.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically format Stasha files on save."
         }
       }
     }

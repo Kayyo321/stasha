@@ -53,6 +53,8 @@ class StashaDiagnosticProvider {
     constructor(collection) {
         this.collection = collection;
         this.timers = new Map();
+        this._onDidUpdate = new vscode.EventEmitter();
+        this.onDidUpdate = this._onDidUpdate.event;
         this._register();
     }
     _register() {
@@ -108,13 +110,22 @@ class StashaDiagnosticProvider {
         proc.on('close', () => {
             const diags = [];
             try {
-                const parsed = JSON.parse(stdout);
-                for (const d of parsed) {
+                const response = JSON.parse(stdout);
+                const items = response.diagnostics ?? [];
+                for (const d of items) {
                     const range = makeRange(d.line, d.col, d.len);
-                    const diag = new vscode.Diagnostic(range, d.message, toVscodeSeverity(d.severity));
+                    let msg = d.message;
+                    if (d.notes && d.notes.length > 0) {
+                        msg += '\n' + d.notes.map(n => `${n.kind}: ${n.message}`).join('\n');
+                    }
+                    const diag = new vscode.Diagnostic(range, msg, toVscodeSeverity(d.severity));
                     diag.source = 'stasha';
                     if (d.labels && d.labels.length > 0) {
                         diag.relatedInformation = d.labels.map(lbl => new vscode.DiagnosticRelatedInformation(new vscode.Location(doc.uri, makeRange(lbl.line, lbl.col, lbl.len)), lbl.message));
+                    }
+                    // Attach raw notes for code actions
+                    if (d.notes) {
+                        diag.__stashaNotes = d.notes;
                     }
                     diags.push(diag);
                 }
@@ -126,6 +137,7 @@ class StashaDiagnosticProvider {
                 }
             }
             this.collection.set(doc.uri, diags);
+            this._onDidUpdate.fire(doc.uri);
         });
         proc.stdin.write(doc.getText());
         proc.stdin.end();
@@ -134,6 +146,7 @@ class StashaDiagnosticProvider {
         for (const t of this.timers.values())
             clearTimeout(t);
         this.timers.clear();
+        this._onDidUpdate.dispose();
     }
 }
 exports.StashaDiagnosticProvider = StashaDiagnosticProvider;
