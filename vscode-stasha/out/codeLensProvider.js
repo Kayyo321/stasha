@@ -33,44 +33,38 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCompilerPath = getCompilerPath;
-exports.isCompilerAvailable = isCompilerAvailable;
+exports.StashaCodeLensProvider = void 0;
 const vscode = __importStar(require("vscode"));
-const path = __importStar(require("path"));
-const fs = __importStar(require("fs"));
-const child_process_1 = require("child_process");
-function getCompilerPath() {
-    const cfg = vscode.workspace.getConfiguration('stasha');
-    const configured = cfg.get('compilerPath');
-    if (configured && configured.trim() !== '' && configured !== 'stasha') {
-        return configured;
-    }
-    const folders = vscode.workspace.workspaceFolders;
-    if (folders && folders.length > 0) {
-        const candidate = path.join(folders[0].uri.fsPath, 'bin', 'stasha');
-        if (fs.existsSync(candidate)) {
-            return candidate;
+class StashaCodeLensProvider {
+    provideCodeLenses(doc) {
+        const lenses = [];
+        const filePath = doc.uri.fsPath;
+        for (let i = 0; i < doc.lineCount; i++) {
+            const text = doc.lineAt(i).text;
+            const range = new vscode.Range(i, 0, i, text.length);
+            if (/^\s*(ext\s+)?fn\s+main\s*\(/.test(text)) {
+                lenses.push(new vscode.CodeLens(range, {
+                    title: '▶ Run',
+                    command: 'stasha.run',
+                    arguments: [filePath],
+                }));
+                lenses.push(new vscode.CodeLens(range, {
+                    title: '⚡ Debug',
+                    command: 'stasha.startDebug',
+                    arguments: [filePath],
+                }));
+            }
+            const testMatch = text.match(/^\s*test\s+'([^']+)'/);
+            if (testMatch) {
+                lenses.push(new vscode.CodeLens(range, {
+                    title: `▶ Run Test "${testMatch[1]}"`,
+                    command: 'stasha.runTestFile',
+                    arguments: [filePath],
+                }));
+            }
         }
-    }
-    try {
-        const which = process.platform === 'win32' ? 'where stasha' : 'which stasha';
-        const resolved = (0, child_process_1.execSync)(which, { encoding: 'utf8' }).trim().split('\n')[0].trim();
-        if (resolved)
-            return resolved;
-    }
-    catch {
-        // not on PATH
-    }
-    return configured ?? 'stasha';
-}
-function isCompilerAvailable() {
-    const bin = getCompilerPath();
-    try {
-        (0, child_process_1.execSync)(`"${bin}" --version`, { stdio: 'ignore' });
-        return true;
-    }
-    catch {
-        return false;
+        return lenses;
     }
 }
-//# sourceMappingURL=compilerPath.js.map
+exports.StashaCodeLensProvider = StashaCodeLensProvider;
+//# sourceMappingURL=codeLensProvider.js.map

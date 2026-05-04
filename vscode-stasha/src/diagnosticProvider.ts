@@ -36,10 +36,15 @@ function toVscodeSeverity(s: string): vscode.DiagnosticSeverity {
     return vscode.DiagnosticSeverity.Information;
 }
 
-function makeRange(line: number, col: number, len: number): vscode.Range {
+function makeRange(line: number, col: number, len: number, doc?: vscode.TextDocument): vscode.Range {
     const l = Math.max(0, line);
-    const c = Math.max(0, col);
-    return new vscode.Range(l, c, l, c + Math.max(1, len));
+    let c = Math.max(0, col);
+    if (c === 0 && doc && l < doc.lineCount) {
+        c = doc.lineAt(l).firstNonWhitespaceCharacterIndex;
+    }
+    const lineLen = doc && l < doc.lineCount ? doc.lineAt(l).text.length : c + Math.max(1, len);
+    const end = Math.min(c + Math.max(1, len), lineLen);
+    return new vscode.Range(l, c, l, end);
 }
 
 export class StashaDiagnosticProvider {
@@ -113,7 +118,7 @@ export class StashaDiagnosticProvider {
                 const response: DiagnosticsResponse = JSON.parse(stdout);
                 const items: CompilerDiag[] = response.diagnostics ?? [];
                 for (const d of items) {
-                    const range = makeRange(d.line, d.col, d.len);
+                    const range = makeRange(d.line, d.col, d.len, doc);
                     let msg = d.message;
                     if (d.notes && d.notes.length > 0) {
                         msg += '\n' + d.notes.map(n => `${n.kind}: ${n.message}`).join('\n');
@@ -122,7 +127,7 @@ export class StashaDiagnosticProvider {
                     diag.source = 'stasha';
                     if (d.labels && d.labels.length > 0) {
                         diag.relatedInformation = d.labels.map(lbl => new vscode.DiagnosticRelatedInformation(
-                            new vscode.Location(doc.uri, makeRange(lbl.line, lbl.col, lbl.len)),
+                            new vscode.Location(doc.uri, makeRange(lbl.line, lbl.col, lbl.len, doc)),
                             lbl.message
                         ));
                     }

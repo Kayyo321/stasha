@@ -18,6 +18,14 @@ export function getCompilerPath(): string {
         }
     }
 
+    try {
+        const which = process.platform === 'win32' ? 'where stasha' : 'which stasha';
+        const resolved = execSync(which, { encoding: 'utf8' }).trim().split('\n')[0].trim();
+        if (resolved) return resolved;
+    } catch {
+        // not on PATH
+    }
+
     return configured ?? 'stasha';
 }
 

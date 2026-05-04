@@ -86,14 +86,48 @@
       { "command": "stasha.build",            "title": "Stasha: Build" },
       { "command": "stasha.buildRelease",     "title": "Stasha: Build (Release)" },
       { "command": "stasha.test",             "title": "Stasha: Test" },
-      { "command": "stasha.run",              "title": "Stasha: Run" },
+      { "command": "stasha.run",              "title": "Stasha: Run",       "icon": "$(play)" },
+      { "command": "stasha.startDebug",       "title": "Stasha: Debug",     "icon": "$(debug-alt)" },
+      { "command": "stasha.runTestFile",      "title": "Stasha: Run Test File" },
       { "command": "stasha.openProjectPanel", "title": "Stasha: Open Project Panel", "icon": "$(gear)" },
       { "command": "stasha.refreshProject",   "title": "Stasha: Refresh Project",    "icon": "$(refresh)" },
       { "command": "stasha.setMain",          "title": "Stasha: Set Entry Point" },
       { "command": "stasha.removeExtLib",     "title": "Stasha: Remove Library" },
       { "command": "stasha.openProjectFile",  "title": "Stasha: Open File" }
     ],
+    "keybindings": [
+      {
+        "command": "stasha.run",
+        "key": "ctrl+f5",
+        "mac": "cmd+f5",
+        "when": "editorLangId == stasha"
+      },
+      {
+        "command": "stasha.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == stasha"
+      },
+      {
+        "command": "stasha.runTestFile",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorLangId == stasha"
+      }
+    ],
     "menus": {
+      "editor/title/run": [
+        {
+          "command": "stasha.run",
+          "when": "resourceLangId == stasha",
+          "group": "navigation@1"
+        },
+        {
+          "command": "stasha.startDebug",
+          "when": "resourceLangId == stasha",
+          "group": "navigation@2"
+        }
+      ],
       "view/title": [
         {
           "command": "stasha.refreshProject",

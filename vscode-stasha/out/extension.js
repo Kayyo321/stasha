@@ -56,6 +56,7 @@ const inlayHintProvider_1 = require("./inlayHintProvider");
 const formatProvider_1 = require("./formatProvider");
 const referencesProvider_1 = require("./referencesProvider");
 const renameProvider_1 = require("./renameProvider");
+const codeLensProvider_1 = require("./codeLensProvider");
 const STASHA_LANG = { language: 'stasha' };
 function activate(ctx) {
     // ── Diagnostics ──────────────────────────────────────────────────────────
@@ -95,7 +96,7 @@ function activate(ctx) {
             e.waitUntil(Promise.resolve(edits));
     }));
     // ── References & Rename ───────────────────────────────────────────────────
-    ctx.subscriptions.push(vscode.languages.registerReferenceProvider(STASHA_LANG, new referencesProvider_1.StashaReferencesProvider()), vscode.languages.registerRenameProvider(STASHA_LANG, new renameProvider_1.StashaRenameProvider()));
+    ctx.subscriptions.push(vscode.languages.registerReferenceProvider(STASHA_LANG, new referencesProvider_1.StashaReferencesProvider()), vscode.languages.registerRenameProvider(STASHA_LANG, new renameProvider_1.StashaRenameProvider()), vscode.languages.registerCodeLensProvider(STASHA_LANG, new codeLensProvider_1.StashaCodeLensProvider()));
     // ── Tasks & Debug ─────────────────────────────────────────────────────────
     ctx.subscriptions.push(vscode.tasks.registerTaskProvider('stasha', new taskProvider_1.StashaTaskProvider()));
     ctx.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('stasha', new debugConfigProvider_1.StashaDebugConfigProvider()));

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getCompilerPath } from './compilerPath';
 
 const MAIN_STS = (name: string) =>
 `mod ${name};
@@ -166,12 +167,50 @@ export function registerProjectCommands(ctx: vscode.ExtensionContext) {
             ))
         ),
 
-        vscode.commands.registerCommand('stasha.run', async () => {
+        vscode.commands.registerCommand('stasha.run', async (filePath?: string) => {
             const folder = vscode.workspace.workspaceFolders?.[0];
-            if (!folder) return;
+            const bin = getCompilerPath();
             const terminal = vscode.window.createTerminal('Stasha Run');
             terminal.show();
-            terminal.sendText('stasha build && ./bin/debug_out');
+
+            const sprojPath = folder ? path.join(folder.uri.fsPath, 'sts.sproj') : null;
+            if (sprojPath && fs.existsSync(sprojPath)) {
+                const content = fs.readFileSync(sprojPath, 'utf8');
+                const match = content.match(/^binary\s*=\s*"([^"]+)"/m);
+                const binary = match ? match[1] : 'bin/out';
+                terminal.sendText(`cd "${folder!.uri.fsPath}" && "${bin}" build && ./${binary}`);
+            } else {
+                const file = filePath ?? vscode.window.activeTextEditor?.document.uri.fsPath;
+                if (!file) return;
+                const outDir = path.join(path.dirname(file), 'bin');
+                const outFile = path.join(outDir, 'out');
+                terminal.sendText(`mkdir -p "${outDir}" && "${bin}" build "${file}" -o "${outFile}" && "${outFile}"`);
+            }
+        }),
+
+        vscode.commands.registerCommand('stasha.startDebug', async (filePath?: string) => {
+            const file = filePath ?? vscode.window.activeTextEditor?.document.uri.fsPath;
+            if (!file) return;
+            const folder = vscode.workspace.workspaceFolders?.[0];
+            const outDir = folder ? path.join(folder.uri.fsPath, 'bin') : path.join(path.dirname(file), 'bin');
+            await vscode.debug.startDebugging(folder, {
+                type: 'stasha',
+                request: 'launch',
+                name: 'Debug Stasha',
+                program: file,
+                output: path.join(outDir, 'debug_out'),
+                args: [],
+                cwd: folder?.uri.fsPath ?? path.dirname(file),
+            });
+        }),
+
+        vscode.commands.registerCommand('stasha.runTestFile', async (filePath?: string) => {
+            const file = filePath ?? vscode.window.activeTextEditor?.document.uri.fsPath;
+            if (!file) return;
+            const bin = getCompilerPath();
+            const terminal = vscode.window.createTerminal('Stasha Test');
+            terminal.show();
+            terminal.sendText(`"${bin}" test "${file}"`);
         }),
     );
 }

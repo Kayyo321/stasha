@@ -19,6 +19,7 @@ import { StashaInlayHintProvider } from './inlayHintProvider';
 import { StashaFormatProvider } from './formatProvider';
 import { StashaReferencesProvider } from './referencesProvider';
 import { StashaRenameProvider } from './renameProvider';
+import { StashaCodeLensProvider } from './codeLensProvider';
 
 const STASHA_LANG = { language: 'stasha' };
 
@@ -108,6 +109,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     ctx.subscriptions.push(
         vscode.languages.registerReferenceProvider(STASHA_LANG, new StashaReferencesProvider()),
         vscode.languages.registerRenameProvider(STASHA_LANG, new StashaRenameProvider()),
+        vscode.languages.registerCodeLensProvider(STASHA_LANG, new StashaCodeLensProvider()),
     );
 
     // ── Tasks & Debug ─────────────────────────────────────────────────────────
