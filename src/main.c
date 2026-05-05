@@ -26,6 +26,10 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 
 static char bin_dir[512] = {0};
 
+/* cheader companion .c files discovered during process_cheader_decls */
+static char cheader_c_srcs[64][2048];
+static usize_t cheader_c_src_count = 0;
+
 /*
  * Populate bin_dir with the directory containing the stasha binary.
  * Used to locate bin/stdlib/ for `libimp "name" from std;`.
@@ -627,6 +631,8 @@ static node_t *make_cheader_int_lit(node_t *src_node, long value) {
 }
 
 static void process_cheader_decls(node_t *ast, const char *input_path) {
+    cheader_c_src_count = 0;
+
     node_list_t generated;
     node_list_init(&generated);
 
@@ -643,6 +649,26 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
             diag_span(DIAG_NODE(decl), True, "header declared here");
             diag_finish();
             continue;
+        }
+
+        /* Auto-link companion .c file if it exists alongside the resolved header. */
+        {
+            usize_t rlen = strlen(resolved);
+            if (rlen > 2 && resolved[rlen - 2] == '.' && resolved[rlen - 1] == 'h') {
+                char c_path[2048];
+                memcpy(c_path, resolved, rlen);
+                c_path[rlen - 1] = 'c';
+                c_path[rlen] = '\0';
+                FILE *cf = fopen(c_path, "rb");
+                if (cf) {
+                    fclose(cf);
+                    boolean_t already = False;
+                    for (usize_t k = 0; k < cheader_c_src_count; k++)
+                        if (strcmp(cheader_c_srcs[k], c_path) == 0) { already = True; break; }
+                    if (!already && cheader_c_src_count < 64)
+                        memcpy(cheader_c_srcs[cheader_c_src_count++], c_path, rlen + 1);
+                }
+            }
         }
 
         for (usize_t j = 0; j < result.struct_count; j++) {
@@ -1651,10 +1677,40 @@ static result_t compile_file(const cfile_params_t *p) {
         }
     }
 
-    /* ── build final library list: AST libs + caller-supplied extras ── */
+    /* ── compile cheader companion .c files to temp objects ── */
+    static char cheader_obj_paths[64][512];
+    usize_t cheader_obj_count = 0;
+    if (p->mode != EmitLib && cheader_c_src_count > 0) {
+        for (usize_t i = 0; i < cheader_c_src_count; i++) {
+            snprintf(cheader_obj_paths[cheader_obj_count], sizeof(cheader_obj_paths[0]),
+                     "%s.ch%zu.o", p->output_path, i);
+            const char *src = cheader_c_srcs[i];
+            const char *dst = cheader_obj_paths[cheader_obj_count];
+#if defined(__APPLE__) || defined(__linux__)
+            pid_t pid = fork();
+            if (pid == 0) {
+                execlp("cc", "cc", "-std=c11", "-O0", "-fPIC", "-c", "-o", dst, src,
+                       (char *)Null);
+                _exit(1);
+            } else if (pid > 0) {
+                int status;
+                waitpid(pid, &status, 0);
+                if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+                    cheader_obj_count++;
+                else
+                    remove(dst);
+            }
+#endif
+        }
+    }
+
+    /* ── build final library list: cheader objs + AST libs + caller-supplied extras ── */
     const char *all_libs[512];
     usize_t     all_lib_count = 0;
 
+    /* cheader companion objects go first so they satisfy symbols before any user archive */
+    for (usize_t i = 0; i < cheader_obj_count && all_lib_count < 511; i++)
+        all_libs[all_lib_count++] = cheader_obj_paths[i];
     for (usize_t i = 0; i < ast_lib_count && all_lib_count < 511; i++)
         all_libs[all_lib_count++] = ast_lib_buf[i];
     if (p->extra_lib_paths) {
@@ -1733,6 +1789,8 @@ static result_t compile_file(const cfile_params_t *p) {
     }
 
     remove(obj_path);
+    for (usize_t i = 0; i < cheader_obj_count; i++)
+        remove(cheader_obj_paths[i]);
     compile_cleanup();
 
     if (link_result != Ok) return Err;

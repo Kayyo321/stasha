@@ -53,7 +53,9 @@ function getCompilerPath() {
         }
     }
     try {
-        const which = process.platform === 'win32' ? 'where stasha' : 'which stasha';
+        const which = process.platform === 'win32'
+            ? 'where stasha'
+            : `${process.env.SHELL ?? '/bin/zsh'} -l -c 'which stasha'`;
         const resolved = (0, child_process_1.execSync)(which, { encoding: 'utf8' }).trim().split('\n')[0].trim();
         if (resolved)
             return resolved;

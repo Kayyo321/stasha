@@ -17,7 +17,7 @@ yellow(){ printf "\033[33m%s\033[0m" "$1"; }
 
 # expect_in STDERR PATTERN DESCRIPTION
 expect_in() {
-    if echo "$1" | grep -qE "$2"; then
+    if echo "$1" | grep -qE "$2f"; then
         PASS=$((PASS + 1))
         echo "  $(green PASS) $3"
     else

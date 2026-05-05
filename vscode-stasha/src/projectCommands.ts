@@ -137,35 +137,38 @@ export function registerProjectCommands(ctx: vscode.ExtensionContext) {
             vscode.window.showInformationMessage(`Stasha project '${name}' initialized.`);
         }),
 
-        vscode.commands.registerCommand('stasha.build', () =>
-            vscode.tasks.executeTask(new vscode.Task(
+        vscode.commands.registerCommand('stasha.build', () => {
+            const bin = getCompilerPath();
+            return vscode.tasks.executeTask(new vscode.Task(
                 { type: 'stasha', task: 'build' },
                 vscode.workspace.workspaceFolders![0],
                 'build', 'stasha',
-                new vscode.ShellExecution('stasha build'),
+                new vscode.ShellExecution(`"${bin}" build`),
                 ['$stasha'],
-            ))
-        ),
+            ));
+        }),
 
-        vscode.commands.registerCommand('stasha.buildRelease', () =>
-            vscode.tasks.executeTask(new vscode.Task(
+        vscode.commands.registerCommand('stasha.buildRelease', () => {
+            const bin = getCompilerPath();
+            return vscode.tasks.executeTask(new vscode.Task(
                 { type: 'stasha', task: 'buildRelease' },
                 vscode.workspace.workspaceFolders![0],
                 'build (release)', 'stasha',
-                new vscode.ShellExecution('stasha build release'),
+                new vscode.ShellExecution(`"${bin}" build release`),
                 ['$stasha'],
-            ))
-        ),
+            ));
+        }),
 
-        vscode.commands.registerCommand('stasha.test', () =>
-            vscode.tasks.executeTask(new vscode.Task(
+        vscode.commands.registerCommand('stasha.test', () => {
+            const bin = getCompilerPath();
+            return vscode.tasks.executeTask(new vscode.Task(
                 { type: 'stasha', task: 'test' },
                 vscode.workspace.workspaceFolders![0],
                 'test', 'stasha',
-                new vscode.ShellExecution('stasha test'),
+                new vscode.ShellExecution(`"${bin}" test`),
                 ['$stasha'],
-            ))
-        ),
+            ));
+        }),
 
         vscode.commands.registerCommand('stasha.run', async (filePath?: string) => {
             const folder = vscode.workspace.workspaceFolders?.[0];
