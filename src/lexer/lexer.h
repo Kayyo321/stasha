@@ -215,6 +215,9 @@ typedef enum {
 
     /* escaped identifier: $"name" or $'name' — allows C names that are Stasha keywords */
     TokDollarStr,
+
+    /* va — variadic argument list handle type + va.start/next/end/copy/foreach/read ops */
+    TokVa,
 } token_kind_t;
 
 typedef struct {

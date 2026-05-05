@@ -161,6 +161,9 @@ static boolean_t is_builtin_type_token(token_kind_t k) {
         || k == TokBool || k == TokVoid || k == TokErrorType || k == TokFuture
         || k == TokStream
         || k == TokAny || k == TokZone;
+        /* Note: TokVa is NOT included here because `va.op(...)` expression forms
+           must not be mistaken for a variable declaration start. TypeVa is
+           recognised in parse_type() via its own branch instead. */
 }
 
 static type_kind_t token_to_type(token_kind_t k) {
@@ -181,6 +184,7 @@ static type_kind_t token_to_type(token_kind_t k) {
         case TokFuture:    return TypeFuture;
         case TokStream:    return TypeStream;
         case TokZone:      return TypeZone;
+        case TokVa:        return TypeVa;
         default:      return TypeVoid;
     }
 }
@@ -206,6 +210,7 @@ static const char *comptime_type_name(type_info_t ti) {
         case TypeFuture: return "future";
         case TypeStream: return "stream";
         case TypeSlice: return "slice";
+        case TypeVa:    return "va";
         default:        return "type";
     }
 }
@@ -332,6 +337,14 @@ static type_info_t parse_type(parser_t *p) {
         }
         /* bare 'any' without type list — treat as i64 placeholder */
         info.base = TypeI64;
+        goto parse_type_ptr;
+    }
+
+    /* va — va_list buffer type. Kept separate from is_builtin_type_token() so
+       that `va.op(...)` expression forms are not mistaken for var decl starts. */
+    if (check(p, TokVa)) {
+        advance_parser(p);
+        info.base = TypeVa;
         goto parse_type_ptr;
     }
 
@@ -483,7 +496,7 @@ static boolean_t can_start_type(parser_t *p) {
         if (is_slice) return True;
     }
     return is_builtin_type_token(p->current.kind) || check(p, TokIdent) || check(p, TokFn)
-        || check(p, TokAny);
+        || check(p, TokAny) || check(p, TokVa);
 }
 
 /* In a parameter list, a bare identifier is only a type if followed by

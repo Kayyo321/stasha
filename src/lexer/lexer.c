@@ -201,6 +201,7 @@ static token_kind_t identifier_kind(const char *start, usize_t len) {
     KW("await",     TokAwait);
     KW("yield",     TokYield);
     KW("lam",       TokLam);
+    KW("va",        TokVa);
     /* "frees" is NOT a keyword — parsed contextually as TokIdent after '@' */
 
     KW("i8", TokI8);

@@ -12,6 +12,10 @@ static LLVMTypeRef get_slice_elem_llvm_type(cg_t *cg, type_info_t elem_ti);
 static LLVMTypeRef slice_struct_type(cg_t *cg);
 static LLVMTypeRef elem_type_from_sym(cg_t *cg, symbol_t *sym);
 
+/* Type-tag helpers for ...typed variadic ABI (forward-declared; defined near gen_va_op) */
+static int va_type_tag_for_ti(type_info_t ti);
+static int va_type_tag_for_llvm(cg_t *cg, LLVMValueRef val);
+
 /* Find the struct registry entry whose LLVM type matches ty.
  * This is more reliable than LLVMGetStructName + find_struct because the
  * LLVM struct name is mangled (e.g. "dstring__dstring_t") while the registry
@@ -1619,6 +1623,34 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         deallocate(pt_heap);
     }
 
+    /* Tier 2 typed variadic: interleave type tags for ...typed callee.
+       For each variadic arg (beyond fixed params): emit [TAG_i32, value].
+       Then append TAG_END (0) so callee knows where args stop. */
+    node_t *callee_fndecl = find_fn_decl(cg, node->as.call.callee);
+    if (callee_fndecl && callee_fndecl->as.fn_decl.is_typed_variadic
+            && LLVMIsFunctionVarArg(fn_type)) {
+        usize_t fixed = (usize_t)n_params; /* fixed LLVM params (no vararg) */
+        usize_t n_var = (argc > fixed) ? (argc - fixed) : 0;
+        /* new array: fixed_args + (tag + val)*n_var + TAG_END */
+        usize_t new_argc = fixed + n_var * 2 + 1;
+        heap_t new_heap  = allocate(new_argc, sizeof(LLVMValueRef));
+        LLVMValueRef *new_args = new_heap.pointer;
+        LLVMTypeRef itag_ty = LLVMInt32TypeInContext(cg->ctx);
+        for (usize_t i = 0; i < fixed && i < argc; i++)
+            new_args[i] = args[i];
+        usize_t out = fixed;
+        for (usize_t i = fixed; i < argc; i++) {
+            int tag = va_type_tag_for_llvm(cg, args[i]);
+            new_args[out++] = LLVMConstInt(itag_ty, (unsigned long long)tag, 0);
+            new_args[out++] = args[i];
+        }
+        new_args[out] = LLVMConstInt(itag_ty, 0, 0); /* TAG_END */
+        if (argc > 0) deallocate(args_heap);
+        args      = new_args;
+        args_heap = new_heap;
+        argc      = new_argc;
+    }
+
     LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_val,
                                        args, (unsigned)argc, "");
     if (argc > 0) deallocate(args_heap);
@@ -2867,6 +2899,347 @@ static LLVMValueRef gen_future_op(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+}
+
+/* ── va.* — variadic argument access ─────────────────────────────────────────
+ *
+ * Tier 0 (raw): va.start / va.next / va.end / va.copy — direct LLVM intrinsics.
+ * Tier 1 (typed sugar): va.foreach.[T](n,args){|v|} / va.read.[T1,T2,...](args)
+ * Tier 2 (type-aware): va.foreach(args){|v| match ...} — requires ...typed fn.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/* Type-tag encoding for ...typed variadics.
+ * 0=TAG_END, 1=i8/i16/i32, 2=i64/u64, 3=f32/f64, 4=ptr, 5=bool, 6=u32, 64+=struct */
+static int va_type_tag_for_ti(type_info_t ti) {
+    if (ti.is_pointer) return 4;
+    switch (ti.base) {
+        case TypeBool: return 5;
+        case TypeI8: case TypeI16: case TypeI32: return 1;
+        case TypeI64: case TypeU64: return 2;
+        case TypeU32: return 6;
+        case TypeF32: case TypeF64: return 3;
+        default: return 4; /* struct/unknown — caller passes by ptr */
+    }
+}
+
+static int va_type_tag_for_llvm(cg_t *cg, LLVMValueRef val) {
+    LLVMTypeRef ty = LLVMTypeOf(val);
+    LLVMTypeKind kind = LLVMGetTypeKind(ty);
+    (void)cg;
+    switch (kind) {
+        case LLVMIntegerTypeKind: {
+            unsigned bits = LLVMGetIntTypeWidth(ty);
+            if (bits == 1)  return 5; /* bool */
+            if (bits == 64) return 2; /* i64/u64 */
+            return 1;                 /* i8/i16/i32/u32 — all promoted */
+        }
+        case LLVMFloatTypeKind:   return 3; /* f32 → promoted to f64 in varargs */
+        case LLVMDoubleTypeKind:  return 3; /* f64 */
+        case LLVMPointerTypeKind: return 4; /* any pointer */
+        default:                  return 4; /* struct etc. — treat as ptr */
+    }
+}
+
+/* Helper: get-or-create an LLVM intrinsic function with a void(ptr) signature. */
+static LLVMValueRef get_va_intrinsic(cg_t *cg, const char *name) {
+    LLVMValueRef fn = LLVMGetNamedFunction(cg->module, name);
+    if (fn) return fn;
+    LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef void_ty = LLVMVoidTypeInContext(cg->ctx);
+    LLVMTypeRef fty     = LLVMFunctionType(void_ty, &ptr_ty, 1, 0);
+    return LLVMAddFunction(cg->module, name, fty);
+}
+
+/* Helper: get-or-create llvm.va_copy.p0(ptr dst, ptr src). */
+static LLVMValueRef get_va_copy_intrinsic(cg_t *cg) {
+    LLVMValueRef fn = LLVMGetNamedFunction(cg->module, "llvm.va_copy.p0");
+    if (fn) return fn;
+    LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef void_ty = LLVMVoidTypeInContext(cg->ctx);
+    LLVMTypeRef params[2] = { ptr_ty, ptr_ty };
+    LLVMTypeRef fty = LLVMFunctionType(void_ty, params, 2, 0);
+    return LLVMAddFunction(cg->module, "llvm.va_copy.p0", fty);
+}
+
+static LLVMValueRef gen_va_op(cg_t *cg, node_t *node) {
+    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
+    LLVMValueRef zero32 = LLVMConstInt(i32_ty, 0, 0);
+
+    /* Safety check: va.start/next/foreach require a variadic function.
+       We detect this by checking whether the current LLVM function is vararg. */
+    if ((node->as.va_op.op == VaStart || node->as.va_op.op == VaNext
+            || node->as.va_op.op == VaForeach || node->as.va_op.op == VaForeachTyped)
+            && cg->current_fn) {
+        LLVMTypeRef fn_ty = LLVMGlobalGetValueType(cg->current_fn);
+        if (!LLVMIsFunctionVarArg(fn_ty)) {
+            diag_begin_error("va.%s used inside a non-variadic function",
+                node->as.va_op.op == VaStart ? "start" :
+                node->as.va_op.op == VaNext  ? "next"  : "foreach");
+            diag_span(DIAG_NODE(node), True, "function must be declared with '...'");
+            diag_finish();
+            return zero32;
+        }
+    }
+
+    switch (node->as.va_op.op) {
+
+    /* ── Tier 0: raw intrinsics ── */
+
+    case VaStart: {
+        LLVMValueRef va_ptr = gen_expr(cg, node->as.va_op.handle);
+        LLVMValueRef fn     = get_va_intrinsic(cg, "llvm.va_start.p0");
+        LLVMTypeRef  fty    = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(cg->builder, fty, fn, &va_ptr, 1, "");
+        return zero32;
+    }
+
+    case VaEnd: {
+        LLVMValueRef va_ptr = gen_expr(cg, node->as.va_op.handle);
+        LLVMValueRef fn     = get_va_intrinsic(cg, "llvm.va_end.p0");
+        LLVMTypeRef  fty    = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(cg->builder, fty, fn, &va_ptr, 1, "");
+        return zero32;
+    }
+
+    case VaNext: {
+        LLVMValueRef va_ptr  = gen_expr(cg, node->as.va_op.handle);
+        LLVMTypeRef  elem_ty = get_llvm_type(cg, node->as.va_op.next_type);
+        return LLVMBuildVAArg(cg->builder, va_ptr, elem_ty, "va_next");
+    }
+
+    case VaCopy: {
+        LLVMValueRef dst_ptr = gen_expr(cg, node->as.va_op.handle);
+        LLVMValueRef src_ptr = gen_expr(cg, node->as.va_op.copy_src);
+        LLVMValueRef fn  = get_va_copy_intrinsic(cg);
+        LLVMTypeRef  fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args[2] = { dst_ptr, src_ptr };
+        LLVMBuildCall2(cg->builder, fty, fn, args, 2, "");
+        return zero32;
+    }
+
+    /* ── Tier 1: va.foreach.(T)(n, args) { |v| body } ── */
+
+    case VaForeach: {
+        /* Get typed value T and va_list ptr */
+        LLVMTypeRef  elem_ty = get_llvm_type(cg, node->as.va_op.next_type);
+        LLVMValueRef va_ptr  = gen_expr(cg, node->as.va_op.handle);
+        LLVMValueRef count   = gen_expr(cg, node->as.va_op.count_expr);
+        count = coerce_int(cg, count, i32_ty);
+
+        /* va_start */
+        LLVMValueRef va_start_fn  = get_va_intrinsic(cg, "llvm.va_start.p0");
+        LLVMTypeRef  va_start_fty = LLVMGlobalGetValueType(va_start_fn);
+        LLVMBuildCall2(cg->builder, va_start_fty, va_start_fn, &va_ptr, 1, "");
+
+        /* Build loop: alloca counter in entry block */
+        LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
+        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cg->current_fn);
+        LLVMValueRef first_instr   = LLVMGetFirstInstruction(entry_bb);
+        if (first_instr) LLVMPositionBuilderBefore(cg->builder, first_instr);
+        else             LLVMPositionBuilderAtEnd(cg->builder, entry_bb);
+        LLVMValueRef cnt_alloca = LLVMBuildAlloca(cg->builder, i32_ty, "va_foreach.i");
+        /* also alloca for the param variable */
+        LLVMValueRef param_alloca = Null;
+        const char *pname = node->as.va_op.closure_param ? node->as.va_op.closure_param : "__va_v";
+        param_alloca = LLVMBuildAlloca(cg->builder, elem_ty, pname);
+        LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
+
+        LLVMBuildStore(cg->builder, zero32, cnt_alloca);
+
+        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "vafor.cond");
+        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "vafor.body");
+        LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "vafor.end");
+
+        LLVMBuildBr(cg->builder, cond_bb);
+
+        /* cond block: while i < count */
+        LLVMPositionBuilderAtEnd(cg->builder, cond_bb);
+        LLVMValueRef cur_i  = LLVMBuildLoad2(cg->builder, i32_ty, cnt_alloca, "va_i");
+        LLVMValueRef cmp    = LLVMBuildICmp(cg->builder, LLVMIntSLT, cur_i, count, "vafor.cmp");
+        LLVMBuildCondBr(cg->builder, cmp, body_bb, end_bb);
+
+        /* body block */
+        LLVMPositionBuilderAtEnd(cg->builder, body_bb);
+        LLVMValueRef elem = LLVMBuildVAArg(cg->builder, va_ptr, elem_ty, "va_elem");
+        LLVMBuildStore(cg->builder, elem, param_alloca);
+
+        /* push scope: save locals count, bind param, generate closure body */
+        usize_t saved_locals = cg->locals.count;
+        type_info_t param_ti = node->as.va_op.next_type;
+        symtab_add(&cg->locals, pname, param_alloca, elem_ty, param_ti, 0);
+
+        if (node->as.va_op.closure_body && node->as.va_op.closure_body->kind == NodeLambda)
+            gen_block(cg, node->as.va_op.closure_body->as.lambda_expr.body);
+
+        /* pop scope */
+        cg->locals.count = saved_locals;
+
+        /* increment i */
+        LLVMValueRef i_next = LLVMBuildAdd(cg->builder, cur_i,
+                                            LLVMConstInt(i32_ty, 1, 0), "va_i_next");
+        LLVMBuildStore(cg->builder, i_next, cnt_alloca);
+        LLVMBuildBr(cg->builder, cond_bb);
+
+        /* end block */
+        LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+
+        /* va_end */
+        LLVMValueRef va_end_fn  = get_va_intrinsic(cg, "llvm.va_end.p0");
+        LLVMTypeRef  va_end_fty = LLVMGlobalGetValueType(va_end_fn);
+        LLVMBuildCall2(cg->builder, va_end_fty, va_end_fn, &va_ptr, 1, "");
+
+        return zero32;
+    }
+
+    /* ── Tier 1: va.read.[T1,T2,...](args) ── */
+
+    case VaRead: {
+        /* Emit one LLVMBuildVAArg per type in the type_list.
+           Returns the first value; multi-assign unpacking is handled by the
+           surrounding multi-assign codegen (same as ext fn multi-return). */
+        LLVMValueRef va_ptr = gen_expr(cg, node->as.va_op.handle);
+        if (node->as.va_op.type_list.count == 0) return zero32;
+        /* emit all va_args and return first (rest are reachable via the node's
+           type_list being walked by the enclosing multi-assign) */
+        LLVMValueRef first = Null;
+        for (usize_t ti = 0; ti < node->as.va_op.type_list.count; ti++) {
+            type_info_t tinfo = node->as.va_op.type_list.items[ti]->as.sizeof_expr.type;
+            LLVMTypeRef lt    = get_llvm_type(cg, tinfo);
+            LLVMValueRef v    = LLVMBuildVAArg(cg->builder, va_ptr, lt, "va_r");
+            if (!first) first = v;
+        }
+        return first ? first : zero32;
+    }
+
+    /* ── Tier 2: va.foreach(args) { |v| match v { i32 x => ... } } ── */
+
+    case VaForeachTyped: {
+        LLVMValueRef va_ptr = gen_expr(cg, node->as.va_op.handle);
+
+        /* Initialize the va_list before reading */
+        {
+            LLVMValueRef va_start_fn  = get_va_intrinsic(cg, "llvm.va_start.p0");
+            LLVMTypeRef  va_start_fty = LLVMGlobalGetValueType(va_start_fn);
+            LLVMBuildCall2(cg->builder, va_start_fty, va_start_fn, &va_ptr, 1, "");
+        }
+
+        /* Locate the match statement inside the closure body */
+        node_t *match_node = Null;
+        if (node->as.va_op.closure_body
+                && node->as.va_op.closure_body->kind == NodeLambda) {
+            node_t *body = node->as.va_op.closure_body->as.lambda_expr.body;
+            for (usize_t si = 0; si < body->as.block.stmts.count; si++) {
+                node_t *s = body->as.block.stmts.items[si];
+                if (s->kind == NodeMatchStmt) { match_node = s; break; }
+                if (s->kind == NodeExprStmt && s->as.expr_stmt.expr
+                        && s->as.expr_stmt.expr->kind == NodeMatchStmt) {
+                    match_node = s->as.expr_stmt.expr; break;
+                }
+            }
+        }
+        if (!match_node) {
+            diag_begin_error("va.foreach() Tier 2 closure must contain a match statement");
+            diag_span(DIAG_NODE(node), True,
+                      "expected: va.foreach(args) { |v| match v { i32 x => ... _ => {} } }");
+            diag_finish();
+            return zero32;
+        }
+
+        node_list_t *arms = &match_node->as.match_stmt.arms;
+
+        /* Build basic blocks */
+        LLVMBasicBlockRef loop_bb = LLVMAppendBasicBlockInContext(
+            cg->ctx, cg->current_fn, "vaft.loop");
+        LLVMBasicBlockRef dispatch_bb = LLVMAppendBasicBlockInContext(
+            cg->ctx, cg->current_fn, "vaft.disp");
+        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
+            cg->ctx, cg->current_fn, "vaft.end");
+
+        LLVMBuildBr(cg->builder, loop_bb);
+
+        /* loop_bb: read tag; break if TAG_END */
+        LLVMPositionBuilderAtEnd(cg->builder, loop_bb);
+        LLVMValueRef tag = LLVMBuildVAArg(cg->builder, va_ptr, i32_ty, "va_tag");
+        LLVMValueRef is_end = LLVMBuildICmp(cg->builder, LLVMIntEQ,
+                                             tag, zero32, "tag_end");
+        LLVMBuildCondBr(cg->builder, is_end, end_bb, dispatch_bb);
+
+        /* dispatch_bb: switch on tag */
+        LLVMPositionBuilderAtEnd(cg->builder, dispatch_bb);
+
+        /* default block for unmatched tags: skip (continue loop) */
+        LLVMBasicBlockRef default_bb = LLVMAppendBasicBlockInContext(
+            cg->ctx, cg->current_fn, "vaft.def");
+
+        /* count type-pattern arms for switch size hint */
+        usize_t n_typed_arms = 0;
+        for (usize_t ai = 0; ai < arms->count; ai++)
+            if (arms->items[ai]->is_any_arm) n_typed_arms++;
+
+        LLVMValueRef sw = LLVMBuildSwitch(cg->builder, tag,
+                                           default_bb, (unsigned)n_typed_arms);
+
+        usize_t saved_locals = cg->locals.count;
+
+        /* Generate each type-pattern arm */
+        for (usize_t ai = 0; ai < arms->count; ai++) {
+            node_t *arm = arms->items[ai];
+            if (!arm->is_any_arm) continue;
+
+            int tag_val = va_type_tag_for_ti(arm->any_bind_ti);
+            LLVMBasicBlockRef arm_bb = LLVMAppendBasicBlockInContext(
+                cg->ctx, cg->current_fn, "vaft.arm");
+            LLVMAddCase(sw,
+                LLVMConstInt(i32_ty, (unsigned long long)tag_val, 0), arm_bb);
+
+            LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
+
+            /* Read typed value from va_list */
+            LLVMTypeRef val_ty = get_llvm_type(cg, arm->any_bind_ti);
+            LLVMValueRef val = LLVMBuildVAArg(cg->builder, va_ptr, val_ty, "va_val");
+
+            /* Bind to arm's variable name */
+            if (arm->any_bind_name) {
+                LLVMValueRef bind_alloca = alloc_in_entry(cg, val_ty, arm->any_bind_name);
+                LLVMBuildStore(cg->builder, val, bind_alloca);
+                symtab_add(&cg->locals, arm->any_bind_name, bind_alloca,
+                           val_ty, arm->any_bind_ti, 0);
+            }
+
+            gen_block(cg, arm->as.match_arm.body);
+            cg->locals.count = saved_locals;
+
+            LLVMBasicBlockRef cur = LLVMGetInsertBlock(cg->builder);
+            if (!LLVMGetBasicBlockTerminator(cur))
+                LLVMBuildBr(cg->builder, loop_bb);
+        }
+
+        /* Default block: wildcard arm body (or just continue) */
+        LLVMPositionBuilderAtEnd(cg->builder, default_bb);
+        for (usize_t ai = 0; ai < arms->count; ai++) {
+            node_t *arm = arms->items[ai];
+            if (arm->as.match_arm.is_wildcard && !arm->is_any_arm) {
+                gen_block(cg, arm->as.match_arm.body);
+                break;
+            }
+        }
+        LLVMBasicBlockRef cur_def = LLVMGetInsertBlock(cg->builder);
+        if (!LLVMGetBasicBlockTerminator(cur_def))
+            LLVMBuildBr(cg->builder, loop_bb);
+
+        /* va_end after the loop */
+        LLVMPositionBuilderAtEnd(cg->builder, end_bb);
+        {
+            LLVMValueRef va_end_fn  = get_va_intrinsic(cg, "llvm.va_end.p0");
+            LLVMTypeRef  va_end_fty = LLVMGlobalGetValueType(va_end_fn);
+            LLVMBuildCall2(cg->builder, va_end_fty, va_end_fn, &va_ptr, 1, "");
+        }
+        return zero32;
+    }
+
+    default:
+        return zero32;
+    }
 }
 
 static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
@@ -5949,6 +6322,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeAwaitExpr:        return gen_await(cg, node);
         case NodeAwaitCombinator:  return gen_await_combinator(cg, node);
         case NodeFutureOp:         return gen_future_op(cg, node);
+        case NodeVaOp:             return gen_va_op(cg, node);
         case NodeCompoundAssign:   return gen_compound_assign(cg, node);
         case NodeAssignExpr:       return gen_assign(cg, node);
         case NodeIndexExpr:        return gen_index(cg, node);

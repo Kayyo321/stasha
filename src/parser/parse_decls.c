@@ -798,6 +798,46 @@ static node_t *parse_match_stmt(parser_t *p) {
             arm->as.match_arm.literal_value = sign * val;
             advance_parser(p); /* consume int literal */
 
+        } else if (!is_any_match && is_builtin_type_token(p->current.kind)) {
+            /* Tier 2 type-pattern arm for va.foreach typed dispatch:
+               `i32 x => { ... }` / `f64 x => { ... }` / `i8 *r s => { ... }`
+               Speculatively parse full TypeSpec then expect a bare binding name. */
+            parser_state_t snap_tp = save_state(p);
+            type_info_t ti = parse_type(p);
+            if (is_name_token(p)) {
+                /* confirmed: TypeSpec BindName => { ... } */
+                arm->as.match_arm.is_wildcard = False;
+                arm->as.match_arm.is_literal  = False;
+                arm->is_any_arm = True;
+                arm->any_bind_ti      = ti;
+                arm->any_bind_storage = StorageStack;
+                const char *base_name = comptime_type_name(ti);
+                char tname[64];
+                if (ti.is_pointer)
+                    snprintf(tname, sizeof(tname), "%s_ptr", base_name);
+                else
+                    snprintf(tname, sizeof(tname), "%s", base_name);
+                arm->any_type_name             = ast_strdup(tname, strlen(tname));
+                arm->as.match_arm.variant_name = arm->any_type_name;
+                arm->as.match_arm.enum_name    = Null;
+                token_t btok = consume_name(p, "binding name");
+                arm->any_bind_name          = copy_name_text(btok);
+                arm->as.match_arm.bind_name = arm->any_bind_name;
+            } else {
+                restore_state(p, snap_tp);
+                if (!p->panic_mode) {
+                    diag_begin_error("expected match arm pattern, found '%.*s'",
+                                     (int)p->current.length, p->current.start);
+                    diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                              True, "expected type binding or '_'");
+                    diag_finish();
+                }
+                p->had_error  = True;
+                p->panic_mode = True;
+                skip_to_recovery_point(p);
+                arm->as.match_arm.is_wildcard = True;
+            }
+
         } else if (is_any_match && (is_builtin_type_token(p->current.kind) || check(p, TokIdent))) {
             /* any-type arm: TypeName(storage TypeName binding) => { ... } */
             arm->as.match_arm.is_wildcard = False;
@@ -1411,14 +1451,23 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     node_list_t params;
     node_list_init(&params);
     boolean_t is_variadic = False;
+    boolean_t is_typed_variadic = False;
     if (!check(p, TokRParen) && !check(p, TokVoid)) {
         type_info_t last_type = NO_TYPE;
         storage_t last_storage = StorageDefault;
         do {
-            /* variadic: ... must be last */
+            /* variadic: ... or ...typed must be last */
             if (check(p, TokDotDotDot)) {
                 advance_parser(p);
                 is_variadic = True;
+                /* ...typed — Tier 2: compiler inserts type tags at call sites.
+                   "typed" is not a keyword so we match it as an identifier. */
+                if (check(p, TokIdent) &&
+                        p->current.length == 5 &&
+                        memcmp(p->current.start, "typed", 5) == 0) {
+                    advance_parser(p); /* consume 'typed' */
+                    is_typed_variadic = True;
+                }
                 break;
             }
             /* optional parameter attributes: @frees, @restrict */
@@ -1551,7 +1600,8 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     n->as.fn_decl.body = body;
     n->as.fn_decl.is_method = is_method;
     n->as.fn_decl.struct_name = struct_name;
-    n->as.fn_decl.is_variadic = is_variadic;
+    n->as.fn_decl.is_variadic        = is_variadic;
+    n->as.fn_decl.is_typed_variadic  = is_typed_variadic;
     n->as.fn_decl.type_param_count = fn_type_param_count;
     for (usize_t _i = 0; _i < fn_type_param_count; _i++)
         n->as.fn_decl.type_params[_i] = fn_type_params[_i];

@@ -27,6 +27,7 @@ typedef enum {
     TypeSlice,      /* []T — fat pointer (ptr, len, cap) */
     TypeZone,       /* zone — opaque arena allocator handle (void* state pointer) */
     TypeInfer,      /* sentinel: "infer me" — used for trailing-closure params */
+    TypeVa,         /* va — platform va_list buffer (alloca'd, stack only)     */
 } type_kind_t;
 
 /* ── forward declaration for fn_ptr_desc_t and type_info_t ── */
@@ -309,6 +310,9 @@ typedef enum {
 
     /* sugar pack: lambda expression */
     NodeLambda,          /* lam.(params): ret { body } — lifted to module-level fn */
+
+    /* va.* — variadic argument access (Tier 0/1/2) */
+    NodeVaOp,            /* va.start/next/end/copy/foreach/read/foreach_typed */
 } node_kind_t;
 
 /* maximum conditions in a single comparison chain */
@@ -325,6 +329,17 @@ typedef enum {
     StreamDrop,  /* stream.drop(s)              — destroy stream coroutine */
     StreamCancel,/* stream.cancel(s)            — request cooperative end  */
 } future_op_t;
+
+/* ── va operation kinds ── */
+typedef enum {
+    VaStart,         /* va.start(args)                  — llvm.va_start              */
+    VaNext,          /* va.next.(T)(args)               — LLVMBuildVAArg             */
+    VaEnd,           /* va.end(args)                    — llvm.va_end                */
+    VaCopy,          /* va.copy(dst, src)               — llvm.va_copy               */
+    VaForeach,       /* va.foreach.(T)(n, args) { |v| } — Tier 1 typed loop         */
+    VaRead,          /* va.read.[T1,T2,...](args)        — Tier 1 destructure        */
+    VaForeachTyped,  /* va.foreach(args) { |v| match }  — Tier 2 type-dispatch      */
+} va_op_t;
 
 /* ── node list ── */
 
@@ -370,7 +385,8 @@ struct node {
             node_t *body;               /* Block */
             boolean_t is_method;        /* fn Type.method(...) */
             char *struct_name;          /* the Type part (null if !is_method) */
-            boolean_t is_variadic;      /* fn foo(stack i32 n, ...): void */
+            boolean_t is_variadic;         /* fn foo(stack i32 n, ...): void         */
+            boolean_t is_typed_variadic;   /* fn foo(...typed): void — Tier 2 tags   */
             int attr_flags;             /* AttrWeak | AttrHidden */
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
@@ -634,6 +650,21 @@ struct node {
             boolean_t   inferred_params; /* True for trailing-closure short form     */
             boolean_t   inferred_ret;    /* True when ret type was omitted           */
         } lambda_expr;
+
+        /* NodeVaOp: va.start/next/end/copy/foreach/read/foreach_typed
+           All ops reference their va_list variable through `handle`.
+           Tier 1 `foreach` and `read` carry the typed type_list (bracket syntax).
+           Tier 2 `foreach_typed` uses the match-style closure_body. */
+        struct {
+            va_op_t      op;
+            node_t      *handle;        /* the va variable (all ops)                  */
+            node_t      *copy_src;      /* VaCopy: source va variable                 */
+            type_info_t  next_type;     /* VaNext: the T in va.next.(T)(args)         */
+            node_list_t  type_list;     /* VaForeach/VaRead: [T1, T2, ...]           */
+            node_t      *count_expr;    /* VaForeach: n in (n, args)                  */
+            node_t      *closure_body;  /* VaForeach/VaForeachTyped: block/match node */
+            char        *closure_param; /* VaForeach: param name (|v|)                */
+        } va_op;
 
         /* NodeSubMod: [int|ext] mod name { decls... } */
         struct { char *name; linkage_t linkage; node_list_t decls; } submod;

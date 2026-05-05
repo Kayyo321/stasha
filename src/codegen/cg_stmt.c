@@ -197,7 +197,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                              || ti.base == TypeVoid; /* multi-assign target: no type yet */
     if (!is_let_binding) {
         if (node->as.var_decl.storage == StorageHeap && !ti.is_pointer
-                && ti.base != TypeFnPtr && ti.base != TypeSlice) {
+                && ti.base != TypeFnPtr && ti.base != TypeSlice
+                && ti.base != TypeVa) {
             const char *qual = "heap";
             diag_begin_error("'%s' qualifier is not allowed on non-pointer variable '%s'",
                              qual, node->as.var_decl.name ? node->as.var_decl.name : "?");
@@ -228,6 +229,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     else
         LLVMPositionBuilderAtEnd(cg->builder, entry_bb);
     LLVMValueRef alloca_val = LLVMBuildAlloca(cg->builder, type, node->as.var_decl.name);
+    /* va_list buffers must be 8-byte aligned for va_start/va_arg to work correctly */
+    if (ti.base == TypeVa) LLVMSetAlignment(alloca_val, 8);
     LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 
     /* cross-domain check: heap/stack pointer domain vs initialiser provenance */
@@ -279,6 +282,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* zone-allocated: rem.() must be a no-op — zone owns the memory */
         if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
             sym_flags |= SymZoneAlloc;
+        /* va_list buffer: mark so rem.() and other pointer ops can be rejected */
+        if (ti.base == TypeVa) sym_flags |= SymVa;
         check_shadow(cg, node->as.var_decl.name, node->line, node->col, node->len);
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
     }

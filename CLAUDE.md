@@ -238,7 +238,18 @@ stream.cancel(f);                   // set cancelled flag; producer sees at next
 
 // Struct attributes: @packed  @align(N)  @c_layout
 // Fn/var attributes: @weak  @hidden  @restrict
-// Variadic: fn foo(stack i32 n, ...): void
+// Variadic (Tier 0 — raw):
+//   fn foo(stack i32 n, ...): void
+//   stack va args; va.start(args); va.next.[i32](args); va.end(args); va.copy(dst, src)
+// Variadic (Tier 1 — typed sugar, zero cost):
+//   va.foreach.[T](n, args) { |v| body };      // auto start/end
+//   stack [T1, T2] [a, b] = va.read.[T1, T2](args);
+// Variadic (Tier 2 — type-aware dispatch, ...typed ABI):
+//   fn log(...typed): void { stack va args; va.foreach(args) { |v| match v {
+//       i32 x => { ... }   f64 x => { ... }   i8 *r s => { ... }   _ => {}
+//   } }; }
+//   log(42, 3.14);  // compiler inserts: TAG_I32, 42, TAG_F64, 3.14, TAG_END
+// Tags: 0=END 1=i8/i16/i32 2=i64/u64 3=f32/f64 4=ptr 5=bool 6=u32 64+=struct
 // Union: type U: union { i32 x; f32 y; }
 // Bitfield: i32 flags: 3;  (inside struct)
 ```

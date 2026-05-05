@@ -1,0 +1,36 @@
+mod row16_va_typed;
+
+fn describe(...typed): void {
+    stack va args;
+    va.foreach(args) { |v|
+        match v {
+            i32 x => { print.('{} ', x); }
+            f64 x => { print.('{} ', x); }
+            _ => { print.('? '); }
+        }
+    };
+    print.('\n');
+}
+
+fn sum_mixed(stack i32 n, ...typed): i64 {
+    stack va args;
+    stack i64 total = 0;
+    va.foreach(args) { |v|
+        match v {
+            i32 x => { total = total + x; }
+            i64 x => { total = total + x; }
+            _ => {}
+        }
+    };
+    ret total;
+}
+
+fn main(void): i32 {
+    describe(42, 99);
+
+    stack i64 s = sum_mixed(2, 10, 20);
+    if (s != 30) { print.('FAIL sum_mixed: got {}\n', s); ret 1; }
+
+    print.('16_va_typed: ok\n');
+    ret 0;
+}

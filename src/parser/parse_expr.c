@@ -1,5 +1,8 @@
 /* ── primary ── */
 
+/* forward declaration: parse_trailing_closure is defined after parse_primary */
+static void parse_trailing_closure(parser_t *p, node_list_t *args_dest);
+
 static long parse_int_value(token_t t) {
     long val = 0;
     if (t.length > 2 && t.start[0] == '0' && (t.start[1] == 'x' || t.start[1] == 'X')) {
@@ -787,6 +790,150 @@ static node_t *parse_primary(parser_t *p) {
         diag_finish();
         p->had_error = True;
         return make_node(NodeNilExpr, line);
+    }
+
+    /* ── va.* — variadic argument access ────────────────────────────────────
+     *
+     *  Tier 0 (raw, zero cost):
+     *    va.start(args)                        → VaStart
+     *    va.next.(T)(args)                     → VaNext   [mirrors future.get.(T)(f)]
+     *    va.end(args)                          → VaEnd
+     *    va.copy(dst, src)                     → VaCopy
+     *
+     *  Tier 1 (typed sugar, zero cost):
+     *    va.foreach.(T)(n, args) { |v| body }  → VaForeach
+     *    va.read.[T1,T2,...](args)              → VaRead
+     *
+     *  Tier 2 (type-aware, requires ...typed fn):
+     *    va.foreach(args) { |v| body }         → VaForeachTyped
+     * ─────────────────────────────────────────────────────────────────────── */
+    if (check(p, TokVa)) {
+        usize_t line = p->current.line;
+        advance_parser(p); /* consume 'va' */
+        consume(p, TokDot, "'.' after 'va'");
+
+        /* Accept TokIdent or any keyword that matches a known va op name.
+           'foreach' is TokForeach (keyword), 'read' is TokIdent, etc. */
+        if (!check(p, TokIdent) && !check(p, TokForeach)) {
+            diag_begin_error("expected va operation (start, next, end, copy, foreach, read), found '%.*s'",
+                             (int)p->current.length, p->current.start);
+            diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                      True, "expected a va operation here");
+            diag_finish();
+            p->had_error = True;
+            return make_node(NodeNilExpr, line);
+        }
+        token_t op_tok = p->current;
+        advance_parser(p);
+        char op_name[16];
+        usize_t op_len = op_tok.length < 15 ? op_tok.length : 15;
+        memcpy(op_name, op_tok.start, op_len);
+        op_name[op_len] = '\0';
+
+        node_t *n = make_node(NodeVaOp, line);
+        n->as.va_op.copy_src     = Null;
+        n->as.va_op.count_expr   = Null;
+        n->as.va_op.closure_body = Null;
+        n->as.va_op.closure_param = Null;
+        n->as.va_op.next_type    = NO_TYPE;
+        node_list_init(&n->as.va_op.type_list);
+
+        if (strcmp(op_name, "start") == 0) {
+            n->as.va_op.op = VaStart;
+            consume(p, TokLParen, "'('");
+            n->as.va_op.handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+
+        } else if (strcmp(op_name, "end") == 0) {
+            n->as.va_op.op = VaEnd;
+            consume(p, TokLParen, "'('");
+            n->as.va_op.handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+
+        } else if (strcmp(op_name, "next") == 0) {
+            /* va.next.[T](args) — bracket syntax mirrors future.get.[T](f) */
+            n->as.va_op.op = VaNext;
+            consume(p, TokDot, "'.' before type parameter");
+            consume(p, TokLBracket, "'['");
+            n->as.va_op.next_type = parse_type(p);
+            consume(p, TokRBracket, "']'");
+            consume(p, TokLParen, "'('");
+            n->as.va_op.handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+
+        } else if (strcmp(op_name, "copy") == 0) {
+            /* va.copy(dst, src) */
+            n->as.va_op.op = VaCopy;
+            consume(p, TokLParen, "'('");
+            n->as.va_op.handle   = parse_expr(p);
+            consume(p, TokComma, "','");
+            n->as.va_op.copy_src = parse_expr(p);
+            consume(p, TokRParen, "')'");
+
+        } else if (strcmp(op_name, "foreach") == 0) {
+            if (check(p, TokDot)) {
+                /* va.foreach.[T](n, args) { |v| body } — Tier 1 typed loop */
+                advance_parser(p); /* consume '.' */
+                consume(p, TokLBracket, "'['");
+                n->as.va_op.next_type = parse_type(p); /* the T */
+                consume(p, TokRBracket, "']'");
+                consume(p, TokLParen, "'('");
+                n->as.va_op.count_expr = parse_expr(p);
+                consume(p, TokComma, "','");
+                n->as.va_op.handle = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                n->as.va_op.op = VaForeach;
+            } else {
+                /* va.foreach(args) { |v| body } — Tier 2 type-aware */
+                consume(p, TokLParen, "'('");
+                n->as.va_op.handle = parse_expr(p);
+                consume(p, TokRParen, "')'");
+                n->as.va_op.op = VaForeachTyped;
+            }
+            /* parse trailing closure { |v| body } */
+            if (check(p, TokLBrace) && p->no_trailing_closure == 0) {
+                node_list_t closure_list;
+                node_list_init(&closure_list);
+                parse_trailing_closure(p, &closure_list);
+                if (closure_list.count > 0) {
+                    node_t *lam = closure_list.items[0];
+                    n->as.va_op.closure_body = lam;
+                    /* extract param name from first param (the |v| part) */
+                    if (lam->kind == NodeLambda && lam->as.lambda_expr.params.count > 0)
+                        n->as.va_op.closure_param =
+                            lam->as.lambda_expr.params.items[0]->as.var_decl.name;
+                }
+            }
+
+        } else if (strcmp(op_name, "read") == 0) {
+            /* va.read.[T1, T2, ...](args) — Tier 1 typed destructure.
+               Bracket syntax mirrors generic instantiation: arr_t.[i32]. */
+            n->as.va_op.op = VaRead;
+            consume(p, TokDot, "'.' before type list");
+            consume(p, TokLBracket, "'['");
+            if (!check(p, TokRBracket)) {
+                do {
+                    type_info_t ti = parse_type(p);
+                    /* store each type as a NodeSizeofExpr (has a type_info_t field) */
+                    node_t *tnode = make_node(NodeSizeofExpr, line);
+                    tnode->as.sizeof_expr.type = ti;
+                    node_list_push(&n->as.va_op.type_list, tnode);
+                } while (match_tok(p, TokComma));
+            }
+            consume(p, TokRBracket, "']'");
+            consume(p, TokLParen, "'('");
+            n->as.va_op.handle = parse_expr(p);
+            consume(p, TokRParen, "')'");
+
+        } else {
+            diag_begin_error("unknown va operation '%s'", op_name);
+            diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length),
+                      True, "expected: start, next, end, copy, foreach, read");
+            diag_finish();
+            n->as.va_op.op     = VaEnd; /* recover */
+            n->as.va_op.handle = make_node(NodeNilExpr, line);
+        }
+        return n;
     }
 
     /* any.(expr) — extract runtime type tag from an any.[...] value */

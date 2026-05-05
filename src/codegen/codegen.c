@@ -71,6 +71,7 @@ enum {
     SymTls      = (1 << 6),  /* thread-local storage        */
     SymZone     = (1 << 7),  /* zone variable (freed by __zone_free) */
     SymZoneAlloc = (1 << 8), /* zone-allocated pointer — rem.() is a no-op */
+    SymVa        = (1 << 9), /* va_list buffer — TypeVa alloca              */
 };
 
 typedef struct {

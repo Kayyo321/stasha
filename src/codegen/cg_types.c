@@ -180,6 +180,20 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         case TypeZone:
             /* zone is an opaque void* to zone_state_t; stored as ptr in structs/params */
             return LLVMPointerTypeInContext(cg->ctx, 0);
+        case TypeVa: {
+            /* platform va_list buffer: alloca'd byte array.
+               Sizes: x86_64 = 24 bytes (one __va_list_tag),
+                      AArch64 = 32 bytes, 32-bit = 4 bytes (plain ptr). */
+            unsigned va_bytes = 8; /* conservative default */
+            const char *triple = cg->target_triple;
+            if (triple) {
+                if      (strstr(triple, "x86_64"))                         va_bytes = 24;
+                else if (strstr(triple, "aarch64") || strstr(triple, "arm64")) va_bytes = 32;
+                else if (strstr(triple, "arm")    || strstr(triple, "i686")
+                      || strstr(triple, "i386"))                           va_bytes = 4;
+            }
+            return LLVMArrayType2(LLVMInt8TypeInContext(cg->ctx), va_bytes);
+        }
         case TypeSlice: {
             /* fat pointer: { ptr, i32, i32 } = (data, len, cap) */
             LLVMTypeRef fields[3] = {
@@ -189,6 +203,8 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
             };
             return LLVMStructTypeInContext(cg->ctx, fields, 3, 0);
         }
+        case TypeInfer:
+            return LLVMVoidTypeInContext(cg->ctx);
     }
     return LLVMVoidTypeInContext(cg->ctx);
 }
@@ -286,6 +302,7 @@ static usize_t payload_type_size(type_info_t ti) {
         case TypeZone:
         case TypeFnPtr:
             return 8;
+        case TypeVa: return 32; /* conservative: AArch64 max size */
         default: return 8; /* conservative default for user types */
     }
 }
