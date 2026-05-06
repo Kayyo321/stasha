@@ -599,7 +599,10 @@ static void gen_ret(cg_t *cg, node_t *node) {
                 sts_emit_task_ret(cg, &cg->cur_coro, rv);
             }
         } else {
-            sts_emit_stream_ret(cg, &cg->cur_coro);
+            LLVMValueRef final_v = Null;
+            if (node->as.ret_stmt.values.count > 0)
+                final_v = gen_expr(cg, node->as.ret_stmt.values.items[0]);
+            sts_emit_stream_ret(cg, &cg->cur_coro, final_v);
         }
         return;
     }
@@ -1900,7 +1903,7 @@ static void gen_comptime_assert(cg_t *cg, node_t *node) {
     }
     diag_begin_error("comptime_assert: expression too complex to evaluate at compile time");
     diag_span(DIAG_NODE(node), True, "unsupported expression");
-    diag_note("only constants, sizeof, struct @comptime fields, and arithmetic are supported");
+    diag_note("supports: constants, sizeof, struct @comptime fields, arithmetic, comparisons (==, !=, <, >), boolean logic (&&, ||, !)");
     diag_finish();
 }
 

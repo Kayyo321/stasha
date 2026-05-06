@@ -60,6 +60,11 @@ static signal_storage_t *ensure_signal_storage(cg_t *cg, const char *mt) {
     LLVMSetLinkage(entry.data_gv, LLVMLinkOnceODRLinkage);
     LLVMSetInitializer(entry.data_gv, LLVMConstNull(ptr_t));
 
+    snprintf(name, sizeof(name), "__stasha_watch_udata_%s", mt);
+    entry.udata_gv = LLVMAddGlobal(cg->module, ptr_t, name);
+    LLVMSetLinkage(entry.udata_gv, LLVMLinkOnceODRLinkage);
+    LLVMSetInitializer(entry.udata_gv, LLVMConstNull(ptr_t));
+
     snprintf(name, sizeof(name), "__stasha_watch_len_%s", mt);
     entry.len_gv = LLVMAddGlobal(cg->module, i64_t, name);
     LLVMSetLinkage(entry.len_gv, LLVMLinkOnceODRLinkage);
@@ -153,15 +158,18 @@ static LLVMValueRef get_fflush_fn(cg_t *cg) {
  * void __stasha_watch_register(ptr data_gv, ptr len_gv, ptr cap_gv,
  *                              ptr lock_gv, ptr fn)
  * Grows the fn-pointer array (realloc-doubling) and appends fn under lock. */
+/* __stasha_watch_register(data_gv, udata_gv, len_gv, cap_gv, lock_gv, fn_ptr, user_data)
+ * Appends fn_ptr to data array and user_data to parallel udata array (both grow together). */
 static LLVMValueRef ensure_watch_register_fn(cg_t *cg) {
     if (cg->watch_register_fn) return cg->watch_register_fn;
 
     LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg->ctx, 0);
     LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg->ctx);
     LLVMTypeRef void_t = LLVMVoidTypeInContext(cg->ctx);
-    LLVMTypeRef params[5] = { ptr_t, ptr_t, ptr_t, ptr_t, ptr_t };
+    /* params: data_gv, udata_gv, len_gv, cap_gv, lock_gv, fn_ptr, user_data */
+    LLVMTypeRef params[7] = { ptr_t, ptr_t, ptr_t, ptr_t, ptr_t, ptr_t, ptr_t };
 
-    cg->watch_register_type = LLVMFunctionType(void_t, params, 5, 0);
+    cg->watch_register_type = LLVMFunctionType(void_t, params, 7, 0);
     cg->watch_register_fn   = LLVMAddFunction(cg->module,
         "__stasha_watch_register", cg->watch_register_type);
     LLVMSetLinkage(cg->watch_register_fn, LLVMLinkOnceODRLinkage);
@@ -174,11 +182,13 @@ static LLVMValueRef ensure_watch_register_fn(cg_t *cg) {
         cg->watch_register_fn, "entry");
     LLVMPositionBuilderAtEnd(cg->builder, entry);
 
-    LLVMValueRef data_gv = LLVMGetParam(cg->watch_register_fn, 0);
-    LLVMValueRef len_gv  = LLVMGetParam(cg->watch_register_fn, 1);
-    LLVMValueRef cap_gv  = LLVMGetParam(cg->watch_register_fn, 2);
-    LLVMValueRef lock_gv = LLVMGetParam(cg->watch_register_fn, 3);
-    LLVMValueRef fn_ptr  = LLVMGetParam(cg->watch_register_fn, 4);
+    LLVMValueRef data_gv  = LLVMGetParam(cg->watch_register_fn, 0);
+    LLVMValueRef udata_gv = LLVMGetParam(cg->watch_register_fn, 1);
+    LLVMValueRef len_gv   = LLVMGetParam(cg->watch_register_fn, 2);
+    LLVMValueRef cap_gv   = LLVMGetParam(cg->watch_register_fn, 3);
+    LLVMValueRef lock_gv  = LLVMGetParam(cg->watch_register_fn, 4);
+    LLVMValueRef fn_ptr   = LLVMGetParam(cg->watch_register_fn, 5);
+    LLVMValueRef user_data = LLVMGetParam(cg->watch_register_fn, 6);
 
     emit_spin_acquire(cg, lock_gv);
 
@@ -201,19 +211,29 @@ static LLVMValueRef ensure_watch_register_fn(cg_t *cg) {
         LLVMConstInt(i64_t, 4, 0), cap_doubled, "new_cap");
     LLVMValueRef bytes = LLVMBuildMul(cg->builder, new_cap,
         LLVMConstInt(i64_t, 8, 0), "bytes");
+    /* grow fn-pointer array */
     LLVMValueRef old_data = LLVMBuildLoad2(cg->builder, ptr_t, data_gv, "old_data");
     LLVMValueRef realloc_args[2] = { old_data, bytes };
     LLVMValueRef new_data = LLVMBuildCall2(cg->builder, cg->realloc_type,
         cg->realloc_fn, realloc_args, 2, "new_data");
     LLVMBuildStore(cg->builder, new_data, data_gv);
+    /* grow user_data array in parallel */
+    LLVMValueRef old_udata = LLVMBuildLoad2(cg->builder, ptr_t, udata_gv, "old_udata");
+    LLVMValueRef realloc_uargs[2] = { old_udata, bytes };
+    LLVMValueRef new_udata = LLVMBuildCall2(cg->builder, cg->realloc_type,
+        cg->realloc_fn, realloc_uargs, 2, "new_udata");
+    LLVMBuildStore(cg->builder, new_udata, udata_gv);
     LLVMBuildStore(cg->builder, new_cap, cap_gv);
     LLVMBuildBr(cg->builder, store_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, store_bb);
-    LLVMValueRef data = LLVMBuildLoad2(cg->builder, ptr_t, data_gv, "data");
-    LLVMValueRef len2 = LLVMBuildLoad2(cg->builder, i64_t, len_gv, "len2");
-    LLVMValueRef slot_ptr = LLVMBuildGEP2(cg->builder, ptr_t, data, &len2, 1, "slot_ptr");
-    LLVMBuildStore(cg->builder, fn_ptr, slot_ptr);
+    LLVMValueRef data  = LLVMBuildLoad2(cg->builder, ptr_t, data_gv, "data");
+    LLVMValueRef udata = LLVMBuildLoad2(cg->builder, ptr_t, udata_gv, "udata");
+    LLVMValueRef len2  = LLVMBuildLoad2(cg->builder, i64_t, len_gv, "len2");
+    LLVMValueRef slot_ptr  = LLVMBuildGEP2(cg->builder, ptr_t, data,  &len2, 1, "slot_ptr");
+    LLVMValueRef uslot_ptr = LLVMBuildGEP2(cg->builder, ptr_t, udata, &len2, 1, "uslot_ptr");
+    LLVMBuildStore(cg->builder, fn_ptr,    slot_ptr);
+    LLVMBuildStore(cg->builder, user_data, uslot_ptr);
     LLVMValueRef new_len = LLVMBuildAdd(cg->builder, len2,
         LLVMConstInt(i64_t, 1, 0), "new_len");
     LLVMBuildStore(cg->builder, new_len, len_gv);
@@ -267,18 +287,19 @@ static LLVMValueRef ensure_watch_dereg_fn(cg_t *cg) {
 }
 
 /* ── shared helper: __stasha_watch_dispatch ──
- * void __stasha_watch_dispatch(ptr data_gv, ptr len_gv, ptr lock_gv, ptr arg)
- * Snapshot-then-iterate; each iter re-reads slot under lock, calls fn
- * outside lock (handler may reentrantly register/send/break). */
+ * void __stasha_watch_dispatch(ptr data_gv, ptr udata_gv, ptr len_gv, ptr lock_gv, ptr arg)
+ * Snapshot-then-iterate; re-reads slot+user_data under lock, calls fn(arg, data_gv, lock_gv, i, user_data)
+ * outside lock. */
 static LLVMValueRef ensure_watch_dispatch_fn(cg_t *cg) {
     if (cg->watch_dispatch_fn) return cg->watch_dispatch_fn;
 
     LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg->ctx, 0);
     LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg->ctx);
     LLVMTypeRef void_t = LLVMVoidTypeInContext(cg->ctx);
-    LLVMTypeRef params[4] = { ptr_t, ptr_t, ptr_t, ptr_t };
+    /* params: data_gv, udata_gv, len_gv, lock_gv, arg */
+    LLVMTypeRef params[5] = { ptr_t, ptr_t, ptr_t, ptr_t, ptr_t };
 
-    cg->watch_dispatch_type = LLVMFunctionType(void_t, params, 4, 0);
+    cg->watch_dispatch_type = LLVMFunctionType(void_t, params, 5, 0);
     cg->watch_dispatch_fn   = LLVMAddFunction(cg->module,
         "__stasha_watch_dispatch", cg->watch_dispatch_type);
     LLVMSetLinkage(cg->watch_dispatch_fn, LLVMLinkOnceODRLinkage);
@@ -291,10 +312,11 @@ static LLVMValueRef ensure_watch_dispatch_fn(cg_t *cg) {
         cg->watch_dispatch_fn, "entry");
     LLVMPositionBuilderAtEnd(cg->builder, entry);
 
-    LLVMValueRef data_gv = LLVMGetParam(cg->watch_dispatch_fn, 0);
-    LLVMValueRef len_gv  = LLVMGetParam(cg->watch_dispatch_fn, 1);
-    LLVMValueRef lock_gv = LLVMGetParam(cg->watch_dispatch_fn, 2);
-    LLVMValueRef arg     = LLVMGetParam(cg->watch_dispatch_fn, 3);
+    LLVMValueRef data_gv  = LLVMGetParam(cg->watch_dispatch_fn, 0);
+    LLVMValueRef udata_gv = LLVMGetParam(cg->watch_dispatch_fn, 1);
+    LLVMValueRef len_gv   = LLVMGetParam(cg->watch_dispatch_fn, 2);
+    LLVMValueRef lock_gv  = LLVMGetParam(cg->watch_dispatch_fn, 3);
+    LLVMValueRef arg      = LLVMGetParam(cg->watch_dispatch_fn, 4);
 
     /* snapshot len under lock */
     emit_spin_acquire(cg, lock_gv);
@@ -323,10 +345,13 @@ static LLVMValueRef ensure_watch_dispatch_fn(cg_t *cg) {
 
     LLVMPositionBuilderAtEnd(cg->builder, body_bb);
     emit_spin_acquire(cg, lock_gv);
-    LLVMValueRef data = LLVMBuildLoad2(cg->builder, ptr_t, data_gv, "data");
+    LLVMValueRef data  = LLVMBuildLoad2(cg->builder, ptr_t, data_gv,  "data");
+    LLVMValueRef udata = LLVMBuildLoad2(cg->builder, ptr_t, udata_gv, "udata");
     LLVMValueRef i_val2 = LLVMBuildLoad2(cg->builder, i64_t, i_alloca, "i.v2");
-    LLVMValueRef slot_ptr = LLVMBuildGEP2(cg->builder, ptr_t, data, &i_val2, 1, "slot_ptr");
-    LLVMValueRef fn_ptr = LLVMBuildLoad2(cg->builder, ptr_t, slot_ptr, "fn_ptr");
+    LLVMValueRef slot_ptr  = LLVMBuildGEP2(cg->builder, ptr_t, data,  &i_val2, 1, "slot_ptr");
+    LLVMValueRef uslot_ptr = LLVMBuildGEP2(cg->builder, ptr_t, udata, &i_val2, 1, "uslot_ptr");
+    LLVMValueRef fn_ptr    = LLVMBuildLoad2(cg->builder, ptr_t, slot_ptr,  "fn_ptr");
+    LLVMValueRef user_data = LLVMBuildLoad2(cg->builder, ptr_t, uslot_ptr, "user_data");
     emit_spin_release(cg, lock_gv);
 
     LLVMValueRef is_null = LLVMBuildICmp(cg->builder, LLVMIntEQ, fn_ptr,
@@ -334,10 +359,11 @@ static LLVMValueRef ensure_watch_dispatch_fn(cg_t *cg) {
     LLVMBuildCondBr(cg->builder, is_null, step_bb, call_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, call_bb);
-    LLVMTypeRef handler_params[4] = { ptr_t, ptr_t, ptr_t, i64_t };
-    LLVMTypeRef handler_type = LLVMFunctionType(void_t, handler_params, 4, 0);
-    LLVMValueRef call_args[4] = { arg, data_gv, lock_gv, i_val2 };
-    LLVMBuildCall2(cg->builder, handler_type, fn_ptr, call_args, 4, "");
+    /* handler signature: void(ptr arg, ptr data_gv, ptr lock_gv, i64 index, ptr user_data) */
+    LLVMTypeRef handler_params[5] = { ptr_t, ptr_t, ptr_t, i64_t, ptr_t };
+    LLVMTypeRef handler_type = LLVMFunctionType(void_t, handler_params, 5, 0);
+    LLVMValueRef call_args[5] = { arg, data_gv, lock_gv, i_val2, user_data };
+    LLVMBuildCall2(cg->builder, handler_type, fn_ptr, call_args, 5, "");
     LLVMBuildBr(cg->builder, step_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, step_bb);
@@ -419,10 +445,12 @@ static LLVMValueRef ensure_quit_fn(cg_t *cg) {
 
 /* ── gen_watch_stmt ──
  * Synthesizes a top-level handler function with signature
- *   void(ptr arg, ptr data_gv, ptr lock_gv, i64 index)
+ *   void(ptr arg, ptr data_gv, ptr lock_gv, i64 index, ptr user_data)
  * whose body is the user's block.  `break` inside the body lowers to
  * a jump to a synthesized dereg-and-return block.  Emits a call to the
- * shared register helper at the watch site. */
+ * shared register helper at the watch site.  If the watch has a capture
+ * list, builds an env struct (same as lambda captures) and passes it as
+ * user_data; inside the handler body captured names are loaded from the env. */
 static void gen_watch_stmt(cg_t *cg, node_t *node) {
     type_info_t ti = node->as.watch_stmt.type;
     ti = resolve_alias(cg, ti);
@@ -442,8 +470,56 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg->ctx, 0);
     LLVMTypeRef i64_t  = LLVMInt64TypeInContext(cg->ctx);
     LLVMTypeRef void_t = LLVMVoidTypeInContext(cg->ctx);
-    LLVMTypeRef hparams[4] = { ptr_t, ptr_t, ptr_t, i64_t };
-    LLVMTypeRef htype = LLVMFunctionType(void_t, hparams, 4, 0);
+
+    usize_t          cap_count = node->as.watch_stmt.capture_count;
+    capture_entry_t *caps      = node->as.watch_stmt.captures;
+
+    /* ── build capture env in the caller's block (before switching current_fn) ── */
+    LLVMTypeRef  env_type   = Null;
+    LLVMValueRef env_alloca = Null;
+    LLVMTypeRef *cap_types  = Null;
+    heap_t cap_types_heap   = NullHeap;
+    heap_t env_fields_heap  = NullHeap;
+
+    if (cap_count > 0) {
+        cap_types_heap  = allocate(cap_count, sizeof(LLVMTypeRef));
+        env_fields_heap = allocate(cap_count, sizeof(LLVMTypeRef));
+        cap_types = cap_types_heap.pointer;
+        LLVMTypeRef *env_fields = env_fields_heap.pointer;
+        for (usize_t ci = 0; ci < cap_count; ci++) {
+            symbol_t *outer = symtab_lookup(&cg->locals, caps[ci].name);
+            LLVMTypeRef val_t = (outer && outer->type)
+                                ? outer->type
+                                : LLVMInt32TypeInContext(cg->ctx);
+            cap_types[ci]  = val_t;
+            env_fields[ci] = caps[ci].by_ref ? ptr_t : val_t;
+        }
+        env_type   = LLVMStructTypeInContext(cg->ctx, env_fields,
+                                             (unsigned)cap_count, 0);
+        env_alloca = alloc_in_entry(cg, env_type, "watch.env");
+        for (usize_t ci = 0; ci < cap_count; ci++) {
+            symbol_t *outer = symtab_lookup(&cg->locals, caps[ci].name);
+            if (!outer) continue;
+            LLVMValueRef idx[2] = {
+                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0),
+                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned)ci, 0),
+            };
+            LLVMValueRef fp = LLVMBuildInBoundsGEP2(cg->builder, env_type,
+                                                     env_alloca, idx, 2, "env.f");
+            if (caps[ci].by_ref) {
+                LLVMBuildStore(cg->builder, outer->value, fp);
+            } else {
+                LLVMValueRef v = LLVMBuildLoad2(cg->builder, cap_types[ci],
+                                                outer->value, caps[ci].name);
+                LLVMBuildStore(cg->builder, v, fp);
+            }
+        }
+        deallocate(env_fields_heap);
+    }
+
+    /* handler signature: void(ptr arg, ptr data_gv, ptr lock_gv, i64 index, ptr user_data) */
+    LLVMTypeRef hparams[5] = { ptr_t, ptr_t, ptr_t, i64_t, ptr_t };
+    LLVMTypeRef htype = LLVMFunctionType(void_t, hparams, 5, 0);
 
     char hname[256];
     snprintf(hname, sizeof(hname), "__stasha_handler_%s_%lu",
@@ -459,6 +535,13 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     usize_t           saved_locals   = cg->locals.count;
     usize_t           saved_dtor     = cg->dtor_depth;
 
+    /* save and set lambda capture context so gen_ident can load from env */
+    LLVMValueRef     saved_env_param     = cg->lambda_env_param;
+    LLVMTypeRef      saved_env_type      = cg->lambda_env_type;
+    capture_entry_t *saved_captures      = cg->lambda_captures;
+    usize_t          saved_capture_count = cg->lambda_capture_count;
+    LLVMTypeRef     *saved_cap_types     = cg->lambda_cap_types;
+
     cg->current_fn   = hfn;
     cg->locals.count = 0;
     cg->dtor_depth   = 0;
@@ -467,10 +550,27 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     LLVMBasicBlockRef dereg_bb = LLVMAppendBasicBlockInContext(cg->ctx, hfn, "watch.dereg");
     LLVMPositionBuilderAtEnd(cg->builder, entry);
 
-    LLVMValueRef arg     = LLVMGetParam(hfn, 0);
-    LLVMValueRef data_gv = LLVMGetParam(hfn, 1);
-    LLVMValueRef lock_gv = LLVMGetParam(hfn, 2);
-    LLVMValueRef index   = LLVMGetParam(hfn, 3);
+    LLVMValueRef arg       = LLVMGetParam(hfn, 0);
+    LLVMValueRef data_gv   = LLVMGetParam(hfn, 1);
+    LLVMValueRef lock_gv   = LLVMGetParam(hfn, 2);
+    LLVMValueRef index     = LLVMGetParam(hfn, 3);
+    LLVMValueRef user_data = LLVMGetParam(hfn, 4);
+
+    /* set up capture context inside the handler */
+    if (cap_count > 0) {
+        cg->lambda_env_param     = user_data;
+        cg->lambda_env_type      = env_type;
+        cg->lambda_captures      = caps;
+        cg->lambda_capture_count = cap_count;
+        cg->lambda_cap_types     = cap_types;
+        cg->lambda_depth++;
+    } else {
+        cg->lambda_env_param     = Null;
+        cg->lambda_env_type      = Null;
+        cg->lambda_captures      = Null;
+        cg->lambda_capture_count = 0;
+        cg->lambda_cap_types     = Null;
+    }
 
     /* stack-copy the param so user reads behave as if it were a local value */
     LLVMValueRef param_alloca = LLVMBuildAlloca(cg->builder, t_llvm,
@@ -501,6 +601,12 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     LLVMBuildRetVoid(cg->builder);
 
     /* restore outer state */
+    if (cap_count > 0) cg->lambda_depth--;
+    cg->lambda_env_param     = saved_env_param;
+    cg->lambda_env_type      = saved_env_type;
+    cg->lambda_captures      = saved_captures;
+    cg->lambda_capture_count = saved_capture_count;
+    cg->lambda_cap_types     = saved_cap_types;
     cg->current_fn      = saved_fn;
     cg->break_target    = saved_break;
     cg->continue_target = saved_continue;
@@ -508,11 +614,15 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     cg->dtor_depth      = saved_dtor;
     if (saved_bb) LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 
-    /* register the handler at the watch site */
-    LLVMValueRef reg_args[5] = {
-        st->data_gv, st->len_gv, st->cap_gv, st->lock_gv, hfn
+    if (cap_types_heap.pointer) deallocate(cap_types_heap);
+
+    /* register the handler at the watch site:
+       __stasha_watch_register(data_gv, udata_gv, len_gv, cap_gv, lock_gv, fn_ptr, user_data) */
+    LLVMValueRef env_arg = env_alloca ? env_alloca : LLVMConstNull(ptr_t);
+    LLVMValueRef reg_args[7] = {
+        st->data_gv, st->udata_gv, st->len_gv, st->cap_gv, st->lock_gv, hfn, env_arg
     };
-    LLVMBuildCall2(cg->builder, cg->watch_register_type, reg_fn, reg_args, 5, "");
+    LLVMBuildCall2(cg->builder, cg->watch_register_type, reg_fn, reg_args, 7, "");
 }
 
 /* ── gen_send_stmt ──
@@ -529,8 +639,9 @@ static void gen_send_stmt(cg_t *cg, node_t *node) {
     LLVMValueRef tmp = alloc_in_entry(cg, t_llvm, "send.tmp");
     LLVMBuildStore(cg->builder, val, tmp);
 
-    LLVMValueRef args[4] = { st->data_gv, st->len_gv, st->lock_gv, tmp };
-    LLVMBuildCall2(cg->builder, cg->watch_dispatch_type, disp_fn, args, 4, "");
+    /* dispatch(data_gv, udata_gv, len_gv, lock_gv, arg) */
+    LLVMValueRef args[5] = { st->data_gv, st->udata_gv, st->len_gv, st->lock_gv, tmp };
+    LLVMBuildCall2(cg->builder, cg->watch_dispatch_type, disp_fn, args, 5, "");
 }
 
 /* ── gen_quit_stmt ──

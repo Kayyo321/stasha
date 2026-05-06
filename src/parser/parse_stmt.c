@@ -338,8 +338,8 @@ static node_t *parse_expr_stmt(parser_t *p) {
     return n;
 }
 
-/* watch.(T name) => { body }  — register typed handler.
-   Body is parsed via parse_body so `=> stmt;` and `{ block }` both work. */
+/* watch.(T name) { .|caps| body }  — register typed handler with optional captures.
+   The body must be a { } block (not the `=> stmt` shorthand) when captures are used. */
 static node_t *parse_watch_stmt(parser_t *p) {
     usize_t line = p->current.line;
     advance_parser(p);                       /* consume 'watch' */
@@ -349,11 +349,34 @@ static node_t *parse_watch_stmt(parser_t *p) {
     token_t name_tok = consume_name(p, "handler parameter name");
     char *param_name = copy_name_text(name_tok);
     consume(p, TokRParen, "')'");
-    node_t *body = parse_body(p);
+
+    /* peek for capture list inside the block: { .|...| body } */
+    capture_entry_t *captures    = Null;
+    usize_t          capture_cnt = 0;
+    node_t          *body        = Null;
+
+    if (check(p, TokLBrace)) {
+        usize_t bline = p->current.line;
+        advance_parser(p); /* consume '{' */
+        try_parse_capture_list(p, &captures, &capture_cnt);
+        /* parse remaining body statements */
+        body = make_node(NodeBlock, bline);
+        node_list_init(&body->as.block.stmts);
+        while (!check(p, TokRBrace) && !check(p, TokEof)) {
+            node_t *stmt = parse_statement(p);
+            if (stmt) node_list_push(&body->as.block.stmts, stmt);
+        }
+        consume(p, TokRBrace, "'}'");
+    } else {
+        body = parse_body(p);
+    }
+
     node_t *n = make_node(NodeWatchStmt, line);
-    n->as.watch_stmt.type       = type;
-    n->as.watch_stmt.param_name = param_name;
-    n->as.watch_stmt.body       = body;
+    n->as.watch_stmt.type          = type;
+    n->as.watch_stmt.param_name    = param_name;
+    n->as.watch_stmt.body          = body;
+    n->as.watch_stmt.captures      = captures;
+    n->as.watch_stmt.capture_count = capture_cnt;
     return n;
 }
 

@@ -368,6 +368,51 @@ static type_info_t parse_type(parser_t *p) {
                 restore_state(p, snap);
             }
         }
+    } else if (check(p, TokIdent)
+               && p->current.length == 7
+               && memcmp(p->current.start, "closure", 7) == 0) {
+        /* closure.(params): ret — fat {fn_ptr, env_ptr} pair.
+           Parsed identically to fn*(params): ret but produces TypeClosure. */
+        usize_t cline = p->current.line;
+        advance_parser(p); /* consume 'closure' */
+        consume(p, TokDot, "'.' after 'closure' in closure type");
+        consume(p, TokLParen, "'(' in closure type");
+
+        fn_ptr_param_t tmp_cparams[32];
+        usize_t cparam_count = 0;
+
+        if (!check(p, TokRParen) && !check(p, TokVoid)) {
+            do {
+                if (cparam_count >= 32) {
+                    diag_begin_error("closure type exceeds maximum of 32 parameters");
+                    diag_span(SRC_LOC(cline, 1, 0), True, "in this closure type");
+                    diag_finish();
+                    p->had_error = True;
+                    break;
+                }
+                storage_t cps = StorageDefault;
+                if (match_tok(p, TokStack))      cps = StorageStack;
+                else if (match_tok(p, TokHeap)) cps = StorageHeap;
+                type_info_t cptype = parse_type(p);
+                tmp_cparams[cparam_count].storage = cps;
+                tmp_cparams[cparam_count].type    = cptype;
+                cparam_count++;
+            } while (match_tok(p, TokComma));
+        } else if (check(p, TokVoid)) {
+            advance_parser(p);
+        }
+        consume(p, TokRParen, "')'");
+        consume(p, TokColon, "':'");
+        type_info_t cret_type = parse_type(p);
+
+        fn_ptr_desc_t *cdesc = alloc_fn_ptr_desc(cparam_count);
+        cdesc->ret_type = cret_type;
+        for (usize_t i = 0; i < cparam_count; i++)
+            cdesc->params[i] = tmp_cparams[i];
+
+        info.base        = TypeClosure;
+        info.fn_ptr_desc = cdesc;
+        return info;
     } else if (check(p, TokIdent)) {
         info.base = TypeUser;
         info.user_name = copy_token_text(p->current);

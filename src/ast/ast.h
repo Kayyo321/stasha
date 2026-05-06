@@ -28,6 +28,7 @@ typedef enum {
     TypeZone,       /* zone — opaque arena allocator handle (void* state pointer) */
     TypeInfer,      /* sentinel: "infer me" — used for trailing-closure params */
     TypeVa,         /* va — platform va_list buffer (alloca'd, stack only)     */
+    TypeClosure,    /* closure.(params): ret — fat {fn_ptr, env_ptr} pair      */
 } type_kind_t;
 
 /* ── forward declaration for fn_ptr_desc_t and type_info_t ── */
@@ -310,10 +311,17 @@ typedef enum {
 
     /* sugar pack: lambda expression */
     NodeLambda,          /* lam.(params): ret { body } — lifted to module-level fn */
+    NodeLambdaCall,      /* (lambda)(args) — IIFE from pipeline |> lam.(x){...}   */
 
     /* va.* — variadic argument access (Tier 0/1/2) */
     NodeVaOp,            /* va.start/next/end/copy/foreach/read/foreach_typed */
 } node_kind_t;
+
+/* ── capture list entry (for lambda and watch captures) ── */
+typedef struct {
+    char     *name;    /* captured variable name */
+    boolean_t by_ref;  /* True → env holds &name, False → env holds copy  */
+} capture_entry_t;
 
 /* maximum conditions in a single comparison chain */
 #define CMP_CHAIN_MAX 32
@@ -328,6 +336,7 @@ typedef enum {
     StreamDone,  /* stream.done.(s)             — i32 1 if EOS, else 0     */
     StreamDrop,  /* stream.drop.(s)             — destroy stream coroutine */
     StreamCancel,/* stream.cancel.(s)           — request cooperative end  */
+    StreamFinal, /* stream.final.(s)            — load final ret val slot  */
 } future_op_t;
 
 /* ── va operation kinds ── */
@@ -611,7 +620,13 @@ struct node {
         struct { char *fmt; usize_t fmt_len; node_list_t args; boolean_t on_heap; } comptime_fmt;
 
         /* NodeWatchStmt: watch.(T name) => { body } */
-        struct { type_info_t type; char *param_name; node_t *body; } watch_stmt;
+        struct {
+            type_info_t      type;
+            char            *param_name;
+            node_t          *body;
+            capture_entry_t *captures;      /* non-null when .|...| list present */
+            usize_t          capture_count;
+        } watch_stmt;
 
         /* NodeSendStmt: send.(value) */
         struct { node_t *value; } send_stmt;
@@ -639,17 +654,27 @@ struct node {
         struct { int unused; } yield_now_expr;
 
         /* NodeLambda: lam.(params): ret { body }
-           Lifted to a module-level LLVM fn during codegen.  v1: non-capturing only.
+           Lifted to a module-level LLVM fn during codegen.
+           When captures is non-null, a closure {fn_ptr, env_ptr} is returned.
            When `inferred_params` is True, params carry TypeInfer types — gen_call
            backfills concrete types from the callee's matching parameter slot. */
         struct {
-            node_list_t params;       /* VarDecl nodes (name + type + storage)      */
-            type_info_t ret_type;     /* TypeInfer means infer from body's `ret`    */
-            node_t     *body;         /* Block                                       */
-            char       *mangled_name; /* assigned at codegen time                    */
-            boolean_t   inferred_params; /* True for trailing-closure short form     */
-            boolean_t   inferred_ret;    /* True when ret type was omitted           */
+            node_list_t      params;          /* VarDecl nodes (name + type + storage)      */
+            type_info_t      ret_type;        /* TypeInfer means infer from body's `ret`    */
+            node_t          *body;            /* Block                                       */
+            char            *mangled_name;    /* assigned at codegen time                    */
+            boolean_t        inferred_params; /* True for trailing-closure short form        */
+            boolean_t        inferred_ret;    /* True when ret type was omitted              */
+            capture_entry_t *captures;        /* non-null when .|...| list present           */
+            usize_t          capture_count;
         } lambda_expr;
+
+        /* NodeLambdaCall: immediate lambda invocation from |> pipeline
+           e.g.  value |> lam.(x): T { body }  →  lambda(value) */
+        struct {
+            node_t     *lambda;  /* NodeLambda node                          */
+            node_list_t args;    /* arguments (first = lhs of |>)            */
+        } lambda_call;
 
         /* NodeVaOp: va.start/next/end/copy/foreach/read/foreach_typed
            All ops reference their va_list variable through `handle`.

@@ -212,6 +212,7 @@ typedef struct {
 typedef struct {
     char *mt;                /* signal type key (e.g. "i32" or "ex_signals__sig_t") */
     LLVMValueRef data_gv;    /* ptr: heap array of fn pointers     */
+    LLVMValueRef udata_gv;   /* ptr: parallel array of user_data ptrs (env for captures) */
     LLVMValueRef len_gv;     /* i64: current number of registered  */
     LLVMValueRef cap_gv;     /* i64: current allocated capacity    */
     LLVMValueRef lock_gv;    /* i32: atomic spinlock state         */
@@ -448,11 +449,18 @@ typedef struct {
     LLVMValueRef      underscore_exit_fn;     LLVMTypeRef underscore_exit_type;
     LLVMValueRef      fflush_fn;              LLVMTypeRef fflush_type;
 
-    /* ── lambda lifting (sugar pack v1: non-capturing only) ── */
-    int    lambda_depth;            /* > 0 while emitting a lambda body */
-    char **lambda_blocked_names;    /* outer-scope local names — capture is forbidden */
+    /* ── lambda lifting (capturing closures supported) ── */
+    int    lambda_depth;            /* > 0 while emitting a lambda body          */
+    char **lambda_blocked_names;    /* outer-scope local names (used when non-capturing) */
     usize_t lambda_blocked_count;
     usize_t lambda_counter;         /* monotonic id for synthesised lambda fn names */
+
+    /* ── active lambda capture context (set during gen_lambda with captures) ── */
+    LLVMValueRef     lambda_env_param;      /* env ptr param inside capturing lambda */
+    LLVMTypeRef      lambda_env_type;       /* env struct type (NULL when non-capturing) */
+    capture_entry_t *lambda_captures;       /* capture list for current lambda body  */
+    usize_t          lambda_capture_count;
+    LLVMTypeRef     *lambda_cap_types;      /* per-capture pointee LLVM type (for by-ref loads) */
 } cg_t;
 
 /* ── helpers ── */

@@ -233,9 +233,22 @@ static LLVMTypeRef sts_stream_prom_type(cg_t *cg, type_info_t item_ti,
     if (out_item_lt) *out_item_lt = item_lt;
 
     /* Use an anonymous struct — distinct LLVM type instances are fine because
-     * the layout is hashed by (hdr, item_lt), and LLVM dedupes structurally. */
-    LLVMTypeRef fields[2] = { hdr, item_lt };
-    return LLVMStructTypeInContext(cg->ctx, fields, 2, 0);
+     * the layout is hashed by (hdr, item_lt), and LLVM dedupes structurally.
+     * Field 0 = hdr, Field 1 = item (current yield value), Field 2 = final_val
+     * (stream `ret expr;` stores into field 2; consumer reads via stream.final.(s)). */
+    LLVMTypeRef fields[3] = { hdr, item_lt, item_lt };
+    return LLVMStructTypeInContext(cg->ctx, fields, 3, 0);
+}
+
+/* GEP into the final_val slot (field 2 of the outer promise struct).
+ * Only meaningful for stream coroutines that use `ret expr;`. */
+static LLVMValueRef sts_gep_final_val(cg_t *cg, LLVMTypeRef prom_ty,
+                                      LLVMValueRef prom_ptr) {
+    LLVMValueRef idx[2] = {
+        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0),
+        LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 2, 0),  /* prom_ty[2] = final_val */
+    };
+    return LLVMBuildInBoundsGEP2(cg->builder, prom_ty, prom_ptr, idx, 2, "prom.final_val");
 }
 
 /* GEP into header field `fld` (0..7), returning a ptr suitable for
@@ -657,9 +670,16 @@ static void sts_emit_yield_now(cg_t *cg, sts_coro_ctx_t *cx) {
     sts_check_cancelled_and_finalize(cg, cx, "ynow");
 }
 
-/* `ret;` inside a stream coroutine — branch to the final suspend block. */
-static void sts_emit_stream_ret(cg_t *cg, sts_coro_ctx_t *cx) {
+/* `ret;` / `ret expr;` inside a stream coroutine.
+ * value == Null → bare `ret;` (no final value stored).
+ * value != Null → store into the final_val slot (promise field 2), then finalize. */
+static void sts_emit_stream_ret(cg_t *cg, sts_coro_ctx_t *cx, LLVMValueRef value) {
     if (!cx || !cx->active) return;
+    if (value) {
+        LLVMValueRef stored = coerce_int(cg, value, cx->item_type);
+        LLVMValueRef final_ptr = sts_gep_final_val(cg, cx->promise_type, cx->promise);
+        LLVMBuildStore(cg->builder, stored, final_ptr);
+    }
     LLVMBuildBr(cg->builder, cx->final_suspend_bb);
 }
 
@@ -927,6 +947,19 @@ static LLVMValueRef sts_emit_stream_done(cg_t *cg, LLVMValueRef stream_h,
     LLVMValueRef prom = sts_call_coro_promise(cg, stream_h);
     LLVMValueRef eos_p = sts_gep_hdr_field(cg, prom_ty, prom, STS_PROM_OFF_EOS);
     return LLVMBuildLoad2(cg->builder, i32_t, eos_p, "stream.done");
+}
+
+/* stream.final(s) — load the final ret value written by `ret expr;` in the producer.
+   Only valid after stream.done(s) is true.  item_ti must match the stream's yield type
+   so that sts_stream_prom_type produces the correct field offsets. */
+static LLVMValueRef sts_emit_stream_final(cg_t *cg, LLVMValueRef stream_h,
+                                          type_info_t item_ti) {
+    LLVMTypeRef prom_ty = sts_stream_prom_type(cg, item_ti, Null);
+    LLVMValueRef prom   = sts_call_coro_promise(cg, stream_h);
+    LLVMValueRef fvp    = sts_gep_final_val(cg, prom_ty, prom);
+    LLVMTypeRef item_lt = get_llvm_type(cg, item_ti);
+    if (!item_lt) item_lt = LLVMInt64TypeInContext(cg->ctx);
+    return LLVMBuildLoad2(cg->builder, item_lt, fvp, "stream.final");
 }
 
 /* stream.drop(s) — destroy the stream coroutine, freeing its frame. */

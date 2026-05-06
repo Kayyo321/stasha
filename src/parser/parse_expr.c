@@ -3,6 +3,55 @@
 /* forward declaration: parse_trailing_closure is defined after parse_primary */
 static void parse_trailing_closure(parser_t *p, node_list_t *args_dest);
 
+/* ── capture list helper: parse .|name, &name2| ──
+ * Called with the builder positioned AFTER the opening '{' of a lambda or watch body.
+ * If the first tokens are '.' '|', parses a capture list and stores into *out_caps /
+ * *out_cap_count (heap-allocated array, AST-lifetime).  Returns True if a capture list
+ * was found and consumed; False if not (parser state unchanged). */
+static boolean_t try_parse_capture_list(parser_t *p,
+                                        capture_entry_t **out_caps,
+                                        usize_t *out_cap_count) {
+    *out_caps      = Null;
+    *out_cap_count = 0;
+
+    if (!check(p, TokDot)) return False;
+    parser_state_t snap = save_state(p);
+    advance_parser(p); /* consume '.' */
+    if (!check(p, TokPipe)) { restore_state(p, snap); return False; }
+    advance_parser(p); /* consume '|' */
+
+    /* collect captures into a temporary stack buffer */
+    capture_entry_t tmp[64];
+    usize_t cnt = 0;
+
+    if (!check(p, TokPipe)) {
+        do {
+            if (cnt >= 64) {
+                diag_begin_error("too many captures in capture list (max 64)");
+                diag_span(SRC_LOC(p->current.line, p->current.col, 1), True, "here");
+                diag_finish();
+                p->had_error = True;
+                break;
+            }
+            boolean_t by_ref = False;
+            if (check(p, TokAmp)) { by_ref = True; advance_parser(p); }
+            token_t name_tok = consume_name(p, "capture variable name");
+            tmp[cnt].name   = copy_name_text(name_tok);
+            tmp[cnt].by_ref = by_ref;
+            cnt++;
+        } while (match_tok(p, TokComma) && !check(p, TokPipe) && !check(p, TokEof));
+    }
+    consume(p, TokPipe, "closing '|' after capture list");
+
+    if (cnt > 0) {
+        heap_t h = allocate(cnt, sizeof(capture_entry_t));
+        memcpy(h.pointer, tmp, cnt * sizeof(capture_entry_t));
+        *out_caps      = h.pointer;
+        *out_cap_count = cnt;
+    }
+    return True;
+}
+
 static long parse_int_value(token_t t) {
     long val = 0;
     if (t.length > 2 && t.start[0] == '0' && (t.start[1] == 'x' || t.start[1] == 'X')) {
@@ -215,7 +264,20 @@ static node_t *parse_lambda_expr(parser_t *p) {
         inferred_ret = False;
     }
 
-    node_t *body = parse_block(p);
+    /* parse the body block, checking for .|...| capture list as first thing inside */
+    usize_t body_line = p->current.line;
+    consume(p, TokLBrace, "'{'");
+    capture_entry_t *captures    = Null;
+    usize_t          capture_cnt = 0;
+    try_parse_capture_list(p, &captures, &capture_cnt);
+
+    node_t *body = make_node(NodeBlock, body_line);
+    node_list_init(&body->as.block.stmts);
+    while (!check(p, TokRBrace) && !check(p, TokEof)) {
+        node_t *stmt = parse_statement(p);
+        if (stmt) node_list_push(&body->as.block.stmts, stmt);
+    }
+    consume(p, TokRBrace, "'}'");
 
     node_t *n = make_node(NodeLambda, line);
     n->as.lambda_expr.params         = params;
@@ -224,6 +286,8 @@ static node_t *parse_lambda_expr(parser_t *p) {
     n->as.lambda_expr.mangled_name   = Null;
     n->as.lambda_expr.inferred_params = False;
     n->as.lambda_expr.inferred_ret   = inferred_ret;
+    n->as.lambda_expr.captures       = captures;
+    n->as.lambda_expr.capture_count  = capture_cnt;
     return n;
 }
 
@@ -599,10 +663,12 @@ static node_t *parse_primary(parser_t *p) {
             op = StreamDrop;
         } else if (strcmp(op_name, "cancel") == 0) {
             op = StreamCancel;
+        } else if (strcmp(op_name, "final") == 0) {
+            op = StreamFinal;
         } else {
             diag_begin_error("unknown stream operation '%s'", op_name);
             diag_span(SRC_LOC(op_tok.line, op_tok.col, op_tok.length), True,
-                      "expected: done, drop, cancel");
+                      "expected: done, drop, cancel, final");
             diag_finish();
             op = StreamDrop; /* recover */
         }
@@ -1227,20 +1293,32 @@ static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
     if (p->no_trailing_closure > 0) return;
 
     usize_t lbrace_line = p->current.line;
-    /* speculative: only treat as trailing closure if we see "|...|" or
-       statement-like content (i.e., the brace is NOT a designated-init form
-       like `{ .field = ... }` — that prefix begins with TokDot). */
+    /* speculative: only treat as trailing closure if we see "|...|", ".|...|",
+       or statement-like content.
+       Bail if we see `{ .ident` (designated-init) but NOT `{ .|` (capture list). */
     parser_state_t snap = save_state(p);
     advance_parser(p); /* consume '{' */
     if (check(p, TokDot)) {
-        /* Looks like `{ .field = ... }` — leave alone. */
-        restore_state(p, snap);
-        return;
+        /* peek further: if followed by '|' it is a capture list, keep going */
+        parser_state_t snap2 = save_state(p);
+        advance_parser(p); /* consume '.' */
+        if (!check(p, TokPipe)) {
+            /* not a capture list — looks like `{ .field = ... }`, leave alone */
+            restore_state(p, snap);
+            return;
+        }
+        restore_state(p, snap2); /* restore back to after '{', before '.' */
     }
 
     node_list_t params;
     node_list_init(&params);
 
+    /* optional capture list: .|name, &name2| */
+    capture_entry_t *captures    = Null;
+    usize_t          capture_cnt = 0;
+    try_parse_capture_list(p, &captures, &capture_cnt);
+
+    /* optional parameter list: |p1, p2| (may follow capture list) */
     if (check(p, TokPipe)) {
         advance_parser(p); /* consume opening '|' */
         if (!check(p, TokPipe)) {
@@ -1310,12 +1388,14 @@ static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
     inferred_ret.base = TypeInfer;
 
     node_t *lam = make_node(NodeLambda, lbrace_line);
-    lam->as.lambda_expr.params         = params;
-    lam->as.lambda_expr.ret_type       = inferred_ret;
-    lam->as.lambda_expr.body           = body;
-    lam->as.lambda_expr.mangled_name   = Null;
+    lam->as.lambda_expr.params          = params;
+    lam->as.lambda_expr.ret_type        = inferred_ret;
+    lam->as.lambda_expr.body            = body;
+    lam->as.lambda_expr.mangled_name    = Null;
     lam->as.lambda_expr.inferred_params = True;
-    lam->as.lambda_expr.inferred_ret   = True;
+    lam->as.lambda_expr.inferred_ret    = True;
+    lam->as.lambda_expr.captures        = captures;
+    lam->as.lambda_expr.capture_count   = capture_cnt;
 
     node_list_push(args_dest, lam);
 }
@@ -2156,23 +2236,14 @@ static node_t *parse_pipeline(parser_t *p) {
                 break;
             }
             case NodeLambda: {
-                /* (lam.(x){...}).(a) — wrap as direct call.  The lambda is
-                   lifted to a top-level fn at codegen, so we synthesize a
-                   NodeCallExpr with a placeholder callee that gen_pipeline_call
-                   would resolve.  To keep v1 simple, we emit a method-shaped
-                   call where the object is the lambda itself.  Codegen of
-                   NodeMethodCall already evaluates `object`; we need a tiny
-                   special path.  Easier approach: produce a method-style call
-                   that gen_call can handle by direct invocation. */
-                /* Strategy: use NodeMethodCall with a synthetic empty method,
-                   where the object expr is the lambda — and we emit a special
-                   marker.  Simpler: don't allow lam on RHS in v1. */
-                diag_begin_error("lambda on the right of '|>' is not supported in v1");
-                diag_span(SRC_LOC(line, p->previous.col, 2), True,
-                          "bind the lambda to a variable and pipe into it instead");
-                diag_finish();
-                p->had_error = True;
-                left = right;
+                /* value |> lam.(x): T { body }  →  NodeLambdaCall(lambda, [value])
+                   The lambda is gen'd inline at codegen and immediately invoked
+                   with `left` as its first argument. */
+                node_t *n = make_node(NodeLambdaCall, line);
+                n->as.lambda_call.lambda = right;
+                node_list_init(&n->as.lambda_call.args);
+                node_list_push(&n->as.lambda_call.args, left);
+                left = n;
                 break;
             }
             default:

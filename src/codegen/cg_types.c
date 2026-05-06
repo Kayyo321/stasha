@@ -205,6 +205,12 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
         }
         case TypeInfer:
             return LLVMVoidTypeInContext(cg->ctx);
+        case TypeClosure: {
+            /* closure = {fn_ptr: ptr, env_ptr: ptr} fat pointer pair */
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+            LLVMTypeRef fields[2] = { ptr_t, ptr_t };
+            return LLVMStructTypeInContext(cg->ctx, fields, 2, 0);
+        }
     }
     return LLVMVoidTypeInContext(cg->ctx);
 }

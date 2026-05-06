@@ -374,14 +374,6 @@ static void analyze_stmt(coro_analysis_t *ca, node_t *stmt) {
             break;
         case NodeRetStmt:
             analyze_node_list(ca, &stmt->as.ret_stmt.values, False);
-            if (ca->current_fn && ca->current_fn->as.fn_decl.coro_flavor == CoroStream
-                    && stmt->as.ret_stmt.values.count > 0) {
-                diag_begin_error("stream coroutine '%s' cannot return a final value in v1",
-                                 ca->current_fn->as.fn_decl.name);
-                diag_span(DIAG_NODE(stmt), True, "use 'ret;' to end a stream coroutine");
-                diag_finish();
-                note_error(ca);
-            }
             break;
         case NodeIfStmt:
             analyze_expr(ca, stmt->as.if_stmt.cond);
