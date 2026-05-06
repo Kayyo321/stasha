@@ -5,10 +5,10 @@ lib "stdio" = io;
 // ── Thread parallelism ─────────────────────────────────────────────────────
 //
 // thread.(fn)(args)    — dispatch fn to the thread pool, returns future
-// future.wait(f)       — block until f completes
-// future.ready(f)      — non-blocking bool: is f done?
+// future.wait.(f)       — block until f completes
+// future.ready.(f)      — non-blocking bool: is f done?
 // future.get.(T)(f)    — block and return typed result
-// future.drop(f)       — wait (if needed) + free the handle
+// future.drop.(f)       — wait (if needed) + free the handle
 
 int atomic i32 work_done = 0;
 
@@ -32,15 +32,15 @@ fn main(void): i16 {
     // ── Void dispatch: wait + drop ─────────────────────────────────────────
     future f1 = thread.(worker)();
     future f2 = thread.(worker)();
-    future.wait(f1); future.drop(f1);
-    future.wait(f2); future.drop(f2);
+    future.wait.(f1); future.drop.(f1);
+    future.wait.(f2); future.drop.(f2);
     io.printf('work_done = %d\n', work_done);   // 2 (atomic global, both increments visible)
 
     // ── Return values: future.get.(T) ──────────────────────────────────────
     future fs = thread.(square)(7);
     i32 sq = future.get.(i32)(fs);        // blocks until done
     io.printf('7^2 = %d\n', sq);               // 49
-    future.drop(fs);
+    future.drop.(fs);
 
     // ── Concurrent dispatch: fire all, then collect ─────────────────────────
     future fa = thread.(square)(3);
@@ -52,14 +52,14 @@ fn main(void): i16 {
     i32 rc = future.get.(i32)(fc);   // 42
     i32 rd = future.get.(i32)(fd);   // 81
     io.printf('%d %d %d %d\n', ra, rb, rc, rd);
-    future.drop(fa); future.drop(fb); future.drop(fc); future.drop(fd);
+    future.drop.(fa); future.drop.(fb); future.drop.(fc); future.drop.(fd);
 
     // ── future.ready: non-blocking completion check ─────────────────────────
     future fw = thread.(square)(5);
-    future.wait(fw);
-    bool r = future.ready(fw);      // true after wait
+    future.wait.(fw);
+    bool r = future.ready.(fw);      // true after wait
     io.printf('ready after wait = %d\n', (i32)r);
-    future.drop(fw);
+    future.drop.(fw);
 
     ret 0;
 }
@@ -67,7 +67,7 @@ fn main(void): i16 {
 test 'return value via future.get' {
     future f = thread.(square)(5);
     expect_eq.(future.get.(i32)(f), 25);
-    future.drop(f);
+    future.drop.(f);
 }
 
 test 'concurrent futures are independent' {
@@ -75,15 +75,15 @@ test 'concurrent futures are independent' {
     future fb = thread.(add)(6, 7);
     expect_eq.(future.get.(i32)(fa), 16);
     expect_eq.(future.get.(i32)(fb), 13);
-    future.drop(fa);
-    future.drop(fb);
+    future.drop.(fa);
+    future.drop.(fb);
 }
 
 test 'wait then ready is true' {
     future f = thread.(worker)();
-    future.wait(f);
-    expect.(future.ready(f));
-    future.drop(f);
+    future.wait.(f);
+    expect.(future.ready.(f));
+    future.drop.(f);
 }
 
 test 'double_it: 8 parallel jobs' {
@@ -93,5 +93,5 @@ test 'double_it: 8 parallel jobs' {
     expect_eq.(future.get.(i32)(f0),  0);
     expect_eq.(future.get.(i32)(f1),  2);
     expect_eq.(future.get.(i32)(f7), 14);
-    future.drop(f0); future.drop(f1); future.drop(f7);
+    future.drop.(f0); future.drop.(f1); future.drop.(f7);
 }

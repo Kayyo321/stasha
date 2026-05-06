@@ -5,8 +5,8 @@ mod ex_coroutine_surface;
 // Stream coroutines are real LLVM coroutines lowered through `llvm.coro.*`
 // intrinsics + the `coro-early`/`coro-split`/`coro-cleanup` pass pipeline.
 // Calling a yielding `async fn` returns a `stream.[T]` handle that the
-// consumer drives synchronously through `await.next(s)` / `stream.done(s)` /
-// `stream.drop(s)`.
+// consumer drives synchronously through `await.next.(s)` / `stream.done.(s)` /
+// `stream.drop.(s)`.
 //
 // `yield expr` produces an item.
 // `yield;`     cooperative reschedule — no item, just suspends.
@@ -30,11 +30,11 @@ async fn count_up(i32 n): stream.[i32] {
 fn run_counter(void): void {
     stream.[i32] s = count_up(5);
     inf {
-        stack i32 v = await.next(s);
-        if (stream.done(s)) { break; }
+        stack i32 v = await.next.(s);
+        if (stream.done.(s)) { break; }
         io.printf('count_up: %d\n', v);
     }
-    stream.drop(s);
+    stream.drop.(s);
 }
 
 // ── 2. fibonacci stream ────────────────────────────────────────────────────
@@ -55,11 +55,11 @@ async fn fib(i32 n): stream.[i64] {
 fn run_fib(void): void {
     stream.[i64] f = fib(10);
     inf {
-        stack i64 v = await.next(f);
-        if (stream.done(f)) { break; }
+        stack i64 v = await.next.(f);
+        if (stream.done.(f)) { break; }
         io.printf('fib: %lld\n', v);
     }
-    stream.drop(f);
+    stream.drop.(f);
 }
 
 // ── 3. cooperative `yield;` between items ──────────────────────────────────
@@ -79,11 +79,11 @@ async fn pulse(i32 n): stream.[i32] {
 fn run_pulse(void): void {
     stream.[i32] p = pulse(4);
     inf {
-        stack i32 v = await.next(p);
-        if (stream.done(p)) { break; }
+        stack i32 v = await.next.(p);
+        if (stream.done.(p)) { break; }
         io.printf('pulse: %d\n', v);
     }
-    stream.drop(p);
+    stream.drop.(p);
 }
 
 // ── 4. early drop — destroy a stream before exhausting it ──────────────────
@@ -100,14 +100,14 @@ fn run_take_3(void): void {
     stream.[i32] s = nats();
     stack i32 taken = 0;
     while (taken < 3) {
-        stack i32 v = await.next(s);
-        if (stream.done(s)) { break; }
+        stack i32 v = await.next.(s);
+        if (stream.done.(s)) { break; }
         io.printf('take: %d\n', v);
         taken = taken + 1;
     }
     // drop the stream while it's still suspended — coro.destroy unwinds
     // the frame's heap allocation without leaking.
-    stream.drop(s);
+    stream.drop.(s);
 }
 
 // ── 5. branching producer ──────────────────────────────────────────────────
@@ -129,11 +129,11 @@ async fn alternating(i32 n): stream.[i32] {
 fn run_alt(void): void {
     stream.[i32] s = alternating(6);
     inf {
-        stack i32 v = await.next(s);
-        if (stream.done(s)) { break; }
+        stack i32 v = await.next.(s);
+        if (stream.done.(s)) { break; }
         io.printf('alt: %d\n', v);
     }
-    stream.drop(s);
+    stream.drop.(s);
 }
 
 fn main(void): i32 {
@@ -152,40 +152,40 @@ fn main(void): i32 {
 
 test 'count_up yields 0..n' {
     stream.[i32] s = count_up(3);
-    stack i32 a = await.next(s);
-    expect.(stream.done(s) == 0);
+    stack i32 a = await.next.(s);
+    expect.(stream.done.(s) == 0);
     expect_eq.(a, 0);
-    stack i32 b = await.next(s);
-    expect.(stream.done(s) == 0);
+    stack i32 b = await.next.(s);
+    expect.(stream.done.(s) == 0);
     expect_eq.(b, 1);
-    stack i32 c = await.next(s);
-    expect.(stream.done(s) == 0);
+    stack i32 c = await.next.(s);
+    expect.(stream.done.(s) == 0);
     expect_eq.(c, 2);
-    stack i32 d = await.next(s);
-    expect.(stream.done(s) != 0);
-    stream.drop(s);
+    stack i32 d = await.next.(s);
+    expect.(stream.done.(s) != 0);
+    stream.drop.(s);
 }
 
 test 'pulse interleaves yield; with values' {
     stream.[i32] p = pulse(2);
-    stack i32 a = await.next(p);
+    stack i32 a = await.next.(p);
     expect_eq.(a, 0);
-    stack i32 b = await.next(p);
+    stack i32 b = await.next.(p);
     expect_eq.(b, 10);
-    stack i32 c = await.next(p);
-    expect.(stream.done(p) != 0);
-    stream.drop(p);
+    stack i32 c = await.next.(p);
+    expect.(stream.done.(p) != 0);
+    stream.drop.(p);
 }
 
 test 'fib stays correct after suspend/resume' {
     stream.[i64] f = fib(7);
-    stack i64 v0 = await.next(f);
-    stack i64 v1 = await.next(f);
-    stack i64 v2 = await.next(f);
-    stack i64 v3 = await.next(f);
-    stack i64 v4 = await.next(f);
-    stack i64 v5 = await.next(f);
-    stack i64 v6 = await.next(f);
+    stack i64 v0 = await.next.(f);
+    stack i64 v1 = await.next.(f);
+    stack i64 v2 = await.next.(f);
+    stack i64 v3 = await.next.(f);
+    stack i64 v4 = await.next.(f);
+    stack i64 v5 = await.next.(f);
+    stack i64 v6 = await.next.(f);
     expect_eq.(v0, 0);
     expect_eq.(v1, 1);
     expect_eq.(v2, 1);
@@ -193,15 +193,15 @@ test 'fib stays correct after suspend/resume' {
     expect_eq.(v4, 3);
     expect_eq.(v5, 5);
     expect_eq.(v6, 8);
-    stream.drop(f);
+    stream.drop.(f);
 }
 
 test 'early drop on infinite stream does not leak' {
     stream.[i32] s = nats();
-    stack i32 a = await.next(s);
-    stack i32 b = await.next(s);
+    stack i32 a = await.next.(s);
+    stack i32 b = await.next.(s);
     expect_eq.(a, 0);
     expect_eq.(b, 1);
     // drop while still suspended at yield
-    stream.drop(s);
+    stream.drop.(s);
 }

@@ -570,9 +570,16 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         return Err;
     }
     LLVMCodeGenOptLevel opt_level = map_opt_level(optimization_level);
+    boolean_t is_native = !target_triple || target_triple[0] == '\0';
+    char *cpu_str  = is_native ? LLVMGetHostCPUName()     : NULL;
+    char *feat_str = is_native ? LLVMGetHostCPUFeatures() : NULL;
     LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
-        early_target, triple, "generic", "",
+        early_target, triple,
+        cpu_str  ? cpu_str  : "generic",
+        feat_str ? feat_str : "",
         opt_level, LLVMRelocPIC, LLVMCodeModelDefault);
+    if (cpu_str)  LLVMDisposeMessage(cpu_str);
+    if (feat_str) LLVMDisposeMessage(feat_str);
 
     cg.di_data_layout = LLVMCreateTargetDataLayout(machine);
     LLVMSetModuleDataLayout(cg.module, cg.di_data_layout);
@@ -2048,7 +2055,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     if (get_error_count() == errors_before && ast_requires_coro_pipeline(ast)) {
         LLVMPassBuilderOptionsRef pb_opts = LLVMCreatePassBuilderOptions();
-        LLVMPassBuilderOptionsSetVerifyEach(pb_opts, 1);
+        LLVMPassBuilderOptionsSetVerifyEach(pb_opts, debug_mode ? 1 : 0);
         LLVMErrorRef pass_err = LLVMRunPasses(
             cg.module,
             "coro-early,cgscc(coro-split),coro-cleanup,globaldce",
@@ -2061,6 +2068,23 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             diag_finish();
             if (msg) LLVMDisposeErrorMessage(msg);
             LLVMConsumeError(pass_err);
+            emit_result = Err;
+            goto cg_cleanup;
+        }
+    }
+
+    if (get_error_count() == errors_before && optimization_level > 0) {
+        LLVMPassBuilderOptionsRef opt_opts = LLVMCreatePassBuilderOptions();
+        LLVMPassBuilderOptionsSetVerifyEach(opt_opts, debug_mode ? 1 : 0);
+        const char *opt_pipeline = optimization_level >= 3 ? "default<O3>" : "default<O2>";
+        LLVMErrorRef opt_err = LLVMRunPasses(cg.module, opt_pipeline, machine, opt_opts);
+        LLVMDisposePassBuilderOptions(opt_opts);
+        if (opt_err) {
+            char *msg = LLVMGetErrorMessage(opt_err);
+            diag_begin_error("LLVM optimization pass failed: %s", msg ? msg : "unknown error");
+            diag_finish();
+            if (msg) LLVMDisposeErrorMessage(msg);
+            LLVMConsumeError(opt_err);
             emit_result = Err;
             goto cg_cleanup;
         }

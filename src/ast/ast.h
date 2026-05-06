@@ -303,7 +303,7 @@ typedef enum {
 
     /* async/await — ergonomic surface over thread pool + future */
     NodeAsyncCall,       /* async.(fn)(args) — dispatch, returns future.[T] */
-    NodeAwaitExpr,       /* await(f) / await.(fn)(args) — block, drop, return value */
+    NodeAwaitExpr,       /* await.(f) / await.(fn)(args) — block, drop, return value */
     NodeAwaitCombinator, /* await.all(...) / await.any(...) */
     NodeYieldExpr,       /* yield expr; */
     NodeYieldNowExpr,    /* yield;      */
@@ -320,22 +320,22 @@ typedef enum {
 
 /* ── future operation kinds ── */
 typedef enum {
-    FutureWait,  /* future.wait(f)              — block, no return        */
-    FutureReady, /* future.ready(f)             — non-blocking bool check  */
+    FutureWait,  /* future.wait.(f)             — block, no return        */
+    FutureReady, /* future.ready.(f)            — non-blocking bool check  */
     FutureGet,   /* future.get.(Type)(f)        — block, return typed val  */
-    FutureGetRaw,/* future.get(f)               — block, return void ptr   */
-    FutureDrop,  /* future.drop(f)              — wait + free future       */
-    StreamDone,  /* stream.done(s)              — i32 1 if EOS, else 0     */
-    StreamDrop,  /* stream.drop(s)              — destroy stream coroutine */
-    StreamCancel,/* stream.cancel(s)            — request cooperative end  */
+    FutureGetRaw,/* future.get.(f)              — block, return void ptr   */
+    FutureDrop,  /* future.drop.(f)             — wait + free future       */
+    StreamDone,  /* stream.done.(s)             — i32 1 if EOS, else 0     */
+    StreamDrop,  /* stream.drop.(s)             — destroy stream coroutine */
+    StreamCancel,/* stream.cancel.(s)           — request cooperative end  */
 } future_op_t;
 
 /* ── va operation kinds ── */
 typedef enum {
-    VaStart,         /* va.start(args)                  — llvm.va_start              */
-    VaNext,          /* va.next.(T)(args)               — LLVMBuildVAArg             */
-    VaEnd,           /* va.end(args)                    — llvm.va_end                */
-    VaCopy,          /* va.copy(dst, src)               — llvm.va_copy               */
+    VaStart,         /* va.start.(args)                 — llvm.va_start              */
+    VaNext,          /* va.next.[T](args)               — LLVMBuildVAArg             */
+    VaEnd,           /* va.end.(args)                   — llvm.va_end                */
+    VaCopy,          /* va.copy.(dst, src)              — llvm.va_copy               */
     VaForeach,       /* va.foreach.(T)(n, args) { |v| } — Tier 1 typed loop         */
     VaRead,          /* va.read.[T1,T2,...](args)        — Tier 1 destructure        */
     VaForeachTyped,  /* va.foreach(args) { |v| match }  — Tier 2 type-dispatch      */

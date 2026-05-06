@@ -581,7 +581,7 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* stream.op(handle) — done(s)/drop(s) for stream.[T] coroutine handles. */
+    /* stream.op.(handle) — done.(s)/drop.(s) for stream.[T] coroutine handles. */
     if (check(p, TokStream)) {
         usize_t line = p->current.line;
         advance_parser(p);
@@ -607,6 +607,7 @@ static node_t *parse_primary(parser_t *p) {
             op = StreamDrop; /* recover */
         }
 
+        consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
         node_t *handle = parse_expr(p);
         consume(p, TokRParen, "')'");
@@ -618,7 +619,7 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* future.op(handle) / future.get.(Type)(handle) */
+    /* future.op.(handle) / future.get.(Type)(handle) */
     if (check(p, TokFuture)) {
         usize_t line = p->current.line;
         advance_parser(p);
@@ -634,6 +635,7 @@ static node_t *parse_primary(parser_t *p) {
         future_op_t op;
         type_info_t get_type = NO_TYPE;
         boolean_t   typed_get = False;
+        boolean_t   needs_arg_dot = True; /* all ops require '.' before (handle), except typed get */
 
         if (strcmp(op_name, "wait") == 0) {
             op = FutureWait;
@@ -642,15 +644,16 @@ static node_t *parse_primary(parser_t *p) {
         } else if (strcmp(op_name, "drop") == 0) {
             op = FutureDrop;
         } else if (strcmp(op_name, "get") == 0) {
-            /* future.get.(Type)(handle)  — typed get
-               future.get(handle)         — raw void* get */
+            /* future.get.(Type)(handle) — typed get, '.' is the type-param dot
+               future.get.(handle)       — raw void* get, '.' is the call dot  */
             if (check(p, TokDot)) {
-                advance_parser(p); /* consume '.' */
+                advance_parser(p); /* consume '.' for type param */
                 consume(p, TokLParen, "'('");
                 get_type  = parse_type(p);
                 consume(p, TokRParen, "')'");
                 op        = FutureGet;
                 typed_get = True;
+                needs_arg_dot = False; /* typed: (Type) already consumed the dot */
             } else {
                 op = FutureGetRaw;
             }
@@ -662,6 +665,7 @@ static node_t *parse_primary(parser_t *p) {
             op = FutureWait; /* recover */
         }
 
+        if (needs_arg_dot) consume(p, TokDot, "'.'");
         consume(p, TokLParen, "'('");
         node_t *handle = parse_expr(p);
         consume(p, TokRParen, "')'");
@@ -698,50 +702,60 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* await(f) / await.(fn)(args) / await.all(...) / await.any(...) */
+    /* await.(f) / await.(fn)(args) / await.next.(stream) / await.all.(...) / await.any.(...) */
     if (check(p, TokAwait)) {
         usize_t line = p->current.line;
         advance_parser(p);
 
-        /* await(f) — extract value from future, auto-drop. */
+        consume(p, TokDot, "'.' after 'await'");
+
+        /* await.(f) — simple future await (drive to completion, return value)
+           await.(fn)(args) — one-shot: async dispatch + block + drop, return typed value
+           Disambiguated by lookahead: (ident)( → one-shot; anything else → future await. */
         if (check(p, TokLParen)) {
+            parser_state_t snap = save_state(p);
             advance_parser(p); /* consume '(' */
+            if (check(p, TokIdent)) {
+                token_t name_tok = p->current;
+                advance_parser(p);
+                if (check(p, TokRParen)) {
+                    advance_parser(p); /* consume ')' */
+                    if (check(p, TokLParen)) {
+                        /* confirmed: await.(fn)(args) — one-shot */
+                        advance_parser(p); /* consume '(' for args */
+                        char *name = copy_name_text(name_tok);
+                        node_list_t args;
+                        node_list_init(&args);
+                        if (!check(p, TokRParen)) {
+                            do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
+                        }
+                        consume(p, TokRParen, "')'");
+                        node_t *ac = make_node(NodeAsyncCall, line);
+                        ac->as.async_call.callee = name;
+                        ac->as.async_call.args   = args;
+                        node_t *n = make_node(NodeAwaitExpr, line);
+                        n->as.await_expr.handle   = ac;
+                        n->as.await_expr.get_type = NO_TYPE;
+                        return n;
+                    }
+                }
+            }
+            /* await.(expr) — simple future await */
+            restore_state(p, snap);
+            advance_parser(p); /* re-consume '(' */
             node_t *handle = parse_expr(p);
             consume(p, TokRParen, "')'");
             node_t *n = make_node(NodeAwaitExpr, line);
             n->as.await_expr.handle   = handle;
-            n->as.await_expr.get_type = NO_TYPE; /* inferred at codegen */
-            return n;
-        }
-
-        consume(p, TokDot, "'.' or '(' after 'await'");
-
-        /* await.(fn)(args) — one-shot: dispatch + block + drop, return typed value */
-        if (check(p, TokLParen)) {
-            advance_parser(p); /* consume '(' */
-            token_t name_tok = consume_name(p, "function name");
-            char *name = copy_name_text(name_tok);
-            consume(p, TokRParen, "')'");
-            consume(p, TokLParen, "'('");
-            node_list_t args;
-            node_list_init(&args);
-            if (!check(p, TokRParen)) {
-                do { node_list_push(&args, parse_expr(p)); } while (match_tok(p, TokComma));
-            }
-            consume(p, TokRParen, "')'");
-            node_t *ac = make_node(NodeAsyncCall, line);
-            ac->as.async_call.callee = name;
-            ac->as.async_call.args   = args;
-            node_t *n = make_node(NodeAwaitExpr, line);
-            n->as.await_expr.handle   = ac;
             n->as.await_expr.get_type = NO_TYPE;
             return n;
         }
 
-        /* await.next(stream) — consume the next item from a stream.[T]. */
+        /* await.next.(stream) — consume the next item from a stream.[T]. */
         if (check(p, TokIdent) && p->current.length == 4
                 && memcmp(p->current.start, "next", 4) == 0) {
             advance_parser(p); /* consume 'next' */
+            consume(p, TokDot, "'.' after 'next'");
             consume(p, TokLParen, "'('");
             node_t *handle = parse_expr(p);
             consume(p, TokRParen, "')'");
@@ -752,7 +766,7 @@ static node_t *parse_primary(parser_t *p) {
             return n;
         }
 
-        /* await.all(f1, ...) / await.any(f1, ...).
+        /* await.all.(...) / await.any.(...).
            Note: `any` is a lexer keyword (TokAny), `all` is an ident — accept both. */
         if (check(p, TokIdent) || check(p, TokAny)) {
             token_t op_tok = p->current;
@@ -771,6 +785,7 @@ static node_t *parse_primary(parser_t *p) {
                 return make_node(NodeNilExpr, line);
             }
             advance_parser(p); /* consume 'all' / 'any' */
+            consume(p, TokDot, "'.' after combinator name");
             consume(p, TokLParen, "'('");
             node_list_t handles;
             node_list_init(&handles);
@@ -784,7 +799,7 @@ static node_t *parse_primary(parser_t *p) {
             return n;
         }
 
-        diag_begin_error("expected '(', '.(', '.all' or '.any' after 'await'");
+        diag_begin_error("expected '.(', '.next.(', '.all.(' or '.any.(' after 'await'");
         diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                   True, "unexpected token here");
         diag_finish();
@@ -840,12 +855,14 @@ static node_t *parse_primary(parser_t *p) {
 
         if (strcmp(op_name, "start") == 0) {
             n->as.va_op.op = VaStart;
+            consume(p, TokDot, "'.'");
             consume(p, TokLParen, "'('");
             n->as.va_op.handle = parse_expr(p);
             consume(p, TokRParen, "')'");
 
         } else if (strcmp(op_name, "end") == 0) {
             n->as.va_op.op = VaEnd;
+            consume(p, TokDot, "'.'");
             consume(p, TokLParen, "'('");
             n->as.va_op.handle = parse_expr(p);
             consume(p, TokRParen, "')'");
@@ -862,8 +879,9 @@ static node_t *parse_primary(parser_t *p) {
             consume(p, TokRParen, "')'");
 
         } else if (strcmp(op_name, "copy") == 0) {
-            /* va.copy(dst, src) */
+            /* va.copy.(dst, src) */
             n->as.va_op.op = VaCopy;
+            consume(p, TokDot, "'.'");
             consume(p, TokLParen, "'('");
             n->as.va_op.handle   = parse_expr(p);
             consume(p, TokComma, "','");
@@ -884,7 +902,8 @@ static node_t *parse_primary(parser_t *p) {
                 consume(p, TokRParen, "')'");
                 n->as.va_op.op = VaForeach;
             } else {
-                /* va.foreach(args) { |v| body } — Tier 2 type-aware */
+                /* va.foreach.(args) { |v| body } — Tier 2 type-aware */
+                consume(p, TokDot, "'.'");
                 consume(p, TokLParen, "'('");
                 n->as.va_op.handle = parse_expr(p);
                 consume(p, TokRParen, "')'");

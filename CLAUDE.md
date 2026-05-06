@@ -204,20 +204,20 @@ test 'name' { expect.(x); expect_eq.(a, b); test_fail.('msg'); }
 
 // Thread parallelism (thread pool, POSIX threads)
 stack future f = thread.(fn_name)(arg1, arg2);  // dispatch to thread pool
-future.wait(f);                    // block until done
-stack bool r = future.ready(f);    // non-blocking check
-stack i32 v = future.get.(i32)(f); // block and return typed result
-stack void *p = future.get(f);     // block and return raw void*
-future.drop(f);                    // wait + free future
+future.wait.(f);                    // block until done
+stack bool r = future.ready.(f);    // non-blocking check
+stack i32 v = future.get.(i32)(f);  // block and return typed result
+stack void *p = future.get.(f);     // block and return raw void*
+future.drop.(f);                    // wait + free future
 
 // Task coroutines (llvm.coro.* — synchronous drive on caller's thread)
 async fn add(i32 a, i32 b): i32 { ret a + b; }
 stack future.[i32] f = async.(add)(1, 2);
-stack i32 v = await(f);                  // drive to completion, return i32
-stack i32 sum = await.(add)(1, 2);       // one-shot: dispatch + drive + return
-stack i32 [a, b] = await.all(add(1,2), add(3,4));   // drive both, return in order
-stack i32 winner = await.any(add(1,2), add(3,4));    // drive first, cancel rest
-// await(f) is legal anywhere (not just inside async fn)
+stack i32 v = await.(f);                  // drive to completion, return i32
+stack i32 sum = await.(add)(1, 2);        // one-shot: dispatch + drive + return
+stack i32 [a, b] = await.all.(add(1,2), add(3,4));   // drive both, return in order
+stack i32 winner = await.any.(add(1,2), add(3,4));    // drive first, cancel rest
+// await.(f) is legal anywhere (not just inside async fn)
 
 // Stream coroutines (real LLVM coroutines lowered through llvm.coro.*)
 async fn fib(i32 n): stream.[i64] {
@@ -227,25 +227,25 @@ async fn fib(i32 n): stream.[i64] {
 }
 stream.[i64] f = fib(10);
 inf {
-    stack i64 v = await.next(f);    // drives producer to next yield (or eos)
-    if (stream.done(f)) { break; }  // post-call eos check
+    stack i64 v = await.next.(f);    // drives producer to next yield (or eos)
+    if (stream.done.(f)) { break; }  // post-call eos check
     print.('{}\n', v);
 }
-stream.drop(f);                     // destroy coro frame (safe at any state)
-stream.cancel(f);                   // set cancelled flag; producer sees at next yield
+stream.drop.(f);                     // destroy coro frame (safe at any state)
+stream.cancel.(f);                   // set cancelled flag; producer sees at next yield
 // `yield expr;` produces an item; `yield;` is a bare cooperative reschedule.
-// `await.next(s)` is legal anywhere — synchronous drive on caller's thread.
+// `await.next.(s)` is legal anywhere — synchronous drive on caller's thread.
 
 // Struct attributes: @packed  @align(N)  @c_layout
 // Fn/var attributes: @weak  @hidden  @restrict
 // Variadic (Tier 0 — raw):
 //   fn foo(stack i32 n, ...): void
-//   stack va args; va.start(args); va.next.[i32](args); va.end(args); va.copy(dst, src)
+//   stack va args; va.start.(args); va.next.[i32](args); va.end.(args); va.copy.(dst, src)
 // Variadic (Tier 1 — typed sugar, zero cost):
 //   va.foreach.[T](n, args) { |v| body };      // auto start/end
 //   stack [T1, T2] [a, b] = va.read.[T1, T2](args);
 // Variadic (Tier 2 — type-aware dispatch, ...typed ABI):
-//   fn log(...typed): void { stack va args; va.foreach(args) { |v| match v {
+//   fn log(...typed): void { stack va args; va.foreach.(args) { |v| match v {
 //       i32 x => { ... }   f64 x => { ... }   i8 *r s => { ... }   _ => {}
 //   } }; }
 //   log(42, 3.14);  // compiler inserts: TAG_I32, 42, TAG_F64, 3.14, TAG_END
@@ -363,13 +363,13 @@ rem.(q);                               // rem on stack pointer — ERROR
 - [ ] Module system: build Stasha modules that import other `.sts` files into static libraries
 - [x] Dotted module names + sts.sproj project file
 - [x] Thread parallelism: `thread.(fn)(args)` + `future` type (thread pool, POSIX pthreads)
-- [x] Stream coroutines: `async fn ...: stream.[T]` — `yield expr;`, `yield;`, `await.next(s)`, `stream.done(s)`, `stream.drop(s)`, `stream.cancel(s)`
-- [x] Task coroutines: `async fn ...: T` lowered through `llvm.coro.*` — synchronous drive via `await(f)`, `await.all`, `await.any`, `future.[T]` ops
+- [x] Stream coroutines: `async fn ...: stream.[T]` — `yield expr;`, `yield;`, `await.next.(s)`, `stream.done.(s)`, `stream.drop.(s)`, `stream.cancel.(s)`
+- [x] Task coroutines: `async fn ...: T` lowered through `llvm.coro.*` — synchronous drive via `await.(f)`, `await.all.(...)`, `await.any.(...)`, `future.[T]` ops
 - [x] Async methods: `async fn` inside struct body with `this` access (both task + stream)
 - [x] Generic async fns: `@comptime[T] async fn` (task + stream, instantiated per call site)
 - [x] Executor queue: `coro_runtime.c` thread pool retained for `thread.(fn)`; dead `__async_*` codegen path removed
 - [ ] Executor queue + real async scheduling (continuations, yield; pause semantics)
-- [ ] Cancellation propagation through `await(child_task)`
+- [ ] Cancellation propagation through `await.(child_task)`
 - [ ] Build system / package manager
 - [ ] Standard library (string, I/O, math, collections in Stasha)
 - [ ] Self-hosting compiler
