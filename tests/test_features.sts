@@ -1,0 +1,354 @@
+/* tests/test_features.sts
+   Comprehensive test of all features implemented from INCOMPLETE_FEATURES.md:
+   1. Lambda captures (by value + by ref)
+   2. Watch captures
+   3. Lambda on RHS of |>
+   4. Stream coro ret expr + stream.final
+   5. Heterogeneous await.all
+   6. Spread expressions (struct/array/range)
+   7. comptime_assert breadth (comparisons, boolean logic) */
+
+mod test_features;
+
+/* ── helpers for closure tests ─────────────────────────────────────────── */
+
+ext fn apply_i32_closure(stack i32 x, closure.[stack i32]: i32 f): i32 {
+    ret f(x);
+}
+
+ext fn run_void_closure(closure.[void]: i32 f): i32 {
+    ret f();
+}
+
+/* ── async helpers for heterogeneous await.all ──────────────────────────── */
+
+async fn async_i32(stack i32 x): i32 { ret x; }
+async fn async_i64(stack i64 x): i64 { ret x; }
+
+/* ── stream coro with final return value ────────────────────────────────── */
+
+async fn first_n_then_final(stack i32 n): stream.[i32] {
+    stack i32 i = 0;
+    while (i < n) {
+        yield i * i;  /* yields: 0, 1, 4, 9, ... */
+        i = i + 1;
+    }
+    ret n * 100;  /* final value */
+}
+
+/* ── signal types for watch capture tests ───────────────────────────────── */
+
+type ByValEvt: struct {
+    i32 code;
+}
+
+type Point: struct { ext i32 x, y, z; }
+
+type ByRefEvt: struct {
+    i32 code;
+}
+
+/* ── comptime_assert: top-level checks (run at compile time) ─────────────── */
+
+type Align4: struct {
+    ext i32 a, b, c;
+}
+
+@comptime assert.(sizeof.(Align4) == 12,     'Align4 must be 12 bytes');
+@comptime assert.(sizeof.(i32) == 4,         'i32 is 4 bytes');
+@comptime assert.(sizeof.(i64) == 8,         'i64 is 8 bytes');
+@comptime assert.(sizeof.(i32) != sizeof.(i64), 'i32 != i64 size');
+@comptime assert.(sizeof.(i32) < sizeof.(i64),  'i32 smaller than i64');
+@comptime assert.(sizeof.(i64) > sizeof.(i32),  'i64 larger than i32');
+@comptime assert.(sizeof.(i32) <= sizeof.(i32), 'i32 <= i32');
+@comptime assert.(sizeof.(i64) >= sizeof.(i32), 'i64 >= i32');
+@comptime assert.(sizeof.(i32) == 4 && sizeof.(i64) == 8, 'combined sizes');
+@comptime assert.(sizeof.(i8) == 1 || sizeof.(i8) == 2,   'i8 is 1 or 2 bytes');
+@comptime assert.(!(sizeof.(i32) > sizeof.(i64)),          'not i32 > i64');
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 1: Lambda captures
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test 'lambda capture by value: outer change does not affect closure' {
+    stack i32 base = 10;
+    closure.[stack i32]: i32 f = lam.(stack i32 x): i32 { .|base| ret x + base; };
+    expect_eq.(f(5), 15);
+    base = 99;           /* by-value — copy taken at lambda creation */
+    expect_eq.(f(5), 15);
+}
+
+test 'lambda capture by ref: closure mutates outer variable' {
+    stack i32 total = 0;
+    closure.[stack i32]: void acc = lam.(stack i32 x): void { .|&total| total = total + x; };
+    acc(3);
+    acc(7);
+    expect_eq.(total, 10);
+}
+
+test 'lambda capture multiple by-value vars' {
+    stack i32 a = 4;
+    stack i32 b = 5;
+    closure.[void]: i32 product = lam.(void): i32 { .|a, b| ret a * b; };
+    expect_eq.(run_void_closure(product), 20);
+    b = 99;
+    expect_eq.(run_void_closure(product), 20);  /* still sees original b=5 */
+}
+
+test 'lambda capture mixed value and ref' {
+    stack i32 offset = 10;
+    stack i32 accum  = 0;
+    closure.[stack i32]: i32 f = lam.(stack i32 x): i32 {
+        .|offset, &accum|
+        accum = accum + x;
+        ret x + offset;
+    };
+    expect_eq.(f(5), 15);
+    expect_eq.(f(3), 13);
+    expect_eq.(accum, 8);   /* by-ref: 5 + 3 accumulated */
+}
+
+test 'closure passed to higher-order function' {
+    stack i32 bias = 100;
+    closure.[stack i32]: i32 f = lam.(stack i32 x): i32 { .|bias| ret x + bias; };
+    expect_eq.(apply_i32_closure(7, f), 107);
+    expect_eq.(apply_i32_closure(0, f), 100);
+}
+
+test 'nested capture: inner lambda captures from outer lambda body var' {
+    stack i32 outer_val = 42;
+    closure.[stack i32]: i32 outer = lam.(stack i32 x): i32 {
+        .|outer_val|
+        ret x + outer_val;
+    };
+    expect_eq.(outer(8), 50);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 3: Lambda on RHS of |>
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test 'pipeline: non-capturing lambda on RHS' {
+    stack i32 r = 6 |> lam.(stack i32 x): i32 { ret x * x; };
+    expect_eq.(r, 36);
+}
+
+test 'pipeline: capturing lambda on RHS mutates outer' {
+    stack i32 side = 0;
+    stack i32 r = 5 |> lam.(stack i32 x): i32 { .|&side| side = x; ret x * 2; };
+    expect_eq.(r, 10);
+    expect_eq.(side, 5);
+}
+
+test 'pipeline: chained with regular fns then lambda' {
+    stack i32 r = 3 |> lam.(stack i32 x): i32 { ret x + 1; };
+    expect_eq.(r, 4);
+}
+
+test 'pipeline: capturing lambda uses outer scale' {
+    stack i32 scale = 3;
+    stack i32 r = 7 |> lam.(stack i32 x): i32 { .|scale| ret x * scale; };
+    expect_eq.(r, 21);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 4: Stream coro ret expr + stream.final
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test 'stream: yields correct values before final' {
+    stream.[i32] s = first_n_then_final(4);
+    stack i32 expected[4] = .{0, 1, 4, 9};
+    stack i32 i = 0;
+    inf {
+        stack i32 v = await.next.(s);
+        if (stream.done.(s)) { break; }
+        expect_eq.(v, expected[i]);
+        i = i + 1;
+    }
+    expect_eq.(i, 4);
+    stream.drop.(s);
+}
+
+test 'stream: ret expr stores retrievable final value' {
+    stream.[i32] s = first_n_then_final(3);
+    /* consume all yields */
+    inf {
+        await.next.(s);
+        if (stream.done.(s)) { break; }
+    }
+    expect.(stream.done.(s) != 0);
+    stack i32 fin = stream.final.(s);
+    expect_eq.(fin, 300);   /* n=3 → 3*100 = 300 */
+    stream.drop.(s);
+}
+
+test 'stream: final value correct for n=1' {
+    stream.[i32] s = first_n_then_final(1);
+    await.next.(s);  /* yield 0 */
+    await.next.(s);  /* hits ret 100 */
+    expect.(stream.done.(s) != 0);
+    expect_eq.(stream.final.(s), 100);
+    stream.drop.(s);
+}
+
+test 'stream: final value correct for n=0 (no yields)' {
+    stream.[i32] s = first_n_then_final(0);
+    await.next.(s);  /* immediately hits ret 0 */
+    expect.(stream.done.(s) != 0);
+    expect_eq.(stream.final.(s), 0);   /* 0*100 = 0 */
+    stream.drop.(s);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 5: Heterogeneous await.all
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test 'heterogeneous await.all: i32 and i64' {
+    stack let [a, b] = await.all.(async_i32(42), async_i64(999));
+    expect_eq.(a, 42);
+    expect.(b == 999);
+}
+
+test 'heterogeneous await.all: three futures mixed types' {
+    stack let [x, y, z] = await.all.(async_i32(1), async_i64(200), async_i32(3));
+    expect_eq.(x, 1);
+    expect.(y == 200);
+    expect_eq.(z, 3);
+}
+
+test 'heterogeneous await.all: results independent of value' {
+    stack let [p, q] = await.all.(async_i32(0), async_i64(0));
+    expect_eq.(p, 0);
+    expect.(q == 0);
+    stack let [r, s] = await.all.(async_i32(-1), async_i64(1000000));
+    expect_eq.(r, -1);
+    expect.(s == 1000000);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 6: Spread expressions
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test 'spread: array spread extends length correctly' {
+    stack i32 src[3] = .{10, 20, 30};
+    stack i32 dst[]  = .{..src, 40, 50};
+    expect_eq.(dst.len, 5);
+    expect_eq.(dst[0], 10);
+    expect_eq.(dst[2], 30);
+    expect_eq.(dst[3], 40);
+    expect_eq.(dst[4], 50);
+}
+
+test 'spread: array spread in middle' {
+    stack i32 mid[2] = .{5, 6};
+    stack i32 out[]  = .{1, ..mid, 7};
+    expect_eq.(out.len, 4);
+    expect_eq.(out[0], 1);
+    expect_eq.(out[1], 5);
+    expect_eq.(out[2], 6);
+    expect_eq.(out[3], 7);
+}
+
+test 'spread: range expansion' {
+    stack i32 evens[] = .{0..10:2};
+    expect_eq.(evens.len, 5);
+    expect_eq.(evens[0], 0);
+    expect_eq.(evens[1], 2);
+    expect_eq.(evens[4], 8);
+}
+
+test 'spread: inclusive range' {
+    stack i32 vals[] = .{1..=4};
+    expect_eq.(vals.len, 4);
+    expect_eq.(vals[0], 1);
+    expect_eq.(vals[3], 4);
+}
+
+test 'spread: struct merge preserves all fields' {
+    stack Point p = .{ .x = 1, .y = 2, .z = 3 };
+    stack Point q = .{ ..p, .z = 99 };
+    expect_eq.(q.x, 1);
+    expect_eq.(q.y, 2);
+    expect_eq.(q.z, 99);
+}
+
+test 'spread: string spread concatenation' {
+    stack i8 s[] = .{.."foo", .."-", .."bar"};
+    expect_eq.(s[0], `f`);
+    expect_eq.(s[3], `-`);
+    expect_eq.(s[4], `b`);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 7: comptime_assert breadth (in-function)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test 'comptime_assert: sizeof comparisons inside fn' {
+    @comptime assert.(sizeof.(i8)  == 1);
+    @comptime assert.(sizeof.(i16) == 2);
+    @comptime assert.(sizeof.(i32) == 4);
+    @comptime assert.(sizeof.(i64) == 8);
+    @comptime assert.(sizeof.(f32) == 4);
+    @comptime assert.(sizeof.(f64) == 8);
+    expect.(1);
+}
+
+test 'comptime_assert: inequality and ordering' {
+    @comptime assert.(sizeof.(i32) != sizeof.(i64));
+    @comptime assert.(sizeof.(i8)  < sizeof.(i32));
+    @comptime assert.(sizeof.(i64) > sizeof.(i32));
+    @comptime assert.(sizeof.(i32) <= sizeof.(i32));
+    @comptime assert.(sizeof.(i32) >= sizeof.(i16));
+    expect.(1);
+}
+
+test 'comptime_assert: boolean logic' {
+    @comptime assert.(sizeof.(i32) == 4 && sizeof.(i64) == 8);
+    @comptime assert.(sizeof.(i8) == 1  || sizeof.(i8) == 2);
+    @comptime assert.(!(sizeof.(i32) > sizeof.(i64)));
+    @comptime assert.(!(sizeof.(i8) == sizeof.(i64)));
+    expect.(1);
+}
+
+test 'comptime_assert: arithmetic in expression' {
+    @comptime assert.(sizeof.(i32) * 2 == sizeof.(i64));
+    @comptime assert.(sizeof.(i64) / 2 == sizeof.(i32));
+    @comptime assert.(sizeof.(i32) + sizeof.(i32) == sizeof.(i64));
+    expect.(1);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Feature 2: Watch captures  (global mechanism — tested in main)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+fn main(void): i32 {
+    /* ── by-value capture: handler has own copy, outer var unchanged ── */
+    stack i32 outer_count = 0;
+    watch.(ByValEvt e) {
+        .|outer_count|
+        outer_count = outer_count + e.code;  /* modifies handler-local copy */
+    }
+    send.(ByValEvt{.code = 5});
+    send.(ByValEvt{.code = 3});
+    if (outer_count != 0) {
+        print.('FAIL: watch by-value must not modify outer var, got {}\n', outer_count);
+        ret 1;
+    }
+    print.('watch by-value OK (outer_count={})\n', outer_count);
+
+    /* ── by-ref capture: handler mutates outer var through pointer ── */
+    stack i32 ref_total = 0;
+    watch.(ByRefEvt e) {
+        .|&ref_total|
+        ref_total = ref_total + e.code;
+    }
+    send.(ByRefEvt{.code = 4});
+    send.(ByRefEvt{.code = 6});
+    if (ref_total != 10) {
+        print.('FAIL: watch by-ref expected 10, got {}\n', ref_total);
+        ret 1;
+    }
+    print.('watch by-ref OK (ref_total={})\n', ref_total);
+
+    ret 0;
+}

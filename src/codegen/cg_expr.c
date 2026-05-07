@@ -1459,7 +1459,7 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     linkage_t saved_linkage = cg->current_fn_linkage;
     LLVMBasicBlockRef saved_break = cg->break_target;
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
-    usize_t saved_locals_count = cg->locals.count;
+    symtab_t saved_locals = cg->locals;     /* full symtab snapshot */
     usize_t saved_dtor_depth = cg->dtor_depth;
 
     /* save lambda capture context so nested lambdas restore correctly */
@@ -1475,18 +1475,18 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     usize_t saved_blocked_count = cg->lambda_blocked_count;
     char **new_blocked = Null;
     heap_t blocked_heap = NullHeap;
-    if (saved_locals_count > 0) {
-        blocked_heap = allocate(saved_locals_count, sizeof(char *));
+    if (saved_locals.count > 0) {
+        blocked_heap = allocate(saved_locals.count, sizeof(char *));
         new_blocked = blocked_heap.pointer;
-        for (usize_t i = 0; i < saved_locals_count; i++)
-            new_blocked[i] = cg->locals.entries[i].name;
+        for (usize_t i = 0; i < saved_locals.count; i++)
+            new_blocked[i] = saved_locals.entries[i].name;
     }
     cg->lambda_blocked_names = new_blocked;
-    cg->lambda_blocked_count = saved_locals_count;
+    cg->lambda_blocked_count = saved_locals.count;
     cg->lambda_depth++;
 
-    /* hide outer locals; set current_fn to the lambda */
-    cg->locals.count = 0;
+    /* give lambda a fresh locals scope so it cannot corrupt outer entries */
+    symtab_init(&cg->locals);
     cg->current_fn = fn;
     cg->current_fn_is_inline_method = False;
     cg->current_fn_is_entry_main = False;
@@ -1542,7 +1542,8 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     if (blocked_heap.pointer) deallocate(blocked_heap);
     cg->lambda_blocked_names  = saved_blocked;
     cg->lambda_blocked_count  = saved_blocked_count;
-    cg->locals.count          = saved_locals_count;
+    symtab_free(&cg->locals);           /* free lambda's own locals */
+    cg->locals                = saved_locals;  /* restore outer symtab */
     cg->dtor_depth            = saved_dtor_depth;
     cg->current_fn            = saved_fn;
     cg->current_struct_name   = saved_struct;
@@ -3675,6 +3676,26 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
 
     if (target->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, target->as.ident.name);
+        /* Inside a capturing lambda: by-ref captured variable assignment.
+           The env struct field holds a pointer to the outer alloca; store through it. */
+        if (!sym && cg->lambda_depth > 0 && cg->lambda_capture_count > 0
+            && cg->lambda_env_param && cg->lambda_env_type) {
+            for (usize_t ci = 0; ci < cg->lambda_capture_count; ci++) {
+                capture_entry_t *cap = &cg->lambda_captures[ci];
+                if (strcmp(cap->name, target->as.ident.name) != 0) continue;
+                if (!cap->by_ref) break; /* by-value: fall through to undefined error */
+                LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
+                LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder,
+                    cg->lambda_env_type, cg->lambda_env_param,
+                    (unsigned)ci, "cap.fld");
+                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
+                LLVMValueRef addr = LLVMBuildLoad2(cg->builder, ptr_t, gep, "cap.addr");
+                if (cg->lambda_cap_types && cg->lambda_cap_types[ci])
+                    rhs = coerce_int(cg, rhs, cg->lambda_cap_types[ci]);
+                LLVMBuildStore(cg->builder, rhs, addr);
+                return rhs;
+            }
+        }
         if (!sym) {
             diag_begin_error("undefined variable '%s'", target->as.ident.name);
             diag_span(DIAG_NODE(target), True, "not found in this scope");

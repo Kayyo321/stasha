@@ -645,12 +645,19 @@ static node_t *parse_primary(parser_t *p) {
         return n;
     }
 
-    /* stream.op.(handle) — done.(s)/drop.(s) for stream.[T] coroutine handles. */
+    /* stream.op.(handle) — done.(s)/drop.(s)/cancel.(s)/final.(s) for stream.[T] handles. */
     if (check(p, TokStream)) {
         usize_t line = p->current.line;
         advance_parser(p);
         consume(p, TokDot, "'.'");
-        token_t op_tok = consume(p, TokIdent, "stream operation (done, drop)");
+        /* 'final' is a keyword token, not TokIdent — accept either */
+        token_t op_tok;
+        if (check(p, TokFinal)) {
+            op_tok = p->current;
+            advance_parser(p);
+        } else {
+            op_tok = consume(p, TokIdent, "stream operation (done, drop, cancel, final)");
+        }
         char op_name[16];
         usize_t op_len = op_tok.length < 15 ? op_tok.length : 15;
         memcpy(op_name, op_tok.start, op_len);

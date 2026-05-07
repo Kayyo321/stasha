@@ -257,8 +257,15 @@ stream.cancel.(f);                   // set cancelled flag; producer sees at nex
 ### Sugar — pipeline `|>`, lambdas `lam.()`, trailing closures
 
 ```
-// Lambda — non-capturing in v1.  Lifted to a module-level fn; expression
-// value is a plain function pointer (fn*(...) : ret).
+// closure.[params]: ret — capturing lambda type (fat {fn_ptr, env_ptr} pair).
+// lam.(params): ret { .|captures| body } — capturing lambda expression.
+// Non-capturing lam produces a plain fn* (no env); capturing lam produces closure.[...].
+closure.[stack i32]: i32 f = lam.(stack i32 x): i32 { .|base| ret x + base; };
+closure.[void]: i32 g     = lam.(void): i32         { .|a, b| ret a * b; };
+// By-ref capture mutates the outer variable:
+closure.[stack i32]: void acc = lam.(stack i32 x): void { .|&total| total = total + x; };
+
+// Non-capturing lambda — lifted to a module-level fn; value is a plain fn*.
 stack fn*(stack i32): i32 sq = lam.(stack i32 x): i32 { ret x * x; };
 
 // Pipeline — left-associative, low-precedence.  `a |> f`        → f.(a)

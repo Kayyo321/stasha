@@ -164,6 +164,12 @@ static type_info_t infer_expr_type(coro_analysis_t *ca, node_t *expr) {
                 return fn->as.fn_decl.return_types[0];
             return NO_TYPE;
         }
+        case NodeBinaryExpr:
+            return infer_expr_type(ca, expr->as.binary.left);
+        case NodeUnaryPrefixExpr:
+            return infer_expr_type(ca, expr->as.unary.operand);
+        case NodeTernaryExpr:
+            return infer_expr_type(ca, expr->as.ternary.then_expr);
         default:
             return NO_TYPE;
     }
