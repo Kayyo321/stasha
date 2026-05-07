@@ -1,0 +1,11 @@
+// Diagnostic test: error deduplication — undefined function called multiple times
+// Expected: only ONE "undefined function" error for 'calculate', not three
+// Feature: Phase 1 error deduplication
+mod diag_dedup_fn;
+
+ext fn main(void): i32 {
+    stack i32 a = calculate(1);
+    stack i32 b = calculate(2);
+    stack i32 c = calculate(3);
+    ret a + b + c;
+}

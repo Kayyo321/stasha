@@ -1,0 +1,14 @@
+mod row12_varargs;
+
+cheader "stdio.h";
+
+fn main(void): i32 {
+    // printf is variadic (`int printf(const char *, ...)`).  Stasha
+    // threads the is_variadic flag through process_cheader_decls →
+    // fn_decl.is_variadic → LLVMFunctionType in cg_expr.c.  This also
+    // exercises printing of mixed types in one call.
+    i32 r = printf("varargs: %d %s %.2f\n", 42, "hello", 3.14);
+    if r < 1 { print.("FAIL printf returned {}\n", r); ret 1; }
+    print.("12_varargs: ok\n");
+    ret 0;
+}

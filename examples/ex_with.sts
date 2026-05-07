@@ -1,0 +1,20 @@
+mod ex_with;
+
+int fn divide(i32 a, i32 b): [i32, error] {
+    if (b == 0) {
+        ret 0, error.('division by zero!');
+    }
+    ret a / b, nil;
+}
+
+ext fn main(void): i32 {
+    with let [result, err] = divide(10, 2); err == nil {
+        print.('{}\n', result);
+    }
+
+    with let [_, err] = divide(100, 0); err != nil {
+        print.error.('"divide(100, 0)" returned: {}\n', err);
+    }
+
+    ret 0;
+}

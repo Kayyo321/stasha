@@ -23,6 +23,8 @@ static void arena_track(heap_t h) {
     arena_entries[arena_count++] = h;
 }
 
+void ast_arena_track(heap_t h) { arena_track(h); }
+
 void ast_free_all(void) {
     for (usize_t i = arena_count; i > 0; i--)
         deallocate(arena_entries[i - 1]);
@@ -48,6 +50,15 @@ node_t *make_node(node_kind_t kind, usize_t line) {
     return n;
 }
 
+void ast_set_loc(node_t *node, token_t tok) {
+    if (!node) return;
+    node->line = tok.line;
+    node->col = tok.col;
+    node->len = tok.length;
+    if (tok.file)
+        node->source_file = ast_strdup(tok.file, strlen(tok.file));
+}
+
 char *copy_token_text(token_t tok) {
     heap_t h = allocate(tok.length + 1, sizeof(char));
     arena_track(h);
@@ -55,6 +66,12 @@ char *copy_token_text(token_t tok) {
     memcpy(s, tok.start, tok.length);
     s[tok.length] = '\0';
     return s;
+}
+
+char *copy_name_text(token_t tok) {
+    if (tok.kind == TokDollarStr)
+        return ast_strdup(tok.start + 2, tok.length - 3); /* skip $" and closing " */
+    return copy_token_text(tok);
 }
 
 char *ast_strdup(const char *src, usize_t len) {
@@ -175,4 +192,42 @@ void node_list_push(node_list_t *list, node_t *node) {
         list->capacity = new_cap;
     }
     list->items[list->count++] = node;
+}
+
+/* ── fileheader helpers ── */
+
+void fileheader_init(fileheader_t *fh) {
+    fh->items = Null;
+    fh->count = 0;
+    fh->capacity = 0;
+    fh->heap = NullHeap;
+}
+
+void fileheader_push(fileheader_t *fh, fh_entry_t entry) {
+    if (fh->count >= fh->capacity) {
+        usize_t new_cap = fh->capacity < 4 ? 4 : fh->capacity * 2;
+        if (fh->heap.pointer == Null) {
+            fh->heap = allocate(new_cap, sizeof(fh_entry_t));
+            arena_track(fh->heap);
+        } else {
+            fh->heap = reallocate(fh->heap, new_cap * sizeof(fh_entry_t));
+        }
+        fh->items = fh->heap.pointer;
+        fh->capacity = new_cap;
+    }
+    fh->items[fh->count++] = entry;
+}
+
+fileheader_t *fileheader_alloc(void) {
+    heap_t h = allocate(1, sizeof(fileheader_t));
+    arena_track(h);
+    fileheader_t *fh = h.pointer;
+    fileheader_init(fh);
+    return fh;
+}
+
+void fileheader_merge(fileheader_t *dst, fileheader_t *src) {
+    if (!dst || !src) return;
+    for (usize_t i = 0; i < src->count; i++)
+        fileheader_push(dst, src->items[i]);
 }

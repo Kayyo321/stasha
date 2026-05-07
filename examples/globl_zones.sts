@@ -1,0 +1,36 @@
+mod globl_zones;
+
+lib "stdio"  = io;
+lib "string" = str;
+
+zone top_lvl; // global zone — freed in main via defer
+
+fn use_top_lvl(void): void {
+    // allocate from the global zone; rem.(buf) is a no-op (zone owns the memory)
+    stack i8 *rw buf = new.(64) in top_lvl;
+    defer rem.(buf);
+
+    str.strcpy(buf, "hello from top_lvl zone");
+    io.printf("use_top_lvl: '%s'\n", buf);
+}
+
+fn pass_zone(zone z): void {
+    // zone passed by value — allocations still go into the caller's arena
+    stack i8 *rw buf = new.(64) in z;
+    defer rem.(buf);
+
+    str.strcpy(buf, "hello through passed zone");
+    io.printf("pass_zone:   '%s'\n", buf);
+}
+
+fn main(void): i32 {
+    defer rem.(top_lvl); // free entire global arena on return
+
+    io.printf("=== global and passed zones ===\n");
+
+    use_top_lvl();           // allocates into top_lvl
+    pass_zone(top_lvl);      // same arena, different function
+
+    io.printf("=== done (top_lvl freed by defer) ===\n");
+    ret 0;
+}

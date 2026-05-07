@@ -1,0 +1,13 @@
+mod row02_ptrs;
+
+cheader "support/ptrs.h" search "tests/cinterop";
+
+fn main(void): i32 {
+    stack i32 xs[5] = .{1, 2, 3, 4, 5};
+    if arr_sum_const(&xs[0], 5) != 15 { print.("FAIL sum\n"); ret 1; }
+    arr_double(&xs[0], 5);
+    if xs[2] != 6 { print.("FAIL double\n"); ret 1; }
+    if ptr_id(&xs[0]) != &xs[0] { print.("FAIL id\n"); ret 1; }
+    print.("02_ptrs: ok\n");
+    ret 0;
+}

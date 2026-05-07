@@ -1,0 +1,154 @@
+mod math;
+
+lib "math" = cmath;
+
+// ── Constants ─────────────────────────────────────────────────────────────
+
+ext const f64 MathPI    = 3.14159265358979323846;
+ext const f64 MathE     = 2.71828182845904523536;
+ext const f64 MathSqrt2 = 1.41421356237309504880;
+ext const f64 MathLn2   = 0.69314718055994530942;
+ext const f64 MathLn10  = 2.30258509299404568402;
+
+// ── Basic ─────────────────────────────────────────────────────────────────
+
+ext fn math_abs_f64(f64 x): f64 { ret cmath.fabs(x); }
+ext fn math_abs_f32(f32 x): f32 { ret cmath.fabsf(x); }
+
+ext fn math_min_f64(f64 a, b): f64 { ret (a < b) ? a : b; }
+ext fn math_max_f64(f64 a, b): f64 { ret (a > b) ? a : b; }
+ext fn math_min_f32(f32 a, b): f32 { ret (a < b) ? a : b; }
+ext fn math_max_f32(f32 a, b): f32 { ret (a > b) ? a : b; }
+ext fn math_min_i32(i32 a, b): i32 { ret (a < b) ? a : b; }
+ext fn math_max_i32(i32 a, b): i32 { ret (a > b) ? a : b; }
+
+ext fn math_clamp_f64(f64 x, lo, hi): f64 {
+    ret (x < lo) ? lo : (x > hi) ? hi : x;
+}
+ext fn math_clamp_f32(f32 x, lo, hi): f32 {
+    ret (x < lo) ? lo : (x > hi) ? hi : x;
+}
+ext fn math_clamp_i32(i32 x, lo, hi): i32 {
+    ret (x < lo) ? lo : (x > hi) ? hi : x;
+}
+
+// ── Rounding ──────────────────────────────────────────────────────────────
+
+ext fn math_floor(f64 x): f64 { ret cmath.floor(x); }
+ext fn math_ceil(f64 x):  f64 { ret cmath.ceil(x);  }
+ext fn math_round(f64 x): f64 { ret cmath.round(x); }
+ext fn math_trunc(f64 x): f64 { ret cmath.trunc(x); }
+
+ext fn math_floor_f32(f32 x): f32 { ret cmath.floorf(x); }
+ext fn math_ceil_f32(f32 x):  f32 { ret cmath.ceilf(x);  }
+ext fn math_round_f32(f32 x): f32 { ret cmath.roundf(x); }
+
+// ── Power / root ──────────────────────────────────────────────────────────
+
+ext fn math_sqrt(f64 x):          f64 { ret cmath.sqrt(x);       }
+ext fn math_cbrt(f64 x):          f64 { ret cmath.cbrt(x);       }
+ext fn math_pow(f64 base, exp):   f64 { ret cmath.pow(base, exp); }
+ext fn math_hypot(f64 x, y):      f64 { ret cmath.hypot(x, y);   }
+ext fn math_sqrt_f32(f32 x):      f32 { ret cmath.sqrtf(x);      }
+ext fn math_pow_f32(f32 base, exp): f32 { ret cmath.powf(base, exp); }
+
+// ── Exponential / logarithm ───────────────────────────────────────────────
+
+ext fn math_exp(f64 x):   f64 { ret cmath.exp(x);   }
+ext fn math_exp2(f64 x):  f64 { ret cmath.exp2(x);  }
+ext fn math_log(f64 x):   f64 { ret cmath.log(x);   }
+ext fn math_log2(f64 x):  f64 { ret cmath.log2(x);  }
+ext fn math_log10(f64 x): f64 { ret cmath.log10(x); }
+
+// ── Trigonometry ──────────────────────────────────────────────────────────
+
+ext fn math_sin(f64 x):      f64 { ret cmath.sin(x);        }
+ext fn math_cos(f64 x):      f64 { ret cmath.cos(x);        }
+ext fn math_tan(f64 x):      f64 { ret cmath.tan(x);        }
+ext fn math_asin(f64 x):     f64 { ret cmath.asin(x);       }
+ext fn math_acos(f64 x):     f64 { ret cmath.acos(x);       }
+ext fn math_atan(f64 x):     f64 { ret cmath.atan(x);       }
+ext fn math_atan2(f64 y, x): f64 { ret cmath.atan2(y, x);   }
+ext fn math_sinh(f64 x):     f64 { ret cmath.sinh(x);       }
+ext fn math_cosh(f64 x):     f64 { ret cmath.cosh(x);       }
+ext fn math_tanh(f64 x):     f64 { ret cmath.tanh(x);       }
+
+// Convert degrees to radians and back.
+ext fn math_deg_to_rad(f64 deg): f64 { ret deg * (MathPI / 180.0); }
+ext fn math_rad_to_deg(f64 rad): f64 { ret rad * (180.0 / MathPI); }
+
+// ── Misc ──────────────────────────────────────────────────────────────────
+
+// Linear interpolation: (1-t)*a + t*b, no clamping.
+ext fn math_lerp(f64 a, b, t): f64 { ret a + t * (b - a); }
+
+// True if x is approximately zero within `eps`.
+ext fn math_near_zero(f64 x, eps): bool {
+    ret cmath.fabs(x) <= eps;
+}
+
+// True if a and b are within `eps` of each other.
+ext fn math_near_eq(f64 a, b, eps): bool {
+    ret cmath.fabs(a - b) <= eps;
+}
+
+ext fn math_sign_f64(f64 x): f64 {
+    ret (x > 0.0) ? 1.0 : (x < 0.0) ? -1.0 : 0.0;
+}
+
+test 'math_abs_f64' {
+    expect.(math_near_eq(math_abs_f64(-3.14), 3.14, 0.001));
+    expect.(math_near_eq(math_abs_f64(2.5), 2.5, 0.001));
+    expect.(math_near_eq(math_abs_f64(0.0), 0.0, 0.001));
+}
+
+test 'math_min_max_f64' {
+    expect.(math_near_eq(math_min_f64(3.0, 5.0), 3.0, 0.001));
+    expect.(math_near_eq(math_max_f64(3.0, 5.0), 5.0, 0.001));
+    expect.(math_near_eq(math_min_f64(-1.0, 1.0), -1.0, 0.001));
+}
+
+test 'math_clamp_f64' {
+    expect.(math_near_eq(math_clamp_f64(5.0, 0.0, 3.0), 3.0, 0.001));
+    expect.(math_near_eq(math_clamp_f64(-1.0, 0.0, 3.0), 0.0, 0.001));
+    expect.(math_near_eq(math_clamp_f64(1.5, 0.0, 3.0), 1.5, 0.001));
+}
+
+test 'math_sqrt' {
+    f64 r = math_sqrt(4.0);
+    f64 diff = r - 2.0;
+    if (diff < 0.0) { diff = diff * -1.0; }
+    expect.(diff < 0.001);
+}
+
+test 'math_pow' {
+    f64 r = math_pow(2.0, 10.0);
+    expect.(math_near_eq(r, 1024.0, 0.001));
+}
+
+test 'math_sin_cos' {
+    expect.(math_near_eq(math_sin(0.0), 0.0, 0.001));
+    expect.(math_near_eq(math_cos(0.0), 1.0, 0.001));
+}
+
+test 'math_floor_ceil' {
+    expect.(math_near_eq(math_floor(2.9), 2.0, 0.001));
+    expect.(math_near_eq(math_ceil(2.1), 3.0, 0.001));
+}
+
+test 'math_near_eq' {
+    expect.(math_near_eq(1.0, 1.0001, 0.001));
+    expect.(!math_near_eq(1.0, 2.0, 0.001));
+}
+
+test 'math_lerp' {
+    expect.(math_near_eq(math_lerp(0.0, 10.0, 0.5), 5.0, 0.001));
+    expect.(math_near_eq(math_lerp(0.0, 10.0, 0.0), 0.0, 0.001));
+    expect.(math_near_eq(math_lerp(0.0, 10.0, 1.0), 10.0, 0.001));
+}
+
+test 'math_sign_f64' {
+    expect.(math_near_eq(math_sign_f64(5.0), 1.0, 0.001));
+    expect.(math_near_eq(math_sign_f64(-3.0), -1.0, 0.001));
+    expect.(math_near_eq(math_sign_f64(0.0), 0.0, 0.001));
+}

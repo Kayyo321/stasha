@@ -1,0 +1,117 @@
+mod ex_make_init;
+
+// ── make.{...} — inline-initialised slices ────────────────────────────────
+//
+// `make.{...}` builds a slice with literal values, ranges, and spreads — the
+// same compound-init grammar that powers `.{...}` for arrays and structs.
+// Element type is inferred from the LHS slice type. Length is computed at
+// compile time when possible; otherwise via runtime arithmetic. The storage
+// class on the LHS picks where the backing buffer lives:
+//
+//   heap  []T  — malloc'd; user must `defer rem.(s);`
+//   stack []T  — alloca-backed; never escapes the function
+//
+// Supported (v2):
+//   · Positional literals: make.{1, 2, 3}
+//   · Integer ranges: make.{1..=8}, make.{0..10:2}
+//   · Float ranges:   make.{0.0..=1.0:0.25}
+//   · Spread of fixed-size array: make.{..arr, 99}
+//   · Spread of runtime-length slice: make.{..slice, 99}
+//   · String spread (when elem is i8/u8): make.{.."hello"}
+//   · Designated indices: make.{[3] = 9, [5] = 11}
+//   · Mixed: make.{0..3, 99, ..arr}
+//   · Empty: make.{}
+//   · Element with destructor: rem.(s) walks elements first
+//   · Nested slices: heap [][]T = make.{ make.{...}, ... }
+//   · final/const []T lowers to a private constant global when all items
+//     are scalar literals — zero allocation, smaller IR.
+// ──────────────────────────────────────────────────────────────────────────
+
+int fn print_islice(stack []i32 s): void {
+    print.('[');
+    for (stack i32 i = 0; i < len.(s); i++) {
+        if (i > 0) { print.(' '); }
+        print.('{}', s[i]);
+    }
+    print.(']\n');
+}
+
+fn main(void): i32 {
+    print.('--- positional literals ---\n');
+    heap []i32 a = make.{1, 2, 3, 4};
+    defer rem.(a);
+    print.('a: '); print_islice(a);
+
+    print.('\n--- inclusive range ---\n');
+    heap []i32 b = make.{1..=8};
+    defer rem.(b);
+    print.('b: '); print_islice(b);
+
+    print.('\n--- range with step ---\n');
+    heap []i32 c = make.{0..10:2};
+    defer rem.(c);
+    print.('c: '); print_islice(c);
+
+    print.('\n--- spread of fixed array + extras ---\n');
+    stack i32 src[4] = .{10, 20, 30, 40};
+    heap []i32 d = make.{..src, 99, 100};
+    defer rem.(d);
+    print.('d: '); print_islice(d);
+
+    print.('\n--- mixed range and literals ---\n');
+    heap []i32 e = make.{0..3, 99, 100};
+    defer rem.(e);
+    print.('e: '); print_islice(e);
+
+    print.('\n--- int range coerced to f32 ---\n');
+    heap []f32 f = make.{1..=4};
+    defer rem.(f);
+    print.('f: {} {} {} {} (len={})\n', f[0], f[1], f[2], f[3], len.(f));
+
+    print.('\n--- empty slice ---\n');
+    heap []i32 z = make.{};
+    print.('z: len={} cap={}\n', len.(z), cap.(z));
+
+    print.('\n--- stack slice (alloca-backed) ---\n');
+    stack []i32 s = make.{7, 8, 9};
+    print.('s: '); print_islice(s);
+
+    print.('\n--- v2: float range ---\n');
+    heap []f64 g = make.{0.0..=1.0:0.25};
+    defer rem.(g);
+    print.('g: {} {} {} {} {} (len={})\n', g[0], g[1], g[2], g[3], g[4], len.(g));
+
+    print.('\n--- v2: designated indices ---\n');
+    heap []i32 h = make.{[0] = 1, [4] = 5};
+    defer rem.(h);
+    print.('h: '); print_islice(h);
+
+    print.('\n--- v2: runtime slice spread ---\n');
+    heap []i32 base = make.{1, 2, 3};
+    defer rem.(base);
+    heap []i32 i = make.{..base, 99, ..base};
+    defer rem.(i);
+    print.('i: '); print_islice(i);
+
+    print.('\n--- v2: large range emits a loop ---\n');
+    heap []i32 big = make.{0..1000};
+    defer rem.(big);
+    print.('big[0]={} big[500]={} big[999]={} (len={})\n',
+           big[0], big[500], big[999], len.(big));
+
+    print.('\n--- v2: nested heap [][]T ---\n');
+    heap [][]i32 outer = make.{
+        make.{1, 2, 3},
+        make.{4, 5, 6, 7},
+    };
+    defer rem.(outer);                      // walks inner slices first
+    for (stack i32 ix = 0; ix < len.(outer); ix++) {
+        print.('  outer[{}] ', ix); print_islice(outer[ix]);
+    }
+
+    print.('\n--- v2: const-global fast path ---\n');
+    final []i32 weeks = make.{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    print.('weeks[1]={} weeks[11]={} (len={})\n', weeks[1], weeks[11], len.(weeks));
+
+    ret 0;
+}

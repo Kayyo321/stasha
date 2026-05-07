@@ -1,0 +1,49 @@
+mod console;
+
+lib "unistd" = cunistd;
+
+ext const i32 StdoutFD = 1;
+ext const i32 StderrFD = 2;
+
+ext type stdstream_t: enum {
+    Stdout,
+    Stderr,
+}
+
+ext macro log! {
+    (...@args) => {
+        @foreach arg : args {
+            print.('{} ', arg);
+        }
+        print.('\n');
+    }
+}
+
+ext macro elog! {
+    (...@args) => {
+        @foreach arg : args {
+            print.error.('{} ', arg);
+        }
+        print.error.('\n');
+    }
+}
+
+ext fn write_fd(i32 fd, i8 *r buf, u32 cnt): [i64, error] {
+    // ssize_t write(int fd, const void *buf, size_t count);
+    final i64 write_result = cunistd.write(fd, buf, cnt);
+    if write_result != (i64)cnt {
+        ret write_result, error.('Expected to write {} bytes but wrote {}.', cnt, write_result);
+    }
+
+    ret write_result, nil;
+}
+
+ext fn write_stream(stdstream_t stdstream, i8 *r buf, u32 cnt): [i64, error] {
+    final i32 desc;
+    match stdstream {
+        stdstream_t.Stdout => { desc = StdoutFD; }
+        stdstream_t.Stderr => { desc = StderrFD; }
+    }
+
+    ret write_fd(desc, buf, cnt);
+}

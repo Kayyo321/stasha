@@ -1,0 +1,32 @@
+mod row21_outbuf;
+
+cheader "support/outbuf.h" search "tests/cinterop";
+
+// "Output via pointer" idiom: caller owns the buffer, the C function
+// writes into it.  Verifies that Stasha's `*rw` lowering of `int32_t *`
+// round-trips writes back through the FFI boundary.
+
+fn main(void): i32 {
+    stack i32 a = 0;
+    out_set_i32(&a, 99);
+    if a != 99 { print.("FAIL out_set_i32 = {}\n", a); ret 1; }
+
+    stack i32 p1 = 0;
+    stack i32 p2 = 0;
+    out_pair(&p1, &p2, 12);
+    if p1 != 12 || p2 != -12 { print.("FAIL out_pair = {}/{}\n", p1, p2); ret 1; }
+
+    stack i32 buf[5] = .{};
+    out_fill(&buf[0], 5, 7);
+    if buf[0] != 7 || buf[4] != 7 { print.("FAIL out_fill\n"); ret 1; }
+
+    stack i32 q = 0;
+    stack i32 r = 0;
+    if out_div(17, 5, &q, &r) != 0 { print.("FAIL div ret\n"); ret 1; }
+    if q != 3 || r != 2 { print.("FAIL div q={} r={}\n", q, r); ret 1; }
+
+    if out_div(17, 0, &q, &r) != -1 { print.("FAIL div by zero\n"); ret 1; }
+
+    print.("21_outbuf: ok\n");
+    ret 0;
+}

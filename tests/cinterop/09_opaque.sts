@@ -1,0 +1,18 @@
+mod row09_opaque;
+
+cheader "support/opaque.h" search "tests/cinterop";
+
+// Opaque pointer typedefs (LLVMModuleRef pattern).  cheader surfaces
+// `typedef struct OpaqueFoo *FooRef;` as `type FooRef: alias = *rw void`
+// — pointer-width on 64-bit targets, no spurious empty-struct synthesis.
+
+fn main(void): i32 {
+    FooRef f = foo_create(7);
+    if foo_get(f) != 15 { print.("FAIL foo_get\n"); ret 1; }
+    BarRef b = bar_from_foo(f);
+    if bar_get(b) != 1015 { print.("FAIL bar_get\n"); ret 1; }
+    bar_destroy(b);
+    foo_destroy(f);
+    print.("09_opaque: ok\n");
+    ret 0;
+}

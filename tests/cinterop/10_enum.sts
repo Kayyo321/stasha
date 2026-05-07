@@ -1,0 +1,28 @@
+mod row10_enum;
+
+cheader "support/enums.h" search "tests/cinterop";
+
+// C enums round-trip through cheader → Stasha as int32 constants:
+//  * Anonymous `typedef enum { ... } color_t;` (auto-numbered + designated)
+//  * Tagged   `typedef enum Mode { ... } Mode;`
+//
+// Each variant becomes a TypeI32 const decl in the AST, so they can be
+// compared and passed to C functions that take an int32_t.
+
+fn main(void): i32 {
+    if Red   != 0 { print.("FAIL Red={}\n", Red); ret 1; }
+    if Green != 5 { print.("FAIL Green={}\n", Green); ret 1; }
+    if Blue  != 6 { print.("FAIL Blue={}\n", Blue); ret 1; }
+
+    if ModeOff  != 0 { print.("FAIL ModeOff\n");  ret 1; }
+    if ModeOn   != 1 { print.("FAIL ModeOn\n");   ret 1; }
+    if ModeAuto != 2 { print.("FAIL ModeAuto\n"); ret 1; }
+
+    if enum_brighten(Red)   != 100 { print.("FAIL bright Red\n");   ret 1; }
+    if enum_brighten(Green) != 200 { print.("FAIL bright Green\n"); ret 1; }
+    if enum_brighten(Blue)  != 300 { print.("FAIL bright Blue\n");  ret 1; }
+    if enum_brighten(99)    != -1  { print.("FAIL bright unknown\n"); ret 1; }
+
+    print.("10_enum: ok\n");
+    ret 0;
+}

@@ -1,0 +1,18 @@
+mod weak_linkage;
+
+// Linkage-control examples for embedded / plugin / libc-style override points.
+
+@[[weak]]
+fn panic_handler(i8 *msg): void {
+    print.error.("panic: {}\n", msg);
+}
+
+@[[weak, export_name: "alloc_error_handler"]]
+fn on_alloc_error(usize_t requested): void {
+    print.error.("allocation failed for {} bytes\n", requested);
+}
+
+fn main(void): i32 {
+    panic_handler("demo");
+    ret 0;
+}

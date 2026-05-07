@@ -1,0 +1,25 @@
+mod row52_b_struct_byval;
+
+// Path B — point_dot_ptr takes pointers, which works regardless of the
+// AAPCS aggregate ABI gap that breaks struct-byval ARG passing
+// (see tests/cinterop/xfail/04b_struct_byval_arg.sts).  This test
+// covers struct-by-pointer round-tripping through a C-archive linkage
+// without involving cheader.
+
+type point_t: struct {
+    ext i32 x;
+    ext i32 y;
+};
+
+lib "cinterop_support" = c;
+
+fn main(void): i32 {
+    point_t a;
+    point_t b;
+    a.x = 2; a.y = 3;
+    b.x = 7; b.y = 1;
+    i32 dot = c.point_dot_ptr(&a, &b);
+    if dot != 17 { print.("FAIL got {}\n", dot); ret 1; }
+    print.("52_b_struct_byval: ok\n");
+    ret 0;
+}

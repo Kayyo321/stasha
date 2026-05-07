@@ -1,0 +1,94 @@
+mod error_helpers;
+
+lib "stdlib" = cstdlib;
+lib "stdio" = cio;
+
+// Return nil (no error).
+ext fn err_ok(void): error {
+    ret nil;
+}
+
+// True if e is nil (no error).
+ext fn err_is_ok(error e): bool {
+    ret e == nil;
+}
+
+// True if e is non-nil (there is an error).
+ext fn err_is_err(error e): bool {
+    ret e != nil;
+}
+
+// If err is non-nil, return fallback; otherwise return 0.
+ext fn err_unwrap_or(error e, i32 fallback): i32 {
+    if (e != nil) {
+        ret fallback;
+    }
+    ret 0;
+}
+
+// Return first if non-nil, else second.
+ext fn err_chain(error first, error second): error {
+    if (first != nil) {
+        ret first;
+    }
+    ret second;
+}
+
+// If e is non-nil, print to stderr and abort.
+ext fn err_assert(error e): void {
+    if (e != nil) {
+        cio.printf("err_assert: assertion failed\n");
+        cstdlib.abort();
+    }
+}
+
+test 'err_ok returns nil' {
+    error e = err_ok();
+    expect.(e == nil);
+}
+
+test 'err_new creates a non-nil error' {
+    error e = error.('something went wrong');
+    expect.(e != nil);
+}
+
+test 'err_is_ok and err_is_err' {
+    error ok = err_ok();
+    error bad = error.('fail');
+    expect.(err_is_ok(ok));
+    expect.(err_is_err(bad));
+    expect.(err_is_ok(bad) == false);
+    expect.(err_is_err(ok) == false);
+}
+
+test 'err_unwrap_or returns fallback on error' {
+    error e = error.('oops');
+    i32 result = err_unwrap_or(e, 42);
+    expect_eq.(result, 42);
+}
+
+test 'err_unwrap_or returns 0 on ok' {
+    error e = err_ok();
+    i32 result = err_unwrap_or(e, 42);
+    expect_eq.(result, 0);
+}
+
+test 'err_chain returns first if non-nil' {
+    error first = error.('first');
+    error second = error.('second');
+    error result = err_chain(first, second);
+    expect.(result != nil);
+}
+
+test 'err_chain returns second if first is nil' {
+    error first = err_ok();
+    error second = error.('second');
+    error result = err_chain(first, second);
+    expect.(result != nil);
+}
+
+test 'err_assert does not abort on ok' {
+    error e = err_ok();
+    err_assert(e);
+    expect.(true);
+}

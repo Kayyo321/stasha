@@ -1,0 +1,9 @@
+mod cheader_mylib;
+
+cheader "cheader_mylib.h" search "./examples";
+lib "cheader_mylib" from "libcheader_mylib.a";
+
+ext fn main(void): void {
+    mylib_point_t pt = .{2, 5};
+    print.("sum: {}\n", mylib_sum(&pt));
+}

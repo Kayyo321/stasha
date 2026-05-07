@@ -1,0 +1,5 @@
+mod coro_yield_outside_async;
+
+fn main(void): void {
+    yield 1;
+}

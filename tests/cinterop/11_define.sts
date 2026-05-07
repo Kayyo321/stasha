@@ -1,0 +1,20 @@
+mod row11_define;
+
+cheader "support/defines.h" search "tests/cinterop";
+
+// Plain `#define NAME <int>` macros are surfaced as int64 constants by
+// ch_extract_define.  Function-like macros and non-integer macros are
+// skipped silently and must NOT crash the parser.
+
+fn main(void): i32 {
+    if MAX_BUF      != 4096    { print.("FAIL MAX_BUF\n");      ret 1; }
+    if MIN_BUF      != 16      { print.("FAIL MIN_BUF\n");      ret 1; }
+    if MAGIC_HEX    != 0xCAFE  { print.("FAIL MAGIC_HEX\n");    ret 1; }
+    if NEG_ONE      != -1      { print.("FAIL NEG_ONE\n");      ret 1; }
+    if HEX_U_SUFFIX != 0x1F    { print.("FAIL HEX_U_SUFFIX\n"); ret 1; }
+    if LONG_SUFFIX  != 100000  { print.("FAIL LONG_SUFFIX\n");  ret 1; }
+    if ULL_SUFFIX   != 0xFF    { print.("FAIL ULL_SUFFIX\n");   ret 1; }
+
+    print.("11_define: ok\n");
+    ret 0;
+}

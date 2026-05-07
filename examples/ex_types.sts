@@ -1,0 +1,123 @@
+mod ex_types;
+
+lib "stdio" = io;
+
+// ── Type system showcase ────────────────────────────────────────────────────
+//
+// Covers: simple enum, tagged enum + match, union, bitfield,
+//         designated initializers, @packed / @c_layout struct attributes.
+
+// ── Simple enum ────────────────────────────────────────────────────────────
+
+type color_t: enum {
+    Red,
+    Green,
+    Blue,
+    Yellow,
+}
+
+int fn mix(color_t a, color_t b): color_t {
+    if (a == color_t.Red   && b == color_t.Green) { ret color_t.Yellow; }
+    if (a == color_t.Green && b == color_t.Red)   { ret color_t.Yellow; }
+    ret a;
+}
+
+// ── Tagged enum (Rust-style): variants carry typed payloads ─────────────────
+
+type Shape: enum {
+    Circle(f64),
+    Rectangle(f64),
+    Point,
+}
+
+int fn describe(Shape s): void {
+    match s {
+        Shape.Circle(r)    => { io.printf('Circle r=%f\n', r); }
+        Shape.Rectangle(w) => { io.printf('Rect   w=%f\n', w); }
+        Shape.Point        => { io.printf('Point\n'); }
+        _                  => { io.printf('unknown\n'); }
+    }
+}
+
+// ── Union ──────────────────────────────────────────────────────────────────
+
+type Value: union {
+    ext i32 as_int;
+    ext f32 as_float;
+    ext u8  as_byte;
+};
+
+// ── Bitfields ──────────────────────────────────────────────────────────────
+
+type Flags: struct {
+    ext i32 readable:   1;
+    ext i32 writable:   1;
+    ext i32 executable: 1;
+    ext i32 priority:   4;
+};
+
+// ── @packed and @c_layout struct attributes ─────────────────────────────────
+
+type PackedHeader: @packed struct {
+    ext u8  version;
+    ext i32 length;
+    ext u8  flags;
+};
+// sizeof(PackedHeader) == 6  (no padding; default would be 12)
+
+type CPoint: @c_layout struct {
+    ext f64 x;
+    ext f64 y;
+};
+comptime_assert.(sizeof.(CPoint) == 16);
+
+// ── Designated initializers ────────────────────────────────────────────────
+
+type Vec3: struct {
+    ext i32 x;
+    ext i32 y;
+    ext i32 z;
+};
+
+fn main(void): i16 {
+    io.printf('--- simple enum ---\n');
+    color_t r = color_t.Red;
+    color_t g = color_t.Green;
+    color_t mixed = mix(r, g);
+    io.printf('mix(Red,Green) = %d  (Yellow=3)\n', (i32)mixed);   // 3
+    io.printf('Red==%d Blue==%d\n', r == color_t.Red, r == color_t.Blue);  // 1 0
+
+    io.printf('\n--- tagged enum + match ---\n');
+    describe(Shape.Circle(3.14));
+    describe(Shape.Rectangle(10.0));
+    describe(Shape.Point);
+    match Shape.Circle(2.0) {
+        Shape.Circle(r) => { io.printf('wildcard caught circle r=%f\n', r); }
+        _ => {}
+    }
+
+    io.printf('\n--- union ---\n');
+    Value v;
+    v.as_int = 42;
+    io.printf('as_int=%d  sizeof(Value)=%lu\n', v.as_int, sizeof.(Value));   // 42  4
+
+    io.printf('\n--- bitfields ---\n');
+    Flags f;
+    f.readable = 1; f.writable = 0; f.executable = 1; f.priority = 7;
+    io.printf('rwe=%d%d%d priority=%d\n',
+              f.readable, f.writable, f.executable, f.priority);   // 101 7
+
+    io.printf('\n--- @packed ---\n');
+    io.printf('sizeof(PackedHeader) = %lu\n', sizeof.(PackedHeader));   // 6
+    PackedHeader hdr;
+    hdr.version = 1; hdr.length = 1024; hdr.flags = 7;
+    io.printf('v=%d len=%d fl=%d\n', (i32)hdr.version, hdr.length, (i32)hdr.flags);
+
+    io.printf('\n--- designated init ---\n');
+    Vec3 p = Vec3 { .x = 10, .y = 20, .z = 30 };
+    Vec3 q = Vec3 { .y = 99 };   // x and z default to 0
+    io.printf('p=(%d,%d,%d)\n', p.x, p.y, p.z);   // (10,20,30)
+    io.printf('q=(%d,%d,%d)\n', q.x, q.y, q.z);   // (0,99,0)
+
+    ret 0;
+}

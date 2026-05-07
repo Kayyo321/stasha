@@ -1,0 +1,24 @@
+mod row19_qualifiers;
+
+cheader "support/quals.h" search "tests/cinterop";
+
+// C type qualifiers (volatile, restrict / __restrict / __restrict__,
+// register, plus const at every level) must be silently dropped by
+// the cheader scanner so the function signatures still resolve.
+
+fn main(void): i32 {
+    stack i32 v = 42;
+    if qual_load_volatile(&v) != 42 { print.("FAIL volatile\n"); ret 1; }
+
+    stack i32 a[3] = .{1, 2, 3};
+    stack i32 b[3] = .{10, 20, 30};
+    if qual_sum_restrict(&a[0], &b[0], 3) != 66 { print.("FAIL restrict\n"); ret 1; }
+    if qual_sum_underscore(&a[0], &b[0], 3) != 66 { print.("FAIL __restrict\n"); ret 1; }
+
+    if qual_register_arg(7) != 8 { print.("FAIL register\n"); ret 1; }
+
+    if qual_const_chain(&a[0], 3) != 6 { print.("FAIL const chain\n"); ret 1; }
+
+    print.("19_qualifiers: ok\n");
+    ret 0;
+}

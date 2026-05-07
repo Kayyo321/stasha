@@ -1,0 +1,345 @@
+{
+  "name": "vscode-stasha",
+  "displayName": "Stasha",
+  "description": "Stasha language support: syntax highlighting, diagnostics, IntelliSense, go to definition, formatting, refactoring, debug, testing, and project tools",
+  "version": "0.2.0",
+  "publisher": "stasha",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Debuggers", "Snippets", "Formatters"],
+  "main": "./out/extension.js",
+  "extensionDependencies": ["vadimcn.vscode-lldb"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "stasha",
+        "aliases": ["Stasha", "sts"],
+        "extensions": [".sts"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "stasha",
+        "scopeName": "source.stasha",
+        "path": "./syntaxes/stasha.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "stasha",
+        "path": "./snippets/stasha.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      { "id": "keyword",    "description": "Language keyword" },
+      { "id": "type",       "description": "Type name" },
+      { "id": "function",   "description": "Function name" },
+      { "id": "variable",   "description": "Variable name" },
+      { "id": "parameter",  "description": "Function parameter" },
+      { "id": "property",   "description": "Field or property" },
+      { "id": "string",     "description": "String literal" },
+      { "id": "number",     "description": "Number literal" },
+      { "id": "comment",    "description": "Comment" },
+      { "id": "operator",   "description": "Operator" },
+      { "id": "decorator",  "description": "Attribute or decorator" },
+      { "id": "enumMember", "description": "Enum member" }
+    ],
+    "semanticTokenScopes": [
+      {
+        "scopes": {
+          "keyword":    ["keyword.control.stasha", "keyword.other.stasha"],
+          "type":       ["entity.name.type.stasha"],
+          "function":   ["entity.name.function.stasha"],
+          "variable":   ["variable.other.stasha"],
+          "parameter":  ["variable.parameter.stasha"],
+          "property":   ["variable.other.property.stasha"],
+          "string":     ["string.quoted.stasha"],
+          "number":     ["constant.numeric.stasha"],
+          "comment":    ["comment.line.stasha", "comment.block.stasha"],
+          "operator":   ["keyword.operator.stasha"],
+          "decorator":  ["entity.name.tag.stasha"],
+          "enumMember": ["variable.other.enummember.stasha"]
+        }
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "stashaExplorer",
+          "title": "Stasha",
+          "icon": "$(tools)"
+        }
+      ]
+    },
+    "views": {
+      "stashaExplorer": [
+        {
+          "id": "stashaProject",
+          "name": "Project",
+          "when": "workbenchState != empty"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "stasha.newProject",       "title": "Stasha: New Project" },
+      { "command": "stasha.initProject",      "title": "Stasha: Initialize Project in Current Folder" },
+      { "command": "stasha.build",            "title": "Stasha: Build" },
+      { "command": "stasha.buildRelease",     "title": "Stasha: Build (Release)" },
+      { "command": "stasha.test",             "title": "Stasha: Test" },
+      { "command": "stasha.run",              "title": "Stasha: Run",       "icon": "$(play)" },
+      { "command": "stasha.startDebug",       "title": "Stasha: Debug",     "icon": "$(debug-alt)" },
+      { "command": "stasha.runTestFile",      "title": "Stasha: Run Test File" },
+      { "command": "stasha.openProjectPanel", "title": "Stasha: Open Project Panel", "icon": "$(gear)" },
+      { "command": "stasha.refreshProject",   "title": "Stasha: Refresh Project",    "icon": "$(refresh)" },
+      { "command": "stasha.setMain",          "title": "Stasha: Set Entry Point" },
+      { "command": "stasha.removeExtLib",     "title": "Stasha: Remove Library" },
+      { "command": "stasha.openProjectFile",  "title": "Stasha: Open File" }
+    ],
+    "keybindings": [
+      {
+        "command": "stasha.run",
+        "key": "ctrl+f5",
+        "mac": "cmd+f5",
+        "when": "editorLangId == stasha"
+      },
+      {
+        "command": "stasha.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == stasha"
+      },
+      {
+        "command": "stasha.runTestFile",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorLangId == stasha"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "stasha.run",
+          "when": "resourceLangId == stasha",
+          "group": "navigation@1"
+        },
+        {
+          "command": "stasha.startDebug",
+          "when": "resourceLangId == stasha",
+          "group": "navigation@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "stasha.refreshProject",
+          "when": "view == stashaProject",
+          "group": "navigation"
+        },
+        {
+          "command": "stasha.openProjectPanel",
+          "when": "view == stashaProject",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "stasha.removeExtLib",
+          "when": "view == stashaProject && viewItem == stashaExtLib",
+          "group": "inline"
+        },
+        {
+          "command": "stasha.setMain",
+          "when": "view == stashaProject && viewItem == stashaMain",
+          "group": "inline"
+        }
+      ]
+    },
+    "taskDefinitions": [
+      {
+        "type": "stasha",
+        "required": [],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The Stasha task to run (build, buildRelease, test, run)"
+          },
+          "file": {
+            "type": "string",
+            "description": "Source file to compile (optional if sts.sproj present)"
+          }
+        }
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "stasha",
+        "label": "Stasha",
+        "languages": ["stasha"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the Stasha source file (.sts) to compile and debug",
+                "default": "${workspaceFolder}/src/main.sts"
+              },
+              "output": {
+                "type": "string",
+                "description": "Output binary path",
+                "default": "${workspaceFolder}/bin/debug_out"
+              },
+              "args": {
+                "type": "array",
+                "description": "Arguments to pass to the program",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "default": {}
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "stasha",
+            "request": "launch",
+            "name": "Debug Stasha Program",
+            "program": "${workspaceFolder}/src/main.sts",
+            "output": "${workspaceFolder}/bin/debug_out",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Stasha: Launch",
+            "description": "Compile and debug a Stasha program",
+            "body": {
+              "type": "stasha",
+              "request": "launch",
+              "name": "Debug Stasha Program",
+              "program": "^\"\\${workspaceFolder}/src/main.sts\"",
+              "output": "^\"\\${workspaceFolder}/bin/debug_out\"",
+              "args": [],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "stasha",
+        "owner": "stasha",
+        "fileLocation": ["absolute"],
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "[*]": {
+          "textMateRules": [
+            { "scope": "punctuation.accessor.dot-dispatch.stasha",       "settings": { "foreground": "#FFD700" } },
+            { "scope": "punctuation.section.compound-init.begin.stasha", "settings": { "foreground": "#56B6C2" } },
+            { "scope": "punctuation.section.compound-init.end.stasha",   "settings": { "foreground": "#56B6C2" } },
+            { "scope": "punctuation.section.generic.stasha",             "settings": { "foreground": "#56B6C2" } },
+            { "scope": "punctuation.accessor.member.stasha",             "settings": { "foreground": "#ABB2BF" } },
+            { "scope": "constant.character.literal.stasha",              "settings": { "foreground": "#E5C07B" } },
+            { "scope": "storage.modifier.pointer.stasha",                "settings": { "foreground": "#C678DD", "fontStyle": "bold" } },
+            { "scope": "entity.name.function.member.stasha",             "settings": { "foreground": "#61AFEF" } },
+            { "scope": "entity.name.function.static.stasha",             "settings": { "foreground": "#61AFEF" } },
+            { "scope": "entity.name.function.test.stasha",               "settings": { "foreground": "#E5C07B", "fontStyle": "italic" } },
+            { "scope": "entity.name.namespace.stasha",                   "settings": { "foreground": "#FF8C42" } },
+            { "scope": "constant.other.format-spec.stasha",              "settings": { "foreground": "#98C379", "fontStyle": "italic" } },
+            { "scope": "punctuation.section.interpolation.begin.stasha", "settings": { "foreground": "#56B6C2" } },
+            { "scope": "punctuation.section.interpolation.end.stasha",   "settings": { "foreground": "#56B6C2" } },
+            { "scope": "string.quoted.comptime.stasha",                  "settings": { "foreground": "#C8A8E9" } },
+            { "scope": "string.quoted.dollar.stasha",                    "settings": { "foreground": "#E5C07B" } },
+            { "scope": "string.unquoted.asm.stasha",                     "settings": { "foreground": "#ABB2BF", "fontStyle": "italic" } },
+            { "scope": "keyword.operator.variadic.stasha",               "settings": { "foreground": "#56B6C2" } },
+            { "scope": "keyword.operator.pipeline.stasha",               "settings": { "foreground": "#C678DD", "fontStyle": "bold" } },
+            { "scope": "keyword.operator.wrapping.stasha",               "settings": { "foreground": "#FF8C42" } },
+            { "scope": "keyword.operator.trapping.stasha",               "settings": { "foreground": "#FF8C42", "fontStyle": "bold" } },
+            { "scope": "keyword.operator.range.stasha",                  "settings": { "foreground": "#56B6C2" } },
+            { "scope": "keyword.operator.range-step.stasha",             "settings": { "foreground": "#56B6C2" } },
+            { "scope": "keyword.operator.addr.stasha",                   "settings": { "foreground": "#FF8C42" } },
+            { "scope": "entity.other.attribute-name.stasha",             "settings": { "foreground": "#FF8C42" } },
+            { "scope": "entity.name.type.parameter.stasha",              "settings": { "foreground": "#E5C07B", "fontStyle": "italic" } },
+            { "scope": "meta.block.unsafe.stasha",                       "settings": { "foreground": "#FF8C42" } }
+          ]
+        }
+      }
+    },
+    "configuration": {
+      "title": "Stasha",
+      "properties": {
+        "stasha.compilerPath": {
+          "type": "string",
+          "default": "stasha",
+          "description": "Path to the Stasha compiler binary. Defaults to 'stasha' (must be on PATH)."
+        },
+        "stasha.checkOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run type-checking diagnostics as you type."
+        },
+        "stasha.checkDelay": {
+          "type": "number",
+          "default": 400,
+          "description": "Debounce delay in milliseconds before running diagnostics after typing."
+        },
+        "stasha.enableCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable code completion (IntelliSense)."
+        },
+        "stasha.enableInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inlay hints for inferred types and parameter names."
+        },
+        "stasha.enableSemanticTokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic syntax highlighting (supplements TextMate grammar)."
+        },
+        "stasha.enableFormat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable document formatting via 'stasha format'."
+        },
+        "stasha.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically format Stasha files on save."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,281 @@
+mod http;
+
+lib "stdhttp" = ch;   // mongoose + wrapper, bundled into libhttp.a at build time
+lib "stdio"   = cio;
+lib "string"  = cstring;
+
+// ── Handler function type ─────────────────────────────────────────────────────
+//
+// Route handlers must match this C-compatible signature:
+//
+//   ext fn my_handler(stack i8 *rw req, stack i8 *rw res): void { ... }
+//
+// Pass them to server.get() / server.post() etc. as function pointers.
+// req is a stdhttp_request_t*  (use http_req_* helpers below)
+// res is a stdhttp_response_t* (use http_res_* helpers below)
+
+// ── http_req_t ────────────────────────────────────────────────────────────────
+//
+// A thin wrapper around the opaque request context pointer.
+// Construct from the raw pointer passed to your handler:
+//   http_req_t req = http_req_t.new(raw_req);
+
+ext type http_req_t: struct {
+    int stack i8 *rw ctx;   // stdhttp_request_t*
+
+    // HTTP method string: "GET", "POST", "PUT", "DELETE", etc.
+    ext fn method(void): i8 *r {
+        ret ch.stdhttp_req_method(this.ctx);
+    }
+
+    // URL path without query string, e.g. "/users/42"
+    ext fn path(void): i8 *r {
+        ret ch.stdhttp_req_path(this.ctx);
+    }
+
+    // Raw query string after '?', e.g. "page=2&sort=asc"
+    ext fn query_string(void): i8 *r {
+        ret ch.stdhttp_req_query_string(this.ctx);
+    }
+
+    // Value for a specific query parameter key.
+    // Returns pointer into a thread-local buffer — copy if you need it later.
+    ext fn query(stack i8 *r+ key): i8 *r {
+        ret ch.stdhttp_req_query(this.ctx, key);
+    }
+
+    // Value for a specific HTTP request header (case-insensitive).
+    // Returns nil if the header is absent.
+    ext fn header(stack i8 *r+ name): i8 *r {
+        ret ch.stdhttp_req_header(this.ctx, name);
+    }
+
+    // Raw request body as a null-terminated string.
+    ext fn body(void): i8 *r {
+        ret ch.stdhttp_req_body(this.ctx);
+    }
+
+    ext fn body_len(void): i32 {
+        ret ch.stdhttp_req_body_len(this.ctx);
+    }
+
+    // Value of a named route parameter (e.g. :id in /users/:id).
+    // Returns nil if parameter not set.
+    ext fn param(stack i8 *r+ name): i8 *r {
+        ret ch.stdhttp_req_param(this.ctx, name);
+    }
+
+    // Check HTTP method without string compare in user code.
+    ext fn method_is(stack i8 *r+ m): bool {
+        stack i8 *r meth = ch.stdhttp_req_method(this.ctx);
+        if (meth == nil) { ret false; }
+        ret cstring.strcmp(meth, m) == 0;
+    }
+
+    // True if the Content-Type header contains "application/json".
+    ext fn is_json(void): bool {
+        stack i8 *r ct = ch.stdhttp_req_header(this.ctx, "Content-Type");
+        if (ct == nil) { ret false; }
+        stack i8 *r found = cstring.strstr(ct, "application/json");
+        ret found != nil;
+    }
+}
+
+ext fn http_req_t.new(stack i8 *rw ctx): http_req_t {
+    ret http_req_t{ .ctx = ctx };
+}
+
+// ── http_res_t ────────────────────────────────────────────────────────────────
+
+ext type http_res_t: struct {
+    int stack i8 *rw ctx;   // stdhttp_response_t*
+
+    // Set HTTP status code (default 200 if not called before send).
+    ext fn status(i32 code): void {
+        ch.stdhttp_res_status(this.ctx, code);
+    }
+
+    // Add an HTTP response header.
+    ext fn header(stack i8 *r+ name, stack i8 *r+ val): void {
+        ch.stdhttp_res_header(this.ctx, name, val);
+    }
+
+    // Send a text/plain response body (null-terminated string).
+    ext fn send(stack i8 *r+ body): void {
+        ch.stdhttp_res_send_str(this.ctx, body);
+    }
+
+    // Send with explicit length (for binary data or embedded NULs).
+    ext fn send_bytes(stack i8 *r body, i32 len): void {
+        ch.stdhttp_res_send(this.ctx, body, len);
+    }
+
+    // Send with Content-Type: application/json.
+    ext fn json(stack i8 *r+ json_str): void {
+        ch.stdhttp_res_json(this.ctx, json_str);
+    }
+
+    // Send with Content-Type: text/html.
+    ext fn html(stack i8 *r+ html_str): void {
+        ch.stdhttp_res_html(this.ctx, html_str);
+    }
+
+    // Serve a static file. Infers Content-Type from extension.
+    ext fn file(stack i8 *r+ path): void {
+        ch.stdhttp_res_file(this.ctx, path);
+    }
+
+    // Send an HTTP redirect (301 or 302).
+    ext fn redirect(stack i8 *r+ url, i32 code): void {
+        ch.stdhttp_res_redirect(this.ctx, url, code);
+    }
+
+    // True if a response has already been sent for this request.
+    ext fn is_sent(void): bool {
+        ret ch.stdhttp_res_is_sent(this.ctx) != 0;
+    }
+
+    // Convenience: 404 Not Found.
+    ext fn not_found(void): void {
+        ch.stdhttp_res_status(this.ctx, 404);
+        ch.stdhttp_res_send_str(this.ctx, "Not Found");
+    }
+
+    // Convenience: 500 Internal Server Error.
+    ext fn server_error(stack i8 *r+ msg): void {
+        ch.stdhttp_res_status(this.ctx, 500);
+        ch.stdhttp_res_send_str(this.ctx, msg);
+    }
+}
+
+ext fn http_res_t.new(stack i8 *rw ctx): http_res_t {
+    ret http_res_t{ .ctx = ctx };
+}
+
+// ── http_server_t ─────────────────────────────────────────────────────────────
+
+ext type http_server_t: struct {
+    int stack i8 *rw handle;   // stdhttp_server_t*
+    ext i32 port;
+
+    // Register a GET route handler.
+    // handler must be: ext fn my_fn(stack i8 *rw req, stack i8 *rw res): void
+    // Pass it as: server.get("/path", &my_fn)  or  server.get("/path", my_fn)
+    ext fn get(stack i8 *r+ pattern, stack i8 *rw handler): void {
+        ch.stdhttp_route(this.handle, "GET", pattern, handler);
+    }
+
+    ext fn post(stack i8 *r+ pattern, stack i8 *rw handler): void {
+        ch.stdhttp_route(this.handle, "POST", pattern, handler);
+    }
+
+    ext fn put(stack i8 *r+ pattern, stack i8 *rw handler): void {
+        ch.stdhttp_route(this.handle, "PUT", pattern, handler);
+    }
+
+    ext fn delete(stack i8 *r+ pattern, stack i8 *rw handler): void {
+        ch.stdhttp_route(this.handle, "DELETE", pattern, handler);
+    }
+
+    ext fn patch(stack i8 *r+ pattern, stack i8 *rw handler): void {
+        ch.stdhttp_route(this.handle, "PATCH", pattern, handler);
+    }
+
+    // Register a handler for ALL methods on this pattern.
+    ext fn route_any(stack i8 *r+ pattern, stack i8 *rw handler): void {
+        ch.stdhttp_route(this.handle, "ANY", pattern, handler);
+    }
+
+    // Register a middleware function run before every route handler.
+    // middleware must be: ext fn my_mw(stack i8 *rw req, stack i8 *rw res): i32
+    // Return 0 to continue, non-zero to stop (response already sent).
+    ext fn use(stack i8 *rw middleware): void {
+        ch.stdhttp_use(this.handle, middleware);
+    }
+
+    // Block and start serving requests. Returns only on error or after stop().
+    // Returns 0 on clean shutdown, -1 on error.
+    ext fn listen(void): i32 {
+        ret ch.stdhttp_listen(this.handle);
+    }
+
+    // Signal the server to stop (safe to call from a signal handler).
+    ext fn stop(void): void {
+        ch.stdhttp_stop(this.handle);
+    }
+
+    ext fn rem(void): void {
+        if (this.handle != nil) {
+            ch.stdhttp_free(this.handle);
+            this.handle = nil;
+        }
+    }
+}
+
+// Free server resources. Calls stop() first if still running.
+// Create an HTTP server on the given port (does not start listening).
+ext fn http_server_t.new(i32 port): http_server_t {
+    ret http_server_t{
+        .handle = ch.stdhttp_create(port),
+        .port   = port
+    };
+}
+
+// ── Standalone request/response helpers ───────────────────────────────────────
+// These are the same as the methods above but usable without the wrapper types,
+// useful when working directly with the raw ctx pointers from your handler.
+
+ext fn req_method(stack i8 *rw req_ctx): i8 *r {
+    ret ch.stdhttp_req_method(req_ctx);
+}
+
+ext fn req_path(stack i8 *rw req_ctx): i8 *r {
+    ret ch.stdhttp_req_path(req_ctx);
+}
+
+ext fn req_query(stack i8 *rw req_ctx, stack i8 *r+ key): i8 *r {
+    ret ch.stdhttp_req_query(req_ctx, key);
+}
+
+ext fn req_header(stack i8 *rw req_ctx, stack i8 *r+ name): i8 *r {
+    ret ch.stdhttp_req_header(req_ctx, name);
+}
+
+ext fn req_body(stack i8 *rw req_ctx): i8 *r {
+    ret ch.stdhttp_req_body(req_ctx);
+}
+
+ext fn req_param(stack i8 *rw req_ctx, stack i8 *r+ name): i8 *r {
+    ret ch.stdhttp_req_param(req_ctx, name);
+}
+
+ext fn res_status(stack i8 *rw res_ctx, i32 code): void {
+    ch.stdhttp_res_status(res_ctx, code);
+}
+
+ext fn res_send(stack i8 *rw res_ctx, stack i8 *r+ body): void {
+    ch.stdhttp_res_send_str(res_ctx, body);
+}
+
+ext fn res_json(stack i8 *rw res_ctx, stack i8 *r+ json_str): void {
+    ch.stdhttp_res_json(res_ctx, json_str);
+}
+
+ext fn res_html(stack i8 *rw res_ctx, stack i8 *r+ html_str): void {
+    ch.stdhttp_res_html(res_ctx, html_str);
+}
+
+ext fn res_header(stack i8 *rw res_ctx, stack i8 *r+ name, stack i8 *r+ val): void {
+    ch.stdhttp_res_header(res_ctx, name, val);
+}
+
+ext fn res_not_found(stack i8 *rw res_ctx): void {
+    ch.stdhttp_res_status(res_ctx, 404);
+    ch.stdhttp_res_send_str(res_ctx, "Not Found");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test 'http module loads' {
+    expect.(true);
+}

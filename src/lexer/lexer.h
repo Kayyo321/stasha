@@ -32,9 +32,10 @@ typedef enum {
     TokAtomic,
     TokConst,
     TokFinal,
-    TokGpu,
-    TokCpu,
-    TokDebug,
+    TokThread,  /* thread — parallel dispatch to thread pool */
+    TokFuture,  /* future — handle to an async result       */
+    TokStream,  /* stream — handle to an async yield stream */
+    TokPrint,
     TokVoid,
     TokTrue,
     TokFalse,
@@ -141,6 +142,8 @@ typedef enum {
     TokColon,
     TokComma,
     TokDot,
+    TokDotDot,
+    TokDotDotEq,
     TokQuestion,
 
     TokFatArrow,    /* => */
@@ -159,18 +162,77 @@ typedef enum {
 
     TokEof,
     TokError,
+
+    /* added after initial release — keep at end to avoid shifting existing values */
+    TokLibImp,      /* libimp */
+    TokCHeader,     /* cheader */
+    TokStd,         /* std (stdlib source specifier) */
+    TokHash,        /* hash */
+    TokEqu,         /* equ */
+    TokThis,        /* this — self-reference inside method bodies */
+    TokWith,        /* with — scoped binding statement */
+    TokAny,         /* any — inline tagged-union type */
+    TokInterface,   /* interface — interface declaration */
+    TokMacro,       /* macro — preprocessor macro keyword */
+
+    /* slice builtins — keep at end to avoid shifting existing values */
+    TokMake,        /* make   */
+    TokAppend,      /* append */
+    TokCopy,        /* copy   */
+    TokLen,         /* len    */
+    TokCap,         /* cap    */
+
+    /* memory-safety keywords — added for new safety redesign */
+    TokZone,        /* zone — lexical/manual memory zone                    */
+    TokUnsafe,      /* unsafe — suppresses safety checks inside the block   */
+    TokUnchecked,   /* unchecked — opt-out of bounds check in buf[unchecked: i] */
+    /* NOTE: @frees is intentionally NOT a keyword — it is parsed as an    */
+    /* identifier after '@' to avoid conflicts with struct field names.     */
+
+    TokDotEqEq,     /* .== — infix universal equality operator              */
+
+    /* comparison-chain keywords */
+    TokAnd,         /* and — chained comparison AND (x > 1 and < 10)        */
+    TokOr,          /* or  — chained comparison OR  (x == 1 or 2 or 3)      */
+
+    /* foreach slice iteration */
+    TokForeach,     /* foreach — iterate over a slice                        */
+    TokIn,          /* in  — separates iter var from slice in foreach        */
+
+    /* signals: type-routed handlers + exit-safe termination */
+    TokWatch,       /* watch.(T name) => { body } — register typed handler  */
+    TokSend,        /* send.(value) — dispatch to handlers of value's type  */
+    TokQuit,        /* quit.(code)  — exit such that @[[exit]] blocks run   */
+
+    /* async/await — thin surface layer over thread pool + future              */
+    TokAsync,       /* async fn ... / async.(fn)(args)                        */
+    TokAwait,       /* await(f) / await.(fn)(args) / await.all(..) / await.any(..) */
+    TokYield,       /* yield expr; / yield; inside async coroutines                  */
+
+    /* sugar pack: lambda + pipeline */
+    TokLam,         /* lam.(...) — non-capturing lambda expression            */
+    TokPipeline,    /* |> — left-associative pipeline operator                */
+
+    /* escaped identifier: $"name" or $'name' — allows C names that are Stasha keywords */
+    TokDollarStr,
+
+    /* va — variadic argument list handle type + va.start/next/end/copy/foreach/read ops */
+    TokVa,
 } token_kind_t;
 
 typedef struct {
     token_kind_t kind;
-    const char *start;
-    usize_t length;
-    usize_t line;
+    const char  *start;
+    usize_t      length;
+    usize_t      line;
+    usize_t      col;   /* 1-based column of the first character of this token */
+    const char  *file;  /* source file path; NULL = set by caller after lexing */
 } token_t;
 
 typedef struct {
-    const char *start;
-    const char *current;
+    const char *start;       /* beginning of entire source buffer            */
+    const char *current;     /* current scan position                        */
+    const char *line_start;  /* pointer to first char of the current line    */
     usize_t line;
 } lexer_t;
 

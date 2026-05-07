@@ -1,0 +1,19 @@
+mod diagnostic_scope;
+
+// Fileheaders can also act like compiler control fences around a declaration.
+// That gives a place to tune warnings or strictness locally.
+
+@[[diagnostic: push]]
+@[[diagnostic: ignore("unused-param")]]
+@[[diagnostic: ignore("shadow")]]
+fn legacy_callback(i32 code, i8 *data): void {
+    i32 code = 4;
+    print.("{} {}\n", code, data);
+}
+
+@[[diagnostic: pop]]
+
+fn main(void): i32 {
+    legacy_callback(1, nil);
+    ret 0;
+}

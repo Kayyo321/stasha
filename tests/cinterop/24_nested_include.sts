@@ -1,0 +1,26 @@
+mod row24_nested_include;
+
+cheader "support/nested_outer.h" search "tests/cinterop";
+
+// nested_outer.h `#include`s nested_inner.h with a relative path.  cheader
+// must transitively process the included file (via ch_resolve_header
+// + ch_process_file) and expose `inner_t` even though Stasha never
+// names the inner header directly.
+//
+// Note: types defined in transitive includes are NOT marked
+// `from_user_header`, so warnings/errors targeting user-only mistakes
+// stay quiet for them.
+
+fn main(void): i32 {
+    inner_t a;
+    inner_make(&a, 21);
+    if a.value != 21 { print.("FAIL inner_make\n"); ret 1; }
+
+    if outer_extract(&a) != 21 { print.("FAIL extract\n"); ret 1; }
+
+    inner_t b = outer_double(&a);
+    if b.value != 42 { print.("FAIL double = {}\n", b.value); ret 1; }
+
+    print.("24_nested_include: ok\n");
+    ret 0;
+}

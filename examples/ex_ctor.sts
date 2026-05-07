@@ -1,0 +1,18 @@
+mod ex_ctor;
+
+type Point: struct {
+    ext i32 x;
+    ext i32 y;
+};
+
+fn Point.new(i32 x, i32 y): Point {
+    Point p;
+    p.x = x;
+    p.y = y;
+    ret p;
+}
+
+ext fn main(void): i32 {
+    Point p = Point.(3, 4);
+    ret 0;
+}

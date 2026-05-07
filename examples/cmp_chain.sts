@@ -1,0 +1,119 @@
+mod cmp_chain;
+
+// ── comparison chain examples ──────────────────────────────────────────────
+//
+// 'and' / 'or' are chaining operators that reuse the left-hand expression
+// across multiple comparisons.
+//
+//   Syntax:  lhs OP rhs  (and|or)  OP rhs  ...
+//            lhs OP rhs  (and|or)  literal  ...   ← bare literal implies ==
+//
+// Function-call bases are evaluated exactly once.
+
+// helper — side-effect counter to prove single evaluation
+stack i32 eval_count = 0;
+
+fn get_score(void): i32 {
+    eval_count = eval_count + 1;
+    ret 72;
+}
+
+type Point: struct { ext i32 x; ext i32 y; }
+
+fn main(void): i32 {
+
+    // ── 1. range comparison ─────────────────────────────────────────────
+    // x > 10 and < 20  →  x > 10 && x < 20
+    stack i32 x = 15;
+    if (x > 10 and < 20) {
+        print.('1. range         : {} is in (10, 20)\n', x);
+    }
+
+    // ── 2. inclusive range ──────────────────────────────────────────────
+    // x >= 0 and <= 100
+    stack i32 pct = 87;
+    if (pct >= 0 and <= 100) {
+        print.('2. inclusive range: {}% is a valid percentage\n', pct);
+    }
+
+    // ── 3. equality chain ───────────────────────────────────────────────
+    // x == 1 or 2 or 3  →  x == 1 || x == 2 || x == 3
+    stack i32 cmd = 2;
+    if (cmd == 1 or 2 or 3) {
+        print.('3. eq chain      : cmd {} is 1, 2, or 3\n', cmd);
+    }
+
+    // ── 4. not-equal chain ──────────────────────────────────────────────
+    // x != 1 and != 2 and != 3  →  x != 1 && x != 2 && x != 3
+    stack i32 mode = 5;
+    if (mode != 1 and != 2 and != 3) {
+        print.('4. neq chain     : mode {} is not 1, 2, or 3\n', mode);
+    }
+
+    // ── 5. mixed operators ──────────────────────────────────────────────
+    // x != 5 and > 0  →  x != 5 && x > 0
+    stack i32 val = 7;
+    if (val != 5 and > 0) {
+        print.('5. mixed ops     : {} is non-zero and not five\n', val);
+    }
+
+    // ── 6. expression as lhs ────────────────────────────────────────────
+    // (x + y) > 5 and < 20
+    stack i32 a = 4;
+    stack i32 b = 6;
+    if ((a + b) > 5 and < 20) {
+        print.('6. expr lhs      : a+b={} is in (5, 20)\n', a + b);
+    }
+
+    // ── 7. index expression as lhs ──────────────────────────────────────
+    // arr[i] == 1 or 2 or 3
+    stack i32 arr = 2;   // pretend arr[0]
+    if (arr == 1 or 2 or 3) {
+        print.('7. index lhs     : arr value {} matched\n', arr);
+    }
+
+    // ── 8. struct member as lhs ─────────────────────────────────────────
+    stack Point p = Point { .x = 12, .y = 5 };
+    if (p.y != 0 and > -10) {
+        print.('8. member lhs    : p.y={} is non-zero and > -10\n', p.y);
+    }
+
+    // ── 9. function call — evaluated exactly once ────────────────────────
+    // getValue() > 10 and < 20  →  tmp=getValue(); tmp>10 && tmp<20
+    eval_count = 0;
+    if (get_score() > 60 and < 90) {
+        print.('9. fn call lhs   : score in (60,90), eval_count={} (must be 1)\n', eval_count);
+    }
+
+    // ── 10. precedence: and binds tighter than or ────────────────────────
+    // x == 1 or 15 and != 99
+    //   expands to: x==1 || x==15 && x!=99
+    //   precedence: x==1 || (x==15 && x!=99)
+    stack i32 n = 15;
+    if (n == 1 or 15 and != 99) {
+        print.('10. precedence   : {} matched (or-then-and)\n', n);
+    }
+
+    // ── 11. chained range on the low/out-of-range side ──────────────────
+    // flag < 0 or > 100
+    stack i32 flag = 150;
+    if (flag < 0 or > 100) {
+        print.('11. out-of-range : {} is outside [0, 100]\n', flag);
+    }
+
+    // ── 12. longer equality chain ────────────────────────────────────────
+    stack i32 status = 404;
+    if (status == 400 or 401 or 403 or 404 or 500) {
+        print.('12. http error   : status {} is an error code\n', status);
+    }
+
+    ret 0;
+}
+
+// ── invalid forms (compiler errors — kept as comments for reference) ──────
+//
+//   x > 10 and y < 20        ← ERROR: new variable after 'and'
+//   x and 10                 ← ERROR: 'and' must follow a comparison
+//   > 10 and < 20            ← ERROR: no lhs before chain
+//   x > 10 and 20            ← ERROR: bare literal after 'and' on relational op
+//                                      (only valid after ==)

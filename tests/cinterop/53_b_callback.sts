@@ -1,0 +1,19 @@
+mod row53_b_callback;
+
+// Path B (no cheader) — register a Stasha fn as a C callback, then have
+// C invoke it back.  Exercises the round-trip: Stasha fn ptr → C global
+// → C call site → Stasha entry.
+
+lib "cinterop_support" = c;
+
+ext fn triple(i32 n): i32 {
+    ret n * 3;
+}
+
+fn main(void): i32 {
+    c.cb_register(&triple);
+    i32 r = c.cb_invoke(7);
+    if r != 21 { print.("FAIL got {}\n", r); ret 1; }
+    print.("53_b_callback: ok\n");
+    ret 0;
+}

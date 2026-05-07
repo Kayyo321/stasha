@@ -1,0 +1,136 @@
+mod unguarded_loops;
+
+fn main(void): i32 {
+    // ── if / else if / else ──────────────────────────────────────────────────
+    // All three forms: unguarded, guarded, and one-liner via =>
+
+    stack i32 x = 5;
+
+    if x > 0 {
+        print.('x is positive\n');
+    }
+
+    if (x > 10) {
+        print.('x > 10\n');
+    } else if x > 3 {
+        print.('x in (3, 10)\n');
+    } else {
+        print.('x <= 3\n');
+    }
+
+    // => one-liner: no braces needed for single-statement bodies
+    if x == 5 => print.('x is 5\n');
+    if (x == 5) => print.('also 5 (guarded)\n');
+
+    // => with else
+    if x > 10 => print.('big\n');
+    else => print.('not big\n');
+
+    // => else if chain
+    if x < 0 => print.('negative\n');
+    else if x == 0 => print.('zero\n');
+    else => print.('positive\n');
+
+
+    // ── while ────────────────────────────────────────────────────────────────
+
+    stack i32 i = 0;
+
+    while i < 3 {
+        print.('while unguarded: {}\n', i);
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < 3) {
+        print.('while guarded: {}\n', i);
+        i = i + 1;
+    }
+
+    // while one-liner
+    i = 0;
+    // (body must not loop forever — we break after first iteration)
+    while i < 1 => i = i + 1;
+    print.('after while one-liner: i = {}\n', i);
+
+
+    // ── for ──────────────────────────────────────────────────────────────────
+
+    // unguarded: no parens around the clauses
+    for stack i32 j = 0; j < 3; j++ {
+        print.('for unguarded: {}\n', j);
+    }
+
+    // guarded: parens still accepted
+    for (stack i32 j = 0; j < 3; j++) {
+        print.('for guarded: {}\n', j);
+    }
+
+    // let-binding (type inferred)
+    for let k = 0; k < 3; k++ {
+        print.('for let: {}\n', k);
+    }
+
+    // empty init clause
+    stack i32 m = 0;
+    for ; m < 3; m++ {
+        print.('for empty init: {}\n', m);
+    }
+
+    // one-liner for
+    for stack i32 n = 0; n < 3; n++ => print.('for one-liner: {}\n', n);
+
+    // one-liner for (guarded)
+    for (stack i32 p = 0; p < 3; p++) => print.('for one-liner guarded: {}\n', p);
+
+
+    // ── do-while ─────────────────────────────────────────────────────────────
+
+    // guarded condition (classic)
+    stack i32 count = 0;
+    do {
+        print.('do guarded body: {}\n', count);
+        count = count + 1;
+    } while (count < 3);
+
+    // unguarded condition
+    count = 0;
+    do {
+        print.('do unguarded: {}\n', count);
+        count = count + 1;
+    } while count < 3;
+
+    // do one-liner body + unguarded condition
+    count = 0;
+    do => count = count + 1; while count < 3;
+    print.('do one-liner result: {}\n', count);
+
+    // do one-liner body + guarded condition
+    count = 0;
+    do => count = count + 1; while (count < 2);
+    print.('do one-liner guarded result: {}\n', count);
+
+    // do body runs at least once even when condition is false from the start
+    count = 99;
+    do {
+        print.('executes once: count = {}\n', count);
+    } while count < 0;
+
+
+    // ── inf loop ─────────────────────────────────────────────────────────────
+
+    // one-liner inf: => with a block body (block is a valid single statement)
+    stack i32 hits = 0;
+    inf => { hits = hits + 1; break; }
+
+    // normal inf with break
+    inf {
+        hits = hits + 1;
+        break;
+    }
+
+    print.('inf hits: {}\n', hits);
+
+
+    ret 0;
+}

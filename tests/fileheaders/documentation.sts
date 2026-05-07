@@ -1,0 +1,19 @@
+mod documentation;
+
+@[[
+    doc: div(i32, i32) -> i32 (returns 0 on divide-by-zero)
+    returns: i32
+    params: two 32-bit integers a and b
+]];
+int fn div(stack i32 a, stack i32 b): i32 {
+    if (b == 0) {
+        ret 0;
+    }
+    ret a / b;
+}
+
+fn main(void): i32 {
+    print.("10 / 2 = {}\n", div(10, 2));
+    print.("10 / 0 = {}\n", div(10, 0));
+    ret 0;
+}

@@ -1,0 +1,11 @@
+mod neg_long_double_unsupported;
+
+cheader "support/long_double.h" search "tests/cinterop/neg";
+
+// Negative test: a C header that uses `long double` in a function
+// signature must be rejected with a "long double"-bearing diagnostic
+// rather than silently mapped to f64.
+
+fn main(void): i32 {
+    ret 0;
+}

@@ -1,0 +1,109 @@
+mod ex_interface;
+
+type entity_i: interface {
+    id(void): i32;
+}
+
+type movable_i: interface.[entity_i] {
+    move(i32 x, y); // returns void
+}
+
+type attackable_i: interface.[entity_i] {
+    attack(entity_i target);
+}
+
+type character_i: interface.[movable_t, attackable_i] {
+    get_health(void): i32;
+    set_health(i32);
+}
+
+type renderable_i: interface {
+    render(); // (void): void
+}
+
+//                                               Would throw err if didn't impl properly
+//                   <~~~~~~~~~~~~~~~~~~~~~~~~~~ (i.e. all functions correctly named && implemented)
+type player_t: struct.[character_i, renderable_i] {
+    int i32 player_id, player_health, player_x, player_y;
+
+    ext fn id(void): i32 => this.player_id;
+    ext fn get_health(void): i32 => this.player_health;
+    ext fn set_health(i32 new_health): void {
+        this.player_health = new_health;
+    }
+
+    ext fn move(i32 x, y) {
+        this.player_x += x;
+        this.player_y += y;
+
+        print.('Player {} moved to ({},{})\n', this.id(), this.player_x, this.player_y);
+    }
+
+    ext fn attack(entity_i target) {
+        print.('Player {} attacks entity {}\n', this.id(), target.id());
+    }
+
+    ext fn render() {
+        print.('Rendering player {}\n', this.id());
+    }
+}
+
+fn player_t.new(i32 id, health, x, y): player_t {
+    ret player_t{.player_id = id, .player_health = health, .player_x = x, .player_y = y};
+}
+
+// Object that implements two interfaces with same method name
+type flyable_i: interface {
+    move();
+}
+
+type swimmable_i: interface {
+    move();
+}
+
+type duck_t: struct.[flyable_i, swimmable_i] {
+    ext fn flyable_i.move() {
+        print.('Duck flies');
+    }
+
+    ext fn swimmable_i.move() {
+        print.('Duck swims');
+    }
+}
+
+// expected generics         <~~~~~~~~~~~~ if T doesn't implement N expected... error!
+type entity_holder: @comptime[T.[entity_i]] struct {
+    int stack T *r entity;
+
+    ext fn print_id(void) {
+        print.('Entity id: {}\n', this.entity.id());
+    }
+}
+
+fn @comptime[T.[entity_i]] entity_holder.new(stack T *r ent): entity_holder.[T] {
+    ret entity_holder{.entity = ent};
+}
+
+fn main(void): i32 {
+    // Create a player
+    player_t p = player_t.(1, 100, 0, 0);
+    print.("Player id: {}\n", p.id());
+    print.("Player health: {}\n", p.get_health());
+    p.set_health(80);
+    print.("Player health after set: {}\n", p.get_health());
+    p.move(5, 7);
+    // Attack self for demo (would be another entity in real use)
+    p.attack(p);
+    p.render();
+
+    // Duck example
+    duck_t d = duck_t.();
+    d.flyable_i.move();
+    d.swimmable_i.move();
+
+    // Entity holder example
+    entity_holder.[player_t] holder = entity_holder.[player_t].(&p);
+    holder.print_id();
+
+    ret 0;
+}

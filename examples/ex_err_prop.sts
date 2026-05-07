@@ -1,0 +1,70 @@
+mod ex_err_prop;
+
+lib "stdio" = io;
+
+/* ── error-returning functions ── */
+
+ext fn parse_int(stack i32 x): error {
+    if (x < 0) { ret error.('negative value'); }
+    if (x > 1000) { ret error.('value too large'); }
+    ret nil;
+}
+
+/* Existing fn.?(args) syntax: call function, propagate error if non-nil */
+ext fn process(stack i32 x): error {
+    parse_int.?(x);
+    ret nil;
+}
+
+/* ── postfix ? operator ── */
+/* expr? evaluates expr; if the result carries an error, the enclosing
+   function (which must return error) returns that error immediately. */
+
+ext fn validate_range(stack i32 x): error {
+    stack error e = parse_int(x);
+    e?;              /* postfix ? on a stored error value */
+    ret nil;
+}
+
+ext fn pipeline(stack i32 a, stack i32 b): error {
+    parse_int(a)?;    /* postfix ? on a call expression — most common form */
+    parse_int(b)?;
+    ret nil;
+}
+
+ext fn main(void): i32 {
+    /* fn.?(args) call syntax */
+    stack error ok = process(5);
+    if (ok == nil) {
+        io.printf("process(5) succeeded\n");
+    }
+
+    stack error bad = process(-1);
+    if (bad != nil) {
+        io.printf("process(-1) failed as expected\n");
+    }
+
+    /* postfix ? — pipeline aborts early on first error */
+    stack error r = pipeline(10, -1);
+    if (r != nil) {
+        io.printf("pipeline(10,-1) failed as expected\n");
+    }
+
+    stack error r2 = pipeline(3, 7);
+    if (r2 == nil) {
+        io.printf("pipeline(3,7) succeeded\n");
+    }
+
+    /* validate_range with stored-error postfix ? */
+    stack error v = validate_range(500);
+    if (v == nil) {
+        io.printf("validate_range(500) ok\n");
+    }
+
+    stack error v2 = validate_range(-5);
+    if (v2 != nil) {
+        io.printf("validate_range(-5) failed as expected\n");
+    }
+
+    ret 0;
+}

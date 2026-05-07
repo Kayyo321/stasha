@@ -1,0 +1,11 @@
+mod row05_struct_ptr;
+
+cheader "support/structs.h" search "tests/cinterop";
+
+fn main(void): i32 {
+    point_t a = point_make(2, 3);
+    point_t b = point_make(7, 1);
+    if point_dot_ptr(&a, &b) != 17 { print.("FAIL\n"); ret 1; }
+    print.("05_struct_ptr: ok\n");
+    ret 0;
+}

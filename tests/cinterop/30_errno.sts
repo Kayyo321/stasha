@@ -1,0 +1,17 @@
+mod row30_errno;
+
+// `<errno.h>` is the canonical messy system header — it lays out the
+// error-code constants via #define and pulls in implementation-detail
+// machinery (mbstate, sigval, &c.) through nested includes.  This test
+// proves cheader can chew through it without false errors and that
+// the #define-style constants are surfaced as Stasha-side ints.
+cheader "errno.h";
+
+fn main(void): i32 {
+    if ENOENT != 2  { print.("FAIL ENOENT={}\n", ENOENT); ret 1; }
+    if EEXIST != 17 { print.("FAIL EEXIST={}\n", EEXIST); ret 1; }
+    if EINVAL != 22 { print.("FAIL EINVAL={}\n", EINVAL); ret 1; }
+
+    print.("30_errno: ok\n");
+    ret 0;
+}

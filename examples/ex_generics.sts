@@ -1,0 +1,83 @@
+mod ex_generics;
+
+lib "stdio" = io;
+
+/* ── Standalone generic functions ─────────────────────────────────────
+   Use @comptime[T] before `fn` to declare a type-parameterised function.
+   Instantiate at the call site with .[ConcreteType].
+   ──────────────────────────────────────────────────────────────────── */
+
+/* identity: works on any type */
+fn @comptime[T] identity(stack T val): T {
+    ret val;
+}
+
+/* swap two values via pointers */
+fn @comptime[T] swap(stack T *rw a, stack T *rw b): void {
+    stack T tmp = a[0];
+    a[0] = b[0];
+    b[0] = tmp;
+}
+
+/* clamp a value to [lo, hi] */
+fn @comptime[T] clamp(stack T val, stack T lo, stack T hi): T {
+    if (val < lo) { ret lo; }
+    if (val > hi) { ret hi; }
+    ret val;
+}
+
+/* generic min / max */
+fn @comptime[T] gmin(stack T a, stack T b): T {
+    if (a < b) { ret a; }
+    ret b;
+}
+
+fn @comptime[T] gmax(stack T a, stack T b): T {
+    if (a > b) { ret a; }
+    ret b;
+}
+
+/* ── Generic struct with generic standalone methods ───────────────── */
+
+type point_t: @comptime[T] struct {
+    ext T x;
+    ext T y;
+}
+
+fn @comptime[T] point_t.new(stack T x, stack T y): point_t.[T] {
+    ret point_t.[T] { .x = x, .y = y };
+}
+
+/* standalone generic function that works on any point_t.[T] */
+fn @comptime[T] point_add(stack point_t.[T] a, stack point_t.[T] b): point_t.[T] {
+    ret point_t.[T] { .x = a.x + b.x, .y = a.y + b.y };
+}
+
+ext fn main(void): i32 {
+    /* identity */
+    stack i32 n = identity.[i32](99);
+    stack f64 f = identity.[f64](3.14);
+    io.printf("identity i32=%d  f64=%.2f\n", n, f);
+
+    /* swap */
+    stack i32 a = 10;
+    stack i32 b = 20;
+    swap.[i32](&a, &b);
+    io.printf("after swap: a=%d b=%d\n", a, b);
+
+    /* clamp */
+    io.printf("clamp i32 200 to [0,100] = %d\n", clamp.[i32](200, 0, 100));
+    io.printf("clamp f64 -1.5 to [0,1]  = %.1f\n", clamp.[f64](-1.5, 0.0, 1.0));
+
+    /* min / max */
+    io.printf("gmin(3,7)=%d  gmax(3,7)=%d\n", gmin.[i32](3, 7), gmax.[i32](3, 7));
+
+    /* generic struct + standalone generic function on it */
+    point_t.[i32] p1 = point_t.[i32].new(1, 2);
+    point_t.[i32] p2 = point_t.[i32].new(3, 4);
+    point_t.[i32] p3 = point_add.[i32](p1, p2);
+    io.printf("point_add: (%d,%d) + (%d,%d) = (%d,%d)\n",
+              p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+
+    ret 0;
+}

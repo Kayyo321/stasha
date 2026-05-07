@@ -1,0 +1,157 @@
+mod ex_foreach;
+
+// ── foreach ─────────────────────────────────────────────────────────────────
+//
+// foreach iterates over every element in a slice without managing an index.
+//
+//   foreach <elem> in <slice> { body }
+//
+// <elem> is a by-value copy of each element, stack-scoped to the loop body.
+// Works on both heap and stack (borrowed) slices.
+// break and continue behave identically to a for loop.
+// ────────────────────────────────────────────────────────────────────────────
+
+int fn sum_slice(stack []i32 s): i32 {
+    stack i32 total = 0;
+    foreach n in s {
+        total += n;
+    }
+    ret total;
+}
+
+int fn contains_val(stack []i32 s, stack i32 target): bool {
+    foreach n in s {
+        if (n == target) { ret true; }
+    }
+    ret false;
+}
+
+int fn print_slice(stack []i32 s): void {
+    print.('[');
+    stack bool first = true;
+    foreach n in s {
+        if (!first) { print.(', '); }
+        print.('{:4}', n);
+        first = false;
+    }
+    print.(']\n');
+}
+
+fn main(void): i32 {
+
+    // ── 1. basic iteration over a heap slice ─────────────────────────────────
+    print.('--- basic: 1..10 ---\n');
+    heap []i32 nums = make.([]i32, 10);
+    defer rem.(nums);
+    for (stack i32 i = 0; i < 10; i++) { nums[i] = i + 1; }
+
+    print.('elements: ');
+    foreach n in nums {
+        print.('{} ', n);
+    }
+    print.('\n');
+    print.('sum = {}\n', sum_slice(nums));   // 55
+
+
+    // ── 2. foreach over a stack (borrowed) slice view ─────────────────────────
+    print.('\n--- stack slice view ---\n');
+    stack i32 arr[6] = .{ 10, 20, 30, 40, 50, 60 };
+    stack []i32 view = arr[:];
+
+    stack i32 product = 1;
+    foreach v in view {
+        product *= v;
+    }
+    print.('product of all elements = {}\n', product);   // 720000000
+
+
+    // ── 3. early exit with break ──────────────────────────────────────────────
+    print.('\n--- break on first negative ---\n');
+    heap []i32 mixed = make.([]i32, 6);
+    defer rem.(mixed);
+    mixed[0] =  5; mixed[1] =  3; mixed[2] = -1;
+    mixed[3] =  8; mixed[4] = -4; mixed[5] =  2;
+
+    stack bool found = false;
+    stack i32 first_neg = 0;
+    foreach n in mixed {
+        if (n < 0) {
+            first_neg = n;
+            found = true;
+            break;
+        }
+    }
+    if (found) {
+        print.('first negative: {}\n', first_neg);   // -1
+    }
+
+
+    // ── 4. skip with continue ─────────────────────────────────────────────────
+    print.('\n--- continue: evens only ---\n');
+    heap []i32 range = make.([]i32, 12);
+    defer rem.(range);
+    for (stack i32 i = 0; i < 12; i++) { range[i] = i + 1; }
+
+    print.('evens: ');
+    foreach n in range {
+        if (n % 2 != 0) { continue; }
+        print.('{} ', n);
+    }
+    print.('\n');   // 2 4 6 8 10 12
+
+
+    // ── 5. foreach over a sub-slice (reslice) ────────────────────────────────
+    print.('\n--- reslice: middle 3 elements ---\n');
+    stack []i32 mid = arr[1:4];   // 20 30 40
+    stack i32 s = 0;
+    foreach v in mid {
+        s += v;
+        print.('{} ', v);
+    }
+    print.('\n');
+    print.('sum of mid = {}\n', s);   // 90
+
+
+    // ── 6. foreach over a heap slice built with append ────────────────────────
+    print.('\n--- appended slice: squares ---\n');
+    heap []i32 sq = make.([]i32, 0, 8);
+    defer rem.(sq);
+    for (stack i32 i = 1; i <= 6; i++) {
+        sq = append.(sq, i * i);
+    }
+    print.('squares: ');
+    foreach s2 in sq {
+        print.('{} ', s2);   // 1 4 9 16 25 36
+    }
+    print.('\n');
+    print.('contains 16? {}\n', contains_val(sq, 16));   // true
+    print.('contains 10? {}\n', contains_val(sq, 10));   // false
+
+
+    // ── 7. nested foreach ─────────────────────────────────────────────────────
+    print.('\n--- nested foreach: all pairs ---\n');
+    heap []i32 xs = make.([]i32, 3);
+    heap []i32 ys = make.([]i32, 2);
+    defer rem.(xs); defer rem.(ys);
+    xs[0] = 1; xs[1] = 2; xs[2] = 3;
+    ys[0] = 10; ys[1] = 20;
+
+    foreach x in xs {
+        foreach y in ys {
+            print.('({},{}) ', x, y);
+        }
+    }
+    print.('\n');   // (1,10) (1,20) (2,10) (2,20) (3,10) (3,20)
+
+
+    // ── 8. foreach over a nil slice ───────────────────────────────────────────
+    print.('\n--- nil slice: no output expected ---\n');
+    heap []i32 empty = nil;
+    defer rem.(empty);
+    foreach n2 in empty {
+        print.('SHOULD NOT PRINT\n');
+    }
+    print.('done — nil slice foreach produced no output\n');
+
+    ret 0;
+}

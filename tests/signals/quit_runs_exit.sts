@@ -1,0 +1,12 @@
+mod quit_runs_exit;
+
+@[[exit]] {
+    print.('exit_block_ran\n');
+}
+
+fn main(void): i32 {
+    print.('before_quit\n');
+    quit.(0);
+    print.('UNREACHABLE\n');
+    ret 0;
+}

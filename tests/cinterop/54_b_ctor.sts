@@ -1,0 +1,14 @@
+mod row54_b_ctor;
+
+// __attribute__((constructor)) C functions run before main, so the
+// canary global must already hold the initialised value by the time
+// Stasha gets control.
+
+lib "cinterop_support" = c;
+
+fn main(void): i32 {
+    i32 v = c.ctor_get_canary();
+    if v != 0xC0DECA1E { print.("FAIL canary={}\n", v); ret 1; }
+    print.("54_b_ctor: ok\n");
+    ret 0;
+}

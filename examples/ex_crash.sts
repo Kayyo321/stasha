@@ -1,0 +1,97 @@
+mod ex_crash;
+
+lib "stdio"  = io;
+lib "stdlib" = libc;
+
+// ── Crash handling ─────────────────────────────────────────────────────────
+//
+// @[[crash]] { ... }          — runs on SIGABRT/SIGSEGV/SIGFPE/SIGILL/SIGBUS
+//                               before any @[[exit]] blocks; signal name and
+//                               last-C-call breadcrumb are printed automatically
+// @[[exit]]  { ... }          — runs on normal exit AND after @[[crash]]
+// @[[crash: disable]];        — remove all signal handlers, skip crash_runtime.a
+// @[[crash: no_tracking]];    — disable per-call TLS breadcrumb stores (hot paths)
+//
+// Ext-lib breadcrumb: before every C lib call the compiler writes
+//   (source file, function name, line) into TLS.  On a crash the handler
+//   reads it to print "last call: fn() — file:N".  Cleared on normal return.
+
+// ── Crash handler: log + flush ─────────────────────────────────────────────
+@[[crash]] {
+    print.error.('[crash] flushing log before exit\n');
+    //io.fprintf(io.stderr, '[crash] flushing log before exit\n');
+    // any cleanup safe to do from a signal handler (no malloc, no locks)
+}
+
+// ── Exit handler: always runs ──────────────────────────────────────────────
+@[[exit]] {
+    io.printf('[exit] goodbye\n');
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// divide — triggers SIGFPE on x / 0
+int fn divide(stack i32 x, stack i32 y): i32 {
+    ret x / y;
+}
+
+// null_read — dereferences a null pointer, triggers SIGSEGV
+int fn null_read(void): i32 {
+    stack i32 *r p = nil;
+    ret *p;
+}
+
+// call_abort — calls C abort(), triggers SIGABRT; breadcrumb shows this site
+int fn call_abort(void): void {
+    libc.abort();
+}
+
+// heavy_math — example of a hot path where breadcrumb overhead matters;
+// @[[crash: no_tracking]] disables TLS writes inside this function only.
+@[[crash: no_tracking]]
+int fn heavy_math(stack i32 n): i64 {
+    stack i64 acc = 0;
+    for (stack i32 i = 0; i < n; i++) {
+        acc = acc + (i64)i * (i64)i;
+    }
+    ret acc;
+}
+
+// ── Demo: normal path (no crash) ───────────────────────────────────────────
+fn main(void): i32 {
+    // safe division — breadcrumb set before the call, cleared on return
+    stack i32 result = divide(100, 4);
+    io.printf('100 / 4 = %d\n', result);    // 25
+
+    // hot path: breadcrumb tracking suppressed via @[[crash: no_tracking]]
+    stack i64 s = heavy_math(1000);
+    io.printf('sum of squares 0..999 = %lld\n', s);
+
+    unsafe {
+    // Uncomment one of the lines below to observe the crash reporter:
+    //
+    //   call_abort(); //    crash: SIGABRT — last call: abort() — ex_crash.sts:44
+    // null_read();  //    crash: SIGSEGV — last call: (none, non-C fault)
+    //  divide(1, 0); //    crash: SIGFPE  — last call: (none, pure Stasha op)
+    }
+
+    ret 0;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+test 'divide: positive quotient' {
+    expect_eq.(divide(81, 9), 9);
+}
+
+test 'divide: negative dividend' {
+    expect_eq.(divide(-20, 4), -5);
+}
+
+test 'heavy_math: n=0 returns 0' {
+    expect_eq.(heavy_math(0), 0);
+}
+
+test 'heavy_math: n=4 returns 0+1+4+9=14' {
+    expect_eq.(heavy_math(4), 14);
+}

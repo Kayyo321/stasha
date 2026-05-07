@@ -1,0 +1,270 @@
+mod array;
+
+// Typed dynamic array — generic via comptime type parameter T.
+// Supports push/pop/insert/remove/swap/reverse/set/at/ensure_capacity.
+
+ext type array_t: @comptime[T] struct {
+    int heap T *rw buf;
+    int u32 length, capacity;
+
+    // Internal: grow if needed so that length < capacity.
+    int fn maybe_grow(void): void {
+        if (this.length < this.capacity) { ret; }
+        final u32 new_cap = this.capacity == 0 ? 8 : this.capacity * 2;
+        this.buf      = mov.(this.buf, new_cap * sizeof.(T));
+        this.capacity = new_cap;
+    }
+
+    // Pre-allocate so that capacity >= min_cap.
+    ext fn ensure_capacity(u32 min_cap): void {
+        if (this.capacity >= min_cap) { ret; }
+        u32 new_cap = this.capacity == 0 ? 8 : this.capacity;
+        while (new_cap < min_cap) { new_cap = new_cap * 2; }
+        this.buf      = mov.(this.buf, new_cap * sizeof.(T));
+        this.capacity = new_cap;
+    }
+
+    // Append a value.
+    ext fn push(T val): void {
+        this.maybe_grow();
+        this.buf[this.length] = val;
+        this.length++;
+    }
+
+    // Remove last element. No-op if empty.
+    ext fn pop(void): void {
+        if (this.length > 0) { this.length--; }
+    }
+
+    // Get read-only pointer to element at idx, or error if out of bounds.
+    ext fn at(u32 idx): [T *r, error] {
+        if (idx >= this.length) {
+            ret nil, error.('index out of bounds');
+        }
+        ret &this.buf[idx], nil;
+    }
+
+    // Overwrite element at idx. Returns error if out of bounds.
+    ext fn set(u32 idx, T val): error {
+        if (idx >= this.length) {
+            ret error.('index out of bounds');
+        }
+        this.buf[idx] = val;
+        ret nil;
+    }
+
+    // Insert val at idx, shifting elements right.
+    ext fn insert(u32 idx, T val): void {
+        if (idx > this.length) { idx = this.length; }
+        this.maybe_grow();
+        u32 i = this.length;
+        while (i > idx) {
+            this.buf[i] = this.buf[i - 1];
+            i--;
+        }
+        this.buf[idx] = val;
+        this.length++;
+    }
+
+    // Remove element at idx, shifting elements left. No-op if out of bounds.
+    ext fn remove(u32 idx): void {
+        if (idx >= this.length) { ret; }
+        u32 i = idx;
+        while (i + 1 < this.length) {
+            this.buf[i] = this.buf[i + 1];
+            i++;
+        }
+        this.length--;
+    }
+
+    // Swap elements at indices i and j. Returns error if either is out of bounds.
+    ext fn swap(u32 i, u32 j): error {
+        if (i >= this.length || j >= this.length) {
+            ret error.('index out of bounds');
+        }
+        if (i == j) { ret nil; }
+        T tmp = this.buf[i];
+        this.buf[i] = this.buf[j];
+        this.buf[j] = tmp;
+        ret nil;
+    }
+
+    // Reverse the array in place.
+    ext fn reverse(void): void {
+        if (this.length <= 1) { ret; }
+        u32 lo = 0;
+        u32 hi = this.length - 1;
+        while (lo < hi) {
+            T tmp = this.buf[lo];
+            this.buf[lo] = this.buf[hi];
+            this.buf[hi] = tmp;
+            lo++;
+            hi--;
+        }
+    }
+
+    // Reset length to zero without freeing memory.
+    ext fn clear(void): void {
+        this.length = 0;
+    }
+
+    ext fn length(void): u32 {
+        ret this.length;
+    }
+
+    ext fn capacity(void): u32 {
+        ret this.capacity;
+    }
+
+    ext fn is_empty(void): bool {
+        ret this.length == 0;
+    }
+
+    ext fn print(void): void {
+        print.('array_t[len={}, cap={}]\n', this.length, this.capacity);
+    }
+
+    ext fn rem(void): void {
+        if (this.buf != nil) { rem.(this.buf); }
+        this.buf      = nil;
+        this.length   = 0;
+        this.capacity = 0;
+    }
+}
+
+ext fn @comptime[T] array_t.new(void): array_t.[T] {
+    ret array_t.[T] {
+        .buf      = nil,
+        .length   = 0,
+        .capacity = 0,
+    };
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'push and length' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(10);
+    a.push(20);
+    a.push(30);
+    expect_eq.(a.length(), 3);
+    expect.(a.is_empty() == false);
+}
+
+test 'at and set' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(42);
+    let [ptr, e] = a.at(0);
+    expect.(e == nil);
+    expect_eq.(ptr[0], 42);
+
+    error se = a.set(0, 99);
+    expect.(se == nil);
+    let [ptr2, e2] = a.at(0);
+    expect.(e2 == nil);
+    expect_eq.(ptr2[0], 99);
+}
+
+test 'at out of bounds' {
+    array_t.[i32] a = array_t.[i32].new();
+    let [ptr, e] = a.at(0);
+    expect.(e != nil);
+}
+
+test 'pop' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(1);
+    a.push(2);
+    a.pop();
+    expect_eq.(a.length(), 1);
+    let [ptr, e] = a.at(0);
+    expect.(e == nil);
+    expect_eq.(ptr[0], 1);
+}
+
+test 'insert' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(1);
+    a.push(3);
+    a.insert(1, 2);
+    expect_eq.(a.length(), 3);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
+    let [r2, e2] = a.at(2);
+    expect.(e0 == nil); expect.(e1 == nil); expect.(e2 == nil);
+    expect_eq.(r0[0], 1);
+    expect_eq.(r1[0], 2);
+    expect_eq.(r2[0], 3);
+}
+
+test 'remove' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(10);
+    a.push(20);
+    a.push(30);
+    a.remove(1);
+    expect_eq.(a.length(), 2);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
+    expect.(e0 == nil); expect.(e1 == nil);
+    expect_eq.(r0[0], 10);
+    expect_eq.(r1[0], 30);
+}
+
+test 'swap' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(1);
+    a.push(2);
+    error se = a.swap(0, 1);
+    expect.(se == nil);
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
+    expect.(e0 == nil); expect.(e1 == nil);
+    expect_eq.(r0[0], 2);
+    expect_eq.(r1[0], 1);
+}
+
+test 'reverse' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(1);
+    a.push(2);
+    a.push(3);
+    a.reverse();
+    let [r0, e0] = a.at(0);
+    let [r1, e1] = a.at(1);
+    let [r2, e2] = a.at(2);
+    expect.(e0 == nil); expect.(e1 == nil); expect.(e2 == nil);
+    expect_eq.(r0[0], 3);
+    expect_eq.(r1[0], 2);
+    expect_eq.(r2[0], 1);
+}
+
+test 'ensure_capacity' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.ensure_capacity(100);
+    expect.(a.capacity() >= 100);
+    expect_eq.(a.length(), 0);
+}
+
+test 'print shows length and capacity' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(1);
+    a.push(2);
+    a.print();
+    expect.(true);
+}
+
+test 'print empty array does not crash' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.print();
+    expect.(true);
+}
+
+test 'clear' {
+    array_t.[i32] a = array_t.[i32].new();
+    a.push(5);
+    a.push(5);
+    a.clear();
+    expect_eq.(a.length(), 0);
+    expect.(a.is_empty());
+}

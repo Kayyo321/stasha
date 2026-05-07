@@ -1,0 +1,45 @@
+mod struct_zones;
+
+lib "stdio"  = io;
+lib "string" = str;
+
+type buf_t: struct {
+    ext zone data_zone;
+    ext zone meta_zone;
+
+    ext stack i8 *rw data;
+    ext stack i8 *rw meta;
+
+    fn rem(void): void {
+        io.printf("[dtor] freeing zone 'data_zone' and 'meta_zone'\n");
+        rem.(this.data_zone);
+        rem.(this.meta_zone);
+    }
+}
+
+fn buf_t.new(void): buf_t {
+    ret buf_t{.data = nil, .meta = nil};
+}
+
+fn main(void): i32 {
+    io.printf("=== struct zone fields ===\n");
+
+    {
+        let b = buf_t.();
+
+        // allocate from struct-field zones
+        b.data = new.(64) in b.data_zone;
+        b.meta = new.(64) in b.meta_zone;
+
+        str.strcpy(b.data, "payload from data_zone");
+        str.strcpy(b.meta, "payload from meta_zone");
+
+        io.printf("b.data  = '%s'\n", b.data);
+        io.printf("b.meta  = '%s'\n", b.meta);
+
+        io.printf("[scope end] buf_t destructor runs next\n");
+    } // buf_t.rem() called here — both zones freed
+
+    io.printf("=== done (no leaks) ===\n");
+    ret 0;
+}

@@ -1,0 +1,19 @@
+mod row51_b_scalars;
+
+// Path B — `lib "x" = alias` registers a C-library namespace.  The
+// archive is supplied via `stasha -l <path>` (the harness does this).
+// Function signatures are inferred from the call site at codegen time
+// (see find_lib_entry / gen_method_call).
+
+lib "cinterop_support" = c;
+
+fn main(void): i32 {
+    if c.scal_id_i32(42) != 42 { print.("FAIL i32\n"); ret 1; }
+    if c.scal_sum_i32(7, 35) != 42 { print.("FAIL sum_i32\n"); ret 1; }
+    // Path B has no compile-time signatures so the return type must be
+    // pinned via explicit storage to keep the comparison float-valued.
+    f64 r = c.scal_sum_f64(1.5, 2.25);
+    if r != 3.75 { print.("FAIL sum_f64\n"); ret 1; }
+    print.("51_b_scalars: ok\n");
+    ret 0;
+}

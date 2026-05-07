@@ -1,0 +1,15 @@
+// Diagnostic test: early abort between codegen passes
+// Expected: type registration error stops codegen before function body analysis
+// Feature: Phase 1C early abort between passes
+mod diag_early_abort;
+
+// Deliberately broken: recursive struct without pointer indirection
+// This should fail in pass 0 and NOT produce cascade errors in pass 2
+type Bad: struct {
+    ext Bad inner;
+};
+
+ext fn main(void): i32 {
+    stack Bad x;
+    ret 0;
+}

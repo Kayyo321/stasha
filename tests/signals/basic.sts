@@ -1,0 +1,13 @@
+mod basic;
+
+type sig_t: struct {
+    i32 code;
+}
+
+fn main(void): i32 {
+    watch.(sig_t s) => {
+        print.('basic: code={}\n', s.code);
+    }
+    send.(sig_t{.code = 42});
+    ret 0;
+}

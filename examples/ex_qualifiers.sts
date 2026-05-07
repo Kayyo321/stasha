@@ -1,0 +1,153 @@
+mod ex_qualifiers;
+
+lib "stdio" = io;
+
+// ── Storage qualifiers and compiler attributes ─────────────────────────────
+//
+// Variable qualifiers:
+//   const   — compile-time constant; no assignment after declaration
+//   final   — write-once runtime value; immutable after first assignment
+//   volatile — prevents optimizer from eliding loads/stores (MMIO, hardware)
+//   tls     — thread-local storage (each thread gets its own independent copy)
+//   restrict — no-alias hint on pointer params, enables auto-vectorization
+//
+// Pointer declarations: pointers must specify 'stack' or 'heap'
+//   stack i32 *rw p = &x;    // pointer variable on the stack
+//   heap  u8  *rw buf;       // pointer variable on the heap
+//
+// Struct attributes (before `struct` keyword):
+//   @packed      — remove padding between fields
+//   @c_layout    — guarantee C-compatible layout for FFI
+//   @align(N)    — align struct to N bytes
+//
+// Function/variable attributes:
+//   @weak   — allow override at link time
+//   @hidden — prevent export from a shared library
+//
+// Compile-time:
+//   comptime_if platform == "macos" { ... }
+//   comptime_assert.(sizeof.(T) == N)
+
+// ── Module-level const globals ──────────────────────────────────────────────
+
+int const i32 MAX_ITEMS = 64;
+int const f64 PI        = 3.14159265;
+
+// ── Thread-local storage ────────────────────────────────────────────────────
+
+ext tls i32 thread_counter = 0;   // each thread has its own copy
+
+// ── @weak and @hidden functions ─────────────────────────────────────────────
+
+@weak
+ext fn default_handler(void): void {
+    io.printf('default handler (overridable at link time)\n');
+}
+
+@hidden
+int fn internal_helper(void): void {
+    io.printf('internal helper (not exported from shared lib)\n');
+}
+
+// ── comptime_assert at module scope ─────────────────────────────────────────
+
+type WireHeader: struct {
+    ext i32 magic;
+    ext i32 version;
+};
+comptime_assert.(sizeof.(WireHeader) == 8);
+
+// ── Demos ───────────────────────────────────────────────────────────────────
+
+int fn const_final_demo(void): void {
+    const i32 limit = 10;
+    final i32 base  = limit * limit;   // set from runtime; frozen after this
+
+    io.printf('limit=%d  base=%d  MAX_ITEMS=%d  PI=%f\n',
+              limit, base, MAX_ITEMS, PI);
+
+    // Only *r pointer derivable from const/final
+    stack i32 *r p = &limit;
+    io.printf('*p = %d\n', p[0]);   // 10
+    // stack i32 *rw bad = &limit;  // ERROR: writable pointer from const
+}
+
+int fn vars_demo(void): void {
+    // Declare multiple variables — no storage qualifier on non-pointers
+    i32 x = 1;
+    i32 y = 2;
+    i32 z = 3;
+    io.printf('x y z: %d %d %d\n', x, y, z);   // 1 2 3
+
+    i32 count = 0;
+    i32 total = 0;
+    for (i32 i = 1; i <= 5; ++i) {
+        count = count + 1;
+        total = total + i;
+    }
+    io.printf('count=%d total=%d\n', count, total);  // 5  15
+}
+
+int fn qualifiers_demo(void): void {
+    // volatile: loads and stores are never optimized away (MMIO, spin-wait)
+    volatile i32 flag = 0;
+    flag = 1;
+    io.printf('volatile flag=%d\n', flag);
+
+    // tls: each thread sees its own copy
+    thread_counter = 42;
+    io.printf('tls thread_counter=%d\n', thread_counter);
+}
+
+// restrict: caller promises dst and src don't alias — enables vectorization
+int fn restrict_add(stack restrict i32 *rw dst, stack restrict i32 *r src): void {
+    dst[0] = dst[0] + src[0];
+}
+
+int fn asm_demo(void): void {
+    asm { "nop" }
+    io.printf('after inline nop\n');
+}
+
+int fn comptime_demo(void): void {
+    comptime_if platform == "macos" {
+        io.printf('platform: macOS\n');
+    } else {
+        io.printf('platform: other\n');
+    }
+    comptime_if arch == "aarch64" {
+        io.printf('arch: ARM64\n');
+    } else {
+        io.printf('arch: x86_64 or other\n');
+    }
+    io.printf('WireHeader size verified at compile time: %lu\n', sizeof.(WireHeader));
+}
+
+fn main(void): i16 {
+    io.printf('--- const / final ---\n');
+    const_final_demo();
+
+    io.printf('\n--- vars ---\n');
+    vars_demo();
+
+    io.printf('\n--- volatile / tls ---\n');
+    qualifiers_demo();
+
+    io.printf('\n--- restrict ---\n');
+    i32 a = 10;
+    i32 b = 20;
+    restrict_add(&a, &b);
+    io.printf('a after restrict_add = %d\n', a);   // 30
+
+    io.printf('\n--- @weak / @hidden ---\n');
+    default_handler();
+    internal_helper();
+
+    io.printf('\n--- inline asm ---\n');
+    asm_demo();
+
+    io.printf('\n--- comptime ---\n');
+    comptime_demo();
+
+    ret 0;
+}

@@ -1,0 +1,26 @@
+mod row15_va_foreach;
+
+fn sum(stack i32 n, ...): i32 {
+    stack i32 total = 0;
+    stack va args;
+    va.foreach.[i32](n, args) { |v| total = total + v; };
+    ret total;
+}
+
+fn product(stack i32 n, ...): i32 {
+    stack i32 result = 1;
+    stack va args;
+    va.foreach.[i32](n, args) { |v| result = result * v; };
+    ret result;
+}
+
+fn main(void): i32 {
+    stack i32 s = sum(4, 10, 20, 30, 40);
+    if (s != 100) { print.('FAIL sum: got {}\n', s); ret 1; }
+
+    stack i32 p = product(3, 2, 5, 6);
+    if (p != 60) { print.('FAIL product: got {}\n', p); ret 1; }
+
+    print.('15_va_foreach: ok\n');
+    ret 0;
+}

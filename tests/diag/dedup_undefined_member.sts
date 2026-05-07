@@ -1,0 +1,18 @@
+// Diagnostic test: error deduplication — undefined member accessed multiple times
+// Expected: only ONE "cannot resolve member 'valeu'" error + "did you mean 'value'?"
+// Feature: Phase 1 dedup + Phase 5A gen_member Levenshtein suggestions
+mod diag_dedup_member;
+
+type Point: struct {
+    ext i32 value;
+    ext i32 extra;
+};
+
+ext fn main(void): i32 {
+    stack Point p;
+    p.value = 10;
+    p.extra = 20;
+    stack i32 a = p.valeu;
+    stack i32 b = p.valeu;
+    ret a + b;
+}

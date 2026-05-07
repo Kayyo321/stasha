@@ -1,0 +1,115 @@
+mod ex_opt;
+
+// ── Optional type example ──────────────────────────────────────────────────
+//
+// Build the stdlib first:
+//   make stdlib
+//
+// Then compile and run:
+//   stasha examples/ex_opt.sts
+
+libimp "opt" from std;
+
+// Returns Some(x / y), or None if y is zero.
+int fn safe_divide(i32 x, i32 y): opt_t.[i32] {
+    if y == 0 {
+        ret opt_t.[i32].from_none();
+    }
+    ret opt_t.[i32].from_some(x / y);
+}
+
+// Tries to parse a single digit character; returns None on non-digit.
+int fn parse_digit(i8 ch): opt_t.[i32] {
+    if ch >= `0` && ch <= `9` {
+        ret opt_t.[i32].from_some((i32)(ch - `0`));
+    }
+    ret opt_t.[i32].from_none();
+}
+
+ext fn main(void): i32 {
+    // ── Create and inspect ────────────────────────────────────────────────
+    opt_t.[i32] a = opt_t.[i32].from_some(42);
+    opt_t.[i32] b = opt_t.[i32].from_none();
+
+    a.print();
+    b.print();
+
+    // ── get ───────────────────────────────────────────────────────────────
+    let [val, e] = a.get();
+    if e == nil {
+        print.('a = {}\n', val[0]);
+    }
+
+    let [_, ne] = b.get();
+    if ne != nil {
+        print.('b.get() -> {}\n', ne);
+    }
+
+    // ── set ───────────────────────────────────────────────────────────────
+    error se = a.set(100);
+    if se == nil {
+        let [v2, _] = a.get();
+        print.('a after set = {}\n', v2[0]);
+    }
+
+    // ── equ ───────────────────────────────────────────────────────────────
+    opt_t.[i32] c = opt_t.[i32].from_some(100);
+    if a.equ(&c) {
+        print.('a == c (both 100)\n');
+    }
+
+    opt_t.[i32] d = opt_t.[i32].from_some(999);
+    if !a.equ(&d) {
+        print.('a != d\n');
+    }
+
+    opt_t.[i32] n1 = opt_t.[i32].from_none();
+    opt_t.[i32] n2 = opt_t.[i32].from_none();
+    if n1.equ(&n2) {
+        print.('None == None\n');
+    }
+
+    // ── set_none ──────────────────────────────────────────────────────────
+    a.set_none();
+    a.print();
+
+    // ── safe_divide ───────────────────────────────────────────────────────
+    print.('\n=== safe_divide ===\n');
+
+    opt_t.[i32] r1 = safe_divide(10, 2);
+    opt_t.[i32] r2 = safe_divide(10, 0);
+
+    r1.print();
+    r2.print();
+
+    let [rv, re] = r1.get();
+    if re == nil {
+        print.('10 / 2 = {}\n', rv[0]);
+    }
+
+    let [_, re2] = r2.get();
+    if re2 != nil {
+        print.('10 / 0 -> None\n');
+    }
+
+    // ── parse_digit ───────────────────────────────────────────────────────
+    print.('\n=== parse_digit ===\n');
+
+    opt_t.[i32] p1 = parse_digit(`7`);
+    opt_t.[i32] p2 = parse_digit(`x`);
+
+    p1.print();
+    p2.print();
+
+    let [dv, de] = p1.get();
+    if de == nil {
+        print.('parsed digit = {}\n', dv[0]);
+    }
+
+    let [_, de2] = p2.get();
+    if de2 != nil {
+        print.('\'x\' is not a digit -> None\n');
+    }
+
+    ret 0;
+}

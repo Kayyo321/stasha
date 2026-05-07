@@ -1,0 +1,32 @@
+mod ex_preproc;
+
+// Internal macro: only visible in this file.
+int macro fn say_hello! {
+    () => {
+        print.('hello\n');
+    };
+}
+
+// External macro: exported for files that import this module.
+ext macro fn repeat! {
+    (@msg, @count) => {
+        for (i32 i = 0; i < @count; i++) {
+            print.(@msg);
+        }
+    };
+}
+
+// Let macro (token alias): replaces the name with the token sequence.
+int macro let integer! = i32;
+
+fn main(void): i32 {
+    say_hello.!();
+
+    const integer.! i = 10;
+    // expands to: const i32 i = 10;
+    print.('i = {}\n', i);
+
+    repeat.!('repeated\n', 3);
+
+    ret 0;
+}

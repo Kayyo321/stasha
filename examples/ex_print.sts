@@ -1,13 +1,82 @@
 mod ex_print;
 
-fn main(void): i16 { // TODO remove the debug keyword
+lib "stdio" = io;
+
+type simple_t: struct {
+    ext i32 x, y, z;
+    int i32 priv;
+}
+
+fn simple_t.new(i32 x, y, z, priv): simple_t {
+    simple_t s;
+    s.x = x;
+    s.y = y;
+    s.z = z;
+    s.priv = priv;
+    ret s;
+}
+
+type complex_t: struct {
+    ext stack i8 *r chars;
+    ext i32 len;
+
+    fn print(void): void {
+        for (i32 i = 0; i < this.len; i++) {
+            print.('{}', this.chars[i]);
+        }
+    }
+}
+
+// Override print for complex_t: fn Type.print(void): void
+// print.(...) calls this instead of the default field-by-field output.
+fn main(void): i32 {
+    // basic
     print.('Hello, World!\n');
-
     print.('Nice to meet you, {}!\n', 'Sully!');
-    print.('{} + {} * {} = {}', 1, 2, 3, 1+2*3);
+    print.('{} + {} * {} = {}\n', 1, 2, 3, 1+2*3);
 
-    // similar to new and rem, print is a builtin that 
-    // turns all these into printf statements with the correct fmt
+    // \{ and \} print literal braces
+    print.('set notation: \{ x | x > 0 \}\n');
+
+    // default struct print: "simple_t{.x = 1, .y = 2, .z = 3}"
+    // (.priv is int so it is omitted)
+    print.('default struct print: {}\n', simple_t.new(1, 2, 3, 4));
+
+    // complex_t has a print override, so {} calls complex_t.print(self)
+    stack i8 *r characters = 'HELLOWORLD';
+    print.('custom struct print: {}\n', complex_t { .chars = characters, .len = 10 });
+
+    // {:x} {:X} — hex
+    print.('hex lower:         {:x}\n', 255);
+    print.('hex upper:         {:X}\n', 255);
+
+    // {:#x} {:#X} — hex with 0x / 0X prefix
+    print.('hex with prefix:   {:#x}\n', 255);
+    print.('HEX with prefix:   {:#X}\n', 255);
+
+    // {:b} {:#b} — binary, with optional 0b prefix
+    print.('10 in binary:      {:b}\n', 10);
+    print.('10 with prefix:    {:#b}\n', 10);
+
+    // {:o} — octal (printf %#llo adds 0 prefix via alt_form)
+    print.('8 in octal:        {:o}\n', 8);
+    print.('8 octal alt:       {:#o}\n', 8);
+
+    // {:.N} — float precision
+    print.('pi to 4 places:    {:.4}\n', 3.14159265);
+
+    // {:+} — force sign
+    print.('force sign +42:    {:+}\n', 42);
+    print.('force sign -42:    {:+}\n', -42);
+
+    // {:N} {:0N} {:<N} — width: right-align, zero-pad, left-align
+    print.('right-aligned:     |{:8}|\n',  42);
+    print.('zero-padded:       |{:08}|\n', 42);
+    print.('left-aligned:      |{:<8}|\n', 42);
+
+    // combinations
+    print.('left+sign:         |{:<+8}|\n',  42);
+    print.('zero+hex+prefix:   |{:#010x}|\n', 255);
 
     ret 0;
 }

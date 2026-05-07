@@ -1,0 +1,7 @@
+mod coro_mixed_yield_types;
+
+async fn bad(void): stream.[i64] {
+    yield 1;
+    yield true;
+    ret;
+}

@@ -1,0 +1,10 @@
+mod cheader_string;
+
+cheader "stdio.h";
+cheader "string.h";
+
+ext fn main(void): void {
+    stack u8 *rw msg = "interop";
+    stack i64 len = strlen(msg);
+    printf("len = %ld\n", len + 2);
+}

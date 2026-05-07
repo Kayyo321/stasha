@@ -11,16 +11,16 @@ mod ex_test;
 //   expect_neq.(a, b)     — fail if a == b
 //   test_fail.('message') — unconditionally fail
 
-int fn add(stack i32 a, stack i32 b): i32 {
+int fn add(i32 a, i32 b): i32 {
     ret a + b;
 }
 
-int fn factorial(stack i32 n): i32 {
+int fn factorial(i32 n): i32 {
     if n <= 1 { ret 1; }
     ret n * factorial(n - 1);
 }
 
-int fn abs(stack i32 x): i32 {
+int fn abs(i32 x): i32 {
     if x < 0 { ret 0 - x; }
     ret x;
 }
@@ -52,6 +52,6 @@ test 'inequality checks' {
 
 // A normal main — only used in non-test builds
 fn main(void): i16 {
-    debug add(10, 20);
+    print.('{}\n', add(10, 20));
     ret 0;
 }

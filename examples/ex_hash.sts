@@ -1,0 +1,102 @@
+mod ex_hash;
+
+lib "stdio" = io;
+
+// ── Point: uses the auto-generated default struct hash ──────────────────────
+
+ext type Point: struct {
+    ext i32 x, y;
+};
+
+ext fn Point.new(i32 x, y): Point {
+    Point p;
+    p.x = x;
+    p.y = y;
+    ret p;
+}
+
+// ── Color: provides a custom hash method ────────────────────────────────────
+
+ext type Color: struct {
+    ext u8 r, g, b;
+
+    ext fn hash(void): u64 {
+        u64 h = (u64) this.r;
+        h = h << 8 | (u64) this.g;
+        h = h << 8 | (u64) this.b;
+        ret h;
+    }
+};
+
+ext fn Color.new(u8 r, g, b): Color {
+    Color c;
+    c.r = r;
+    c.g = g;
+    c.b = b;
+    ret c;
+}
+
+// Custom hash: pack RGB channels into a single u64
+// ── main ─────────────────────────────────────────────────────────────────────
+
+fn main(void): i32 {
+    // --- primitives ---
+    i32  n = 42;
+    f64  f = 3.14;
+    bool t = true;
+    bool ff = false;
+    u64  hn  = hash.(n);
+    u64  hf  = hash.(f);
+    u64  ht  = hash.(t);
+    u64  hff = hash.(ff);
+
+    io.printf("=== primitive hashes ===\n");
+    io.printf("hash(42)    = %llu\n", hn);
+    io.printf("hash(3.14)  = %llu\n", hf);
+    io.printf("hash(true)  = %llu\n", ht);
+    io.printf("hash(false) = %llu\n", hff);
+
+    // same value => same hash
+    i32 n2 = 42;
+    u64 hn2 = hash.(n2);
+    io.printf("hash(42) == hash(42): %d\n", hn == hn2);
+
+    // different values => different hashes
+    i32 m = 43;
+    u64 hm = hash.(m);
+    io.printf("hash(42) != hash(43): %d\n", hn != hm);
+
+    // --- struct default hash ---
+    io.printf("\n=== struct default hash (Point) ===\n");
+    Point a = Point.new(3, 4);
+    Point b = Point.new(3, 4);
+    Point c = Point.new(1, 2);
+
+    u64 ha = hash.(a);
+    u64 hb = hash.(b);
+    u64 hc = hash.(c);
+
+    io.printf("hash(3,4)   = %llu\n", ha);
+    io.printf("hash(3,4)   = %llu\n", hb);
+    io.printf("hash(1,2)   = %llu\n", hc);
+    io.printf("same inputs => same hash:  %d\n", ha == hb);
+    io.printf("diff inputs => diff hash:  %d\n", ha != hc);
+
+    // --- struct custom hash ---
+    io.printf("\n=== struct custom hash (Color) ===\n");
+    Color red   = Color.new(255, 0, 0);
+    Color green = Color.new(0, 255, 0);
+    Color red2  = Color.new(255, 0, 0);
+
+    u64 hr  = hash.(red);
+    u64 hg  = hash.(green);
+    u64 hr2 = hash.(red2);
+
+    io.printf("hash(red)   = %llu\n", hr);
+    io.printf("hash(green) = %llu\n", hg);
+    io.printf("hash(red2)  = %llu\n", hr2);
+    io.printf("red == red2: %d\n", hr == hr2);
+    io.printf("red != green: %d\n", hr != hg);
+
+    ret 0;
+}

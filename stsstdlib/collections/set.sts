@@ -1,0 +1,396 @@
+mod set;
+
+// Hash set (open addressing, FNV-1a) and bit set.
+
+lib "string" = cstring;
+lib "stdlib" = cstdlib;
+
+// ── Constants for bucket state ─────────────────────────────────────────────
+const u8 SET_EMPTY     = 0;
+const u8 SET_OCCUPIED  = 1;
+const u8 SET_TOMBSTONE = 2;
+
+// ── hash_set_t — open-addressing hash set ─────────────────────────────────
+// Bucket layout: [state: u8 (1 byte)][item: item_size bytes]
+
+ext type hash_set_t: struct {
+    int heap u8 *rw buckets;
+    int u32 count, capacity, item_size;
+
+    // Byte size of one bucket slot.
+    int fn slot_size(void): u32 {
+        ret 1 + this.item_size;
+    }
+
+    // Pointer to start of bucket i.
+    int fn bucket_ptr(u32 i): heap u8 *rw+ {
+        ret this.buckets + (i * this.slot_size());
+    }
+
+    // FNV-1a hash over item_size bytes.
+    int fn hash_item(stack u8 *r item): u32 {
+        u32 h = 2166136261;
+        final u32 n = this.item_size;
+        for (u32 i = 0; i < n; i++) {
+            h = h ^ (u32)item[i];
+            h = h * 16777619;
+        }
+        ret h;
+    }
+
+    // True if item bytes at a and b are equal.
+    int fn items_equal(stack u8 *r a, stack u8 *r b): bool {
+        final u32 n = this.item_size;
+        for (u32 i = 0; i < n; i++) {
+            if (a[i] != b[i]) { ret false; }
+        }
+        ret true;
+    }
+
+    // Copy n bytes from src to dst.
+    int fn copy_bytes(stack u8 *w dst, stack u8 *r src, u32 n): void {
+        for (u32 i = 0; i < n; i++) { dst[i] = src[i]; }
+    }
+
+    // Grow and rehash when load factor exceeds 75%.
+    int fn maybe_grow(void): void {
+        // count / capacity > 0.75 -> count * 4 > capacity * 3
+        if (this.count * 4 <= this.capacity * 3) { ret; }
+
+        final u32 old_cap    = this.capacity;
+        heap u8 *rw+ old_bkts = this.buckets;
+        final u32 ss         = this.slot_size();
+        final u32 new_cap    = old_cap * 2;
+
+        this.buckets  = new.(new_cap * ss);
+        for (u32 i = 0; i < new_cap * ss; i++) { this.buckets[i] = 0; }
+        this.capacity = new_cap;
+        this.count    = 0;
+
+        for (u32 i = 0; i < old_cap; i++) {
+            heap u8 *rw+ slot = old_bkts + (i * ss);
+            if (slot[0] == SET_OCCUPIED) {
+                this.insert(slot + 1);
+            }
+        }
+        rem.(old_bkts);
+    }
+
+    // Insert item (no-op if already exists).
+    ext fn insert(stack u8 *r item): void {
+        this.maybe_grow();
+        u32 idx = this.hash_item(item) % this.capacity;
+        u32 tomb = this.capacity;
+
+        inf {
+            heap u8 *rw+ slot = this.bucket_ptr(idx);
+            if (slot[0] == SET_EMPTY) {
+                final u32 write = (tomb < this.capacity) ? tomb : idx;
+                heap u8 *rw+ dst = this.bucket_ptr(write);
+                dst[0] = SET_OCCUPIED;
+                this.copy_bytes(dst + 1, item, this.item_size);
+                this.count++;
+                ret;
+            }
+            if (slot[0] == SET_TOMBSTONE) {
+                if (tomb == this.capacity) { tomb = idx; }
+            } else {
+                // SET_OCCUPIED — check equality
+                if (this.items_equal(slot + 1, item)) { ret; }
+            }
+            idx = (idx + 1) % this.capacity;
+        }
+    }
+
+    // True if item is in the set.
+    ext fn contains(stack u8 *r item): bool {
+        u32 idx    = this.hash_item(item) % this.capacity;
+        u32 probed = 0;
+        while (probed < this.capacity) {
+            heap u8 *rw+ slot = this.bucket_ptr(idx);
+            if (slot[0] == SET_EMPTY) { ret false; }
+            if (slot[0] == SET_OCCUPIED && this.items_equal(slot + 1, item)) {
+                ret true;
+            }
+            idx = (idx + 1) % this.capacity;
+            probed++;
+        }
+        ret false;
+    }
+
+    // Mark item as tombstone (remove). No-op if not present.
+    ext fn remove(stack u8 *r item): void {
+        u32 idx    = this.hash_item(item) % this.capacity;
+        u32 probed = 0;
+        while (probed < this.capacity) {
+            heap u8 *rw+ slot = this.bucket_ptr(idx);
+            if (slot[0] == SET_EMPTY) { ret; }
+            if (slot[0] == SET_OCCUPIED && this.items_equal(slot + 1, item)) {
+                slot[0] = SET_TOMBSTONE;
+                this.count--;
+                ret;
+            }
+            idx = (idx + 1) % this.capacity;
+            probed++;
+        }
+    }
+
+    ext fn count(void): u32    { ret this.count; }
+    ext fn is_empty(void): bool { ret this.count == 0; }
+
+    // Reset all buckets to empty state.
+    ext fn clear(void): void {
+        final u32 total = this.capacity * this.slot_size();
+        for (u32 i = 0; i < total; i++) { this.buckets[i] = 0; }
+        this.count = 0;
+    }
+
+    ext fn print(void): void {
+        print.('hash_set_t[count={}, cap={}, item_size={}]\n',
+               this.count, this.capacity, this.item_size);
+    }
+
+    ext fn rem(void): void {
+        if (this.buckets != nil) { rem.(this.buckets); }
+        this.buckets   = nil;
+        this.count     = 0;
+        this.capacity  = 0;
+        this.item_size = 0;
+    }
+}
+
+ext fn hash_set_t.new(u32 item_size): hash_set_t {
+    final u32 init_cap = 16;
+    final u32 ss       = 1 + item_size;
+    heap u8 *rw bkts   = new.(init_cap * ss);
+    for (u32 i = 0; i < init_cap * ss; i++) { bkts[i] = 0; }
+    ret hash_set_t{
+        .buckets   = bkts,
+        .count     = 0,
+        .capacity  = init_cap,
+        .item_size = item_size
+    };
+}
+
+// ── bit_set_t — compact bit set for integer membership ────────────────────
+
+ext type bit_set_t: struct {
+    int heap u64 *rw words; // array of 64-bit words
+    int u32 capacity_bits, word_count;
+
+    // Set bit at position bit.
+    ext fn set(u32 bit): void {
+        if (bit >= this.capacity_bits) { ret; }
+        final u32 word  = bit / 64;
+        final u32 shift = bit % 64;
+        this.words[word] = this.words[word] | ((u64)1 << shift);
+    }
+
+    // Clear bit at position bit.
+    ext fn clear_bit(u32 bit): void {
+        if (bit >= this.capacity_bits) { ret; }
+        final u32 word  = bit / 64;
+        final u32 shift = bit % 64;
+        this.words[word] = this.words[word] & ~((u64)1 << shift);
+    }
+
+    // Test if bit is set.
+    ext fn test_bit(u32 bit): bool {
+        if (bit >= this.capacity_bits) { ret false; }
+        final u32 word  = bit / 64;
+        final u32 shift = bit % 64;
+        ret (this.words[word] >> shift) & 1;
+    }
+
+    // Flip bit at position bit.
+    ext fn toggle(u32 bit): void {
+        if (bit >= this.capacity_bits) { ret; }
+        final u32 word  = bit / 64;
+        final u32 shift = bit % 64;
+        this.words[word] = this.words[word] ^ ((u64)1 << shift);
+    }
+
+    // Clear all bits.
+    ext fn clear_all(void): void {
+        for (u32 i = 0; i < this.word_count; i++) {
+            this.words[i] = 0;
+        }
+    }
+
+    // Count set bits (popcount via Brian Kernighan's algorithm).
+    ext fn count_set(void): u32 {
+        u32 total = 0;
+        for (u32 i = 0; i < this.word_count; i++) {
+            u64 w = this.words[i];
+            while (w != 0) {
+                w = w & (w - 1);
+                total++;
+            }
+        }
+        ret total;
+    }
+
+    ext fn capacity(void): u32 { ret this.capacity_bits; }
+
+    ext fn print(void): void {
+        print.('bit_set_t[capacity={}, set={}]\n',
+               this.capacity_bits, this.count_set());
+    }
+
+    ext fn rem(void): void {
+        if (this.words != nil) { rem.(this.words); }
+        this.words         = nil;
+        this.capacity_bits = 0;
+        this.word_count    = 0;
+    }
+}
+
+ext fn bit_set_t.new(u32 capacity_bits): bit_set_t {
+    final u32 word_count = (capacity_bits + 63) / 64;
+    heap u64 *rw words   = new.(word_count * sizeof.(u64));
+    for (u32 i = 0; i < word_count; i++) { words[i] = 0; }
+    ret bit_set_t{
+        .words         = words,
+        .capacity_bits = capacity_bits,
+        .word_count    = word_count
+    };
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+test 'hash_set insert and contains' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    i32 v1 = 10; stack i32 *rw p1 = &v1;
+    i32 v2 = 20; stack i32 *rw p2 = &v2;
+    i32 v3 = 30; stack i32 *rw p3 = &v3;
+    s.insert((u8 *r)p1);
+    s.insert((u8 *r)p2);
+    s.insert((u8 *r)p3);
+    expect_eq.(s.count(), 3);
+    expect.(s.contains((u8 *r)p1));
+    expect.(s.contains((u8 *r)p2));
+    expect.(s.contains((u8 *r)p3));
+    i32 missing = 99; stack i32 *rw mp = &missing;
+    expect.(s.contains((u8 *r)mp) == false);
+}
+
+test 'hash_set insert duplicate no-op' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    i32 v = 42; stack i32 *rw vp = &v;
+    s.insert((u8 *r)vp);
+    s.insert((u8 *r)vp);
+    s.insert((u8 *r)vp);
+    expect_eq.(s.count(), 1);
+}
+
+test 'hash_set remove' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    i32 v = 7; stack i32 *rw vp = &v;
+    s.insert((u8 *r)vp);
+    expect.(s.contains((u8 *r)vp));
+    s.remove((u8 *r)vp);
+    expect.(s.contains((u8 *r)vp) == false);
+    expect_eq.(s.count(), 0);
+}
+
+test 'hash_set clear' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    i32 v1 = 1; stack i32 *rw p1 = &v1;
+    i32 v2 = 2; stack i32 *rw p2 = &v2;
+    s.insert((u8 *r)p1);
+    s.insert((u8 *r)p2);
+    s.clear();
+    expect_eq.(s.count(), 0);
+    expect.(s.is_empty());
+    expect.(s.contains((u8 *r)p1) == false);
+}
+
+test 'hash_set grow on load' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    // Insert 13 items to trigger rehash (16 * 0.75 = 12)
+    for (u32 i = 0; i < 13; i++) {
+        i32 v = (i32)i;
+        stack i32 *rw vp = &v;
+        s.insert((u8 *r)vp);
+    }
+    expect_eq.(s.count(), 13);
+    for (u32 i = 0; i < 13; i++) {
+        i32 v = (i32)i;
+        stack i32 *rw vp = &v;
+        expect.(s.contains((u8 *r)vp));
+    }
+}
+
+test 'bit_set set and test' {
+    bit_set_t bs = bit_set_t.new(128);
+    bs.set(0);
+    bs.set(63);
+    bs.set(64);
+    bs.set(127);
+    expect.(bs.test_bit(0));
+    expect.(bs.test_bit(63));
+    expect.(bs.test_bit(64));
+    expect.(bs.test_bit(127));
+    expect.(bs.test_bit(1) == false);
+    expect.(bs.test_bit(100) == false);
+}
+
+test 'bit_set clear_bit' {
+    bit_set_t bs = bit_set_t.new(64);
+    bs.set(5);
+    bs.set(10);
+    expect.(bs.test_bit(5));
+    bs.clear_bit(5);
+    expect.(bs.test_bit(5) == false);
+    expect.(bs.test_bit(10));
+}
+
+test 'bit_set toggle' {
+    bit_set_t bs = bit_set_t.new(64);
+    bs.toggle(3);
+    expect.(bs.test_bit(3));
+    bs.toggle(3);
+    expect.(bs.test_bit(3) == false);
+}
+
+test 'bit_set clear_all' {
+    bit_set_t bs = bit_set_t.new(64);
+    bs.set(0);
+    bs.set(1);
+    bs.set(63);
+    bs.clear_all();
+    expect.(bs.test_bit(0) == false);
+    expect.(bs.test_bit(63) == false);
+}
+
+test 'bit_set count_set' {
+    bit_set_t bs = bit_set_t.new(64);
+    bs.set(0);
+    bs.set(1);
+    bs.set(2);
+    bs.set(63);
+    expect_eq.(bs.count_set(), 4);
+    bs.clear_bit(1);
+    expect_eq.(bs.count_set(), 3);
+}
+
+test 'bit_set capacity' {
+    bit_set_t bs = bit_set_t.new(200);
+    expect_eq.(bs.capacity(), 200);
+}
+
+test 'hash_set_t print does not crash' {
+    hash_set_t s = hash_set_t.new(sizeof.(i32));
+    i32 v = 5; stack i32 *rw vp = &v;
+    s.insert((u8 *r)vp);
+    s.print();
+    expect.(true);
+}
+
+test 'bit_set_t print does not crash' {
+    bit_set_t bs = bit_set_t.new(64);
+    bs.set(3);
+    bs.set(7);
+    bs.print();
+    expect.(true);
+}

@@ -1,0 +1,34 @@
+mod row14_va_access;
+
+fn sum_ints(stack i32 n, ...): i32 {
+    stack va args;
+    va.start(args);
+    stack i32 total = 0;
+    for (stack i32 i = 0; i < n; i = i + 1) {
+        total = total + va.next.[i32](args);
+    }
+    va.end(args);
+    ret total;
+}
+
+fn concat_check(stack i32 n, ...): bool {
+    stack va args;
+    va.start(args);
+    stack i32 s = 0;
+    for (stack i32 i = 0; i < n; i = i + 1) {
+        s = s + va.next.[i32](args);
+    }
+    va.end(args);
+    ret s == 100;
+}
+
+fn main(void): i32 {
+    stack i32 s = sum_ints(4, 10, 20, 30, 40);
+    if (s != 100) { print.('FAIL sum_ints: got {}\n', s); ret 1; }
+
+    stack bool ok = concat_check(5, 5, 10, 20, 30, 35);
+    if (!ok) { print.('FAIL concat_check\n'); ret 1; }
+
+    print.('14_va_access: ok\n');
+    ret 0;
+}

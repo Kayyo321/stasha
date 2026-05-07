@@ -12,6 +12,14 @@ result_t link_object(const char *obj_path, const char *output_path,
                      const char **extra_libs);
 
 /*
+ * Freestanding link: skips -lSystem / -lc / -lm / -lpthread.  Intended for
+ * @[[freestanding]] modules that must not depend on the host libc.  Only the
+ * object file and caller-supplied libraries are passed to LLD.
+ */
+result_t link_object_freestanding(const char *obj_path, const char *output_path,
+                                   const char **extra_libs);
+
+/*
  * Bundle a single object file into a static archive (.a).
  * Uses the bundled LLVM archive writer — no external 'ar' required.
  */

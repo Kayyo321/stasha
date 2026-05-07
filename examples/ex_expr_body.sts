@@ -1,0 +1,9 @@
+mod ex_expr_body;
+
+ext fn double(i32 x): i32 => x * 2;
+ext fn add(i32 a, i32 b): i32 => a + b;
+
+ext fn main(void): i32 {
+    i32 r = double(5);
+    ret 0;
+}

@@ -1,0 +1,21 @@
+mod ex_preproc_other;
+
+imp ex_preproc = pp; // test if the external macro works
+
+int macro write_out! {
+    (...@args) => {
+        @foreach arg : args {
+            print.('{} ', arg);
+        }
+
+        print.('\n');
+    }
+}
+
+fn main(void): i32 {
+    pp.repeat.!('repeated!\n', 5);
+
+    write_out.!('hi', 'you', 110, 3.14, 'kids!');
+
+    ret 0;
+}

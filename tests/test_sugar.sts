@@ -1,0 +1,53 @@
+/* test_sugar.sts — sugar pack v1: lambda + pipeline + trailing closure */
+
+mod test_sugar;
+
+ext fn double(stack i32 x): i32 { ret x * 2; }
+ext fn add(stack i32 a, stack i32 b): i32 { ret a + b; }
+ext fn negate(stack i32 x): i32 { ret -x; }
+
+ext fn apply1(stack i32 x, stack fn*(stack i32): i32 f): i32 { ret f(x); }
+ext fn apply2(stack i32 a, stack i32 b, stack fn*(stack i32, stack i32): i32 f): i32 { ret f(a, b); }
+ext fn run0(stack fn*(void): i32 f): i32 { ret f(); }
+
+test 'lambda assign and call' {
+    stack fn*(stack i32): i32 sq = lam.(stack i32 x): i32 { ret x * x; };
+    expect_eq.(sq(6), 36);
+}
+
+test 'lambda passed as argument' {
+    stack i32 r = apply1(11, lam.(stack i32 x): i32 { ret x + 1; });
+    expect_eq.(r, 12);
+}
+
+test 'pipeline left-associativity' {
+    /* a |> b |> c  →  c.(b.(a)) */
+    stack i32 r = 5 |> double |> negate;
+    expect_eq.(r, -10);
+}
+
+test 'pipeline bare ident auto-calls' {
+    stack i32 r = 21 |> double;
+    expect_eq.(r, 42);
+}
+
+test 'pipeline with extra args' {
+    /* 100 |> add(50)  →  add.(100, 50) */
+    stack i32 r = 100 |> add(50);
+    expect_eq.(r, 150);
+}
+
+test 'trailing closure inference single param' {
+    stack i32 r = apply1(7) { |x| x * 3 };
+    expect_eq.(r, 21);
+}
+
+test 'trailing closure inference two params' {
+    stack i32 r = apply2(10, 20) { |a, b| a + b };
+    expect_eq.(r, 30);
+}
+
+test 'zero-arg trailing closure' {
+    stack i32 r = run0() { ret 99; };
+    expect_eq.(r, 99);
+}

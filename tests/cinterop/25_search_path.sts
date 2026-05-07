@@ -1,0 +1,15 @@
+mod row25_search_path;
+
+// `search "<dir>"` adds an extra include directory to cheader's resolver.
+// Multiple paths can be separated by ':'.  Order matters: the file's own
+// directory is searched first, then user paths, then system defaults.
+//
+// Here the header lives under support/searchsub/, NOT in the same dir
+// as this .sts file — so the resolver must rely on the search path.
+cheader "searchpath.h" search "tests/cinterop/support/searchsub";
+
+fn main(void): i32 {
+    if sp_double(21) != 42 { print.("FAIL\n"); ret 1; }
+    print.("25_search_path: ok\n");
+    ret 0;
+}

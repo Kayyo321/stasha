@@ -1,0 +1,335 @@
+mod str_conv;
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+// Write a u64 in decimal into buf[0..cap-1], null-terminate.
+// Returns number of characters written (not including null terminator).
+int fn u64_to_buf(u64 n, stack i8 *w+ buf, u32 cap): u32 {
+    if (cap == 0) { ret 0; }
+    if (n == 0) {
+        buf[0] = 48;  // '0'
+        buf[1] = 0;
+        ret 1;
+    }
+    // collect digits in reverse order into a temp stack array
+    i8 tmp[20];
+    u32 nd = 0;
+    while (n > 0 && nd < 20) {
+        tmp[nd++] = (i8)48 + (i8)(n % 10);
+        n = n / 10;
+    }
+    u32 written = 0;
+    for (u32 k = nd; k > 0 && written + 1 < cap; --k) {
+        buf[written++] = tmp[k - 1];
+    }
+    buf[written] = 0;
+    ret written;
+}
+
+// ── Integer parsing ───────────────────────────────────────────────────────────
+
+// Parse a null-terminated string as a signed 32-bit integer.
+// Returns [value, nil] on success or [0, error] on failure.
+ext fn str_to_i32(stack i8 *r s): [i32, error] {
+    if (s == nil || s[0] == 0) { ret 0, error.('str_to_i32: empty input'); }
+    u32 i = 0;
+    bool neg = false;
+    if (s[i] == 45) { neg = true; i++; }    // '-'
+    else if (s[i] == 43) { i++; }           // '+'
+    if (s[i] == 0) { ret 0, error.('str_to_i32: no digits after sign'); }
+    i32 val = 0;
+    while (s[i] != 0) {
+        i8 c = s[i];
+        if (c < 48 || c > 57) { ret 0, error.('str_to_i32: non-digit character'); }
+        val = val * 10 + (i32)(c - 48);
+        i++;
+    }
+    ret neg ? -val : val, nil;
+}
+
+// Parse a null-terminated string as a signed 64-bit integer.
+ext fn str_to_i64(stack i8 *r s): [i64, error] {
+    if (s == nil || s[0] == 0) { ret 0, error.('str_to_i64: empty input'); }
+    u32 i = 0;
+    bool neg = false;
+    if (s[i] == 45) { neg = true; i++; }
+    else if (s[i] == 43) { i++; }
+    if (s[i] == 0) { ret 0, error.('str_to_i64: no digits after sign'); }
+    i64 val = 0;
+    while (s[i] != 0) {
+        i8 c = s[i];
+        if (c < 48 || c > 57) { ret 0, error.('str_to_i64: non-digit character'); }
+        val = val * 10 + (i64)(c - 48);
+        i++;
+    }
+    ret neg ? -val : val, nil;
+}
+
+// Parse a null-terminated string as an unsigned 32-bit integer.
+ext fn str_to_u32(stack i8 *r s): [u32, error] {
+    if (s == nil || s[0] == 0) { ret 0, error.('str_to_u32: empty input'); }
+    u32 i = 0;
+    if (s[i] == 43) { i++; }
+    if (s[i] == 0) { ret 0, error.('str_to_u32: no digits'); }
+    u32 val = 0;
+    while (s[i] != 0) {
+        i8 c = s[i];
+        if (c < 48 || c > 57) { ret 0, error.('str_to_u32: non-digit character'); }
+        val = val * 10 + (u32)(c - 48);
+        i++;
+    }
+    ret val, nil;
+}
+
+// Parse a null-terminated string as an unsigned 64-bit integer.
+ext fn str_to_u64(stack i8 *r s): [u64, error] {
+    if (s == nil || s[0] == 0) { ret 0, error.('str_to_u64: empty input'); }
+    u32 i = 0;
+    if (s[i] == 43) { i++; }
+    if (s[i] == 0) { ret 0, error.('str_to_u64: no digits'); }
+    u64 val = 0;
+    while (s[i] != 0) {
+        i8 c = s[i];
+        if (c < 48 || c > 57) { ret 0, error.('str_to_u64: non-digit character'); }
+        val = val * 10 + (u64)(c - 48);
+        i++;
+    }
+    ret val, nil;
+}
+
+// ── Float parsing ─────────────────────────────────────────────────────────────
+
+// Parse a null-terminated string as a 64-bit float.
+// Supports sign, integer part, fractional part, and decimal exponent (e/E).
+ext fn str_to_f64(stack i8 *r s): [f64, error] {
+    if (s == nil || s[0] == 0) { ret 0.0, error.('str_to_f64: empty input'); }
+    u32 i = 0;
+    bool neg = false;
+    if (s[i] == 45) { neg = true; i++; }
+    else if (s[i] == 43) { i++; }
+    if (s[i] == 0) { ret 0.0, error.('str_to_f64: no digits'); }
+
+    f64 int_part = 0.0;
+    while (s[i] >= 48 && s[i] <= 57) {
+        int_part = int_part * 10.0 + (f64)(s[i] - 48);
+        i++;
+    }
+
+    f64 frac_part = 0.0;
+    if (s[i] == 46) {  // '.'
+        i++;
+        f64 place = 0.1;
+        while (s[i] >= 48 && s[i] <= 57) {
+            frac_part = frac_part + (f64)(s[i] - 48) * place;
+            place = place * 0.1;
+            i++;
+        }
+    }
+
+    f64 result = int_part + frac_part;
+
+    // Optional exponent: e or E
+    if (s[i] == 101 || s[i] == 69) {  // 'e' or 'E'
+        i++;
+        bool exp_neg = false;
+        if (s[i] == 45) { exp_neg = true; i++; }
+        else if (s[i] == 43) { i++; }
+        i32 exp_val = 0;
+        while (s[i] >= 48 && s[i] <= 57) {
+            exp_val = exp_val * 10 + (i32)(s[i] - 48);
+            i++;
+        }
+        f64 factor = 1.0;
+        for (i32 j = 0; j < exp_val; j++) { factor = factor * 10.0; }
+        result = exp_neg ? result / factor : result * factor;
+    }
+
+    if (s[i] != 0) { ret 0.0, error.('str_to_f64: unexpected character'); }
+    ret neg ? -result : result, nil;
+}
+
+// Parse a null-terminated string as a 32-bit float.
+ext fn str_to_f32(stack i8 *r s): [f32, error] {
+    let [v, e] = str_to_f64(s);
+    if (e != nil) { ret 0.0, e; }
+    ret (f32)v, nil;
+}
+
+// ── Integer formatting ────────────────────────────────────────────────────────
+
+// Write a signed 32-bit integer into buf. Returns bytes written (no null counted).
+ext fn i32_to_buf(i32 v, stack i8 *w+ buf, u32 cap): u32 {
+    if (cap == 0) { ret 0; }
+    u32 start = 0;
+    if (v < 0) {
+        buf[0] = 45;  // '-'
+        start = 1;
+        ret start + u64_to_buf((u64)(-v), buf + start, cap - start);
+    }
+    ret u64_to_buf((u64)v, buf, cap);
+}
+
+// Write a signed 64-bit integer into buf.
+ext fn i64_to_buf(i64 v, stack i8 *w+ buf, u32 cap): u32 {
+    if (cap == 0) { ret 0; }
+    if (v < 0) {
+        buf[0] = 45;
+        ret 1 + u64_to_buf((u64)(-v), buf + 1, cap - 1);
+    }
+    ret u64_to_buf((u64)v, buf, cap);
+}
+
+// Write an unsigned 32-bit integer into buf.
+ext fn u32_to_buf(u32 v, stack i8 *w+ buf, u32 cap): u32 {
+    ret u64_to_buf((u64)v, buf, cap);
+}
+
+// Write an unsigned 64-bit integer into buf.
+ext fn u64_to_buf_ext(u64 v, stack i8 *w+ buf, u32 cap): u32 {
+    ret u64_to_buf(v, buf, cap);
+}
+
+// ── Float formatting ──────────────────────────────────────────────────────────
+
+// Write a f64 with `prec` decimal places into buf. Returns bytes written.
+ext fn f64_to_buf(f64 v, u32 prec, stack i8 *w+ buf, u32 cap): u32 {
+    if (cap == 0) { ret 0; }
+    u32 pos = 0;
+
+    if (v < 0.0) {
+        buf[pos++] = 45;  // '-'
+        v = -v;
+    }
+
+    i64 int_part = (i64)v;
+    pos += i64_to_buf(int_part, buf + pos, cap - pos);
+
+    if (prec > 0 && pos + 1 < cap) {
+        buf[pos++] = 46;  // '.'
+        f64 frac = v - (f64)int_part;
+        for (u32 d = 0; d < prec && pos + 1 < cap; d++) {
+            frac = frac * 10.0;
+            i32 digit = (i32)frac;
+            if (digit < 0) { digit = -digit; }
+            buf[pos++] = (i8)48 + (i8)(digit % 10);
+            frac = frac - (f64)(i32)frac;
+        }
+    }
+
+    buf[pos] = 0;
+    ret pos;
+}
+
+// Write a f32 with `prec` decimal places into buf.
+ext fn f32_to_buf(f32 v, u32 prec, stack i8 *w+ buf, u32 cap): u32 {
+    ret f64_to_buf((f64)v, prec, buf, cap);
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test 'str_to_i32 positive' {
+    let [v, e] = str_to_i32("42");
+    expect.(e == nil);
+    expect_eq.(v, 42);
+}
+
+test 'str_to_i32 negative' {
+    let [v, e] = str_to_i32("-100");
+    expect.(e == nil);
+    expect_eq.(v, -100);
+}
+
+test 'str_to_i32 invalid' {
+    let [_, e] = str_to_i32("abc");
+    expect.(e != nil);
+}
+
+test 'str_to_i32 zero' {
+    let [v, e] = str_to_i32("0");
+    expect.(e == nil);
+    expect_eq.(v, 0);
+}
+
+test 'str_to_i64 large' {
+    let [v, e] = str_to_i64("1000000000");
+    expect.(e == nil);
+    expect_eq.(v, 1000000000);
+}
+
+test 'str_to_u32 basic' {
+    let [v, e] = str_to_u32("255");
+    expect.(e == nil);
+    expect_eq.(v, 255);
+}
+
+test 'str_to_u64 basic' {
+    let [v, e] = str_to_u64("1000");
+    expect.(e == nil);
+    expect_eq.(v, 1000);
+}
+
+test 'str_to_f64 basic' {
+    let [v, e] = str_to_f64("3.14");
+    expect.(e == nil);
+    expect.(v > 3.0 && v < 3.2);
+}
+
+test 'str_to_f64 negative' {
+    let [v, e] = str_to_f64("-2.5");
+    expect.(e == nil);
+    expect.(v < -2.0 && v > -3.0);
+}
+
+test 'str_to_f64 exponent' {
+    let [v, e] = str_to_f64("1e3");
+    expect.(e == nil);
+    expect.(v > 999.0 && v < 1001.0);
+}
+
+test 'str_to_f64 empty error' {
+    let [_, e] = str_to_f64("");
+    expect.(e != nil);
+}
+
+test 'i32_to_buf positive' {
+    i8 buf[32];
+    u32 n = i32_to_buf(42, buf, 32);
+    expect_eq.(n, 2);
+    expect_eq.(buf[0], 52);   // '4'
+    expect_eq.(buf[1], 50);   // '2'
+}
+
+test 'i32_to_buf negative' {
+    i8 buf[32];
+    u32 n = i32_to_buf(-7, buf, 32);
+    expect_eq.(n, 2);
+    expect_eq.(buf[0], 45);   // '-'
+    expect_eq.(buf[1], 55);   // '7'
+}
+
+test 'i32_to_buf zero' {
+    i8 buf[32];
+    u32 n = i32_to_buf(0, buf, 32);
+    expect_eq.(n, 1);
+    expect_eq.(buf[0], 48);   // '0'
+}
+
+test 'u32_to_buf' {
+    i8 buf[32];
+    u32 n = u32_to_buf(1000, buf, 32);
+    expect_eq.(n, 4);
+}
+
+test 'f64_to_buf precision 2' {
+    i8 buf[32];
+    u32 n = f64_to_buf(3.14, 2, buf, 32);
+    expect.(n >= 4);
+    expect_eq.(buf[0], 51);   // '3'
+    expect_eq.(buf[1], 46);   // '.'
+}
+
+test 'i64_to_buf large' {
+    i8 buf[32];
+    u32 n = i64_to_buf(1000000, buf, 32);
+    expect_eq.(n, 7);
+}

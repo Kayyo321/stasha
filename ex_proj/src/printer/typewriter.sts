@@ -1,0 +1,13 @@
+mod printer.typewriter;
+
+lib "unistd";
+lib "stdio" = io;
+
+ext fn scribe(stack i8 *r+ a_string): void {
+    for (; a_string && *a_string != 0; ++a_string) {
+        print.('{}', *a_string);
+        io.fflush(0);
+        unistd.usleep(80000);
+    }
+    print.('\n');
+}
