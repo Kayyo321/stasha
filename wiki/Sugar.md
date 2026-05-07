@@ -46,28 +46,36 @@ ext fn apply(stack fn*(stack i32): i32 f, stack i32 x): i32 {
 stack i32 r = apply(lam.(stack i32 x): i32 { ret x + 100; }, 7);   // 107
 ```
 
-### Capture Is Not Allowed (v1)
+### Lambda Captures
 
-A lambda body may reference module-scope names — globals, functions, types, macros — but **not** enclosing locals:
+Lambdas that capture enclosing locals use the `closure.[params]: ret` type (a fat `{fn_ptr, env_ptr}` pair). Place a capture list `.|captures|` as the **first thing** inside the body:
 
 ```stasha
-fn outer(void): void {
-    stack i32 base = 10;
+stack i32 base = 10;
 
-    stack fn*(stack i32): i32 bad =
-        lam.(stack i32 x): i32 { ret x + base; };   // ERROR: base captured
+// by-value — copy of base taken at lambda creation; outer changes don't affect it
+closure.(stack i32): i32 f = lam.(stack i32 x): i32 { .|base| ret x + base; };
+f(5);    // 15
+base = 99;
+f(5);    // still 15
 
-    stack fn*(stack i32): i32 good =
-        lam.(stack i32 x): i32 { ret x + 10; };     // OK
-}
+// by-ref — captures &base; mutations visible to caller
+closure.(stack i32): void acc = lam.(stack i32 x): void { .|&base| base = base + x; };
+acc(3);   // base is now 102
+
+// multiple captures — mix value and ref
+closure.(void): i32 g = lam.(void): i32 { .|a, &b| ret a + b; };
 ```
 
-Error:
-```
-error: lambda body captures local variable 'base'; capturing closures land in v2
+The capture list is a comma-separated list of bare names (by value) and `&name` (by reference). By-value captures copy the variable when the lambda is created; by-reference captures hold a pointer to the original.
+
+A non-capturing lambda still produces a plain `fn*` (no env):
+
+```stasha
+stack fn*(stack i32): i32 sq = lam.(stack i32 x): i32 { ret x * x; };
 ```
 
-Capturing closures are planned for v2 with explicit `heap`/`stack` env storage. Until then, pass any context through the parameters or via globals.
+A lambda body may also reference module-scope names (globals, functions, types) without listing them in the capture list.
 
 ---
 
@@ -94,14 +102,22 @@ stack i32 r3 = 100 |> add(50);                  // 150  (add(100, 50))
 
 ### Composing With Lambdas
 
-A lambda is just a function-pointer expression. In v1, bind the lambda first and pipe into the function-pointer variable:
+A `lam.(...)` expression may appear directly on the right of `|>` — both non-capturing and capturing lambdas work:
+
+```stasha
+stack i32 r1 = 6 |> lam.(stack i32 x): i32 { ret x * x; };     // 36
+
+stack i32 side = 0;
+stack i32 r2 = 5 |> lam.(stack i32 x): i32 { .|&side| side = x; ret x * 2; };
+// r2 == 10, side == 5
+```
+
+You can still bind to a named variable first if you prefer:
 
 ```stasha
 stack fn*(stack i32): i32 inc = lam.(stack i32 x): i32 { ret x + 1; };
 stack i32 r = 10 |> inc |> double;              // 22
 ```
-
-Putting a `lam.(...)` expression directly on the right of `|>` is rejected today; binding it to a named function-pointer keeps the lowering simple.
 
 ### What Goes On the Right
 
@@ -114,6 +130,7 @@ The right-hand side must be a **callable**:
 | `obj.method` | `obj.method.(lhs)` |
 | `obj.method.(args...)` | `obj.method.(lhs, args...)` |
 | function-pointer variable | `(*var)(lhs)` |
+| `lam.(p): R { body }` | non-capturing: `__lam_NN.(lhs)`; capturing: closure call with env |
 
 Pipelining into anything else (a literal, a struct field that isn't a fn ptr) is a compile error:
 ```
@@ -261,27 +278,32 @@ ext fn main(void): i32 {
 
 | Source | Lowered to |
 |--------|------------|
-| `lam.(p): R { body }` | Top-level `fn __lam_NN(p): R { body }`; expression value is `&__lam_NN` |
+| `lam.(p): R { body }` (no captures) | Top-level `fn __lam_NN(p): R { body }`; expression value is `&__lam_NN`; type is `fn*(p): R` |
+| `lam.(p): R { .\|caps\| body }` (captures) | Env struct allocated on stack; body lifted with extra `ptr env` last param; expression is `{fn_ptr, env_ptr}`; type is `closure.(p): R` |
 | `a \|> f` | `f.(a)` |
 | `a \|> f.(b, c)` | `f.(a, b, c)` |
+| `a \|> lam.(p): R { body }` | closure or fn* call with `a` as argument |
 | `f.(args) { \|p\| body }` | `f.(args, lam.(p): R { ret body; })` |
 | `f.(args) { stmts }` | `f.(args, lam.(void): void { stmts })` |
 
-All three desugar at parse time. The codegen sees plain `fn_decl` and `fn_call` nodes — no special runtime, no extra allocations.
+All three desugar at parse time. Non-capturing lambdas have no runtime overhead. Capturing lambdas allocate an env struct on the stack at the point of creation.
 
 ---
 
 ## Common Mistakes
 
-**Capturing a local in a lambda:**
+**Forgetting the `closure` type for a capturing lambda:**
 ```stasha
 fn outer(): void {
     stack i32 n = 5;
+    // fn* cannot hold an env pointer — use closure.(...)
     stack fn*(stack i32): i32 f =
-        lam.(stack i32 x): i32 { ret x + n; };   // ERROR: captures n
+        lam.(stack i32 x): i32 { .|n| ret x + n; };   // ERROR: closure assigned to fn*
+    // Fix:
+    closure.(stack i32): i32 f2 =
+        lam.(stack i32 x): i32 { .|n| ret x + n; };   // OK
 }
 ```
-Fix: pass `n` as a parameter, or move it to module scope as a `final` global.
 
 **Trailing closure on a non-callable last param:**
 ```stasha

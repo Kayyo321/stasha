@@ -157,6 +157,78 @@ This is a depth-first, deterministic dispatch — easy to reason about; not suit
 
 ---
 
+## Watch Captures
+
+A `watch.()` body may capture enclosing locals using the same `.|captures|` syntax as lambda expressions. Place the capture list as the **first thing** inside the body braces:
+
+```stasha
+// by-value — handler gets a copy; mutations stay local to handler
+stack i32 count = 0;
+watch.(sig_t signal) {
+    .|count|
+    count = count + signal.code;   // modifies handler-local copy, not outer count
+}
+
+// by-ref — handler mutates outer variable
+stack i32 total = 0;
+watch.(sig_t signal) {
+    .|&total|
+    total = total + signal.code;
+}
+send.(sig_t{.code = 4});
+send.(sig_t{.code = 6});
+// total == 10
+```
+
+The capture list rules are identical to lambda captures: bare name = by value, `&name` = by reference. By-value captures copy the variable when the `watch.()` statement is reached. The env struct is stored on the stack at registration time and passed to every handler invocation.
+
+---
+
+## Crash Protection
+
+Stasha programs automatically handle fatal OS signals (SIGABRT, SIGSEGV, SIGFPE, SIGILL, SIGBUS) via a crash runtime linked into every executable. Use `@[[crash]]` blocks to register cleanup code that runs before the process exits on a fatal signal:
+
+```stasha
+@[[crash]] {
+    // runs on SIGABRT/SIGSEGV/SIGFPE/SIGILL/SIGBUS
+    // signal name and last-C-call breadcrumb are printed automatically
+    print.error.('[crash] flushing log before exit\n');
+    // keep it signal-safe: no malloc, no locks
+}
+
+@[[exit]] {
+    // runs on normal exit AND after @[[crash]]
+    io.printf('[exit] goodbye\n');
+}
+```
+
+The crash runtime also tracks the **last C library call site** (file, function, line) via a TLS breadcrumb updated before every `lib`-backed call. On a crash the handler prints:
+```
+crash: SIGABRT — last call: abort() — ex_crash.sts:44
+```
+
+### Attributes
+
+| Attribute | Effect |
+|-----------|--------|
+| `@[[crash]] { ... }` | Register a crash cleanup block |
+| `@[[crash: disable]];` | Remove all signal handlers; do not link `crash_runtime.a` |
+| `@[[crash: no_tracking]]` on a `fn` | Disable TLS breadcrumb writes in that function (useful for hot paths) |
+
+```stasha
+@[[crash: no_tracking]]
+int fn heavy_math(stack i32 n): i64 {
+    // breadcrumb tracking suppressed — no overhead per C call
+    ...
+}
+```
+
+`@[[crash: disable]];` is a file-wide declaration that opts the entire module out of crash protection.
+
+See [File-Headers](File-Headers) for the full `@[[...]]` syntax reference.
+
+---
+
 ## Restrictions
 
 **No async dispatch (v1).** `send.()` is synchronous. If you need fan-out across threads, dispatch the body of the receiver yourself with `thread.(fn)(args)` or `async.(fn)(args)` and return immediately.
@@ -193,5 +265,6 @@ Watchers are stored in a per-type linked list keyed by a hash of the payload typ
 | Program-exit hooks | `@[[exit]] { ... }` |
 | Init hooks before `main` | `@[[init]] { ... }` |
 | OS signal handling (SIGINT, SIGTERM) | C interop via `lib "signal"` (Unix `sigaction`) |
+| Fatal crash cleanup (SIGSEGV, SIGABRT, etc.) | `@[[crash]] { ... }` |
 
-Signals are deliberately limited to in-process events. For OS signals, use `cheader "signal.h"` and `sigaction(2)` directly.
+Signals are deliberately limited to in-process events. For OS signals, use `cheader "signal.h"` and `sigaction(2)` directly. For fatal crash handling, use `@[[crash]]` blocks — the runtime installs handlers automatically.

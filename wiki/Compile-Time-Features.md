@@ -54,7 +54,16 @@ type Vec3: struct {
 @comptime assert.(true);
 ```
 
-The message argument is optional. Current assertions are intentionally small and deterministic: constant booleans, integer comparisons, `sizeof.(T)` checks, and readable compile-time metadata fields.
+The message argument is optional. Assertions support: constant booleans, integer comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`), boolean logic (`&&`, `||`, `!`), `sizeof.(T)` checks, and readable compile-time metadata fields — all composable:
+
+```stasha
+@comptime assert.(sizeof.(i32) == 4 && sizeof.(i64) == 8, 'size mismatch');
+@comptime assert.(sizeof.(i8) == 1 || sizeof.(i8) == 2,   'i8 is 1 or 2 bytes');
+@comptime assert.(!(sizeof.(i32) > sizeof.(i64)),          'i32 must not exceed i64');
+@comptime assert.(sizeof.(i32) < sizeof.(i64),             'i32 < i64');
+```
+
+These expressions are evaluated at compile time via constant folding — no runtime cost.
 
 Assertions can also appear inside functions:
 

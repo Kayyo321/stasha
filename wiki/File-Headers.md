@@ -221,9 +221,9 @@ The bare-text form (no `key:`) is captured verbatim until the closing `]]`. Use 
 
 ---
 
-## Lifecycle Blocks: `@[[init]]` and `@[[exit]]`
+## Lifecycle Blocks: `@[[init]]`, `@[[exit]]`, and `@[[crash]]`
 
-Lifecycle blocks register code to run **before `main`** (init) or **after `main` returns** (exit). They are the Stasha equivalent of C's `__attribute__((constructor))` / `((destructor))`.
+Lifecycle blocks register code to run **before `main`** (init), **after `main` returns** (exit), or **on a fatal OS signal** (crash). They are the Stasha equivalent of C's `__attribute__((constructor))` / `((destructor))`.
 
 ```stasha
 mod on_init;
@@ -270,6 +270,48 @@ hi! this code actually runs before main!
 data = 1234567890123456789012345678901
 bye! this code is going to run after main returns!
 ```
+
+### `@[[crash]]` — fatal signal cleanup
+
+`@[[crash]]` blocks run when the process receives a fatal OS signal: SIGABRT, SIGSEGV, SIGFPE, SIGILL, or SIGBUS. The crash runtime prints the signal name and the last C-library call site automatically, then invokes every registered crash block before exiting. `@[[exit]]` blocks run after crash blocks.
+
+```stasha
+@[[crash]] {
+    // keep signal-safe: no malloc, no locks, no stdio buffering
+    print.error.('[crash] flushing log before exit\n');
+}
+
+@[[exit]] {
+    io.printf('[exit] goodbye\n');   // runs on both normal exit and crash
+}
+```
+
+The crash runtime also tracks the **last C library call site** per thread via TLS. On a crash the handler prints:
+```
+crash: SIGABRT — last call: abort() — ex_crash.sts:44
+```
+
+#### Crash attributes
+
+| Attribute | Scope | Effect |
+|-----------|-------|--------|
+| `@[[crash]] { ... }` | Block | Register a crash cleanup block |
+| `@[[crash: disable]];` | File-wide | Remove all signal handlers; exclude `crash_runtime.a` from link |
+| `@[[crash: no_tracking]]` on a `fn` | Declaration | Disable TLS breadcrumb writes in that function |
+
+```stasha
+@[[crash: disable]];      // opt entire module out of crash protection
+
+@[[crash: no_tracking]]
+int fn hot_path(stack i32 n): i64 {
+    // no TLS breadcrumb overhead per C call
+    ...
+}
+```
+
+Use `@[[crash: no_tracking]]` on tight numeric loops that call into C frequently — it eliminates 1–2 stores per call without affecting crash reports from other code.
+
+---
 
 ### Titles, `before`, `after`
 

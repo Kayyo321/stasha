@@ -51,11 +51,12 @@ Key rules:
 - `await(f)` is legal **anywhere** (not just inside `async fn`). It drives the task coroutine on the calling thread.
 - `future.ready`, `future.wait`, `future.get.(T)`, and `future.drop` also work on typed `future.[T]` coroutine task handles.
 - `await.next(s)` is legal anywhere — drives one step and returns the next item.
-- `stream.done(s)` — non-zero once the producer hits `ret;`. Check after every `await.next(s)`.
+- `stream.done(s)` — non-zero once the producer hits `ret;` or `ret expr;`. Check after every `await.next(s)`.
 - `stream.drop(s)` — destroy frame; always call for every constructed stream.
+- `stream.final.(s)` — load the final typed value written by `ret expr;`. Only valid after `stream.done(s)` is non-zero.
 - `yield expr;` — produce an item and suspend. Legal only in `async fn` returning `stream.[T]`.
 - `yield;` — cooperative suspend, no item. The coroutine is queued on the thread-local executor and can be resumed by waits/awaits that pump pending work.
-- `ret;` — end a stream. `ret expr;` is rejected in stream coroutines.
+- `ret;` — end a stream with no final value. `ret expr;` ends the stream and stores `expr` as the final value, retrievable via `stream.final.(s)`.
 
 ---
 
@@ -118,11 +119,19 @@ stack i32 r = await.(sum_to)(10);
 
 ### Fan-in: `await.all` and `await.any`
 
-`await.all` drives all live tasks cooperatively in round-robin order and returns their results in argument order:
+`await.all` drives all live tasks cooperatively in round-robin order and returns their results in argument order. Tasks may have **different element types** — use `stack let` destructuring to receive heterogeneous results:
 
 ```stasha
+// Homogeneous — all i32
 stack i32 [a, b, c] = await.all(sum_to(3), sum_to(4), sum_to(5));
 // a=6, b=10, c=15
+
+// Heterogeneous — i32 and i64
+stack let [x, y] = await.all(async_i32(42), async_i64(999));
+// x is i32=42, y is i64=999
+
+// Three mixed types
+stack let [p, q, r] = await.all(async_i32(1), async_i64(200), async_i32(3));
 ```
 
 `await.any` drives all live tasks cooperatively in round-robin order until one completes. The first task to report `complete` wins; the remaining live tasks are cancelled and dropped. It returns only the winner's result:
@@ -181,7 +190,30 @@ inf {
 stream.drop(s);
 ```
 
-`await.next(s)` synchronously drives the producer until it yields the next item or reaches `ret;`. `stream.done(s)` returns non-zero once eos is set; the value returned on eos is zero-initialised. Always call `stream.drop(s)` even if the stream wasn't fully consumed.
+`await.next(s)` synchronously drives the producer until it yields the next item or reaches `ret;`/`ret expr;`. `stream.done(s)` returns non-zero once eos is set; the item value returned on eos is zero-initialised. Always call `stream.drop(s)` even if the stream wasn't fully consumed.
+
+### Final return value
+
+A stream `async fn` may use `ret expr;` to store a typed final value in the coroutine frame. After `stream.done(s)` is non-zero, retrieve it with `stream.final.(s)`:
+
+```stasha
+async fn first_n(i32 n): stream.[i32] {
+    stack i32 i = 0;
+    while (i < n) { yield i * i; i = i + 1; }
+    ret n * 100;   // final value — n=3 → 300
+}
+
+stream.[i32] s = first_n(3);
+inf {
+    stack i32 v = await.next.(s);
+    if (stream.done.(s)) { break; }
+    print.('{}\n', v);   // 0, 1, 4
+}
+stack i32 fin = stream.final.(s);   // 300
+stream.drop.(s);
+```
+
+`stream.final.(s)` is only meaningful after eos — calling it before `stream.done.(s)` is non-zero returns zero-initialised data. `ret;` (bare) leaves the final slot zero-initialised.
 
 ### Eager start
 
@@ -342,7 +374,7 @@ after IR generation. Every `async fn` receives the `presplitcoroutine` attribute
 | Cooperative race only | `await.any` observes coroutine completion, not wall-clock thread completion. CPU-bound tasks must suspend explicitly to share progress. |
 | Cancellation propagation | `stream.cancel`/loser cancellation flags a coroutine and is observed at resume edges such as `yield`, `yield;`, and `await`. Deep cancellation policy is still minimal. |
 | Executor is thread-local | `yield;` queues the coroutine on a fixed-size thread-local executor; there is no IO reactor or cross-thread scheduler yet. |
-| `ret expr;` in stream | rejected. Use `yield expr; ret;` for a last-value-then-end pattern. |
+| `ret expr;` in stream | supported — stores the final value; retrieve with `stream.final.(s)` after `stream.done(s)` is non-zero. |
 | `await` inside `freestanding` | not supported; the coroutine frame uses heap allocation. |
 
 ---
