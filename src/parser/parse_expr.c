@@ -45,6 +45,7 @@ static boolean_t try_parse_capture_list(parser_t *p,
 
     if (cnt > 0) {
         heap_t h = allocate(cnt, sizeof(capture_entry_t));
+        ast_arena_track(h);
         memcpy(h.pointer, tmp, cnt * sizeof(capture_entry_t));
         *out_caps      = h.pointer;
         *out_cap_count = cnt;

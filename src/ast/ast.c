@@ -23,6 +23,8 @@ static void arena_track(heap_t h) {
     arena_entries[arena_count++] = h;
 }
 
+void ast_arena_track(heap_t h) { arena_track(h); }
+
 void ast_free_all(void) {
     for (usize_t i = arena_count; i > 0; i--)
         deallocate(arena_entries[i - 1]);

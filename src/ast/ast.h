@@ -725,6 +725,7 @@ fn_ptr_desc_t *alloc_fn_ptr_desc(usize_t param_count);
 void node_list_init(node_list_t *list);
 void node_list_push(node_list_t *list, node_t *node);
 
+void ast_arena_track(heap_t h);
 void ast_free_all(void);
 
 #endif

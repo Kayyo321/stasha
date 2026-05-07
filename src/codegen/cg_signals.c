@@ -532,7 +532,7 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     LLVMValueRef      saved_fn       = cg->current_fn;
     LLVMBasicBlockRef saved_break    = cg->break_target;
     LLVMBasicBlockRef saved_continue = cg->continue_target;
-    usize_t           saved_locals   = cg->locals.count;
+    symtab_t          saved_locals   = cg->locals;
     usize_t           saved_dtor     = cg->dtor_depth;
 
     /* save and set lambda capture context so gen_ident can load from env */
@@ -542,9 +542,9 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     usize_t          saved_capture_count = cg->lambda_capture_count;
     LLVMTypeRef     *saved_cap_types     = cg->lambda_cap_types;
 
-    cg->current_fn   = hfn;
-    cg->locals.count = 0;
-    cg->dtor_depth   = 0;
+    cg->current_fn = hfn;
+    symtab_init(&cg->locals);
+    cg->dtor_depth = 0;
 
     LLVMBasicBlockRef entry    = LLVMAppendBasicBlockInContext(cg->ctx, hfn, "entry");
     LLVMBasicBlockRef dereg_bb = LLVMAppendBasicBlockInContext(cg->ctx, hfn, "watch.dereg");
@@ -585,6 +585,23 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
                           cg->dtor_depth, -1);
     symtab_set_last_line(&cg->locals, node->line);
 
+    /* by-value captures: load from env into a mutable local alloca so the
+       handler body can read AND assign them (modifying the handler-local copy). */
+    if (cap_count > 0 && env_type) {
+        for (usize_t ci = 0; ci < cap_count; ci++) {
+            if (caps[ci].by_ref) continue;
+            LLVMTypeRef val_t = cap_types[ci];
+            LLVMValueRef alloca_v = LLVMBuildAlloca(cg->builder, val_t, caps[ci].name);
+            LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, env_type,
+                                                    user_data, (unsigned)ci, "cap.f");
+            LLVMValueRef val = LLVMBuildLoad2(cg->builder, val_t, gep, caps[ci].name);
+            LLVMBuildStore(cg->builder, val, alloca_v);
+            type_info_t dummy_ti = {0};
+            symtab_add(&cg->locals, caps[ci].name, alloca_v, val_t, dummy_ti, 0);
+            symtab_set_last_storage(&cg->locals, StorageStack, False);
+        }
+    }
+
     cg->break_target    = dereg_bb;
     cg->continue_target = Null;
 
@@ -610,7 +627,8 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     cg->current_fn      = saved_fn;
     cg->break_target    = saved_break;
     cg->continue_target = saved_continue;
-    cg->locals.count    = saved_locals;
+    symtab_free(&cg->locals);
+    cg->locals          = saved_locals;
     cg->dtor_depth      = saved_dtor;
     if (saved_bb) LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 
