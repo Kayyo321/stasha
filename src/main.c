@@ -4,6 +4,9 @@
 #if defined(__APPLE__) || defined(__linux__)
 #  include <unistd.h>
 #  include <sys/wait.h>
+#elif defined(_WIN32)
+#  include <process.h>
+#  define getpid _getpid
 #endif
 #if defined(__APPLE__)
 /* Forward-declare to avoid pulling in mach-o/dyld.h (conflicts with boolean_t). */
@@ -1393,7 +1396,16 @@ static result_t run_editor_check(const char *source, const char *input_path) {
     free_imp_sources();
 
     char obj_path[512];
+#if defined(_WIN32)
+    {
+        const char *tmp = getenv("TEMP");
+        if (!tmp) tmp = getenv("TMP");
+        if (!tmp) tmp = "C:\\Temp";
+        snprintf(obj_path, sizeof(obj_path), "%s\\stasha-check-%d.o", tmp, (int)getpid());
+    }
+#else
     snprintf(obj_path, sizeof(obj_path), "/tmp/stasha-check-%d.o", (int)getpid());
+#endif
     if (codegen(ast, obj_path, False, Null, input_path, False, 0) == Ok)
         remove(obj_path);
 
