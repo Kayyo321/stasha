@@ -110,11 +110,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Windows build uses system LLVM (no extlib build step).
-          # The Makefile Windows path is a work-in-progress; adjust as needed.
-          $LLVMConfig = (Get-Command llvm-config).Source
-          $LLVMPrefix = Split-Path (Split-Path $LLVMConfig)
-          $env:LLVM_BUILD = $LLVMPrefix
+          $env:LLVM_BUILD = "C:\Program Files\LLVM"
+          $env:PATH = "C:\Program Files\LLVM\bin;C:\ProgramData\chocolatey\bin;$env:PATH"
           make
           make stdlib
 
