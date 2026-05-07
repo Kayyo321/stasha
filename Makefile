@@ -77,6 +77,11 @@ CORO_RUNTIME_SRC = src/runtime/coro_runtime.c
 CORO_RUNTIME_OBJ = build/obj/runtime/coro_runtime.o
 CORO_RUNTIME_LIB = bin/coro_runtime.a
 
+# ── Crash protection runtime ────────────────────────────────────────────────
+CRASH_RUNTIME_SRC = src/runtime/crash_runtime.c
+CRASH_RUNTIME_OBJ = build/obj/runtime/crash_runtime.o
+CRASH_RUNTIME_LIB = bin/crash_runtime.a
+
 # ── Thread test programs ────────────────────────────────────────────────────
 THREAD_TEST_SRCS = examples/thread_basic.sts    \
                    examples/thread_return.sts   \
@@ -118,9 +123,9 @@ else
   endif
 endif
 
-.PHONY: all stdlib stdlib-test thread-runtime zone-runtime coro-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop
+.PHONY: all stdlib stdlib-test thread-runtime zone-runtime coro-runtime crash-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop
 
-all: $(TARGET) thread-runtime zone-runtime coro-runtime
+all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
@@ -312,6 +317,15 @@ $(ZONE_RUNTIME_OBJ): $(ZONE_RUNTIME_SRC) src/runtime/zone_runtime.h
 	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
 
 $(ZONE_RUNTIME_LIB): $(ZONE_RUNTIME_OBJ) | bin
+	ar rcs $@ $<
+
+crash-runtime: $(CRASH_RUNTIME_LIB)
+
+$(CRASH_RUNTIME_OBJ): $(CRASH_RUNTIME_SRC) src/runtime/crash_runtime.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+
+$(CRASH_RUNTIME_LIB): $(CRASH_RUNTIME_OBJ) | bin
 	ar rcs $@ $<
 
 coro-runtime: $(CORO_RUNTIME_LIB)

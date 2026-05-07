@@ -287,6 +287,7 @@ typedef enum {
     /* fileheader lifecycle blocks — @[[init]] { ... } / @[[exit]] { ... } */
     NodeInitBlock,
     NodeExitBlock,
+    NodeCrashBlock,
 
     /* comptime format string: @'...' / heap @'...' */
     NodeComptimeFmt,
@@ -380,7 +381,7 @@ struct node {
 
     union {
         /* ── top-level ── */
-        struct { char *name; node_list_t decls; boolean_t freestanding; long org_addr; boolean_t has_org; } module;
+        struct { char *name; node_list_t decls; boolean_t freestanding; long org_addr; boolean_t has_org; boolean_t crash_protection_disabled; boolean_t crash_tracking_disabled; } module;
 
         /* @[[init]] / @[[exit]] blocks */
         struct { char *title; char *before_name; char *after_name; node_t *body; int priority; } lifecycle_block;

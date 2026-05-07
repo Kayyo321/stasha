@@ -1761,6 +1761,12 @@ static result_t compile_file(const cfile_params_t *p) {
             static char zone_rt_path[512];
             snprintf(zone_rt_path, sizeof(zone_rt_path), "%s/zone_runtime.a", bin_dir);
             if (all_lib_count < 511) all_libs[all_lib_count++] = zone_rt_path;
+
+            if (!ast->as.module.crash_protection_disabled) {
+                static char crash_rt_path[512];
+                snprintf(crash_rt_path, sizeof(crash_rt_path), "%s/crash_runtime.a", bin_dir);
+                if (all_lib_count < 511) all_libs[all_lib_count++] = crash_rt_path;
+            }
         }
         all_libs[all_lib_count] = Null;
 

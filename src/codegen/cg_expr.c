@@ -2014,8 +2014,45 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 }
 
                 LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+
+                /* ── breadcrumb: record last C lib call site for crash reports ── */
+                if (!cg->crash_protection_disabled && !cg->crash_tracking_disabled) {
+                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
+
+                    /* Lazily declare the three TLS globals (defined in crash_runtime.c) */
+                    if (!cg->crash_fn_gv) {
+                        cg->crash_file_gv = LLVMAddGlobal(cg->module, ptr_ty, "__stasha_crash_file");
+                        LLVMSetLinkage(cg->crash_file_gv, LLVMExternalLinkage);
+                        LLVMSetThreadLocal(cg->crash_file_gv, 1);
+                        cg->crash_fn_gv = LLVMAddGlobal(cg->module, ptr_ty, "__stasha_crash_fn");
+                        LLVMSetLinkage(cg->crash_fn_gv, LLVMExternalLinkage);
+                        LLVMSetThreadLocal(cg->crash_fn_gv, 1);
+                        cg->crash_line_gv = LLVMAddGlobal(cg->module, i32_ty, "__stasha_crash_line");
+                        LLVMSetLinkage(cg->crash_line_gv, LLVMExternalLinkage);
+                        LLVMSetThreadLocal(cg->crash_line_gv, 1);
+                    }
+
+                    const char *src = node->source_file ? node->source_file : "";
+                    LLVMValueRef file_str = LLVMBuildGlobalStringPtr(cg->builder, src, ".crf");
+                    LLVMValueRef fn_str   = LLVMBuildGlobalStringPtr(cg->builder, method, ".crfn");
+                    LLVMValueRef line_val = LLVMConstInt(i32_ty, node->line, 0);
+
+                    LLVMBuildStore(cg->builder, file_str, cg->crash_file_gv);
+                    LLVMBuildStore(cg->builder, fn_str,   cg->crash_fn_gv);
+                    LLVMBuildStore(cg->builder, line_val, cg->crash_line_gv);
+                }
+
                 LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_sym->value,
                                                    args, (unsigned)argc, "");
+
+                /* Clear the fn breadcrumb after the call returns normally */
+                if (!cg->crash_protection_disabled && !cg->crash_tracking_disabled
+                        && cg->crash_fn_gv) {
+                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
+                    LLVMBuildStore(cg->builder, LLVMConstNull(ptr_ty), cg->crash_fn_gv);
+                }
+
                 if (argc > 0) deallocate(args_heap);
                 return ret;
             }

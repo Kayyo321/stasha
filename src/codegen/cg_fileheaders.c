@@ -355,23 +355,32 @@ static void cg_emit_lifecycle_array(cg_t *cg, LLVMValueRef *fns, usize_t n,
     LLVMSetInitializer(gv, arr);
 }
 
-/* Entry point: emit all collected init and exit blocks. */
+/* Entry point: emit all collected init and exit blocks.
+   extra_ctor_fn (if non-NULL) is prepended to the ctor list and runs FIRST. */
 static void cg_emit_lifecycle_blocks(cg_t *cg,
                                       node_t **init_blocks, usize_t init_n,
-                                      node_t **exit_blocks, usize_t exit_n) {
-    if (init_n > 0) {
-        heap_t ord_heap = allocate(init_n, sizeof(usize_t));
-        usize_t *order = ord_heap.pointer;
-        cg_lifecycle_topo_sort(init_blocks, init_n, order);
-
-        heap_t fns_heap = allocate(init_n, sizeof(LLVMValueRef));
+                                      node_t **exit_blocks, usize_t exit_n,
+                                      LLVMValueRef extra_ctor_fn) {
+    if (init_n > 0 || extra_ctor_fn) {
+        usize_t total_ctors = init_n + (extra_ctor_fn ? 1 : 0);
+        heap_t fns_heap = allocate(total_ctors, sizeof(LLVMValueRef));
         LLVMValueRef *fns = fns_heap.pointer;
-        for (usize_t i = 0; i < init_n; i++)
-            fns[i] = cg_emit_lifecycle_body(cg, init_blocks[order[i]], "init", i);
+        usize_t fi = 0;
 
-        cg_emit_lifecycle_array(cg, fns, init_n, "llvm.global_ctors");
+        /* extra_ctor_fn (crash init) always runs FIRST */
+        if (extra_ctor_fn) fns[fi++] = extra_ctor_fn;
+
+        if (init_n > 0) {
+            heap_t ord_heap = allocate(init_n, sizeof(usize_t));
+            usize_t *order = ord_heap.pointer;
+            cg_lifecycle_topo_sort(init_blocks, init_n, order);
+            for (usize_t i = 0; i < init_n; i++)
+                fns[fi++] = cg_emit_lifecycle_body(cg, init_blocks[order[i]], "init", i);
+            deallocate(ord_heap);
+        }
+
+        cg_emit_lifecycle_array(cg, fns, total_ctors, "llvm.global_ctors");
         deallocate(fns_heap);
-        deallocate(ord_heap);
     }
 
     if (exit_n > 0) {
@@ -388,4 +397,85 @@ static void cg_emit_lifecycle_blocks(cg_t *cg,
         deallocate(fns_heap);
         deallocate(ord_heap);
     }
+}
+
+/* Emit @[[crash]] block bodies + dispatcher + crash-init constructor.
+   Returns the __stasha_crash_init function (to be registered in @llvm.global_ctors
+   by the caller via cg_emit_lifecycle_blocks extra_ctor_fn parameter).
+   Always returns a non-NULL function even when crash_block_count == 0
+   (the init fn still calls __crash_runtime_install()). */
+static LLVMValueRef cg_emit_crash_blocks(cg_t *cg,
+                                          node_t **crash_blocks, usize_t crash_n) {
+    LLVMTypeRef void_t = LLVMVoidTypeInContext(cg->ctx);
+    LLVMTypeRef ptr_t  = LLVMPointerTypeInContext(cg->ctx, 0);
+    LLVMTypeRef fn0ty  = LLVMFunctionType(void_t, Null, 0, 0);
+
+    /* ── Lazily declare __crash_runtime_install() ── */
+    LLVMValueRef install_fn = LLVMGetNamedFunction(cg->module, "__crash_runtime_install");
+    if (!install_fn) {
+        install_fn = LLVMAddFunction(cg->module, "__crash_runtime_install", fn0ty);
+        LLVMSetLinkage(install_fn, LLVMExternalLinkage);
+    }
+
+    /* ── Lazily declare __crash_runtime_register_block(ptr) ── */
+    LLVMTypeRef reg_params[1] = { ptr_t };
+    LLVMTypeRef reg_type = LLVMFunctionType(void_t, reg_params, 1, 0);
+    LLVMValueRef reg_fn = LLVMGetNamedFunction(cg->module, "__crash_runtime_register_block");
+    if (!reg_fn) {
+        reg_fn = LLVMAddFunction(cg->module, "__crash_runtime_register_block", reg_type);
+        LLVMSetLinkage(reg_fn, LLVMExternalLinkage);
+    }
+
+    /* ── Emit crash block bodies and dispatcher (if any blocks exist) ── */
+    LLVMValueRef dispatch_fn = Null;
+    if (crash_n > 0) {
+        heap_t ord_heap = allocate(crash_n, sizeof(usize_t));
+        usize_t *order = ord_heap.pointer;
+        cg_lifecycle_topo_sort(crash_blocks, crash_n, order);
+
+        heap_t fns_heap = allocate(crash_n, sizeof(LLVMValueRef));
+        LLVMValueRef *fns = fns_heap.pointer;
+        for (usize_t i = 0; i < crash_n; i++)
+            fns[i] = cg_emit_lifecycle_body(cg, crash_blocks[order[i]], "crash", i);
+
+        /* Build __stasha_crash_dispatch() — calls all crash blocks in order */
+        dispatch_fn = LLVMAddFunction(cg->module, "__stasha_crash_dispatch", fn0ty);
+        LLVMSetLinkage(dispatch_fn, LLVMInternalLinkage);
+
+        LLVMValueRef prev_fn = cg->current_fn;
+        cg->current_fn = dispatch_fn;
+        LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg->ctx, dispatch_fn, "entry");
+        LLVMPositionBuilderAtEnd(cg->builder, entry);
+        for (usize_t i = 0; i < crash_n; i++)
+            LLVMBuildCall2(cg->builder, fn0ty, fns[i], Null, 0, "");
+        LLVMBuildRetVoid(cg->builder);
+        cg->current_fn = prev_fn;
+
+        deallocate(fns_heap);
+        deallocate(ord_heap);
+    }
+
+    /* ── Build __stasha_crash_init() — the global ctor ── */
+    LLVMValueRef init_fn = LLVMAddFunction(cg->module, "__stasha_crash_init", fn0ty);
+    LLVMSetLinkage(init_fn, LLVMInternalLinkage);
+
+    LLVMValueRef prev_fn = cg->current_fn;
+    cg->current_fn = init_fn;
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg->ctx, init_fn, "entry");
+    LLVMPositionBuilderAtEnd(cg->builder, entry);
+
+    /* Call __crash_runtime_install() */
+    LLVMBuildCall2(cg->builder, fn0ty, install_fn, Null, 0, "");
+
+    /* Call __crash_runtime_register_block(dispatch_fn or NULL) */
+    LLVMValueRef block_ptr = dispatch_fn
+        ? (LLVMValueRef)dispatch_fn
+        : LLVMConstNull(ptr_t);
+    LLVMValueRef reg_args[1] = { block_ptr };
+    LLVMBuildCall2(cg->builder, reg_type, reg_fn, reg_args, 1, "");
+
+    LLVMBuildRetVoid(cg->builder);
+    cg->current_fn = prev_fn;
+
+    return init_fn;
 }

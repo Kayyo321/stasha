@@ -275,6 +275,11 @@ static void apply_module_headers(node_t *module, fileheader_t *src) {
         } else if (strcmp(e->key, "org") == 0 && e->vkind == FhInt) {
             module->as.module.has_org = True;
             module->as.module.org_addr = e->int_val;
+        } else if (strcmp(e->key, "crash") == 0 && e->vkind == FhIdent && e->str_val) {
+            if (strcmp(e->str_val, "disable") == 0)
+                module->as.module.crash_protection_disabled = True;
+            else if (strcmp(e->str_val, "no_tracking") == 0)
+                module->as.module.crash_tracking_disabled = True;
         }
     }
 }
@@ -287,16 +292,18 @@ static node_t *parse_lifecycle_block(parser_t *p, fileheader_t *pending) {
     char *before_name = Null;
     char *after_name  = Null;
 
+    boolean_t is_crash = False;
     for (usize_t i = 0; i < pending->count; i++) {
         fh_entry_t *e = &pending->items[i];
         if (strcmp(e->key, "init") == 0) is_init = True;
         else if (strcmp(e->key, "exit") == 0) is_exit = True;
+        else if (strcmp(e->key, "crash") == 0) is_crash = True;
         else if (strcmp(e->key, "before") == 0 && e->vkind == FhStr)
             before_name = e->str_val;
         else if (strcmp(e->key, "after") == 0 && e->vkind == FhStr)
             after_name = e->str_val;
-        /* init: before("foo") comes as FhCall with key="init", str_val="before", call_arg="foo" */
-        if ((strcmp(e->key, "init") == 0 || strcmp(e->key, "exit") == 0)
+        /* init/exit/crash: before("foo") comes as FhCall with key=kind, str_val="before", call_arg="foo" */
+        if ((strcmp(e->key, "init") == 0 || strcmp(e->key, "exit") == 0 || strcmp(e->key, "crash") == 0)
                 && e->vkind == FhCall && e->str_val) {
             if (strcmp(e->str_val, "before") == 0) before_name = e->call_arg;
             else if (strcmp(e->str_val, "after") == 0) after_name = e->call_arg;
@@ -311,7 +318,7 @@ static node_t *parse_lifecycle_block(parser_t *p, fileheader_t *pending) {
     }
 
     node_t *body = parse_block(p);
-    node_kind_t kind = is_exit ? NodeExitBlock : NodeInitBlock;
+    node_kind_t kind = is_crash ? NodeCrashBlock : (is_exit ? NodeExitBlock : NodeInitBlock);
     node_t *n = make_node(kind, body ? body->line : 0);
     n->as.lifecycle_block.title = title;
     n->as.lifecycle_block.before_name = before_name;
@@ -1909,9 +1916,10 @@ static node_t *parse_top_decl(parser_t *p) {
 
         /* Lifecycle block: @[[init ...]] { ... }  or  @[[init ...]] "title" { ... } */
         {
-            boolean_t has_init = fh_find(&group, "init") != Null;
-            boolean_t has_exit = fh_find(&group, "exit") != Null;
-            if ((has_init || has_exit) &&
+            boolean_t has_init  = fh_find(&group, "init")  != Null;
+            boolean_t has_exit  = fh_find(&group, "exit")  != Null;
+            boolean_t has_crash = fh_find(&group, "crash") != Null;
+            if ((has_init || has_exit || has_crash) &&
                 (check(p, TokLBrace) || check(p, TokStackStr) || check(p, TokHeapStr))) {
                 fileheader_merge(&pending, &group);
                 return parse_lifecycle_block(p, &pending);

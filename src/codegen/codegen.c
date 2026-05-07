@@ -434,6 +434,17 @@ typedef struct {
     /* Module-level freestanding flag (blocks auto-stdlib/runtime linking hints). */
     boolean_t freestanding;
 
+    /* Crash protection lifecycle blocks (@[[crash]] { ... }). */
+    node_t  *crash_blocks[128];
+    usize_t  crash_block_count;
+    boolean_t crash_protection_disabled;
+    boolean_t crash_tracking_disabled;
+
+    /* TLS breadcrumb globals (lazily created, for C lib call tracking). */
+    LLVMValueRef crash_file_gv;
+    LLVMValueRef crash_fn_gv;
+    LLVMValueRef crash_line_gv;
+
     /* ── signal dispatch (watch/send/quit) ── */
     signal_storage_t *signal_storages;
     usize_t           signal_storage_count;
@@ -540,7 +551,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.source_file = source_file;
     cg.target_triple = target_triple;
     if (ast && ast->kind == NodeModule) {
-        cg.freestanding = ast->as.module.freestanding;
+        cg.freestanding                  = ast->as.module.freestanding;
+        cg.crash_protection_disabled     = ast->as.module.crash_protection_disabled;
+        cg.crash_tracking_disabled       = ast->as.module.crash_tracking_disabled;
     }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
@@ -1197,7 +1210,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         }
 
-        /* Collect @[[init]] / @[[exit]] blocks for global_ctors/global_dtors. */
+        /* Collect @[[init]] / @[[exit]] / @[[crash]] blocks. */
         if (decl->kind == NodeInitBlock) {
             if (cg.init_block_count < 128)
                 cg.init_blocks[cg.init_block_count++] = decl;
@@ -1206,6 +1219,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->kind == NodeExitBlock) {
             if (cg.exit_block_count < 128)
                 cg.exit_blocks[cg.exit_block_count++] = decl;
+            continue;
+        }
+        if (decl->kind == NodeCrashBlock) {
+            if (cg.crash_block_count < 128)
+                cg.crash_blocks[cg.crash_block_count++] = decl;
             continue;
         }
 
@@ -2025,9 +2043,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
 
     /* ── @[[init]] / @[[exit]] lifecycle blocks → global_ctors/global_dtors ── */
+    LLVMValueRef crash_ctor_fn = Null;
+    if (!cg.crash_protection_disabled)
+        crash_ctor_fn = cg_emit_crash_blocks(&cg,
+                                              cg.crash_blocks, cg.crash_block_count);
     cg_emit_lifecycle_blocks(&cg,
                              cg.init_blocks, cg.init_block_count,
-                             cg.exit_blocks, cg.exit_block_count);
+                             cg.exit_blocks, cg.exit_block_count,
+                             crash_ctor_fn);
 
     /* ── DI: finalize before verification ──
      * Must happen after all IR is emitted and before the module is verified,
