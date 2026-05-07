@@ -123,7 +123,7 @@ else
   endif
 endif
 
-.PHONY: all stdlib stdlib-test thread-runtime zone-runtime coro-runtime crash-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop
+.PHONY: all stdlib stdlib-test thread-runtime zone-runtime coro-runtime crash-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop install uninstall package
 
 all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime
 
@@ -480,6 +480,27 @@ $(OPENSSL_LIB): $(OPENSSL_SRC)/Configure
 clean-openssl:
 	$(MAKE) -C $(OPENSSL_SRC) clean 2>/dev/null; true
 	rm -rf $(OPENSSL_BUILD)
+
+# ── install / uninstall / package ────────────────────────────
+PREFIX ?= $(HOME)/.stasha
+
+install: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime stdlib
+	install -d "$(PREFIX)/bin" "$(PREFIX)/lib/stdlib"
+	install -m 755 bin/stasha "$(PREFIX)/bin/stasha"
+	install -m 644 bin/thread_runtime.a bin/zone_runtime.a \
+	               bin/coro_runtime.a bin/crash_runtime.a "$(PREFIX)/lib/"
+	cp -r bin/stdlib/. "$(PREFIX)/lib/stdlib/"
+	@echo "stasha installed -> $(PREFIX)"
+
+uninstall:
+	rm -rf "$(PREFIX)"
+	@echo "stasha uninstalled from $(PREFIX)"
+
+# Creates a release archive named stasha-<os>-<arch>.tar.gz in the project root.
+package: install
+	tar -czf stasha-$(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m).tar.gz \
+	    --directory="$(HOME)" .stasha
+	@echo "package -> stasha-$(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m).tar.gz"
 
 # ── housekeeping ───────────────────────────────────────────────
 clean:

@@ -1,6 +1,30 @@
 
 # Stasha
 
+## Installation
+
+**macOS / Linux** — paste into your terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kayyo321/stasha/main/install.sh | sh
+```
+
+**Windows** — paste into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Kayyo321/stasha/main/install.ps1 | iex
+```
+
+Both installers download a pre-built binary from [GitHub Releases](https://github.com/Kayyo321/stasha/releases), place it in `~/.stasha` (macOS/Linux) or `%LOCALAPPDATA%\stasha` (Windows), and add `stasha` to your PATH automatically.
+
+To verify:
+
+```sh
+stasha --version
+```
+
+To uninstall, run `uninstall.sh` (macOS/Linux) or `uninstall.ps1` (Windows) from the repo, or delete the install directory and remove it from your PATH.
+
 Stasha is a modern, compiled systems programming language designed as a safer, more expressive alternative to C, with explicit control over memory, strong pointer safety, and seamless C interop. Built on LLVM, Stasha aims to combine the performance and predictability of low-level languages with quality-of-life features inspired by modern language design.
 
 ## Why Use Stasha?
