@@ -4,6 +4,8 @@
 *.out
 *.a
 *.test
+*.log
 
 /bin/
-**/logs/.claude/
+**/logs/
+.claude/
