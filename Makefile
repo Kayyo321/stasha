@@ -19,10 +19,16 @@ LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config$(EXE_SUFFIX)
 
 # Flags resolved at recipe time (recursive =) so llvm-config is found after build
 LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
+ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
+LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --link-static --ldflags --libs core analysis native \
+               lto passes option codegen bitwriter debuginfodwarf \
+               objcarcopts textapi object --system-libs 2>/dev/null)
+else
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
                objcarcopts textapi object --system-libs 2>/dev/null) \
                -lLLVMDTLTO
+endif
 
 # If LLD libraries are available, enable embedded LLD support
 LLD_LIBS     = $(wildcard $(LLVM_BUILD)/lib/liblldCommon.a)
