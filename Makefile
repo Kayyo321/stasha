@@ -1,5 +1,19 @@
 CC         = clang
 CXX        = clang++
+
+# ── OS / EXE suffix detection (must precede TARGET) ──────────────────────────
+OS_RAW     := $(shell uname -s 2>/dev/null)
+ifeq ($(OS),Windows_NT)
+  EXE_SUFFIX = .exe
+else ifneq (,$(findstring MINGW,$(OS_RAW)))
+  EXE_SUFFIX = .exe
+else ifneq (,$(findstring MSYS,$(OS_RAW)))
+  EXE_SUFFIX = .exe
+else ifneq (,$(findstring CYGWIN,$(OS_RAW)))
+  EXE_SUFFIX = .exe
+else
+  EXE_SUFFIX =
+endif
 LLVM_BUILD = build/llvm
 LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config
 
@@ -60,7 +74,7 @@ SRCS = src/main.c                       \
 OBJS = $(patsubst src/%.c,build/obj/%.o,$(SRCS))
 LINKER_OBJ = build/obj/linker/linker.o
 
-TARGET = bin/stasha
+TARGET = bin/stasha$(EXE_SUFFIX)
 
 # ── Thread runtime ─────────────────────────────────────────────────────────
 THREAD_RUNTIME_SRC = src/runtime/thread_runtime.c src/runtime/executor.c
@@ -101,21 +115,31 @@ STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
 # All .a targets (used by 'stdlib' phony target to know what to build).
 STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS_ALL),$(dir $(s))lib$(notdir $(basename $(s))).a)
 
-UNAME_S := $(shell uname -s)
-UNAME_M := $(shell uname -m)
+UNAME_S := $(shell uname -s 2>/dev/null)
+UNAME_M := $(shell uname -m 2>/dev/null)
 
 # ── OpenSSL (static libcrypto) ────────────────────────────────────────────
 OPENSSL_SRC   = extlib/openssl
 OPENSSL_BUILD = build/openssl
-OPENSSL_LIB   = $(OPENSSL_BUILD)/lib/libcrypto.a
 
-ifeq ($(UNAME_S),Darwin)
+ifeq ($(EXE_SUFFIX),.exe)
+  OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.lib
+  OPENSSL_TARGET    = VC-WIN64A
+  OPENSSL_CONFIGURE = perl Configure
+  OPENSSL_BUILD_CMD = nmake build_libs && nmake install_dev
+else ifeq ($(UNAME_S),Darwin)
+  OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.a
+  OPENSSL_CONFIGURE = ./Configure
+  OPENSSL_BUILD_CMD = $(MAKE) -C $(OPENSSL_SRC) build_libs && $(MAKE) -C $(OPENSSL_SRC) install_dev
   ifeq ($(UNAME_M),arm64)
     OPENSSL_TARGET = darwin64-arm64-cc
   else
     OPENSSL_TARGET = darwin64-x86_64-cc
   endif
 else
+  OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.a
+  OPENSSL_CONFIGURE = ./Configure
+  OPENSSL_BUILD_CMD = $(MAKE) -C $(OPENSSL_SRC) build_libs && $(MAKE) -C $(OPENSSL_SRC) install_dev
   ifeq ($(UNAME_M),aarch64)
     OPENSSL_TARGET = linux-aarch64
   else
@@ -469,13 +493,12 @@ $(LLVM_CFG):
 openssl: $(OPENSSL_LIB)
 
 $(OPENSSL_LIB): $(OPENSSL_SRC)/Configure
-	cd $(OPENSSL_SRC) && ./Configure \
+	cd $(OPENSSL_SRC) && $(OPENSSL_CONFIGURE) \
 	    --prefix=$(abspath $(OPENSSL_BUILD)) \
 	    --openssldir=$(abspath $(OPENSSL_BUILD))/ssl \
 	    $(OPENSSL_TARGET) \
 	    no-shared no-tests no-docs
-	$(MAKE) -C $(OPENSSL_SRC) build_libs
-	$(MAKE) -C $(OPENSSL_SRC) install_dev
+	cd $(OPENSSL_SRC) && $(OPENSSL_BUILD_CMD)
 
 clean-openssl:
 	$(MAKE) -C $(OPENSSL_SRC) clean 2>/dev/null; true
@@ -485,11 +508,11 @@ clean-openssl:
 PREFIX ?= $(HOME)/.stasha
 
 install: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime stdlib
-	install -d "$(PREFIX)/bin" "$(PREFIX)/lib/stdlib"
-	install -m 755 bin/stasha "$(PREFIX)/bin/stasha"
+	install -d "$(PREFIX)/bin/stdlib"
+	install -m 755 bin/stasha$(EXE_SUFFIX) "$(PREFIX)/bin/stasha$(EXE_SUFFIX)"
 	install -m 644 bin/thread_runtime.a bin/zone_runtime.a \
-	               bin/coro_runtime.a bin/crash_runtime.a "$(PREFIX)/lib/"
-	cp -r bin/stdlib/. "$(PREFIX)/lib/stdlib/"
+	               bin/coro_runtime.a bin/crash_runtime.a "$(PREFIX)/bin/"
+	cp -r bin/stdlib/. "$(PREFIX)/bin/stdlib/"
 	@echo "stasha installed -> $(PREFIX)"
 
 uninstall:

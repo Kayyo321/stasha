@@ -39,10 +39,11 @@ if (-not $Tag) {
     exit 1
 }
 
-$Url = "https://github.com/$Repo/releases/download/$Tag/$Archive"
+$Url    = "https://github.com/$Repo/releases/download/$Tag/$Archive"
+$ShaUrl = "$Url.sha256"
 Write-Host "Installing Stasha $Tag (windows/$ArchName)..."
 
-# ── download and extract ───────────────────────────────────────
+# ── download ───────────────────────────────────────────────────
 $TmpDir  = Join-Path $env:TEMP "stasha-install-$(Get-Random)"
 $ZipPath = Join-Path $TmpDir $Archive
 
@@ -51,30 +52,59 @@ New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 try {
     Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
 } catch {
-    Write-Error "Download failed: $_"
+    if ($_.Exception.Response.StatusCode.value__ -eq 404) {
+        Write-Error "No prebuilt archive found for windows/$ArchName (tag $Tag). Check https://github.com/$Repo/releases"
+    } else {
+        Write-Error "Download failed: $_"
+    }
     Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
     exit 1
 }
 
+# ── SHA-256 verify ─────────────────────────────────────────────
+try {
+    $ShaContent  = (Invoke-WebRequest -Uri $ShaUrl -UseBasicParsing).Content.Trim()
+    $ExpectedHash = ($ShaContent -split '\s+')[0].ToUpper()
+    $ActualHash   = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToUpper()
+    if ($ExpectedHash -ne $ActualHash) {
+        Write-Error "SHA-256 mismatch — archive may be corrupt or tampered.`n  expected: $ExpectedHash`n  got:      $ActualHash"
+        Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
+        exit 1
+    }
+    Write-Host "  SHA-256 verified."
+} catch {
+    Write-Warning "Could not verify SHA-256 (sidecar unavailable): $_"
+}
+
+# ── extract ────────────────────────────────────────────────────
 if (Test-Path $InstallDir) {
     Remove-Item -Recurse -Force $InstallDir
 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-Expand-Archive -Path $ZipPath -DestinationPath $TmpDir\extracted -Force
+Expand-Archive -Path $ZipPath -DestinationPath "$TmpDir\extracted" -Force
 
-# The archive contains bin/ and lib/ at its root — move them into InstallDir
-$Extracted = Get-ChildItem "$TmpDir\extracted" | Select-Object -First 1
-if ($Extracted -and (Test-Path $Extracted.FullName)) {
-    Copy-Item -Recurse -Force "$($Extracted.FullName)\*" $InstallDir
-} else {
-    Copy-Item -Recurse -Force "$TmpDir\extracted\*" $InstallDir
-}
+# Archive root is flat (bin/ only) — copy contents directly into InstallDir.
+Copy-Item -Recurse -Force "$TmpDir\extracted\*" $InstallDir
 
 Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
 
+# ── smoke test ─────────────────────────────────────────────────
+$StashaExe = Join-Path $InstallDir "bin\stasha.exe"
+try {
+    $VersionOut = & $StashaExe --version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Smoke test failed: stasha --version exited with code $LASTEXITCODE"
+        exit 1
+    }
+    Write-Host "  smoke test OK: $VersionOut"
+} catch {
+    Write-Error "Smoke test failed — binary did not run: $_"
+    exit 1
+}
+
 # ── update PATH ────────────────────────────────────────────────
-$BinDir     = Join-Path $InstallDir "bin"
+$BinDir      = Join-Path $InstallDir "bin"
 $CurrentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 
 if ($CurrentPath -notlike "*$BinDir*") {
