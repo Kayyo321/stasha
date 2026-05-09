@@ -14,12 +14,12 @@ else ifneq (,$(findstring CYGWIN,$(OS_RAW)))
 else
   EXE_SUFFIX =
 endif
-LLVM_BUILD = build/llvm
-LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config
+LLVM_BUILD ?= build/llvm
+LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config$(EXE_SUFFIX)
 
 # Flags resolved at recipe time (recursive =) so llvm-config is found after build
-LLVM_CFLAGS  = $(shell $(LLVM_CFG) --cflags  2>/dev/null)
-LLVM_LDFLAGS = $(shell $(LLVM_CFG) --ldflags --libs core analysis native \
+LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
+LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
                objcarcopts textapi object --system-libs 2>/dev/null) \
                -lLLVMDTLTO
@@ -36,7 +36,11 @@ endif
 
 CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
 CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) $(LLD_CFLAGS)
+ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
+LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lstdc++ -static -static-libgcc -static-libstdc++ -lws2_32 -lntdll
+else
 LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lc++
+endif
 
 # ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────
 EXTLIB_CFLAGS = -std=c11 -O2 -fPIC
@@ -107,7 +111,11 @@ THREAD_TEST_SRCS = examples/thread_basic.sts    \
 STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 
 # Modules that have custom bundled-archive rules (exclude from default foreach).
+ifeq ($(STASHA_NO_OPENSSL),1)
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts
+else
 STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts
+endif
 
 # Files for the default compile-only rule.
 STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
@@ -130,7 +138,7 @@ ifeq ($(EXE_SUFFIX),.exe)
 else ifeq ($(UNAME_S),Darwin)
   OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.a
   OPENSSL_CONFIGURE = ./Configure
-  OPENSSL_BUILD_CMD = $(MAKE) -C $(OPENSSL_SRC) build_libs && $(MAKE) -C $(OPENSSL_SRC) install_dev
+  OPENSSL_BUILD_CMD = $(MAKE) build_libs && $(MAKE) install_dev
   ifeq ($(UNAME_M),arm64)
     OPENSSL_TARGET = darwin64-arm64-cc
   else
@@ -139,7 +147,7 @@ else ifeq ($(UNAME_S),Darwin)
 else
   OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.a
   OPENSSL_CONFIGURE = ./Configure
-  OPENSSL_BUILD_CMD = $(MAKE) -C $(OPENSSL_SRC) build_libs && $(MAKE) -C $(OPENSSL_SRC) install_dev
+  OPENSSL_BUILD_CMD = $(MAKE) build_libs && $(MAKE) install_dev
   ifeq ($(UNAME_M),aarch64)
     OPENSSL_TARGET = linux-aarch64
   else
@@ -182,7 +190,11 @@ STDLIB_BUNDLED_CRNG_LIB       = stsstdlib/random/libcomplex_rng.a
 
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
+ifeq ($(STASHA_NO_OPENSSL),1)
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a
+else
 stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a $(STDLIB_BUNDLED_CRNG_LIB)
+endif
 	@echo ""
 	@echo "=== stdlib tests ==="
 	@pass=0; fail=0; skip=0; \
@@ -222,14 +234,16 @@ stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstd
 	    echo "FAIL"; fail=$$((fail+1)); \
 	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
 	fi; \
-	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRNG) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRNG)" -l $(STDLIB_BUNDLED_CRNG_LIB) 2>&1); \
-	code=$$?; \
-	if [ $$code -eq 0 ]; then \
+	if [ "$(STASHA_NO_OPENSSL)" != "1" ]; then \
+	  printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRNG) ..."; \
+	  out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRNG)" -l $(STDLIB_BUNDLED_CRNG_LIB) 2>&1); \
+	  code=$$?; \
+	  if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
-	else \
+	  else \
 	    echo "FAIL"; fail=$$((fail+1)); \
 	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	  fi; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLARGS) ..."; \
 	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CLARGS)" -l stsstdlib/sys/libcl_args.a 2>&1); \

@@ -90,31 +90,20 @@ jobs:
         if: runner.os != 'Windows' && steps.openssl-cache.outputs.cache-hit != 'true'
         run: make openssl
 
-      # ── Windows: system LLVM (pinned) + OpenSSL build deps ───────
-      - name: Install LLVM + OpenSSL build deps (Windows)
+      # ── Windows: MSYS2 UCRT64 toolchain (clang + llvm + lld + make) ───
+      - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install llvm --version=18.1.8 -y
-          choco install nasm strawberryperl cmake ninja -y
-          refreshenv
-          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "C:\Strawberry\perl\bin"    | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Cache OpenSSL build (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        id: openssl-cache-win
+        uses: msys2/setup-msys2@v2
         with:
-          path: build/openssl
-          key: openssl-${{ matrix.target }}-${{ hashFiles('extlib/openssl/**') }}
-
-      - name: Build OpenSSL (Windows)
-        if: runner.os == 'Windows' && steps.openssl-cache-win.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $env:PATH = "C:\Program Files\LLVM\bin;C:\Strawberry\perl\bin;$env:PATH"
-          make openssl
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            make
 
       # ── build compiler + stdlib ─────────────────────────────────
       - name: Build stasha (non-Windows)
@@ -125,10 +114,11 @@ jobs:
 
       - name: Build stasha (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: msys2 {0}
+        env:
+          LLVM_BUILD: /ucrt64
+          STASHA_NO_OPENSSL: "1"
         run: |
-          $env:LLVM_BUILD = "C:\Program Files\LLVM"
-          $env:PATH = "C:\Program Files\LLVM\bin;C:\ProgramData\chocolatey\bin;$env:PATH"
           make
           make stdlib
 
