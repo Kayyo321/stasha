@@ -24,7 +24,7 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #include "cinterop/cheader.h"
 #include "cinterop/cheader.c"
 
-#define STASHA_VERSION "0.1.5"
+#define STASHA_VERSION "0.1.6"
 
 /* ── binary directory (for stdlib resolution) ── */
 

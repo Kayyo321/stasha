@@ -144,7 +144,11 @@ jobs:
              bin/coro_runtime.a bin/crash_runtime.a _dist/bin/
           cp -r bin/stdlib/. _dist/bin/stdlib/
           tar -czf "$ARCHIVE" -C _dist .
-          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+          fi
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
       - name: Package (Windows)

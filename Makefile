@@ -44,8 +44,10 @@ CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
 CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) $(LLD_CFLAGS)
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
 LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lstdc++ -static -static-libgcc -static-libstdc++ -lws2_32 -lntdll
-else
+else ifneq (,$(findstring Darwin,$(OS_RAW)))
 LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lc++
+else
+LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lstdc++
 endif
 
 # ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────
