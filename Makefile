@@ -464,7 +464,7 @@ $(LLD_LIB): $(LLVM_CFG)
 	      -DCMAKE_BUILD_TYPE=Release                       \
 	      -DLLVM_ENABLE_PROJECTS="lld"                     \
 	      -DLLVM_TARGETS_TO_BUILD="$(LLVM_TARGETS)"       \
-	      -DLLVM_BUILD_TOOLS=OFF                           \
+	      -DLLVM_BUILD_TOOLS=ON                            \
 	      -DLLVM_BUILD_UTILS=OFF                           \
 	      -DLLVM_BUILD_EXAMPLES=OFF                        \
 	      -DLLVM_INCLUDE_TESTS=OFF                         \
@@ -479,7 +479,7 @@ $(LLVM_CFG):
 	      -DCMAKE_BUILD_TYPE=Release                       \
 	      -DLLVM_ENABLE_PROJECTS="lld"                     \
 	      -DLLVM_TARGETS_TO_BUILD="$(LLVM_TARGETS)"       \
-	      -DLLVM_BUILD_TOOLS=OFF                           \
+	      -DLLVM_BUILD_TOOLS=ON                            \
 	      -DLLVM_BUILD_UTILS=OFF                           \
 	      -DLLVM_BUILD_EXAMPLES=OFF                        \
 	      -DLLVM_INCLUDE_TESTS=OFF                         \

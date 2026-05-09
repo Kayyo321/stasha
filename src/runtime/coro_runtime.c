@@ -2,10 +2,57 @@
 
 #include "coro_runtime.h"
 
-#include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+
+typedef SRWLOCK             pthread_mutex_t;
+typedef CONDITION_VARIABLE  pthread_cond_t;
+typedef HANDLE              pthread_t;
+#define PTHREAD_MUTEX_INITIALIZER  SRWLOCK_INIT
+#define PTHREAD_COND_INITIALIZER   CONDITION_VARIABLE_INIT
+
+static int pthread_mutex_init(pthread_mutex_t *m, void *attr)    { (void)attr; InitializeSRWLock(m); return 0; }
+static int pthread_mutex_destroy(pthread_mutex_t *m)             { (void)m; return 0; }
+static int pthread_mutex_lock(pthread_mutex_t *m)                { AcquireSRWLockExclusive(m); return 0; }
+static int pthread_mutex_unlock(pthread_mutex_t *m)              { ReleaseSRWLockExclusive(m); return 0; }
+static int pthread_cond_init(pthread_cond_t *c, void *attr)      { (void)attr; InitializeConditionVariable(c); return 0; }
+static int pthread_cond_destroy(pthread_cond_t *c)               { (void)c; return 0; }
+static int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { SleepConditionVariableSRW(c, m, INFINITE, 0); return 0; }
+static int pthread_cond_signal(pthread_cond_t *c)                { WakeConditionVariable(c); return 0; }
+static int pthread_cond_broadcast(pthread_cond_t *c)             { WakeAllConditionVariable(c); return 0; }
+
+typedef struct { void *(*fn)(void *); void *arg; } win_thr_arg_t;
+static unsigned __stdcall win_thr_trampoline(void *p) {
+    win_thr_arg_t a = *(win_thr_arg_t *)p;
+    free(p);
+    a.fn(a.arg);
+    return 0;
+}
+static int pthread_create(pthread_t *t, void *attr, void *(*fn)(void *), void *arg) {
+    (void)attr;
+    win_thr_arg_t *a = (win_thr_arg_t *)malloc(sizeof(*a));
+    if (!a) return -1;
+    a->fn = fn; a->arg = arg;
+    uintptr_t h = _beginthreadex(NULL, 0, win_thr_trampoline, a, 0, NULL);
+    if (!h) { free(a); return -1; }
+    *t = (HANDLE)h;
+    return 0;
+}
+static int pthread_join(pthread_t t, void **retval) {
+    (void)retval;
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    return 0;
+}
+#else
+#include <pthread.h>
 #include <unistd.h>
+#endif
 
 #define STS_ASYNC_MAX_WORKERS 64
 #define STS_ASYNC_QUEUE_CAP   8192
@@ -105,15 +152,23 @@ void __async_runtime_shutdown(void) {
     pthread_mutex_unlock(&__async_init_mutex);
 }
 
+static int __async_detect_cpu_count(void) {
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    int n = (int)si.dwNumberOfProcessors;
+    return n < 1 ? 4 : n;
+#elif defined(_SC_NPROCESSORS_ONLN)
+    int n = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 4 : n;
+#else
+    return 4;
+#endif
+}
+
 __attribute__((constructor))
 static void __async_runtime_auto_init(void) {
-#if defined(_SC_NPROCESSORS_ONLN)
-    int n = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    if (n < 1) n = 4;
-#else
-    int n = 4;
-#endif
-    __async_runtime_init(n);
+    __async_runtime_init(__async_detect_cpu_count());
 }
 
 __attribute__((destructor))

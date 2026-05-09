@@ -5,15 +5,17 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <dirent.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
 
 #ifdef _WIN32
+#include <windows.h>
 #include <direct.h>
+#else
+#include <dirent.h>
+#include <unistd.h>
 #endif
 
 #ifndef PATH_MAX

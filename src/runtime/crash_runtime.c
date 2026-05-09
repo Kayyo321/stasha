@@ -1,9 +1,13 @@
 #include "crash_runtime.h"
-#include <signal.h>
-#include <unistd.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 /* ── TLS breadcrumb — defined here, extern-declared in crash_runtime.h ── */
 _Thread_local const char    *__stasha_crash_file = 0;
@@ -11,8 +15,11 @@ _Thread_local const char    *__stasha_crash_fn   = 0;
 _Thread_local uint32_t       __stasha_crash_line  = 0;
 
 /* ── state ── */
-static volatile sig_atomic_t  __crash_active    = 0;
 static void                 (*__crash_block_fn)(void) = 0;
+
+#ifndef _WIN32
+
+static volatile sig_atomic_t  __crash_active    = 0;
 static char                   __crash_alt_stack[8192];
 
 /* ── signal-safe output helpers ── */
@@ -20,7 +27,8 @@ static void crash_write(const char *s) {
     if (!s) return;
     size_t n = 0;
     while (s[n]) n++;
-    write(STDERR_FILENO, s, n);
+    fwrite(s, 1, n, stderr);
+    fflush(stderr);
 }
 
 static void crash_write_hex(unsigned long v) {
@@ -34,7 +42,8 @@ static void crash_write_hex(unsigned long v) {
     } while (v && i > 2);
     buf[--i] = 'x';
     buf[--i] = '0';
-    write(STDERR_FILENO, buf + i, (size_t)(19 - i));
+    fwrite(buf + i, 1, (size_t)(19 - i), stderr);
+    fflush(stderr);
 }
 
 static void crash_write_dec(unsigned long v) {
@@ -43,7 +52,8 @@ static void crash_write_dec(unsigned long v) {
     buf[i] = '\0';
     if (v == 0) { crash_write("0"); return; }
     while (v) { buf[--i] = (char)('0' + v % 10); v /= 10; }
-    write(STDERR_FILENO, buf + i, (size_t)(21 - i));
+    fwrite(buf + i, 1, (size_t)(21 - i), stderr);
+    fflush(stderr);
 }
 
 /* ── crash handler ── */
@@ -93,6 +103,7 @@ static void __crash_handler(int sig, siginfo_t *info, void *ctx) {
     if (n > 0) {
         crash_write("stack trace:\n");
         backtrace_symbols_fd(bt, n, STDERR_FILENO);
+        fflush(stderr);
         crash_write("\n");
     }
 #endif
@@ -105,11 +116,6 @@ static void __crash_handler(int sig, siginfo_t *info, void *ctx) {
     /* Restore default and re-raise for correct exit code (unreachable if exit runs) */
     signal(sig, SIG_DFL);
     raise(sig);
-}
-
-/* ── public API ── */
-void __crash_runtime_register_block(void (*fn)(void)) {
-    __crash_block_fn = fn;
 }
 
 void __crash_runtime_install(void) {
@@ -130,4 +136,39 @@ void __crash_runtime_install(void) {
     sigaction(SIGFPE,  &sa, 0);
     sigaction(SIGILL,  &sa, 0);
     sigaction(SIGBUS,  &sa, 0);
+}
+
+#else /* _WIN32 */
+
+/* Windows port — minimal stub. SetUnhandledExceptionFilter could be wired up
+ * later; for now we simply provide the public API surface so executables link.
+ * The TLS breadcrumb globals above are defined unconditionally and are still
+ * written by emitted code (just never read on Windows). */
+
+#include <windows.h>
+
+static LONG WINAPI __crash_unhandled_filter(EXCEPTION_POINTERS *ep) {
+    fprintf(stderr, "\ncrash: unhandled exception 0x%08lx\n",
+            (unsigned long)ep->ExceptionRecord->ExceptionCode);
+    if (__stasha_crash_fn) {
+        fprintf(stderr, "last call: %s()", __stasha_crash_fn);
+        if (__stasha_crash_file)
+            fprintf(stderr, " - %s:%u", __stasha_crash_file,
+                    (unsigned)__stasha_crash_line);
+        fputc('\n', stderr);
+    }
+    fflush(stderr);
+    if (__crash_block_fn) __crash_block_fn();
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void __crash_runtime_install(void) {
+    SetUnhandledExceptionFilter(__crash_unhandled_filter);
+}
+
+#endif /* _WIN32 */
+
+/* ── public API (cross-platform) ── */
+void __crash_runtime_register_block(void (*fn)(void)) {
+    __crash_block_fn = fn;
 }

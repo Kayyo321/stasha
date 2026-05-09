@@ -86,12 +86,48 @@ static boolean_t try_extract_timestamp_from_name(const char *file_name, int inde
     return True;
 }
 
-static boolean_t find_log_file_for_index(int index, char *out_path, usize_t out_size, char *out_name, usize_t out_name_size) {
-    if (!out_path || out_size == 0)
+static boolean_t match_log_entry(const char *name, int index, char *best_match_name, usize_t best_match_size, const char *exact_name, boolean_t *should_break) {
+    *should_break = False;
+    if (name[0] == '.')
         return False;
 
-    DIR *directory = opendir(LogDirectory);
-    if (!directory)
+    if (index == 0) {
+        if (strcmp(name, "log0") == 0 || strcmp(name, "log0.log") == 0) {
+            snprintf(best_match_name, best_match_size, "%s", name);
+            return True;
+        }
+        if (strcmp(name, exact_name) == 0) {
+            snprintf(best_match_name, best_match_size, "%s", name);
+            *should_break = True;
+            return True;
+        }
+        if (strncmp(name, "log0-", 5) == 0) {
+            snprintf(best_match_name, best_match_size, "%s", name);
+            return True;
+        }
+        return False;
+    }
+
+    char prefix[32] = {0};
+    if (snprintf(prefix, sizeof(prefix), "log%d", index) >= (int)sizeof(prefix))
+        return False;
+
+    const usize_t prefix_len = strlen(prefix);
+    if (strncmp(name, prefix, prefix_len) != 0)
+        return False;
+
+    const char next_char = name[prefix_len];
+    if (next_char != '\0' && next_char != '-' && next_char != '.')
+        return False;
+
+    snprintf(best_match_name, best_match_size, "%s", name);
+    if (next_char == '-')
+        *should_break = True;
+    return True;
+}
+
+static boolean_t find_log_file_for_index(int index, char *out_path, usize_t out_size, char *out_name, usize_t out_name_size) {
+    if (!out_path || out_size == 0)
         return False;
 
     char best_match_name[PATH_MAX] = {0};
@@ -99,46 +135,35 @@ static boolean_t find_log_file_for_index(int index, char *out_path, usize_t out_
     if (index == 0)
         snprintf(exact_name, sizeof(exact_name), "log0-last.log");
 
+#ifdef _WIN32
+    char pattern[PATH_MAX];
+    snprintf(pattern, sizeof(pattern), "%s\\*", LogDirectory);
+    WIN32_FIND_DATAA find_data;
+    HANDLE h = FindFirstFileA(pattern, &find_data);
+    if (h == INVALID_HANDLE_VALUE)
+        return False;
+
+    do {
+        boolean_t should_break = False;
+        if (match_log_entry(find_data.cFileName, index, best_match_name, sizeof(best_match_name), exact_name, &should_break)) {
+            if (should_break) break;
+        }
+    } while (FindNextFileA(h, &find_data));
+    FindClose(h);
+#else
+    DIR *directory = opendir(LogDirectory);
+    if (!directory)
+        return False;
+
     struct dirent *entry = Null;
     while ((entry = readdir(directory)) != Null) {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        if (index == 0) {
-            if (strcmp(entry->d_name, "log0") == 0 || strcmp(entry->d_name, "log0.log") == 0) {
-                snprintf(best_match_name, sizeof(best_match_name), "%s", entry->d_name);
-                continue;
-            }
-
-            if (strcmp(entry->d_name, exact_name) == 0) {
-                snprintf(best_match_name, sizeof(best_match_name), "%s", entry->d_name);
-                break;
-            }
-
-            if (strncmp(entry->d_name, "log0-", 5) == 0) {
-                snprintf(best_match_name, sizeof(best_match_name), "%s", entry->d_name);
-                continue;
-            }
-
-            continue;
+        boolean_t should_break = False;
+        if (match_log_entry(entry->d_name, index, best_match_name, sizeof(best_match_name), exact_name, &should_break)) {
+            if (should_break) break;
         }
-
-        char prefix[32] = {0};
-        if (snprintf(prefix, sizeof(prefix), "log%d", index) >= (int)sizeof(prefix))
-            continue;
-
-        const usize_t prefix_len = strlen(prefix);
-        if (strncmp(entry->d_name, prefix, prefix_len) != 0)
-            continue;
-
-        const char next_char = entry->d_name[prefix_len];
-        if (next_char != '\0' && next_char != '-' && next_char != '.')
-            continue;
-
-        snprintf(best_match_name, sizeof(best_match_name), "%s", entry->d_name);
-        if (next_char == '-')
-            break;
     }
+    closedir(directory);
+#endif
 
     boolean_t found = False;
     if (best_match_name[0] != '\0') {
@@ -149,7 +174,6 @@ static boolean_t find_log_file_for_index(int index, char *out_path, usize_t out_
         }
     }
 
-    closedir(directory);
     return found;
 }
 
