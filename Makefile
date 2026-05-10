@@ -51,7 +51,7 @@ LDFLAGS  = -Wl,--start-group $(LLD_LDLIBS) $(LLVM_LDFLAGS) -Wl,--end-group -lstd
 endif
 
 # ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────
-EXTLIB_CFLAGS = -std=c11 -O2 -fPIC
+EXTLIB_CFLAGS = -std=c11 -O2 -fPIC -D_GNU_SOURCE -D_DARWIN_C_SOURCE
 
 # ── cJSON (single-file C library) ─────────────────────────────────────────────
 CJSON_SRC = extlib/cjson/cJSON.c

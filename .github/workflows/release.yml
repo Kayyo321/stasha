@@ -40,11 +40,14 @@ jobs:
             arch: arm64
             archive_ext: tar.gz
 
-          - target: windows-x86_64
-            runner: windows-latest
-            os_name: windows
-            arch: x86_64
-            archive_ext: zip
+          # windows-x86_64: temporarily disabled — compiler segfaults on
+          # specific stdlib modules under msys2/mingw build. Re-enable after
+          # debugging. See install.ps1 for graceful fallback messaging.
+          # - target: windows-x86_64
+          #   runner: windows-latest
+          #   os_name: windows
+          #   arch: x86_64
+          #   archive_ext: zip
 
     steps:
       - name: Checkout (with submodules)

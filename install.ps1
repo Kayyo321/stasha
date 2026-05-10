@@ -53,10 +53,14 @@ try {
     Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
 } catch {
     if ($_.Exception.Response.StatusCode.value__ -eq 404) {
-        Write-Error "No prebuilt archive found for windows/$ArchName (tag $Tag). Check https://github.com/$Repo/releases"
-    } else {
-        Write-Error "Download failed: $_"
+        Write-Host ""
+        Write-Host "Stasha Windows builds are not yet available in release $Tag."
+        Write-Host "Track progress: https://github.com/$Repo/releases"
+        Write-Host "macOS and Linux installers are available at https://github.com/$Repo (install.sh)."
+        Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
+        exit 1
     }
+    Write-Error "Download failed: $_"
     Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
     exit 1
 }
