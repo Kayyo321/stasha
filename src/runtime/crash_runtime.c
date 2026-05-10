@@ -1,3 +1,10 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#  define _GNU_SOURCE
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#  define _DARWIN_C_SOURCE 1
+#endif
+
 #include "crash_runtime.h"
 #include <stdio.h>
 #include <stdlib.h>
