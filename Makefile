@@ -20,7 +20,7 @@ LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config$(EXE_SUFFIX)
 # Flags resolved at recipe time (recursive =) so llvm-config is found after build
 LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
-LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --link-static --ldflags --libs --system-libs 2>/dev/null)
+LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis native \
                lto passes option codegen bitwriter debuginfodwarf \
@@ -43,11 +43,11 @@ endif
 CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
 CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) $(LLD_CFLAGS)
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
-LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lstdc++ -static -static-libgcc -static-libstdc++ -lws2_32 -lntdll
+LDFLAGS  = -Wl,--start-group $(LLD_LDLIBS) $(LLVM_LDFLAGS) -Wl,--end-group -lstdc++ -lws2_32 -lntdll
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
 LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lc++
 else
-LDFLAGS  = $(LLVM_LDFLAGS) $(LLD_LDLIBS) -lstdc++
+LDFLAGS  = -Wl,--start-group $(LLD_LDLIBS) $(LLVM_LDFLAGS) -Wl,--end-group -lstdc++
 endif
 
 # ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────

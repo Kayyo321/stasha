@@ -153,18 +153,21 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          $Archive = "stasha-windows-x86_64.zip"
-          New-Item -ItemType Directory -Force _dist\bin\stdlib | Out-Null
-          Copy-Item bin\stasha.exe _dist\bin\
-          Copy-Item bin\thread_runtime.a, bin\zone_runtime.a, `
-                    bin\coro_runtime.a, bin\crash_runtime.a _dist\bin\
-          Copy-Item -Recurse bin\stdlib\* _dist\bin\stdlib\
-          Compress-Archive -Path _dist\* -DestinationPath $Archive -Force
-          $hash = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower()
-          "$hash  $Archive" | Out-File -FilePath "$Archive.sha256" -Encoding utf8 -NoNewline
-          echo "ARCHIVE=$Archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          ARCHIVE="stasha-windows-x86_64.zip"
+          mkdir -p _dist/bin/stdlib
+          cp bin/stasha.exe _dist/bin/
+          cp bin/thread_runtime.a bin/zone_runtime.a \
+             bin/coro_runtime.a bin/crash_runtime.a _dist/bin/
+          cp -r bin/stdlib/. _dist/bin/stdlib/
+          # Bundle DLL deps (LLVM, lld, libstdc++, winpthread, libgcc) from ucrt64.
+          ldd bin/stasha.exe | awk '/=> \/ucrt64/{print $3}' | while read dll; do
+            cp "$dll" _dist/bin/
+          done
+          (cd _dist && powershell -Command "Compress-Archive -Path * -DestinationPath ../$ARCHIVE -Force")
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
       # ── upload to GitHub Release ─────────────────────────────────
       - name: Upload release asset
