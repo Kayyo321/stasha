@@ -452,6 +452,63 @@ static void ch_tokenize_code(const char *path, char *code, ch_tok_stream_t *out)
                 }
                 continue;
             }
+            /* Glibc decoration macros: drop the identifier and any
+             * argument list that follows. Lets cheader parse glibc
+             * header decls that on Linux carry __THROW, __nonnull, __wur,
+             * __BEGIN_DECLS / __END_DECLS, etc. */
+            {
+                static const struct { const char *name; usize_t len; boolean_t has_args; } skips[] = {
+                    {"__THROW",           7,  False},
+                    {"__THROWNL",         9,  False},
+                    {"__BEGIN_DECLS",    13,  False},
+                    {"__END_DECLS",      11,  False},
+                    {"__BEGIN_NAMESPACE_STD", 21, False},
+                    {"__END_NAMESPACE_STD",   19, False},
+                    {"__BEGIN_NAMESPACE_C99", 21, False},
+                    {"__END_NAMESPACE_C99",   19, False},
+                    {"__USING_NAMESPACE_STD", 21, True },
+                    {"__USING_NAMESPACE_C99", 21, True },
+                    {"__wur",              5, False},
+                    {"__nonnull",          9, True },
+                    {"__attribute_const__",      19, False},
+                    {"__attribute_pure__",       18, False},
+                    {"__attribute_noinline__",   22, False},
+                    {"__attribute_warn_unused_result__", 32, False},
+                    {"__attribute_format_arg__", 24, True },
+                    {"__attribute_format_strfmon__", 28, True },
+                    {"__attribute_alloc_size__", 24, True },
+                    {"__attribute_malloc__",     20, False},
+                    {"__attribute_used__",       18, False},
+                    {"__attribute_unused__",     20, False},
+                    {"__attribute_deprecated__", 24, False},
+                    {"__leaf__",            8, False},
+                    {"__extension__",      13, False},
+                    {"__restrict_arr",     14, False},
+                    {"__fortify_function", 18, False},
+                    {"__always_inline",    15, False},
+                    {"__forceinline",      13, False},
+                    {NULL, 0, False},
+                };
+                boolean_t skipped = False;
+                for (int i = 0; skips[i].name; ++i) {
+                    if (len == skips[i].len && memcmp(s.source + start, skips[i].name, len) == 0) {
+                        if (skips[i].has_args) {
+                            ch_skip_ws(&s);
+                            if (s.pos < s.len && s.source[s.pos] == '(') {
+                                int depth = 0;
+                                do {
+                                    if (s.source[s.pos] == '(') depth++;
+                                    else if (s.source[s.pos] == ')') depth--;
+                                    s.pos++;
+                                } while (s.pos < s.len && depth > 0);
+                            }
+                        }
+                        skipped = True;
+                        break;
+                    }
+                }
+                if (skipped) continue;
+            }
             ch_tok_push(out, ch_make_tok(CHTokIdent, s.source + start, len));
             continue;
         }
