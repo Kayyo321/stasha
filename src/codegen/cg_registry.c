@@ -163,8 +163,9 @@ static void register_lib(cg_t *cg, const char *name, const char *alias,
         cg->libs = cg->libs_heap.pointer;
         cg->lib_cap = new_cap;
     }
-    cg->libs[cg->lib_count].name  = (char *)name;
-    cg->libs[cg->lib_count].alias = (char *)alias;
-    cg->libs[cg->lib_count].path  = (char *)path;
+    cg->libs[cg->lib_count].name       = (char *)name;
+    cg->libs[cg->lib_count].alias      = (char *)alias;
+    cg->libs[cg->lib_count].path       = (char *)path;
+    cg->libs[cg->lib_count].mod_prefix = Null;
     cg->lib_count++;
 }

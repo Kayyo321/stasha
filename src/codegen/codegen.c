@@ -575,10 +575,32 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     char *early_error = Null;
     char *triple;
-    if (target_triple && target_triple[0] != '\0')
+    if (target_triple && target_triple[0] != '\0') {
         triple = LLVMCreateMessage(target_triple);
-    else
+    } else {
         triple = LLVMGetDefaultTargetTriple();
+        /* Some LLVM builds (notably the arm64-Linux extlib build used in
+         * CI) return an empty string from LLVMGetDefaultTargetTriple
+         * when LLVM_HOST_TRIPLE wasn't baked in. Fall back to a
+         * compile-time triple derived from the build platform so
+         * stasha can still emit code. */
+        if (!triple || triple[0] == '\0') {
+            if (triple) LLVMDisposeMessage(triple);
+            #if defined(__APPLE__) && defined(__aarch64__)
+                triple = LLVMCreateMessage("arm64-apple-darwin");
+            #elif defined(__APPLE__)
+                triple = LLVMCreateMessage("x86_64-apple-darwin");
+            #elif defined(__linux__) && defined(__aarch64__)
+                triple = LLVMCreateMessage("aarch64-unknown-linux-gnu");
+            #elif defined(__linux__) && defined(__x86_64__)
+                triple = LLVMCreateMessage("x86_64-unknown-linux-gnu");
+            #elif defined(_WIN32) && defined(__x86_64__)
+                triple = LLVMCreateMessage("x86_64-w64-windows-gnu");
+            #else
+                triple = LLVMCreateMessage("");
+            #endif
+        }
+    }
     LLVMSetTarget(cg.module, triple);
 
     LLVMTargetRef early_target;
