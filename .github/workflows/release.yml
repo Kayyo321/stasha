@@ -74,7 +74,7 @@ jobs:
         id: llvm-cache
         with:
           path: build/llvm
-          key: llvm-${{ matrix.target }}-v2-${{ hashFiles('extlib/llvm/.git/HEAD', 'Makefile') }}
+          key: llvm-${{ matrix.target }}-v2-${{ hashFiles('Makefile') }}
 
       - name: Build LLVM (non-Windows)
         if: runner.os != 'Windows' && steps.llvm-cache.outputs.cache-hit != 'true'
