@@ -471,7 +471,7 @@ bin:
 
 # ── LLVM + LLD build (one-time) ──────────────────────────────
 UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_M),arm64)
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
   LLVM_TARGETS = AArch64
 else
   LLVM_TARGETS = X86

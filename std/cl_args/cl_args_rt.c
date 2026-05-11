@@ -1,5 +1,9 @@
 #include "cl_args_rt.h"
 #include <stddef.h>
+#ifndef _WIN32
+#  include <sys/types.h>   /* ssize_t */
+#  include <unistd.h>      /* read, close */
+#endif
 
 static int          g_argc  = 0;
 static const char **g_argv  = NULL;
