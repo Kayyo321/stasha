@@ -82,8 +82,11 @@ static boolean_t cg_os_matches(const cg_target_desc_t *t, const char *s) {
 static boolean_t cg_eval_fh_cond(const cg_target_desc_t *t, const fh_cond_t *c) {
     switch (c->op) {
         case FhCondOsEq:       return c->str_rhs && cg_os_matches(t, c->str_rhs);
+        case FhCondOsNe:       return c->str_rhs && !cg_os_matches(t, c->str_rhs);
         case FhCondArchEq:     return c->str_rhs && cg_arch_matches(t, c->str_rhs);
+        case FhCondArchNe:     return c->str_rhs && !cg_arch_matches(t, c->str_rhs);
         case FhCondPtrWidthEq: return t->pointer_width == c->int_rhs;
+        case FhCondPtrWidthNe: return t->pointer_width != c->int_rhs;
         case FhCondAlwaysFalse: return False;
         case FhCondNone:       return True;
     }
