@@ -1,9 +1,16 @@
 mod process;
 
 lib "stdlib" = cstdlib;
-lib "unistd" = cunistd;
 lib "stdio"  = cio;
 lib "string" = cstring;
+
+@[[if: os != "windows"]]
+lib "unistd" = cunistd;
+
+@[[if: os == "windows"]]
+lib "kernel32" = ckernel32_proc;
+@[[if: os == "windows"]]
+ext fn GetCurrentProcessId(void): u32;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -35,16 +42,23 @@ ext fn proc_setenv(stack i8 *r name, stack i8 *r val): error {
 // ── Process identity ───────────────────────────────────────────────────────
 
 // Current process ID.
+@[[if: os != "windows"]]
 ext fn proc_getpid(void): i32 {
     ret cunistd.getpid();
 }
+@[[if: os == "windows"]]
+ext fn proc_getpid(void): i32 {
+    ret (i32)GetCurrentProcessId();
+}
 
-// Parent process ID.
+// Parent process ID. POSIX only.
+@[[if: os != "windows"]]
 ext fn proc_getppid(void): i32 {
     ret cunistd.getppid();
 }
 
-// Current user ID.
+// Current user ID. POSIX only — Windows has no equivalent.
+@[[if: os != "windows"]]
 ext fn proc_getuid(void): u32 {
     ret cunistd.getuid();
 }
@@ -64,8 +78,19 @@ ext fn proc_system(stack i8 *r cmd): i32 {
 // ── Working directory ──────────────────────────────────────────────────────
 
 // Get current working directory into buf. Returns error if getcwd fails.
+@[[if: os != "windows"]]
 ext fn proc_getcwd(stack i8 *w buf, u32 len): error {
     stack i8 *rw result = cunistd.getcwd(buf, len);
+    if (result == nil) {
+        ret error.('getcwd failed');
+    }
+    ret nil;
+}
+@[[if: os == "windows"]]
+ext fn _getcwd(stack i8 *w buf, stack i32 size): i8 *rw;
+@[[if: os == "windows"]]
+ext fn proc_getcwd(stack i8 *w buf, u32 len): error {
+    stack i8 *rw result = _getcwd(buf, (i32)len);
     if (result == nil) {
         ret error.('getcwd failed');
     }
@@ -120,19 +145,28 @@ test 'proc_getpid returns positive integer' {
     expect.(pid > 0);
 }
 
+@[[if: os != "windows"]]
 test 'proc_getppid returns positive integer' {
     i32 ppid = proc_getppid();
     expect.(ppid > 0);
 }
 
+@[[if: os != "windows"]]
 test 'proc_getuid returns valid uid' {
     u32 _uid = proc_getuid();
     // uid is always >= 0 since it's unsigned; just verify it doesn't crash
     expect.(true);
 }
 
+@[[if: os != "windows"]]
 test 'proc_system echo returns 0' {
     i32 rc = proc_system("echo hello > /tmp/proc_test.txt");
+    expect_eq.(rc, 0);
+}
+@[[if: os == "windows"]]
+test 'proc_system echo returns 0' {
+    // cmd.exe handles `echo > %TEMP%\file` natively.
+    i32 rc = proc_system("echo hello > %TEMP%\\proc_test.txt");
     expect_eq.(rc, 0);
 }
 

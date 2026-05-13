@@ -1,40 +1,75 @@
 mod mutex;
 
+// Cross-platform mutex / rwlock / atomic_counter.
+//   POSIX: pthread_mutex_t + pthread_rwlock_t.
+//   Windows: CRITICAL_SECTION + SRWLOCK from kernel32.
+//
+// Public API is identical on both platforms. Sizes are intentionally
+// over-allocated for cross-libc safety: pthread sizes vary between
+// macOS, glibc, and musl; CRITICAL_SECTION is 40 bytes on x64.
+//
+// TODO: detect glibc/musl pthread sizes at compile time. Current POSIX
+// sizes are the macOS-arm64 values and will over-allocate on Linux.
+
+@[[if: os != "windows"]]
 lib "pthread" = cpthread;
 
-// ── Platform sizes (macOS arm64) ───────────────────────────────────────────
-// sizeof(pthread_mutex_t) = 56 bytes
-// sizeof(pthread_cond_t)  = 40 bytes
-// sizeof(pthread_rwlock_t) = 192 bytes
+@[[if: os == "windows"]]
+lib "kernel32" = ckernel32_mutex;
+@[[if: os == "windows"]]
+ext fn InitializeCriticalSection(stack void *w cs): void;
+@[[if: os == "windows"]]
+ext fn EnterCriticalSection(stack void *w cs): void;
+@[[if: os == "windows"]]
+ext fn LeaveCriticalSection(stack void *w cs): void;
+@[[if: os == "windows"]]
+ext fn TryEnterCriticalSection(stack void *w cs): i32;
+@[[if: os == "windows"]]
+ext fn DeleteCriticalSection(stack void *w cs): void;
+@[[if: os == "windows"]]
+ext fn InitializeSRWLock(stack void *w l): void;
+@[[if: os == "windows"]]
+ext fn AcquireSRWLockExclusive(stack void *w l): void;
+@[[if: os == "windows"]]
+ext fn ReleaseSRWLockExclusive(stack void *w l): void;
+@[[if: os == "windows"]]
+ext fn AcquireSRWLockShared(stack void *w l): void;
+@[[if: os == "windows"]]
+ext fn ReleaseSRWLockShared(stack void *w l): void;
+@[[if: os == "windows"]]
+ext fn TryAcquireSRWLockExclusive(stack void *w l): i8;
+@[[if: os == "windows"]]
+ext fn TryAcquireSRWLockShared(stack void *w l): i8;
 
-const u32 MutexSize  = 56;
-const u32 RwlockSize = 192;
+// ── Platform sizes ────────────────────────────────────────────────────────
+@[[if: os != "windows"]]
+const u32 MutexSize  = 56;    // sizeof(pthread_mutex_t)  on macOS arm64
+@[[if: os != "windows"]]
+const u32 RwlockSize = 192;   // sizeof(pthread_rwlock_t) on macOS arm64
+@[[if: os == "windows"]]
+const u32 MutexSize  = 40;    // sizeof(CRITICAL_SECTION) on x64
+@[[if: os == "windows"]]
+const u32 RwlockSize = 8;     // sizeof(SRWLOCK)          on x64
 
 // ── mutex_t ────────────────────────────────────────────────────────────────
 
+@[[if: os != "windows"]]
 ext type mutex_t: struct {
     int heap u8 *rw handle;
     int bool initialized;
 
-    // Lock the mutex.
     ext fn lock(void): void {
         cpthread.pthread_mutex_lock(this.handle);
     }
-
-    // Unlock the mutex.
     ext fn unlock(void): void {
         cpthread.pthread_mutex_unlock(this.handle);
     }
-
-    // Try to lock without blocking. Returns true if the lock was acquired.
     ext fn try_lock(void): bool {
         ret cpthread.pthread_mutex_trylock(this.handle) == 0;
     }
-
     ext fn print(void): void {
         print.('mutex_t[initialized={}]\n', this.initialized);
     }
-
     ext fn rem(void): void {
         if (this.initialized) {
             cpthread.pthread_mutex_destroy(this.handle);
@@ -45,6 +80,7 @@ ext type mutex_t: struct {
     }
 }
 
+@[[if: os != "windows"]]
 ext fn mutex_t.new(void): mutex_t {
     heap u8 *rw h = new.(MutexSize);
     cpthread.pthread_mutex_init(h, nil);
@@ -54,46 +90,71 @@ ext fn mutex_t.new(void): mutex_t {
     };
 }
 
+@[[if: os == "windows"]]
+ext type mutex_t: struct {
+    int heap u8 *rw handle;
+    int bool initialized;
+
+    ext fn lock(void): void {
+        EnterCriticalSection(this.handle);
+    }
+    ext fn unlock(void): void {
+        LeaveCriticalSection(this.handle);
+    }
+    ext fn try_lock(void): bool {
+        ret TryEnterCriticalSection(this.handle) != 0;
+    }
+    ext fn print(void): void {
+        print.('mutex_t[initialized={}]\n', this.initialized);
+    }
+    ext fn rem(void): void {
+        if (this.initialized) {
+            DeleteCriticalSection(this.handle);
+            rem.(this.handle);
+            this.initialized = false;
+            this.handle = nil;
+        }
+    }
+}
+
+@[[if: os == "windows"]]
+ext fn mutex_t.new(void): mutex_t {
+    heap u8 *rw h = new.(MutexSize);
+    InitializeCriticalSection(h);
+    ret mutex_t{
+        .handle = h,
+        .initialized = true
+    };
+}
+
 // ── rwlock_t ───────────────────────────────────────────────────────────────
 
+@[[if: os != "windows"]]
 ext type rwlock_t: struct {
     int heap u8 *rw handle;
     int bool initialized;
 
-    // Acquire a read (shared) lock.
     ext fn read_lock(void): void {
         cpthread.pthread_rwlock_rdlock(this.handle);
     }
-
-    // Acquire a write (exclusive) lock.
     ext fn write_lock(void): void {
         cpthread.pthread_rwlock_wrlock(this.handle);
     }
-
-    // Release a read lock.
     ext fn read_unlock(void): void {
         cpthread.pthread_rwlock_unlock(this.handle);
     }
-
-    // Release a write lock.
     ext fn write_unlock(void): void {
         cpthread.pthread_rwlock_unlock(this.handle);
     }
-
-    // Try to acquire a read lock without blocking.
     ext fn try_read_lock(void): bool {
         ret cpthread.pthread_rwlock_tryrdlock(this.handle) == 0;
     }
-
-    // Try to acquire a write lock without blocking.
     ext fn try_write_lock(void): bool {
         ret cpthread.pthread_rwlock_trywrlock(this.handle) == 0;
     }
-
     ext fn print(void): void {
         print.('rwlock_t[initialized={}]\n', this.initialized);
     }
-
     ext fn rem(void): void {
         if (this.initialized) {
             cpthread.pthread_rwlock_destroy(this.handle);
@@ -104,6 +165,7 @@ ext type rwlock_t: struct {
     }
 }
 
+@[[if: os != "windows"]]
 ext fn rwlock_t.new(void): rwlock_t {
     heap u8 *rw h = new.(RwlockSize);
     cpthread.pthread_rwlock_init(h, nil);
@@ -113,13 +175,59 @@ ext fn rwlock_t.new(void): rwlock_t {
     };
 }
 
+@[[if: os == "windows"]]
+ext type rwlock_t: struct {
+    int heap u8 *rw handle;
+    int bool initialized;
+
+    ext fn read_lock(void): void {
+        AcquireSRWLockShared(this.handle);
+    }
+    ext fn write_lock(void): void {
+        AcquireSRWLockExclusive(this.handle);
+    }
+    ext fn read_unlock(void): void {
+        ReleaseSRWLockShared(this.handle);
+    }
+    ext fn write_unlock(void): void {
+        ReleaseSRWLockExclusive(this.handle);
+    }
+    ext fn try_read_lock(void): bool {
+        ret TryAcquireSRWLockShared(this.handle) != 0;
+    }
+    ext fn try_write_lock(void): bool {
+        ret TryAcquireSRWLockExclusive(this.handle) != 0;
+    }
+    ext fn print(void): void {
+        print.('rwlock_t[initialized={}]\n', this.initialized);
+    }
+    ext fn rem(void): void {
+        // SRWLOCK has no destroy step; just release ownership.
+        if (this.initialized) {
+            rem.(this.handle);
+            this.initialized = false;
+            this.handle = nil;
+        }
+    }
+}
+
+@[[if: os == "windows"]]
+ext fn rwlock_t.new(void): rwlock_t {
+    heap u8 *rw h = new.(RwlockSize);
+    InitializeSRWLock(h);
+    ret rwlock_t{
+        .handle = h,
+        .initialized = true
+    };
+}
+
 // ── atomic_counter_t ───────────────────────────────────────────────────────
 
+@[[if: os != "windows"]]
 ext type atomic_counter_t: struct {
     int heap u8 *rw mutex_handle;
     int i64 value;
 
-    // Increment and return new value.
     ext fn increment(void): i64 {
         cpthread.pthread_mutex_lock(this.mutex_handle);
         this.value = this.value + 1;
@@ -127,8 +235,6 @@ ext type atomic_counter_t: struct {
         cpthread.pthread_mutex_unlock(this.mutex_handle);
         ret v;
     }
-
-    // Decrement and return new value.
     ext fn decrement(void): i64 {
         cpthread.pthread_mutex_lock(this.mutex_handle);
         this.value = this.value - 1;
@@ -136,8 +242,6 @@ ext type atomic_counter_t: struct {
         cpthread.pthread_mutex_unlock(this.mutex_handle);
         ret v;
     }
-
-    // Add n and return new value.
     ext fn add(i64 n): i64 {
         cpthread.pthread_mutex_lock(this.mutex_handle);
         this.value = this.value + n;
@@ -145,26 +249,20 @@ ext type atomic_counter_t: struct {
         cpthread.pthread_mutex_unlock(this.mutex_handle);
         ret v;
     }
-
-    // Get current value.
     ext fn get(void): i64 {
         cpthread.pthread_mutex_lock(this.mutex_handle);
         i64 v = this.value;
         cpthread.pthread_mutex_unlock(this.mutex_handle);
         ret v;
     }
-
-    // Set value.
     ext fn set(i64 n): void {
         cpthread.pthread_mutex_lock(this.mutex_handle);
         this.value = n;
         cpthread.pthread_mutex_unlock(this.mutex_handle);
     }
-
     ext fn print(void): void {
         print.('atomic_counter_t[value={}]\n', this.get());
     }
-
     ext fn rem(void): void {
         cpthread.pthread_mutex_destroy(this.mutex_handle);
         rem.(this.mutex_handle);
@@ -173,9 +271,68 @@ ext type atomic_counter_t: struct {
     }
 }
 
+@[[if: os != "windows"]]
 ext fn atomic_counter_t.new(i64 initial): atomic_counter_t {
     heap u8 *rw h = new.(MutexSize);
     cpthread.pthread_mutex_init(h, nil);
+    ret atomic_counter_t{
+        .mutex_handle = h,
+        .value = initial
+    };
+}
+
+@[[if: os == "windows"]]
+ext type atomic_counter_t: struct {
+    int heap u8 *rw mutex_handle;
+    int i64 value;
+
+    ext fn increment(void): i64 {
+        EnterCriticalSection(this.mutex_handle);
+        this.value = this.value + 1;
+        i64 v = this.value;
+        LeaveCriticalSection(this.mutex_handle);
+        ret v;
+    }
+    ext fn decrement(void): i64 {
+        EnterCriticalSection(this.mutex_handle);
+        this.value = this.value - 1;
+        i64 v = this.value;
+        LeaveCriticalSection(this.mutex_handle);
+        ret v;
+    }
+    ext fn add(i64 n): i64 {
+        EnterCriticalSection(this.mutex_handle);
+        this.value = this.value + n;
+        i64 v = this.value;
+        LeaveCriticalSection(this.mutex_handle);
+        ret v;
+    }
+    ext fn get(void): i64 {
+        EnterCriticalSection(this.mutex_handle);
+        i64 v = this.value;
+        LeaveCriticalSection(this.mutex_handle);
+        ret v;
+    }
+    ext fn set(i64 n): void {
+        EnterCriticalSection(this.mutex_handle);
+        this.value = n;
+        LeaveCriticalSection(this.mutex_handle);
+    }
+    ext fn print(void): void {
+        print.('atomic_counter_t[value={}]\n', this.get());
+    }
+    ext fn rem(void): void {
+        DeleteCriticalSection(this.mutex_handle);
+        rem.(this.mutex_handle);
+        this.mutex_handle = nil;
+        this.value = 0;
+    }
+}
+
+@[[if: os == "windows"]]
+ext fn atomic_counter_t.new(i64 initial): atomic_counter_t {
+    heap u8 *rw h = new.(MutexSize);
+    InitializeCriticalSection(h);
     ret atomic_counter_t{
         .mutex_handle = h,
         .value = initial
@@ -195,7 +352,6 @@ test 'mutex lock and unlock' {
     mutex_t m = mutex_t.new();
     m.lock();
     m.unlock();
-    // No deadlock means success
     expect.(true);
     mutex_t.rem();
 }
@@ -204,7 +360,6 @@ test 'mutex try_lock when unlocked returns true' {
     mutex_t m = mutex_t.new();
     bool got = m.try_lock();
     expect.(got);
-    // Must unlock after successful try_lock
     m.unlock();
     mutex_t.rem();
 }

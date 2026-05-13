@@ -1,23 +1,31 @@
 mod sys;
 
 lib "stdlib" = cstd;
+
+@[[if: os != "windows"]]
 lib "unistd" = cunistd;
+
+@[[if: os == "windows"]]
+lib "kernel32" = ckernel32;
+@[[if: os == "windows"]]
+ext fn Sleep(stack u32 dwMilliseconds): void;
+@[[if: os == "windows"]]
+ext fn GetCurrentProcessId(void): u32;
+@[[if: os == "windows"]]
+ext fn GetTempPathA(stack u32 nBufferLength, stack i8 *w lpBuffer): u32;
 
 // ── Process control ───────────────────────────────────────────────────────
 
-// Terminate the process with the given exit code.
 ext fn sys_exit(i32 code): void {
     cstd.exit(code);
 }
 
-// Abort with a core dump (SIGABRT).
 ext fn sys_abort(void): void {
     cstd.abort();
 }
 
 // ── Environment ───────────────────────────────────────────────────────────
 
-// Return the value of environment variable `name`, or nil if not set.
 ext fn sys_getenv(stack i8 *r name): i8 *r {
     stack i8 *r result = cstd.getenv(name);
     ret result;
@@ -25,31 +33,87 @@ ext fn sys_getenv(stack i8 *r name): i8 *r {
 
 // ── Process / user identity ───────────────────────────────────────────────
 
-// Current process ID.
+@[[if: os != "windows"]]
 ext fn sys_getpid(void): i32 {
     ret cunistd.getpid();
 }
+@[[if: os == "windows"]]
+ext fn sys_getpid(void): i32 {
+    ret (i32)GetCurrentProcessId();
+}
 
-// Current user ID.
+// POSIX only — Windows lacks a uid concept.
+@[[if: os != "windows"]]
 ext fn sys_getuid(void): u32 {
     ret cunistd.getuid();
 }
 
-// Parent process ID.
+// POSIX only.
+@[[if: os != "windows"]]
 ext fn sys_getppid(void): i32 {
     ret cunistd.getppid();
 }
 
 // ── Sleep ─────────────────────────────────────────────────────────────────
 
-// Sleep for `secs` whole seconds.
+@[[if: os != "windows"]]
 ext fn sys_sleep_s(u32 secs): void {
     cunistd.sleep(secs);
 }
+@[[if: os == "windows"]]
+ext fn sys_sleep_s(u32 secs): void {
+    Sleep(secs * 1000);
+}
 
-// Sleep for `usecs` microseconds.
+// On Windows, resolution is millisecond.
+@[[if: os != "windows"]]
 ext fn sys_sleep_us(u32 usecs): void {
     cunistd.usleep(usecs);
+}
+@[[if: os == "windows"]]
+ext fn sys_sleep_us(u32 usecs): void {
+    Sleep(usecs / 1000);
+}
+
+// ── Temp paths ────────────────────────────────────────────────────────────
+
+// Build "<temp_dir><sep><name>" into a heap-allocated null-terminated path.
+// Caller must rem.() the returned pointer.
+@[[if: os != "windows"]]
+ext fn sys_temp_path(stack i8 *r name): heap i8 *rw {
+    stack i8 *r env = cstd.getenv("TMPDIR");
+    stack i8 *r dir = (env != nil) ? env : "/tmp";
+    stack u32 dn = 0;
+    while (dir[dn] != 0) { dn = dn + 1; }
+    stack u32 nn = 0;
+    while (name[nn] != 0) { nn = nn + 1; }
+    heap i8 *rw out = new.(dn + 1 + nn + 1);
+    stack u32 i = 0;
+    while (i < dn) { out[i] = dir[i]; i = i + 1; }
+    out[dn] = '/';
+    stack u32 j = 0;
+    while (j < nn) { out[dn + 1 + j] = name[j]; j = j + 1; }
+    out[dn + 1 + nn] = 0;
+    ret out;
+}
+@[[if: os == "windows"]]
+ext fn sys_temp_path(stack i8 *r name): heap i8 *rw {
+    stack i8 buf[260];
+    stack u32 dn = GetTempPathA(260, buf);
+    // Strip trailing backslash if present.
+    if (dn > 0 && buf[dn - 1] == '\\') {
+        dn = dn - 1;
+    }
+    stack u32 nn = 0;
+    while (name[nn] != 0) { nn = nn + 1; }
+    heap i8 *rw out = new.(dn + 1 + nn + 1);
+    stack u32 i = 0;
+    while (i < dn) { out[i] = buf[i]; i = i + 1; }
+    out[dn] = '\\';
+    stack u32 j = 0;
+    while (j < nn) { out[dn + 1 + j] = name[j]; j = j + 1; }
+    out[dn + 1 + nn] = 0;
+    ret out;
 }
 
 test 'sys_getpid positive' {
@@ -62,12 +126,21 @@ test 'sys_getenv PATH not nil' {
     expect.(p != nil);
 }
 
+@[[if: os != "windows"]]
 test 'sys_getuid non-negative' {
     u32 uid = sys_getuid();
     expect.(uid >= 0);
 }
 
+@[[if: os != "windows"]]
 test 'sys_getppid positive' {
     i32 ppid = sys_getppid();
     expect.(ppid > 0);
+}
+
+test 'sys_temp_path joins correctly' {
+    heap i8 *rw p = sys_temp_path("foo.txt");
+    expect.(p != nil);
+    expect.(p[0] != 0);
+    rem.(p);
 }

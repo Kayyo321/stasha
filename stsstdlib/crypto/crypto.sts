@@ -62,7 +62,16 @@ ext fn crypto_sha256_hex(stack u8 *r+ data, u64 len, stack i8 *w+ hex_out): void
     rem.(digest);
 }
 
-// Secure random bytes from /dev/urandom
+// Secure random bytes.
+// POSIX: /dev/urandom.  Windows: BCryptGenRandom from bcrypt.dll.
+
+@[[if: os == "windows"]]
+lib "bcrypt" = cbcrypt;
+@[[if: os == "windows"]]
+ext fn BCryptGenRandom(stack void *r hAlgorithm, stack u8 *w+ pbBuffer,
+                       stack u32 cbBuffer, stack u32 dwFlags): i32;
+
+@[[if: os != "windows"]]
 ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
     stack i8 *rw fp = cio.fopen("/dev/urandom", "rb");
     if (fp == nil) {
@@ -72,6 +81,16 @@ ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
     cio.fclose(fp);
     if (n != len) {
         ret error.('short read from /dev/urandom');
+    }
+    ret nil;
+}
+
+@[[if: os == "windows"]]
+ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
+    // dwFlags = 2 = BCRYPT_USE_SYSTEM_PREFERRED_RNG (no algorithm handle needed)
+    i32 rc = BCryptGenRandom(nil, buf, len, 2);
+    if (rc != 0) {
+        ret error.('BCryptGenRandom failed');
     }
     ret nil;
 }
