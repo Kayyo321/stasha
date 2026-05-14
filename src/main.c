@@ -7,6 +7,7 @@
 #  include <sys/wait.h>
 #elif defined(_WIN32)
 #  include <process.h>
+#  include <windows.h>
 #  define getpid _getpid
 #endif
 #if defined(__APPLE__)
@@ -52,6 +53,14 @@ static void init_bin_dir(const char *argv0) {
     if (n > 0) {
         exe[n] = '\0';
         char *sep = strrchr(exe, '/');
+        if (sep) { *sep = '\0'; strncpy(bin_dir, exe, sizeof(bin_dir) - 1); return; }
+    }
+#elif defined(_WIN32)
+    char exe[512];
+    DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    if (n > 0 && n < sizeof(exe)) {
+        char *sep = strrchr(exe, '\\');
+        if (!sep) sep = strrchr(exe, '/');
         if (sep) { *sep = '\0'; strncpy(bin_dir, exe, sizeof(bin_dir) - 1); return; }
     }
 #endif

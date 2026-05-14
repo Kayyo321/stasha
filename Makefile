@@ -17,14 +17,19 @@ endif
 LLVM_BUILD ?= build/llvm
 LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config$(EXE_SUFFIX)
 
+UNAME_S := $(shell uname -s 2>/dev/null)
+UNAME_M := $(shell uname -m 2>/dev/null)
+
 # Flags resolved at recipe time (recursive =) so llvm-config is found after build
 LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis native \
-               lto passes option codegen bitwriter debuginfodwarf \
-               objcarcopts textapi object --system-libs 2>/dev/null) \
+               lto passes option codegen bitwriter debuginfodwarf debuginfocodeview \
+               objcarcopts textapi object windowsdriver windowsmanifest \
+               libdriver dlltooldriver \
+               --system-libs 2>/dev/null) \
                -lLLVMDTLTO
 else
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
@@ -50,8 +55,35 @@ else
 LDFLAGS  = -Wl,--start-group $(LLD_LDLIBS) $(LLVM_LDFLAGS) -Wl,--end-group -lstdc++ -lzstd -lz
 endif
 
+# ── Runtime + extlib target ABI ────────────────────────────────────────────
+# On Windows we emit MSVC-ABI code (triples *-pc-windows-msvc) from codegen,
+# so runtime/extlib object files MUST be built for the same ABI to link.
+# Use clang with an explicit --target and let it find the MSVC headers/libs
+# from the active Developer Command Prompt (LIB / INCLUDE env).
+ifeq ($(EXE_SUFFIX),.exe)
+  ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+    RUNTIME_TARGET = aarch64-pc-windows-msvc
+  else
+    RUNTIME_TARGET = x86_64-pc-windows-msvc
+  endif
+  RUNTIME_CC     = clang --target=$(RUNTIME_TARGET)
+  RUNTIME_AR     = llvm-ar
+  RUNTIME_RANLIB = llvm-ranlib
+  RUNTIME_EXTRA  = -fms-runtime-lib=dll
+else
+  RUNTIME_CC     = $(CC)
+  RUNTIME_AR     = ar
+  RUNTIME_RANLIB = ranlib
+  RUNTIME_EXTRA  =
+endif
+
 # ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────
+# -fPIC and _GNU_SOURCE/_DARWIN_C_SOURCE are POSIX-only; suppress on Windows.
+ifeq ($(EXE_SUFFIX),.exe)
+EXTLIB_CFLAGS = -std=c11 -O2 $(RUNTIME_EXTRA)
+else
 EXTLIB_CFLAGS = -std=c11 -O2 -fPIC -D_GNU_SOURCE -D_DARWIN_C_SOURCE
+endif
 
 # ── cJSON (single-file C library) ─────────────────────────────────────────────
 CJSON_SRC = extlib/cjson/cJSON.c
@@ -131,16 +163,17 @@ STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
 # All .a targets (used by 'stdlib' phony target to know what to build).
 STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS_ALL),$(dir $(s))lib$(notdir $(basename $(s))).a)
 
-UNAME_S := $(shell uname -s 2>/dev/null)
-UNAME_M := $(shell uname -m 2>/dev/null)
-
 # ── OpenSSL (static libcrypto) ────────────────────────────────────────────
 OPENSSL_SRC   = extlib/openssl
 OPENSSL_BUILD = build/openssl
 
 ifeq ($(EXE_SUFFIX),.exe)
   OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.lib
-  OPENSSL_TARGET    = VC-WIN64A
+  ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+    OPENSSL_TARGET  = VC-WIN64-ARM
+  else
+    OPENSSL_TARGET  = VC-WIN64A
+  endif
   OPENSSL_CONFIGURE = perl Configure
   OPENSSL_BUILD_CMD = nmake build_libs && nmake install_dev
 else ifeq ($(UNAME_S),Darwin)
@@ -221,7 +254,7 @@ endif
 	        echo "PASS"; pass=$$((pass+1)); \
 	    else \
 	        echo "FAIL"; fail=$$((fail+1)); \
-	        echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	        echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	    fi; \
 	done; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_JSON) ..."; \
@@ -231,7 +264,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_HTTP) ..."; \
 	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_HTTP)" -l stsstdlib/net/libhttp.a 2>&1); \
@@ -240,7 +273,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	if [ "$(STASHA_NO_OPENSSL)" != "1" ]; then \
 	  printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRNG) ..."; \
@@ -250,7 +283,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	  else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	  fi; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLARGS) ..."; \
@@ -260,7 +293,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	echo ""; \
 	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
@@ -275,23 +308,23 @@ endif
 
 $(CJSON_OBJ): $(CJSON_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
 
 $(JSON_WRAP_OBJ): $(JSON_WRAP_SRC) std/json/json_wrapper.h extlib/cjson/cJSON.h
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
 
 $(MONGOOSE_OBJ): $(MONGOOSE_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -DMG_ENABLE_LINES=1 -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -DMG_ENABLE_LINES=1 -c -o $@ $<
 
 $(HTTP_WRAP_OBJ): $(HTTP_WRAP_SRC) std/http/http_wrapper.h extlib/mongoose/mongoose.h
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
 
 $(CLARGS_RT_OBJ): $(CLARGS_RT_SRC) std/cl_args/cl_args_rt.h
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
 
 # ── Generated rule: stsstdlib/<cat>/lib<name>.a ← stsstdlib/<cat>/<name>.sts ─
 #
@@ -312,8 +345,8 @@ stsstdlib/serial/libjson.a: stsstdlib/serial/json.sts $(TARGET) \
                               $(CJSON_OBJ) $(JSON_WRAP_OBJ)
 	@mkdir -p stsstdlib/serial
 	$(TARGET) lib stsstdlib/serial/json.sts -o $@
-	ar q $@ $(CJSON_OBJ) $(JSON_WRAP_OBJ)
-	ranlib $@
+	$(RUNTIME_AR) -q $@ $(CJSON_OBJ) $(JSON_WRAP_OBJ)
+	$(RUNTIME_RANLIB) $@
 
 # ── HTTP: bundle mongoose + wrapper into the archive ──────────────────────────
 
@@ -321,23 +354,23 @@ stsstdlib/net/libhttp.a: stsstdlib/net/http.sts $(TARGET) \
                            $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
 	@mkdir -p stsstdlib/net
 	$(TARGET) lib stsstdlib/net/http.sts -o $@
-	ar q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
-	ranlib $@
+	$(RUNTIME_AR) -q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
+	$(RUNTIME_RANLIB) $@
 
 # ── cl_args: bundle C runtime into the archive ───────────────────────────────
 
 stsstdlib/sys/libcl_args.a: stsstdlib/sys/cl_args.sts $(TARGET) $(CLARGS_RT_OBJ)
 	@mkdir -p stsstdlib/sys
 	$(TARGET) lib stsstdlib/sys/cl_args.sts -o $@
-	ar q $@ $(CLARGS_RT_OBJ)
-	ranlib $@
+	$(RUNTIME_AR) -q $@ $(CLARGS_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
 
 # ── complex_rng: bundle OpenSSL libcrypto into the archive ────────────────────
 
 $(STDLIB_BUNDLED_CRNG_LIB): stsstdlib/random/complex_rng.sts $(TARGET) $(OPENSSL_LIB)
 	@mkdir -p stsstdlib/random
 	$(TARGET) lib stsstdlib/random/complex_rng.sts -o $@
-	ranlib $@
+	$(RUNTIME_RANLIB) $@
 
 clean-stdlib:
 	find stsstdlib -name '*.a' -delete 2>/dev/null; true
@@ -347,41 +380,41 @@ thread-runtime: $(THREAD_RUNTIME_LIB)
 
 build/obj/runtime/thread_runtime.o: src/runtime/thread_runtime.c src/runtime/thread_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c2x -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 build/obj/runtime/executor.o: src/runtime/executor.c src/runtime/executor.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c2x -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(THREAD_RUNTIME_LIB): $(THREAD_RUNTIME_OBJ) | bin
-	ar rcs $@ $^
+	$(RUNTIME_AR) rcs $@ $^
 
 zone-runtime: $(ZONE_RUNTIME_LIB)
 
 $(ZONE_RUNTIME_OBJ): $(ZONE_RUNTIME_SRC) src/runtime/zone_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c11 -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(ZONE_RUNTIME_LIB): $(ZONE_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	$(RUNTIME_AR) rcs $@ $<
 
 crash-runtime: $(CRASH_RUNTIME_LIB)
 
 $(CRASH_RUNTIME_OBJ): $(CRASH_RUNTIME_SRC) src/runtime/crash_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c11 -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(CRASH_RUNTIME_LIB): $(CRASH_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	$(RUNTIME_AR) rcs $@ $<
 
 coro-runtime: $(CORO_RUNTIME_LIB)
 
 $(CORO_RUNTIME_OBJ): $(CORO_RUNTIME_SRC) src/runtime/coro_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c11 -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(CORO_RUNTIME_LIB): $(CORO_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	$(RUNTIME_AR) rcs $@ $<
 
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
@@ -470,12 +503,11 @@ bin:
 	@mkdir -p bin
 
 # ── LLVM + LLD build (one-time) ──────────────────────────────
-UNAME_M := $(shell uname -m)
-ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
-  LLVM_TARGETS = AArch64
-else
-  LLVM_TARGETS = X86
-endif
+# Build LLVM with both X86 and AArch64 targets on all hosts so the stasha
+# binary can emit code for either architecture (needed for Windows arm64
+# and for any future cross-compilation work). The marginal build cost is
+# small compared with shipping a single-target compiler.
+LLVM_TARGETS = X86;AArch64
 
 LLD_LIB = $(LLVM_BUILD)/lib/liblldCommon.a
 

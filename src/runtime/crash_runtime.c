@@ -147,16 +147,106 @@ void __crash_runtime_install(void) {
 
 #else /* _WIN32 */
 
-/* Windows port — minimal stub. SetUnhandledExceptionFilter could be wired up
- * later; for now we simply provide the public API surface so executables link.
- * The TLS breadcrumb globals above are defined unconditionally and are still
- * written by emitted code (just never read on Windows). */
-
 #include <windows.h>
+#include <dbghelp.h>
 
-static LONG WINAPI __crash_unhandled_filter(EXCEPTION_POINTERS *ep) {
-    fprintf(stderr, "\ncrash: unhandled exception 0x%08lx\n",
-            (unsigned long)ep->ExceptionRecord->ExceptionCode);
+static volatile LONG __crash_active_w = 0;
+
+static const char *win_exception_name(DWORD code) {
+    switch (code) {
+        case EXCEPTION_ACCESS_VIOLATION:         return "EXCEPTION_ACCESS_VIOLATION (segmentation fault)";
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:    return "EXCEPTION_ARRAY_BOUNDS_EXCEEDED";
+        case EXCEPTION_DATATYPE_MISALIGNMENT:    return "EXCEPTION_DATATYPE_MISALIGNMENT";
+        case EXCEPTION_FLT_DIVIDE_BY_ZERO:       return "EXCEPTION_FLT_DIVIDE_BY_ZERO";
+        case EXCEPTION_FLT_INVALID_OPERATION:    return "EXCEPTION_FLT_INVALID_OPERATION";
+        case EXCEPTION_FLT_OVERFLOW:             return "EXCEPTION_FLT_OVERFLOW";
+        case EXCEPTION_FLT_STACK_CHECK:          return "EXCEPTION_FLT_STACK_CHECK";
+        case EXCEPTION_FLT_UNDERFLOW:            return "EXCEPTION_FLT_UNDERFLOW";
+        case EXCEPTION_ILLEGAL_INSTRUCTION:      return "EXCEPTION_ILLEGAL_INSTRUCTION";
+        case EXCEPTION_IN_PAGE_ERROR:            return "EXCEPTION_IN_PAGE_ERROR";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO:       return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_INT_OVERFLOW:             return "EXCEPTION_INT_OVERFLOW";
+        case EXCEPTION_PRIV_INSTRUCTION:         return "EXCEPTION_PRIV_INSTRUCTION";
+        case EXCEPTION_STACK_OVERFLOW:           return "EXCEPTION_STACK_OVERFLOW";
+        case EXCEPTION_BREAKPOINT:               return "EXCEPTION_BREAKPOINT";
+        default:                                 return "unhandled exception";
+    }
+}
+
+static int win_is_fatal(DWORD code) {
+    switch (code) {
+        case EXCEPTION_ACCESS_VIOLATION:
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+        case EXCEPTION_DATATYPE_MISALIGNMENT:
+        case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+        case EXCEPTION_FLT_INVALID_OPERATION:
+        case EXCEPTION_FLT_OVERFLOW:
+        case EXCEPTION_FLT_STACK_CHECK:
+        case EXCEPTION_FLT_UNDERFLOW:
+        case EXCEPTION_ILLEGAL_INSTRUCTION:
+        case EXCEPTION_IN_PAGE_ERROR:
+        case EXCEPTION_INT_DIVIDE_BY_ZERO:
+        case EXCEPTION_INT_OVERFLOW:
+        case EXCEPTION_PRIV_INSTRUCTION:
+        case EXCEPTION_STACK_OVERFLOW:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static void win_print_stack(void) {
+    void *frames[32];
+    USHORT n = RtlCaptureStackBackTrace(1, 32, frames, NULL);
+    if (n == 0) return;
+
+    HANDLE proc = GetCurrentProcess();
+    static int sym_initialised = 0;
+    if (!sym_initialised) {
+        SymSetOptions(SymGetOptions() | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+        SymInitialize(proc, NULL, TRUE);
+        sym_initialised = 1;
+    }
+
+    fprintf(stderr, "stack trace:\n");
+    char buf[sizeof(SYMBOL_INFO) + 512];
+    SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen   = 512;
+    for (USHORT i = 0; i < n; i++) {
+        DWORD64 addr = (DWORD64)(uintptr_t)frames[i];
+        DWORD64 disp = 0;
+        const char *name = "?";
+        if (SymFromAddr(proc, addr, &disp, sym)) name = sym->Name;
+
+        IMAGEHLP_LINE64 line; line.SizeOfStruct = sizeof(line);
+        DWORD line_disp = 0;
+        if (SymGetLineFromAddr64(proc, addr, &line_disp, &line))
+            fprintf(stderr, "  %2u  %s  (%s:%lu)\n",
+                    (unsigned)i, name, line.FileName, (unsigned long)line.LineNumber);
+        else
+            fprintf(stderr, "  %2u  %s  +0x%llx\n",
+                    (unsigned)i, name, (unsigned long long)disp);
+    }
+    fflush(stderr);
+}
+
+static LONG WINAPI __crash_vectored(EXCEPTION_POINTERS *ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (!win_is_fatal(code)) return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedCompareExchange(&__crash_active_w, 1, 0) != 0) {
+        TerminateProcess(GetCurrentProcess(), (UINT)(0x80000000 | code));
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    fprintf(stderr, "\ncrash: %s", win_exception_name(code));
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) {
+        if (ep->ExceptionRecord->NumberParameters >= 2)
+            fprintf(stderr, " at address 0x%llx",
+                    (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1]);
+    }
+    fputc('\n', stderr);
+
     if (__stasha_crash_fn) {
         fprintf(stderr, "last call: %s()", __stasha_crash_fn);
         if (__stasha_crash_file)
@@ -164,13 +254,19 @@ static LONG WINAPI __crash_unhandled_filter(EXCEPTION_POINTERS *ep) {
                     (unsigned)__stasha_crash_line);
         fputc('\n', stderr);
     }
-    fflush(stderr);
+    fputc('\n', stderr);
+
+    win_print_stack();
+
     if (__crash_block_fn) __crash_block_fn();
-    return EXCEPTION_EXECUTE_HANDLER;
+
+    /* Run @[[exit]] blocks via exit() → llvm.global_dtors */
+    exit((int)(0x80000000 | code));
+    return EXCEPTION_EXECUTE_HANDLER; /* unreachable */
 }
 
 void __crash_runtime_install(void) {
-    SetUnhandledExceptionFilter(__crash_unhandled_filter);
+    AddVectoredExceptionHandler(1, __crash_vectored);
 }
 
 #endif /* _WIN32 */
