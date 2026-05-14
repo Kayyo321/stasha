@@ -25,7 +25,7 @@ LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
-LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis native \
+LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis x86 aarch64 \
                lto passes option codegen bitwriter debuginfodwarf debuginfocodeview \
                objcarcopts textapi object windowsdriver windowsmanifest \
                libdriver dlltooldriver \

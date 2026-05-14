@@ -140,6 +140,16 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
     }
     args.push_back("-o");
     args.push_back(output_path);
+    /* System lib search paths — Ubuntu/Debian multiarch + traditional. */
+#if defined(__aarch64__) || defined(__arm64__)
+    args.push_back("-L/usr/lib/aarch64-linux-gnu");
+    args.push_back("-L/lib/aarch64-linux-gnu");
+#else
+    args.push_back("-L/usr/lib/x86_64-linux-gnu");
+    args.push_back("-L/lib/x86_64-linux-gnu");
+#endif
+    args.push_back("-L/usr/lib");
+    args.push_back("-L/lib");
     args.push_back("-lc");
     args.push_back("-lm");
     args.push_back("-lpthread");  /* thread runtime requires pthreads on Linux */

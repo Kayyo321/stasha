@@ -3,6 +3,7 @@
 #ifndef _WIN32
 #  include <sys/types.h>   /* ssize_t */
 #  include <unistd.h>      /* read, close */
+#  include <fcntl.h>       /* open, O_RDONLY */
 #endif
 
 static int          g_argc  = 0;
@@ -28,34 +29,10 @@ static void cl_args_capture(void) {
     int           fd;
     ssize_t       n;
 
-    /* open /proc/self/cmdline */
-    fd = -1;
-    {
-        /* inline syscall open to avoid pulling in stdio */
-        const char path[] = "/proc/self/cmdline";
-        __asm__ volatile (
-            "syscall"
-            : "=a"(fd)
-            : "0"(2 /* SYS_open */), "D"(path), "S"(0 /* O_RDONLY */), "d"(0)
-            : "rcx", "r11", "memory"
-        );
-    }
+    fd = open("/proc/self/cmdline", 0 /* O_RDONLY */);
     if (fd < 0) return;
-    n = 0;
-    {
-        __asm__ volatile (
-            "syscall"
-            : "=a"(n)
-            : "0"(0 /* SYS_read */), "D"(fd), "S"(buf), "d"(sizeof(buf) - 1)
-            : "rcx", "r11", "memory"
-        );
-    }
-    {
-        long rc;
-        __asm__ volatile (
-            "syscall" : "=a"(rc) : "0"(3 /* SYS_close */), "D"(fd) : "rcx", "r11"
-        );
-    }
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
     if (n <= 0) return;
     buf[n] = '\0';
     int argc = 0;

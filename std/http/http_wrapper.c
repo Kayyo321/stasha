@@ -4,6 +4,12 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef _WIN32
+#  define strcasecmp _stricmp
+#else
+#  include <strings.h>
+#endif
+
 /* ── Compile-time limits ───────────────────────────────────────────────────── */
 
 #define STDHTTP_MAX_ROUTES      64
