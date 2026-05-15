@@ -150,6 +150,13 @@ THREAD_TEST_SRCS = examples/thread_basic.sts    \
 # ── Standard library ──────────────────────────────────────────────────────
 STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 
+# complex_rng requires OpenSSL libcrypto. When STASHA_NO_OPENSSL=1 (Windows
+# CI, where the MSYS2 perl can't drive the OpenSSL Configure) drop it from
+# every derived list so neither the build nor the test pulls in OpenSSL.
+ifeq ($(STASHA_NO_OPENSSL),1)
+STDLIB_SRCS_ALL := $(filter-out stsstdlib/random/complex_rng.sts,$(STDLIB_SRCS_ALL))
+endif
+
 # Modules that have custom bundled-archive rules (exclude from default foreach).
 ifeq ($(STASHA_NO_OPENSSL),1)
 STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts

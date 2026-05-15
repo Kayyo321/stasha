@@ -79,7 +79,12 @@ jobs:
         id: llvm-cache
         with:
           path: build/llvm
-          key: llvm-${{ matrix.target }}-v2-${{ hashFiles('Makefile') }}
+          # Static token (not hashFiles(Makefile)) so routine Makefile edits
+          # don't trigger a ~30min LLVM rebuild. Bump v3 -> v4 manually when
+          # LLVM_TARGETS or the LLVM submodule commit changes.
+          key: llvm-${{ matrix.target }}-v3
+          restore-keys: |
+            llvm-${{ matrix.target }}-
 
       - name: Build LLVM (non-Windows)
         if: runner.os != 'Windows' && steps.llvm-cache.outputs.cache-hit != 'true'
