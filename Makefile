@@ -22,10 +22,16 @@ UNAME_M := $(shell uname -m 2>/dev/null)
 
 # Flags resolved at recipe time (recursive =) so llvm-config is found after build
 LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
+# Target backends the local LLVM was actually built with, lowercased to
+# llvm-config component names (AArch64->aarch64, X86->x86). Passing a
+# component for a target that wasn't built makes llvm-config fail and
+# emit nothing, which would silently break the link.
+LLVM_TARGET_LIBS = $(shell "$(LLVM_CFG)" --targets-built 2>/dev/null | \
+                   tr 'A-Z ' 'a-z\n' | grep -E '^(x86|aarch64)$$' | tr '\n' ' ')
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
-LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis x86 aarch64 \
+LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis $(LLVM_TARGET_LIBS) \
                lto passes option codegen bitwriter debuginfodwarf debuginfocodeview \
                objcarcopts textapi object windowsdriver windowsmanifest \
                libdriver dlltooldriver \
@@ -105,6 +111,10 @@ HTTP_WRAP_OBJ = build/obj/std/http/http_wrapper.o
 CLARGS_RT_SRC = std/cl_args/cl_args_rt.c
 CLARGS_RT_OBJ = build/obj/std/cl_args/cl_args_rt.o
 
+# ── crypto (SHA-256) runtime ────────────────────────────────────────────────
+SHA256_RT_SRC = std/crypto/sha256_rt.c
+SHA256_RT_OBJ = build/obj/std/crypto/sha256_rt.o
+
 SRCS = src/main.c                       \
        src/common/common.c               \
        src/lexer/lexer.c                 \
@@ -159,9 +169,9 @@ endif
 
 # Modules that have custom bundled-archive rules (exclude from default foreach).
 ifeq ($(STASHA_NO_OPENSSL),1)
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts
 else
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts
 endif
 
 # Files for the default compile-only rule.
@@ -198,6 +208,10 @@ else
   OPENSSL_BUILD_CMD = $(MAKE) build_libs && $(MAKE) install_dev
   ifeq ($(UNAME_M),aarch64)
     OPENSSL_TARGET = linux-aarch64
+    # ld.lld can't resolve the LSE outline-atomic helpers
+    # (__aarch64_ldadd8_*) that GCC emits by default; disable them so
+    # OpenSSL uses inline atomics instead.
+    OPENSSL_EXTRA  = -mno-outline-atomics
   else
     OPENSSL_TARGET = linux-x86_64
   endif
@@ -209,7 +223,7 @@ all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
-stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stdlib-test
+stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stdlib-test
 	@mkdir -p bin/stdlib
 	@for s in $(STDLIB_SRCS); do \
 	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
@@ -222,6 +236,8 @@ stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhtt
 	@cp stsstdlib/net/http.sts     bin/stdlib/
 	@cp stsstdlib/sys/libcl_args.a bin/stdlib/
 	@cp stsstdlib/sys/cl_args.sts  bin/stdlib/
+	@cp stsstdlib/crypto/libcrypto.a bin/stdlib/
+	@cp stsstdlib/crypto/crypto.sts  bin/stdlib/
 	@echo "stdlib installed -> bin/stdlib/"
 
 # Modules that require platform-specific external libs not available everywhere.
@@ -234,18 +250,19 @@ STDLIB_TEST_BUNDLED_JSON      = stsstdlib/serial/json.sts
 STDLIB_TEST_BUNDLED_HTTP      = stsstdlib/net/http.sts
 STDLIB_TEST_BUNDLED_CRNG      = stsstdlib/random/complex_rng.sts
 STDLIB_TEST_BUNDLED_CLARGS    = stsstdlib/sys/cl_args.sts
+STDLIB_TEST_BUNDLED_CRYPTO    = stsstdlib/crypto/crypto.sts
 STDLIB_BUNDLED_CRNG_LIB       = stsstdlib/random/libcomplex_rng.a
 
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
 ifeq ($(STASHA_NO_OPENSSL),1)
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a
 else
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a $(STDLIB_BUNDLED_CRNG_LIB)
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a $(STDLIB_BUNDLED_CRNG_LIB)
 endif
 	@echo ""
 	@echo "=== stdlib tests ==="
-	@pass=0; fail=0; skip=0; \
+	@pass=0; fail=0; skip=0; dumped=; \
 	for f in $(STDLIB_SRCS); do \
 	    skip_this=0; \
 	    for s in $(STDLIB_TEST_SKIP); do \
@@ -261,6 +278,12 @@ endif
 	        echo "PASS"; pass=$$((pass+1)); \
 	    else \
 	        echo "FAIL"; fail=$$((fail+1)); \
+	        if [ -z "$$dumped" ]; then \
+	            echo "      ---- full output ($$f) ----"; \
+	            echo "$$out" | tail -40 | sed 's/^/      /'; \
+	            echo "      ---- end ----"; \
+	            dumped=1; \
+	        fi; \
 	        echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	    fi; \
 	done; \
@@ -302,6 +325,15 @@ endif
 	    echo "FAIL"; fail=$$((fail+1)); \
 	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRYPTO) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRYPTO)" -l stsstdlib/crypto/libcrypto.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
+	fi; \
 	echo ""; \
 	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
 	echo ""; \
@@ -330,6 +362,10 @@ $(HTTP_WRAP_OBJ): $(HTTP_WRAP_SRC) std/http/http_wrapper.h extlib/mongoose/mongo
 	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
 
 $(CLARGS_RT_OBJ): $(CLARGS_RT_SRC) std/cl_args/cl_args_rt.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+
+$(SHA256_RT_OBJ): $(SHA256_RT_SRC) std/crypto/sha256_rt.h
 	@mkdir -p $(dir $@)
 	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
 
@@ -370,6 +406,14 @@ stsstdlib/sys/libcl_args.a: stsstdlib/sys/cl_args.sts $(TARGET) $(CLARGS_RT_OBJ)
 	@mkdir -p stsstdlib/sys
 	$(TARGET) lib stsstdlib/sys/cl_args.sts -o $@
 	$(RUNTIME_AR) -q $@ $(CLARGS_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
+
+# ── crypto: bundle the portable SHA-256 shim into the archive ────────────────
+
+stsstdlib/crypto/libcrypto.a: stsstdlib/crypto/crypto.sts $(TARGET) $(SHA256_RT_OBJ)
+	@mkdir -p stsstdlib/crypto
+	$(TARGET) lib stsstdlib/crypto/crypto.sts -o $@
+	$(RUNTIME_AR) -q $@ $(SHA256_RT_OBJ)
 	$(RUNTIME_RANLIB) $@
 
 # ── complex_rng: bundle OpenSSL libcrypto into the archive ────────────────────
@@ -557,8 +601,9 @@ $(OPENSSL_LIB): $(OPENSSL_SRC)/Configure
 	cd $(OPENSSL_SRC) && $(OPENSSL_CONFIGURE) \
 	    --prefix=$(abspath $(OPENSSL_BUILD)) \
 	    --openssldir=$(abspath $(OPENSSL_BUILD))/ssl \
+	    --libdir=lib \
 	    $(OPENSSL_TARGET) \
-	    no-shared no-tests no-docs
+	    no-shared no-tests no-docs $(OPENSSL_EXTRA)
 	cd $(OPENSSL_SRC) && $(OPENSSL_BUILD_CMD)
 
 clean-openssl:
