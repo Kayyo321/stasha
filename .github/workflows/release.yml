@@ -187,32 +187,84 @@ jobs:
           cp bin/thread_runtime.a bin/zone_runtime.a \
              bin/coro_runtime.a bin/crash_runtime.a _dist/bin/
           cp -r bin/stdlib/. _dist/bin/stdlib/
-          # Bundle MSYS2 runtime DLLs the host stasha.exe depends on.
-          if [ "$STS_ARCH" = "arm64" ]; then MSYSROOT=/clangarm64; else MSYSROOT=/ucrt64; fi
-          ldd bin/stasha.exe | awk -v root="$MSYSROOT" '$0 ~ "=> "root"/" {print $3}' | while read dll; do
-            cp "$dll" _dist/bin/
-          done
+
+          # ── Bundle MSYS2 runtime DLLs that stasha.exe links against ──
+          # Strategy: use ldd (available in MSYS2) and filter for DLLs
+          # under the MSYS2 prefix. Fall back to copying the known set of
+          # required runtime DLLs if ldd produces no matches.
+          if [ "$STS_ARCH" = "arm64" ]; then
+            MSYSROOT=/clangarm64
+          else
+            MSYSROOT=/ucrt64
+          fi
+
+          # Collect DLLs from ldd output that live under $MSYSROOT.
+          DLL_LIST=$(ldd bin/stasha.exe 2>/dev/null \
+            | grep -i "${MSYSROOT}/" \
+            | awk '{print $3}' \
+            | grep -i '\.dll$' || true)
+
+          if [ -n "$DLL_LIST" ]; then
+            echo "$DLL_LIST" | while IFS= read -r dll; do
+              [ -f "$dll" ] && cp "$dll" _dist/bin/ || true
+            done
+          else
+            # ldd didn't resolve MSYS2-prefix DLLs — copy the minimum
+            # known runtime set for clang/UCRT64 builds.
+            echo "ldd produced no MSYS2 DLLs; copying known runtime set"
+            for dll in \
+              "${MSYSROOT}/bin/libc++.dll" \
+              "${MSYSROOT}/bin/libunwind.dll" \
+              "${MSYSROOT}/bin/libwinpthread-1.dll"; do
+              [ -f "$dll" ] && cp "$dll" _dist/bin/ || true
+            done
+          fi
+
           (cd _dist && powershell -Command "Compress-Archive -Path * -DestinationPath ../$ARCHIVE -Force")
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
-      # ── upload to GitHub Release (tag pushes only) ───────────────
-      - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.ARCHIVE }}
-            ${{ env.ARCHIVE }}.sha256
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-
-      # ── upload archive as CI artifact (non-tag builds) ───────────
-      - name: Upload CI artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+      # ── upload per-platform archive as a workflow artifact ───────
+      # Uploaded on every build (tag and non-tag) so the consolidation
+      # job and the release job can download them.
+      - name: Upload archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: stasha-${{ matrix.target }}
           path: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
+
+  # ── consolidation job: build SHA256SUMS + attach to release ─────
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          # Download every stasha-* artifact into subdirs named after the artifact.
+          pattern: stasha-*
+          merge-multiple: true
+          path: _release/
+
+      - name: Generate consolidated SHA256SUMS
+        run: |
+          cd _release
+          # Gather all .tar.gz and .zip (not the .sha256 sidecars).
+          sha256sum stasha-*.tar.gz stasha-*.zip 2>/dev/null > SHA256SUMS || true
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: Create GitHub Release and upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            _release/stasha-*.tar.gz
+            _release/stasha-*.zip
+            _release/stasha-*.sha256
+            _release/SHA256SUMS
