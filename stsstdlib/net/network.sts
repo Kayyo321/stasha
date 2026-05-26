@@ -1,20 +1,36 @@
 mod network;
 
+@[[if: os != "windows"]]
 lib "c" = cnet;
+
+// Windows: sockets live in ws2_32, not libc.
+// We declare the Winsock functions we need directly.
+@[[if: os == "windows"]]
+lib "ws2_32" = cnet;
 
 ext const i32 NetAfInet     = 2;
 ext const i32 NetSockStream = 1;
 ext const i32 NetSockDgram  = 2;
-ext const i32 NetSolSocket  = 65535;
-ext const i32 NetSoReuseAddr = 4;
 ext const i32 NetInvalidFd  = -1;
 
-// Host-to-network byte order for u16 (little-endian arm64)
+// SOL_SOCKET / SO_REUSEADDR constants.
+// These are embedded as literals in bind_and_listen to avoid OS-conditional
+// top-level const declarations (which require an explicit --target triple
+// to be resolved at stdlib build time).
+//
+// Values per OS:
+//   macOS:   SOL_SOCKET=65535  SO_REUSEADDR=4
+//   Linux:   SOL_SOCKET=1      SO_REUSEADDR=2
+//   Windows: SOL_SOCKET=65535  SO_REUSEADDR=4
+//
+// bind_and_listen uses the platform-correct inline literals via @[[if:]] blocks.
+
+// Host-to-network byte order for u16 (little-endian arm64/x86_64)
 ext fn net_htons(u16 port): u16 {
     ret (port >> 8) | (port << 8);
 }
 
-// Host-to-network byte order for u32 (little-endian arm64)
+// Host-to-network byte order for u32 (little-endian arm64/x86_64)
 ext fn net_htonl(u32 addr): u32 {
     ret ((addr & 0xFF) << 24) | (((addr >> 8) & 0xFF) << 16) | (((addr >> 16) & 0xFF) << 8) | ((addr >> 24) & 0xFF);
 }
@@ -41,11 +57,16 @@ ext fn net_inet_addr(stack i8 *r+ ip_str): u32 {
     ret octets[0] | (octets[1] << 8) | (octets[2] << 16) | (octets[3] << 24);
 }
 
-// Build a sockaddr_in in a 16-byte buffer (macOS layout)
-// buf[0]=sin_len=16, buf[1]=AF_INET=2, buf[2..3]=port(network), buf[4..7]=addr, buf[8..15]=0
+// Build a sockaddr_in in a 16-byte buffer.
+//
+// Layout (portable POSIX + Windows — sin_len is macOS-only):
+//   macOS:   buf[0]=sin_len(16), buf[1]=AF_INET(2), buf[2..3]=port, buf[4..7]=addr, buf[8..15]=0
+//   Linux:   buf[0..1]=AF_INET(2 LE), buf[2..3]=port, buf[4..7]=addr, buf[8..15]=0
+//   Windows: buf[0..1]=AF_INET(2 LE), buf[2..3]=port, buf[4..7]=addr, buf[8..15]=0
+@[[if: os == "macos"]]
 ext fn net_make_sockaddr_in(u32 addr_ip, u16 port, stack u8 *w+ buf): void {
-    buf[0] = 16;
-    buf[1] = 2;
+    buf[0] = 16;     // sin_len (macOS only)
+    buf[1] = 2;      // AF_INET
     buf[2] = (u8)(port >> 8);
     buf[3] = (u8)(port & 0xFF);
     // addr_ip is already in network byte order (from net_inet_addr)
@@ -55,6 +76,32 @@ ext fn net_make_sockaddr_in(u32 addr_ip, u16 port, stack u8 *w+ buf): void {
     buf[7] = (u8)((addr_ip >> 24) & 0xFF);
     buf[8]  = 0; buf[9]  = 0; buf[10] = 0; buf[11] = 0;
     buf[12] = 0; buf[13] = 0; buf[14] = 0; buf[15] = 0;
+}
+
+@[[if: os != "macos"]]
+ext fn net_make_sockaddr_in(u32 addr_ip, u16 port, stack u8 *w+ buf): void {
+    // Linux / Windows: no sin_len; sa_family is a u16 in little-endian
+    buf[0] = 2;      // AF_INET low byte
+    buf[1] = 0;      // AF_INET high byte
+    buf[2] = (u8)(port >> 8);
+    buf[3] = (u8)(port & 0xFF);
+    buf[4] = (u8)(addr_ip & 0xFF);
+    buf[5] = (u8)((addr_ip >> 8) & 0xFF);
+    buf[6] = (u8)((addr_ip >> 16) & 0xFF);
+    buf[7] = (u8)((addr_ip >> 24) & 0xFF);
+    buf[8]  = 0; buf[9]  = 0; buf[10] = 0; buf[11] = 0;
+    buf[12] = 0; buf[13] = 0; buf[14] = 0; buf[15] = 0;
+}
+
+// ── close helper ───────────────────────────────────────────────────────────
+// POSIX uses close(fd); Windows Winsock uses closesocket(fd).
+@[[if: os != "windows"]]
+int fn net_close(i32 fd): void {
+    cnet.close(fd);
+}
+@[[if: os == "windows"]]
+int fn net_close(i32 fd): void {
+    cnet.closesocket(fd);
 }
 
 // ── TCP socket (client) ─────────────────────────────────────────────────────
@@ -94,7 +141,7 @@ ext type tcp_socket_t: struct {
 
     ext fn close_conn(void): void {
         if (this.fd != -1) {
-            cnet.close(this.fd);
+            net_close(this.fd);
             this.fd = -1;
             this.connected = false;
         }
@@ -107,7 +154,7 @@ ext type tcp_socket_t: struct {
 
     ext fn rem(void): void {
         if (this.fd != -1) {
-            cnet.close(this.fd);
+            net_close(this.fd);
             this.fd = -1;
         }
     }
@@ -129,7 +176,14 @@ ext type tcp_server_t: struct {
     ext fn bind_and_listen(u16 port, i32 backlog): error {
         i32 reuse = 1;
         stack i32 *rw rp = &reuse;
-        cnet.setsockopt(this.listen_fd, 65535, 4, rp, 4);
+        // setsockopt with SO_REUSEADDR.
+        // macOS/Windows: SOL_SOCKET=65535, SO_REUSEADDR=4
+        // Linux:         SOL_SOCKET=1,     SO_REUSEADDR=2
+        @comptime if os == "linux" {
+            cnet.setsockopt(this.listen_fd, 1, 2, rp, 4);
+        } else {
+            cnet.setsockopt(this.listen_fd, 65535, 4, rp, 4);
+        }
 
         u8 sa_buf[16];
         // Bind to INADDR_ANY (0.0.0.0) in network order
@@ -160,7 +214,7 @@ ext type tcp_server_t: struct {
 
     ext fn close_server(void): void {
         if (this.listen_fd != -1) {
-            cnet.close(this.listen_fd);
+            net_close(this.listen_fd);
             this.listen_fd = -1;
         }
     }
@@ -171,7 +225,7 @@ ext type tcp_server_t: struct {
 
     ext fn rem(void): void {
         if (this.listen_fd != -1) {
-            cnet.close(this.listen_fd);
+            net_close(this.listen_fd);
             this.listen_fd = -1;
         }
     }
@@ -187,7 +241,7 @@ ext fn tcp_server_t.new(void): tcp_server_t {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 test 'net_htons' {
-    // On little-endian arm64: htons(80) = 0x5000
+    // On little-endian arm64/x86_64: htons(80) = 0x5000
     expect_eq.(net_htons(80), 0x5000);
     expect_eq.(net_htons(0x1234), 0x3412);
 }

@@ -31,10 +31,20 @@ ext fn proc_getenv_or(stack i8 *r name, stack i8 *r fallback): i8 *r {
 }
 
 // Set environment variable name=val (overwrite=1). Returns error on failure.
+@[[if: os != "windows"]]
 ext fn proc_setenv(stack i8 *r name, stack i8 *r val): error {
     i32 rc = cstdlib.setenv(name, val, 1);
     if (rc != 0) {
         ret error.('setenv failed');
+    }
+    ret nil;
+}
+@[[if: os == "windows"]]
+ext fn proc_setenv(stack i8 *r name, stack i8 *r val): error {
+    // _putenv_s is the MSVC CRT portable alternative to setenv.
+    i32 rc = cstdlib._putenv_s(name, val);
+    if (rc != 0) {
+        ret error.('_putenv_s failed');
     }
     ret nil;
 }

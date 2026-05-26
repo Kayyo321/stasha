@@ -1,6 +1,13 @@
 mod console;
 
+@[[if: os != "windows"]]
 lib "unistd" = cunistd;
+
+// On Windows, _write(fd, buf, count) mirrors POSIX write(2) and lives in
+// the MSVC CRT (no extra import needed — it is exposed via the default
+// msvcrt / ucrt link).
+@[[if: os == "windows"]]
+ext fn _write(i32 fd, i8 *r buf, u32 cnt): i32;
 
 ext const i32 StdoutFD = 1;
 ext const i32 StderrFD = 2;
@@ -28,14 +35,23 @@ ext macro elog! {
     }
 }
 
+// Write cnt bytes from buf to the given file descriptor.
+@[[if: os != "windows"]]
 ext fn write_fd(i32 fd, i8 *r buf, u32 cnt): [i64, error] {
-    // ssize_t write(int fd, const void *buf, size_t count);
     final i64 write_result = cunistd.write(fd, buf, cnt);
     if write_result != (i64)cnt {
         ret write_result, error.('Expected to write {} bytes but wrote {}.', cnt, write_result);
     }
-
     ret write_result, nil;
+}
+
+@[[if: os == "windows"]]
+ext fn write_fd(i32 fd, i8 *r buf, u32 cnt): [i64, error] {
+    final i32 write_result = _write(fd, buf, cnt);
+    if write_result < 0 {
+        ret (i64)write_result, error.('write failed on fd {}', fd);
+    }
+    ret (i64)write_result, nil;
 }
 
 ext fn write_stream(stdstream_t stdstream, i8 *r buf, u32 cnt): [i64, error] {

@@ -3,6 +3,8 @@ mod filesystem;
 lib "stdio"   = cio;
 lib "stdlib"  = cstdlib;
 lib "string"  = cstring;
+
+@[[if: os != "windows"]]
 lib "unistd"  = cunistd;
 
 // ── Seek constants ─────────────────────────────────────────────────────────
@@ -33,8 +35,8 @@ ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, u32 
         di++;
     }
 
-    // Add separator if base doesn't end with '/' and there's room
-    if (di > 0 && dst[di - 1] != 47 && di < dst_len - 2) {
+    // Add separator if base doesn't end with '/' or '\' and there's room
+    if (di > 0 && dst[di - 1] != 47 && dst[di - 1] != 92 && di < dst_len - 2) {
         dst[di] = 47;   // '/'
         di++;
     }
@@ -57,7 +59,7 @@ ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, u32 dst_len): void {
     u32 i = 0;
 
     while (i < len) {
-        if (path[i] == 47) { last_slash = (i32)i; }  // '/'
+        if (path[i] == 47 || path[i] == 92) { last_slash = (i32)i; }  // '/' or '\'
         i++;
     }
 
@@ -86,14 +88,14 @@ ext fn fs_path_dirname(stack i8 *r+ path, stack i8 *w+ dst, u32 dst_len): void {
     dst[copy_len] = 0;
 }
 
-// Return pointer to the filename component (after last '/'), or path itself.
+// Return pointer to the filename component (after last '/' or '\'), or path itself.
 ext fn fs_path_basename(stack i8 *r+ path): i8 *r+ {
     u32 len = fs_strlen(path);
     i32 last_slash = -1;
     u32 i = 0;
 
     while (i < len) {
-        if (path[i] == 47) { last_slash = (i32)i; }  // '/'
+        if (path[i] == 47 || path[i] == 92) { last_slash = (i32)i; }  // '/' or '\'
         i++;
     }
 
@@ -116,33 +118,63 @@ ext fn fs_path_extension(stack i8 *r+ path): i8 *r+ {
     ret path + (u32)last_dot;
 }
 
-// Return true if path starts with '/'.
+// Return true if path starts with '/' or a drive letter (e.g. "C:\").
 ext fn fs_path_is_absolute(stack i8 *r+ path): bool {
-    ret path[0] == 47;  // '/'
+    if (path[0] == 47) { ret true; }   // '/'
+    // Windows: letter followed by ':'
+    if (path[1] == 58) { ret true; }   // ':'
+    ret false;
 }
 
 // ── File existence / access checks ────────────────────────────────────────
 
-// Return true if path exists (F_OK = 0).
+// Return true if path exists.
+@[[if: os != "windows"]]
 ext fn fs_exists(stack i8 *r+ path): bool {
     ret cunistd.access(path, 0) == 0;
 }
+@[[if: os == "windows"]]
+ext fn fs_exists(stack i8 *r+ path): bool {
+    // _access(path, 0) — 0=F_OK; available in <io.h> via msvcrt
+    ret cstdlib._access(path, 0) == 0;
+}
 
-// Return true if path is readable (R_OK = 4).
+// Return true if path is readable.
+@[[if: os != "windows"]]
 ext fn fs_is_readable(stack i8 *r+ path): bool {
     ret cunistd.access(path, 4) == 0;
 }
+@[[if: os == "windows"]]
+ext fn fs_is_readable(stack i8 *r+ path): bool {
+    ret cstdlib._access(path, 4) == 0;
+}
 
-// Return true if path is writable (W_OK = 2).
+// Return true if path is writable.
+@[[if: os != "windows"]]
 ext fn fs_is_writable(stack i8 *r+ path): bool {
     ret cunistd.access(path, 2) == 0;
+}
+@[[if: os == "windows"]]
+ext fn fs_is_writable(stack i8 *r+ path): bool {
+    ret cstdlib._access(path, 2) == 0;
 }
 
 // ── Current working directory ──────────────────────────────────────────────
 
 // Fill buf with the CWD. Return error if getcwd returns nil.
+@[[if: os != "windows"]]
 ext fn fs_getcwd(stack i8 *w+ buf, u32 buf_len): error {
     stack i8 *rw result = cunistd.getcwd(buf, buf_len);
+    if (result == nil) {
+        ret error.('getcwd failed');
+    }
+    ret nil;
+}
+@[[if: os == "windows"]]
+ext fn _getcwd(stack i8 *w buf, stack i32 size): i8 *rw;
+@[[if: os == "windows"]]
+ext fn fs_getcwd(stack i8 *w+ buf, u32 buf_len): error {
+    stack i8 *rw result = _getcwd(buf, (i32)buf_len);
     if (result == nil) {
         ret error.('getcwd failed');
     }
@@ -284,14 +316,22 @@ test 'fs_path_is_absolute false for relative' {
     expect.(fs_path_is_absolute("relative/path") == false);
 }
 
+@[[if: os != "windows"]]
 test 'fs_exists on existing path' {
     expect.(fs_exists("/tmp"));
+}
+
+@[[if: os == "windows"]]
+test 'fs_exists on existing path' {
+    // C:\ always exists on Windows
+    expect.(fs_exists("C:\\"));
 }
 
 test 'fs_exists on nonexistent path' {
     expect.(fs_exists("/nonexistent_xyz_abc_stasha") == false);
 }
 
+@[[if: os != "windows"]]
 test 'fs_write_all and fs_read_all roundtrip' {
     stack i8 *r test_path = "/tmp/stasha_fs_test.txt";
     stack i8 *r content   = "hello stasha filesystem";
@@ -308,9 +348,38 @@ test 'fs_write_all and fs_read_all roundtrip' {
     rem.(buf);
 }
 
+@[[if: os == "windows"]]
+test 'fs_write_all and fs_read_all roundtrip' {
+    stack i8 *r test_path = "C:\\Temp\\stasha_fs_test.txt";
+    stack i8 *r content   = "hello stasha filesystem";
+    u64 content_len = 23;
+
+    error we = fs_write_all(test_path, (u8 *r+)content, content_len);
+    expect.(we == nil);
+
+    let [buf, sz, re] = fs_read_all(test_path);
+    expect.(re == nil);
+    expect_eq.(sz, content_len);
+    // Check first byte 'h' = 104
+    expect_eq.(buf[0], 104);
+    rem.(buf);
+}
+
+@[[if: os != "windows"]]
 test 'fs_file_size' {
     stack i8 *r test_path = "/tmp/stasha_fs_test.txt";
     // Write known content first
+    stack i8 *r content = "hello stasha filesystem";
+    fs_write_all(test_path, (u8 *r+)content, 23);
+
+    let [sz, e] = fs_file_size(test_path);
+    expect.(e == nil);
+    expect_eq.(sz, 23);
+}
+
+@[[if: os == "windows"]]
+test 'fs_file_size' {
+    stack i8 *r test_path = "C:\\Temp\\stasha_fs_test.txt";
     stack i8 *r content = "hello stasha filesystem";
     fs_write_all(test_path, (u8 *r+)content, 23);
 
