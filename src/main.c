@@ -1722,6 +1722,19 @@ static result_t compile_file(const cfile_params_t *p) {
                 else
                     remove(dst);
             }
+#elif defined(_WIN32)
+            /* On Windows use _spawnlp (process.h) to compile the C companion.
+               _P_WAIT = 0: wait for child to finish before returning. */
+            {
+                char cmd[1024];
+                snprintf(cmd, sizeof(cmd),
+                         "cl /nologo /std:c11 /O1 /c /Fo\"%s\" \"%s\"", dst, src);
+                int rc = system(cmd);
+                if (rc == 0)
+                    cheader_obj_count++;
+                else
+                    remove(dst);
+            }
 #endif
         }
     }
@@ -1942,8 +1955,20 @@ static int run_project_tests(sproj_t *proj, const char *proj_dir) {
             printf("  [FAIL] '%s'  (fork failed)\n\n", m->name);
             fail++;
         }
+#elif defined(_WIN32)
+        /* Windows: use _spawnl (process.h) — synchronous child process. */
+        {
+            intptr_t rc = _spawnl(_P_WAIT, full_output, full_output, (char *)Null);
+            if (rc == 0) {
+                printf("  [PASS] '%s'\n\n", m->name);
+                pass++;
+            } else {
+                printf("  [FAIL] '%s'  (exit %d)\n\n", m->name, (int)rc);
+                fail++;
+            }
+        }
 #else
-        /* Fallback for platforms without fork/exec: just report the binary. */
+        /* Fallback for platforms without fork/exec or _spawnl. */
         printf("  [SKIP] '%s'  (auto-run not supported on this platform; binary at %s)\n\n",
                m->name, full_output);
 #endif
@@ -2274,10 +2299,18 @@ int main(int argc, char **argv) {
                     output_path = lib_name_buf;
                     break;
                 case EmitTest:
+#if defined(_WIN32)
+                    output_path = "a.test.exe";
+#else
                     output_path = "a.test";
+#endif
                     break;
                 default:
+#if defined(_WIN32)
+                    output_path = "a.out.exe";
+#else
                     output_path = "a.out";
+#endif
                     break;
             }
         }
