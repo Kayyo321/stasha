@@ -3,45 +3,49 @@ mod clock;
 lib "time" = ctime;
 
 // ── Ticks ─────────────────────────────────────────────────────────────────
-// Uses clock() which measures CPU time consumed by the process.
-// Resolution is CLOCKS_PER_SEC (1 000 000 on POSIX — microsecond precision).
+// Monotonic wall-clock ticks in nanoseconds.  Backed by a portable C shim
+// (std/clock/clock_rt.c) that wraps clock_gettime(CLOCK_MONOTONIC) on POSIX,
+// mach_absolute_time() on macOS, and QueryPerformanceCounter on Windows.
 
-ext const i64 StsClockPerSec = 1000000;
+ext fn sts_clock_now_ns(void): i64;
+ext fn sts_clock_ticks_per_sec(void): i64;
 
-// Raw CPU-clock tick count.
+ext const i64 StsClockPerSec = 1000000000;
+
+// Raw monotonic tick count (nanoseconds).
 ext fn clock_ticks(void): i64 {
-    ret ctime.clock();
+    ret sts_clock_now_ns();
 }
 
 // Convert ticks to milliseconds.
 ext fn clock_ticks_to_ms(i64 ticks): f64 {
-    ret (f64)ticks * 1000.0 / (f64)StsClockPerSec;
+    ret (f64)ticks / 1000000.0;
 }
 
 // Convert ticks to microseconds.
 ext fn clock_ticks_to_us(i64 ticks): f64 {
-    ret (f64)ticks * 1000000.0 / (f64)StsClockPerSec;
+    ret (f64)ticks / 1000.0;
 }
 
 // ── Stopwatch ─────────────────────────────────────────────────────────────
-// Measures CPU time between new() / reset() and elapsed_*() calls.
+// Measures monotonic wall-clock time between new() / reset() and elapsed_*().
 
 ext type stopwatch_t: struct {
     int i64 t0;
 
-    // Elapsed CPU time in milliseconds since construction or last reset().
+    // Elapsed wall-clock time in milliseconds since construction or last reset().
     ext fn elapsed_ms(void): f64 {
-        ret clock_ticks_to_ms(ctime.clock() - this.t0);
+        ret clock_ticks_to_ms(sts_clock_now_ns() - this.t0);
     }
 
-    // Elapsed CPU time in microseconds since construction or last reset().
+    // Elapsed wall-clock time in microseconds since construction or last reset().
     ext fn elapsed_us(void): f64 {
-        ret clock_ticks_to_us(ctime.clock() - this.t0);
+        ret clock_ticks_to_us(sts_clock_now_ns() - this.t0);
     }
 
     // Return elapsed milliseconds and reset the timer.
     ext fn lap(void): f64 {
-        final i64 now = ctime.clock();
+        final i64 now = sts_clock_now_ns();
         final f64 ms  = clock_ticks_to_ms(now - this.t0);
         this.t0 = now;
         ret ms;
@@ -49,7 +53,7 @@ ext type stopwatch_t: struct {
 
     // Restart the timer.
     ext fn reset(void): void {
-        this.t0 = ctime.clock();
+        this.t0 = sts_clock_now_ns();
     }
 
     ext fn print(void): void {
@@ -59,7 +63,7 @@ ext type stopwatch_t: struct {
 
 // Start a new stopwatch (captures the current tick count).
 ext fn stopwatch_t.new(void): stopwatch_t {
-    ret stopwatch_t{ .t0 = ctime.clock() };
+    ret stopwatch_t{ .t0 = sts_clock_now_ns() };
 }
 
 // ── Calendar time ─────────────────────────────────────────────────────────
@@ -79,6 +83,12 @@ test 'clock_ticks non-negative' {
     expect.(t >= 0);
 }
 
+test 'clock_ticks is monotonic' {
+    i64 a = clock_ticks();
+    i64 b = clock_ticks();
+    expect.(b >= a);
+}
+
 test 'stopwatch elapsed non-negative' {
     stopwatch_t sw = stopwatch_t.new();
     f64 ms = sw.elapsed_ms();
@@ -92,6 +102,8 @@ test 'stopwatch print does not crash' {
 }
 
 test 'clock_ticks_to_ms conversion' {
-    f64 ms = clock_ticks_to_ms(1000000);
-    expect.(ms > 0.0);
+    // 10 million ns = 10 ms
+    f64 ms = clock_ticks_to_ms(10000000);
+    expect.(ms > 9.0);
+    expect.(ms < 11.0);
 }

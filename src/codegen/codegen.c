@@ -1378,7 +1378,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes,
                 (unsigned)total_params, decl->as.fn_decl.is_variadic ? 1 : 0);
-            LLVMValueRef fn = LLVMAddFunction(cg.module, fn_name, fn_type);
+            /* If this symbol was already pre-declared (e.g. `printf` from
+               the C runtime hookup at codegen.c:700, or any earlier
+               cheader pass), reuse the existing decl instead of letting
+               LLVM mangle the second one to "<name>.1" — that mangled
+               symbol would never link.  Reusing the existing pointer is
+               safe for C externs: signatures must match by ABI anyway. */
+            LLVMValueRef fn = LLVMGetNamedFunction(cg.module, fn_name);
+            if (!fn) fn = LLVMAddFunction(cg.module, fn_name, fn_type);
             if (decl->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 

@@ -146,6 +146,45 @@ jobs:
           make
           make stdlib
 
+      # ── test suite (per-platform, before packaging) ──────────────
+      # `make stdlib` already runs `stdlib-test` as a prerequisite, so the
+      # standard-library tests have run by the time we land here.  The
+      # extra targets below exercise the C-interop, thread, and LLVM smoke
+      # paths.  Each platform fails fast on a regression so we don't ship
+      # broken binaries.
+      - name: Run cinterop tests (non-Windows)
+        if: runner.os != 'Windows'
+        run: make test-cinterop
+
+      - name: Run cinterop tests (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          STASHA_NO_OPENSSL: "1"
+        run: make test-cinterop
+
+      - name: Run thread tests (non-Windows)
+        if: runner.os != 'Windows'
+        run: make test-threads
+
+      - name: Run thread tests (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          STASHA_NO_OPENSSL: "1"
+        run: make test-threads
+
+      - name: Run LLVM smoke test (non-Windows)
+        if: runner.os != 'Windows'
+        run: make test-llvm-smoke
+
+      - name: Run LLVM smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          STASHA_NO_OPENSSL: "1"
+        run: make test-llvm-smoke
+
       # ── upload build dir on failure for debugging ────────────────
       - name: Upload build artifacts on failure
         if: failure()
@@ -189,36 +228,59 @@ jobs:
           cp -r bin/stdlib/. _dist/bin/stdlib/
 
           # ── Bundle MSYS2 runtime DLLs that stasha.exe links against ──
-          # Strategy: use ldd (available in MSYS2) and filter for DLLs
-          # under the MSYS2 prefix. Fall back to copying the known set of
-          # required runtime DLLs if ldd produces no matches.
+          # Two-stage: run ldd to discover the direct dependency set, then
+          # close over it transitively so DLLs-of-DLLs are also copied.
+          # Finally validate with a clean-PATH smoke test so a missing DLL
+          # fails CI rather than shipping a broken zip.
           if [ "$STS_ARCH" = "arm64" ]; then
             MSYSROOT=/clangarm64
           else
             MSYSROOT=/ucrt64
           fi
 
-          # Collect DLLs from ldd output that live under $MSYSROOT.
-          DLL_LIST=$(ldd bin/stasha.exe 2>/dev/null \
-            | grep -i "${MSYSROOT}/" \
-            | awk '{print $3}' \
-            | grep -i '\.dll$' || true)
+          copy_msys_deps() {
+            local exe="$1"
+            ldd "$exe" 2>/dev/null \
+              | grep -i "${MSYSROOT}/" \
+              | awk '{print $3}' \
+              | grep -i '\.dll$' \
+              | while IFS= read -r dll; do
+                  local name; name=$(basename "$dll")
+                  if [ -f "$dll" ] && [ ! -f "_dist/bin/$name" ]; then
+                    cp "$dll" _dist/bin/
+                    echo "  bundled: $name"
+                  fi
+                done
+          }
 
-          if [ -n "$DLL_LIST" ]; then
-            echo "$DLL_LIST" | while IFS= read -r dll; do
-              [ -f "$dll" ] && cp "$dll" _dist/bin/ || true
+          echo "── discovering DLL deps of stasha.exe ──"
+          copy_msys_deps bin/stasha.exe
+
+          # Transitive closure: walk over each DLL we just copied and
+          # repeat until nothing new shows up.  Caps at 5 passes to avoid
+          # accidental infinite loops on cyclic deps.
+          for pass in 1 2 3 4 5; do
+            before=$(ls _dist/bin/*.dll 2>/dev/null | wc -l)
+            for dll in _dist/bin/*.dll; do
+              [ -f "$dll" ] && copy_msys_deps "$dll"
             done
-          else
-            # ldd didn't resolve MSYS2-prefix DLLs — copy the minimum
-            # known runtime set for clang/UCRT64 builds.
-            echo "ldd produced no MSYS2 DLLs; copying known runtime set"
-            for dll in \
-              "${MSYSROOT}/bin/libc++.dll" \
-              "${MSYSROOT}/bin/libunwind.dll" \
-              "${MSYSROOT}/bin/libwinpthread-1.dll"; do
-              [ -f "$dll" ] && cp "$dll" _dist/bin/ || true
-            done
-          fi
+            after=$(ls _dist/bin/*.dll 2>/dev/null | wc -l)
+            [ "$before" = "$after" ] && break
+          done
+
+          echo "── DLLs bundled into _dist/bin/ ──"
+          ls _dist/bin/*.dll 2>/dev/null || echo "(none)"
+
+          # Smoke check: run stasha.exe with PATH scrubbed of MSYS2 so
+          # only the bundled DLLs and Windows system DLLs are visible.
+          # If a runtime dep is missing the loader will fail with
+          # "missing X.dll", failing the workflow loudly.
+          echo "── clean-PATH smoke check ──"
+          DIST_BIN_WIN=$(cygpath -w "$(pwd)/_dist/bin")
+          SYSROOT_WIN="C:\\Windows\\System32;C:\\Windows"
+          PATH_SCRUBBED="${DIST_BIN_WIN};${SYSROOT_WIN}" \
+            cmd.exe /c "_dist\\bin\\stasha.exe --version" \
+            || { echo "ERROR: stasha.exe failed under scrubbed PATH — missing runtime DLLs?"; exit 1; }
 
           (cd _dist && powershell -Command "Compress-Archive -Path * -DestinationPath ../$ARCHIVE -Force")
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"

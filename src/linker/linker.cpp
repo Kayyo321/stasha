@@ -20,6 +20,12 @@ extern "C" {
 #include "linker.h"
 }
 
+static bool g_linker_debug_mode = false;
+
+extern "C" void linker_set_debug_mode(boolean_t on) {
+    g_linker_debug_mode = (on == True);
+}
+
 #ifdef _WIN32
 #include <string>
 /* Append `/libpath:<dir>` entries from the MSVC `LIB` env var (set by
@@ -130,6 +136,12 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
     static std::string out_arg;
     out_arg = std::string("/out:") + output_path;
     args.push_back(out_arg.c_str());
+    static std::string pdb_arg;
+    if (g_linker_debug_mode) {
+        args.push_back("/debug");
+        pdb_arg = std::string("/pdb:") + output_path + ".pdb";
+        args.push_back(pdb_arg.c_str());
+    }
 #else
     args.push_back("ld.lld");
     args.push_back(obj_path);
@@ -148,6 +160,8 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
     args.push_back("-L/usr/lib/x86_64-linux-gnu");
     args.push_back("-L/lib/x86_64-linux-gnu");
 #endif
+    args.push_back("-L/usr/lib64");
+    args.push_back("-L/lib64");
     args.push_back("-L/usr/lib");
     args.push_back("-L/lib");
     args.push_back("-lc");
@@ -312,6 +326,12 @@ extern "C" result_t link_dynamic(const char *obj_path, const char *output_path,
     static std::string dyn_out_arg;
     dyn_out_arg = std::string("/out:") + output_path;
     args.push_back(dyn_out_arg.c_str());
+    static std::string dyn_pdb_arg;
+    if (g_linker_debug_mode) {
+        args.push_back("/debug");
+        dyn_pdb_arg = std::string("/pdb:") + output_path + ".pdb";
+        args.push_back(dyn_pdb_arg.c_str());
+    }
 #else
     args.push_back("ld.lld");
     args.push_back("-shared");

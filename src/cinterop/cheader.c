@@ -175,6 +175,31 @@ static void ch_add_search_dirs(ch_ctx_t *ctx, const char *input_path, const char
 
     for (usize_t i = 0; ch_default_dirs[i]; i++)
         ch_str_list_push(&ctx->search_dirs, ch_default_dirs[i]);
+
+#if defined(_WIN32)
+    /* MSVC + Windows SDK headers live wherever the developer-prompt
+       INCLUDE env var points (semicolon-separated).  Add each entry so
+       <stdio.h> etc. resolve under cmd.exe / clang-cl as well as MSYS2. */
+    {
+        const char *inc = getenv("INCLUDE");
+        if (inc && inc[0]) {
+            const char *p = inc;
+            while (*p) {
+                const char *start = p;
+                while (*p && *p != ';') p++;
+                if (p > start) {
+                    char buf[1024];
+                    usize_t len = (usize_t)(p - start);
+                    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+                    memcpy(buf, start, len);
+                    buf[len] = '\0';
+                    ch_str_list_push(&ctx->search_dirs, buf);
+                }
+                if (*p == ';') p++;
+            }
+        }
+    }
+#endif
 }
 
 static boolean_t ch_resolve_header(ch_ctx_t *ctx, const char *cur_file,

@@ -115,6 +115,14 @@ CLARGS_RT_OBJ = build/obj/std/cl_args/cl_args_rt.o
 SHA256_RT_SRC = std/crypto/sha256_rt.c
 SHA256_RT_OBJ = build/obj/std/crypto/sha256_rt.o
 
+# ── clock (monotonic wall-clock) runtime ────────────────────────────────────
+CLOCK_RT_SRC = std/clock/clock_rt.c
+CLOCK_RT_OBJ = build/obj/std/clock/clock_rt.o
+
+# ── regex (portable backtracking engine) runtime ────────────────────────────
+REGEX_RT_SRC = std/regex/regex_rt.c
+REGEX_RT_OBJ = build/obj/std/regex/regex_rt.o
+
 SRCS = src/main.c                       \
        src/common/common.c               \
        src/lexer/lexer.c                 \
@@ -151,11 +159,7 @@ CRASH_RUNTIME_OBJ = build/obj/runtime/crash_runtime.o
 CRASH_RUNTIME_LIB = bin/crash_runtime.a
 
 # ── Thread test programs ────────────────────────────────────────────────────
-THREAD_TEST_SRCS = examples/thread_basic.sts    \
-                   examples/thread_return.sts   \
-                   examples/thread_many_jobs.sts \
-                   examples/thread_stress.sts   \
-                   examples/future_wait.sts
+THREAD_TEST_SRCS = examples/ex_threads.sts
 
 # ── Standard library ──────────────────────────────────────────────────────
 STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
@@ -169,9 +173,9 @@ endif
 
 # Modules that have custom bundled-archive rules (exclude from default foreach).
 ifeq ($(STASHA_NO_OPENSSL),1)
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts stsstdlib/time/clock.sts stsstdlib/regex/regex.sts
 else
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts stsstdlib/time/clock.sts stsstdlib/regex/regex.sts
 endif
 
 # Files for the default compile-only rule.
@@ -223,7 +227,7 @@ all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
-stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stdlib-test
+stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stsstdlib/time/libclock.a stsstdlib/regex/libregex.a stdlib-test
 	@mkdir -p bin/stdlib
 	@for s in $(STDLIB_SRCS); do \
 	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
@@ -238,6 +242,10 @@ stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhtt
 	@cp stsstdlib/sys/cl_args.sts  bin/stdlib/
 	@cp stsstdlib/crypto/libcrypto.a bin/stdlib/
 	@cp stsstdlib/crypto/crypto.sts  bin/stdlib/
+	@cp stsstdlib/time/libclock.a    bin/stdlib/
+	@cp stsstdlib/time/clock.sts     bin/stdlib/
+	@cp stsstdlib/regex/libregex.a   bin/stdlib/
+	@cp stsstdlib/regex/regex.sts    bin/stdlib/
 	@echo "stdlib installed -> bin/stdlib/"
 
 # Modules that require platform-specific external libs not available everywhere.
@@ -251,14 +259,16 @@ STDLIB_TEST_BUNDLED_HTTP      = stsstdlib/net/http.sts
 STDLIB_TEST_BUNDLED_CRNG      = stsstdlib/random/complex_rng.sts
 STDLIB_TEST_BUNDLED_CLARGS    = stsstdlib/sys/cl_args.sts
 STDLIB_TEST_BUNDLED_CRYPTO    = stsstdlib/crypto/crypto.sts
+STDLIB_TEST_BUNDLED_CLOCK     = stsstdlib/time/clock.sts
+STDLIB_TEST_BUNDLED_REGEX     = stsstdlib/regex/regex.sts
 STDLIB_BUNDLED_CRNG_LIB       = stsstdlib/random/libcomplex_rng.a
 
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
 ifeq ($(STASHA_NO_OPENSSL),1)
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stsstdlib/time/libclock.a stsstdlib/regex/libregex.a
 else
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a $(STDLIB_BUNDLED_CRNG_LIB)
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stsstdlib/time/libclock.a stsstdlib/regex/libregex.a $(STDLIB_BUNDLED_CRNG_LIB)
 endif
 	@echo ""
 	@echo "=== stdlib tests ==="
@@ -334,6 +344,24 @@ endif
 	    echo "FAIL"; fail=$$((fail+1)); \
 	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLOCK) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CLOCK)" -l stsstdlib/time/libclock.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
+	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_REGEX) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_REGEX)" -l stsstdlib/regex/libregex.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
+	fi; \
 	echo ""; \
 	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
 	echo ""; \
@@ -366,6 +394,14 @@ $(CLARGS_RT_OBJ): $(CLARGS_RT_SRC) std/cl_args/cl_args_rt.h
 	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
 
 $(SHA256_RT_OBJ): $(SHA256_RT_SRC) std/crypto/sha256_rt.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+
+$(CLOCK_RT_OBJ): $(CLOCK_RT_SRC) std/clock/clock_rt.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+
+$(REGEX_RT_OBJ): $(REGEX_RT_SRC) std/regex/regex_rt.h
 	@mkdir -p $(dir $@)
 	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
 
@@ -414,6 +450,22 @@ stsstdlib/crypto/libcrypto.a: stsstdlib/crypto/crypto.sts $(TARGET) $(SHA256_RT_
 	@mkdir -p stsstdlib/crypto
 	$(TARGET) lib stsstdlib/crypto/crypto.sts -o $@
 	$(RUNTIME_AR) -q $@ $(SHA256_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
+
+# ── clock: bundle the portable monotonic-clock shim into the archive ─────────
+
+stsstdlib/time/libclock.a: stsstdlib/time/clock.sts $(TARGET) $(CLOCK_RT_OBJ)
+	@mkdir -p stsstdlib/time
+	$(TARGET) lib stsstdlib/time/clock.sts -o $@
+	$(RUNTIME_AR) -q $@ $(CLOCK_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
+
+# ── regex: bundle the portable regex engine into the archive ─────────────────
+
+stsstdlib/regex/libregex.a: stsstdlib/regex/regex.sts $(TARGET) $(REGEX_RT_OBJ)
+	@mkdir -p stsstdlib/regex
+	$(TARGET) lib stsstdlib/regex/regex.sts -o $@
+	$(RUNTIME_AR) -q $@ $(REGEX_RT_OBJ)
 	$(RUNTIME_RANLIB) $@
 
 # ── complex_rng: bundle OpenSSL libcrypto into the archive ────────────────────

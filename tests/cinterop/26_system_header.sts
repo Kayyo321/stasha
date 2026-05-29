@@ -12,10 +12,11 @@ fn main(void): i32 {
     // round-trips through Stasha as a numeric value compatible with
     // i32 comparisons after truncation.
     stack i8 buf[16] = .{};
-    buf[0] = 'h';
-    buf[1] = 'i';
-    /* `.{}` zero-fills the rest, so the implicit NUL terminator at
-     * buf[2] is already in place; no need to write it explicitly. */
+    /* Char literals use backticks; single/double quotes denote strings.
+       `.{}` zero-fills the rest, so the implicit NUL terminator at
+       buf[2] is already in place. */
+    buf[0] = `h`;
+    buf[1] = `i`;
     stack u64 n = strlen(&buf[0]);
     if n != 2 { print.("FAIL strlen={}\n", n); ret 1; }
 
