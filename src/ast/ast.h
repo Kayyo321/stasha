@@ -138,8 +138,11 @@ typedef enum {
 typedef enum {
     FhCondNone,
     FhCondOsEq,        /* os == "linux" */
+    FhCondOsNe,        /* os != "windows" */
     FhCondArchEq,      /* target.arch == "x86_64" (or bare arch ==) */
+    FhCondArchNe,      /* arch != "wasm32" */
     FhCondPtrWidthEq,  /* pointer_width == 64 */
+    FhCondPtrWidthNe,  /* pointer_width != 32 */
     FhCondAlwaysFalse, /* unknown lhs — skip decl silently; error for require */
 } fh_cond_kind_t;
 

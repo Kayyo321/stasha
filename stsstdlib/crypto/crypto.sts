@@ -1,28 +1,30 @@
 mod crypto;
 
-// On macOS, CC_SHA256 family is in libSystem (accessible via lib "c").
-// CC_SHA256_CTX is 96 bytes on macOS arm64.
-// CC_SHA256_Init / CC_SHA256_Update / CC_SHA256_Final are the POSIX-style API.
-// CC_SHA256(data, len, out) is the one-shot API.
-// SHA256_DIGEST_LENGTH = 32
+// SHA-256 is provided by a bundled, dependency-free C shim
+// (std/crypto/sha256_rt.c) so this module links identically on macOS,
+// Linux and Windows — no CommonCrypto / OpenSSL needed.
+// sts_sha256_ctx is 112 bytes; we over-allocate 128 to stay safe.
 
-lib "c" = csha;
 lib "stdio" = cio;
 
 ext const u32 CryptoSha256Len = 32;
 
+ext fn sts_sha256_init(stack u8 *w+ ctx): void;
+ext fn sts_sha256_update(stack u8 *w+ ctx, stack u8 *r+ data, u64 len): void;
+ext fn sts_sha256_final(stack u8 *w+ digest, stack u8 *w+ ctx): void;
+ext fn sts_sha256(stack u8 *r+ data, u64 len, stack u8 *w+ digest): void;
+
 // ── SHA-256 hasher (incremental) ─────────────────────────────────────────────
-// CC_SHA256_CTX is 96 bytes on macOS arm64.
 
 ext type sha256_t: struct {
     ext heap u8 *rw ctx;
 
     ext fn update(stack u8 *r+ data, u64 len): void {
-        csha.CC_SHA256_Update(this.ctx, data, len);
+        sts_sha256_update(this.ctx, data, len);
     }
 
     ext fn finalize(stack u8 *w+ digest): void {
-        csha.CC_SHA256_Final(digest, this.ctx);
+        sts_sha256_final(digest, this.ctx);
     }
 
     ext fn print(void): void {
@@ -38,9 +40,9 @@ ext type sha256_t: struct {
 }
 
 ext fn sha256_t.new(void): sha256_t {
-    heap u8 *rw c = new.(96);
-    for (i32 i = 0; i < 96; i++) { c[i] = 0; }
-    csha.CC_SHA256_Init(c);
+    heap u8 *rw c = new.(128);
+    for (i32 i = 0; i < 128; i++) { c[i] = 0; }
+    sts_sha256_init(c);
     ret sha256_t{
         .ctx = c
     };
@@ -48,13 +50,13 @@ ext fn sha256_t.new(void): sha256_t {
 
 // One-shot SHA-256: writes 32 bytes into digest
 ext fn crypto_sha256(stack u8 *r+ data, u64 len, stack u8 *w+ digest): void {
-    csha.CC_SHA256(data, len, digest);
+    sts_sha256(data, len, digest);
 }
 
 // One-shot SHA-256 as hex string: hex_out must be >= 65 bytes
 ext fn crypto_sha256_hex(stack u8 *r+ data, u64 len, stack i8 *w+ hex_out): void {
     heap u8 *rw digest = new.(32);
-    csha.CC_SHA256(data, len, digest);
+    sts_sha256(data, len, digest);
     for (i32 i = 0; i < 32; i++) {
         cio.sprintf(hex_out + i * 2, "%02x", (i32)digest[i]);
     }
@@ -62,7 +64,16 @@ ext fn crypto_sha256_hex(stack u8 *r+ data, u64 len, stack i8 *w+ hex_out): void
     rem.(digest);
 }
 
-// Secure random bytes from /dev/urandom
+// Secure random bytes.
+// POSIX: /dev/urandom.  Windows: BCryptGenRandom from bcrypt.dll.
+
+@[[if: os == "windows"]]
+lib "bcrypt" = cbcrypt;
+@[[if: os == "windows"]]
+ext fn BCryptGenRandom(stack void *r hAlgorithm, stack u8 *w+ pbBuffer,
+                       stack u32 cbBuffer, stack u32 dwFlags): i32;
+
+@[[if: os != "windows"]]
 ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
     stack i8 *rw fp = cio.fopen("/dev/urandom", "rb");
     if (fp == nil) {
@@ -72,6 +83,16 @@ ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
     cio.fclose(fp);
     if (n != len) {
         ret error.('short read from /dev/urandom');
+    }
+    ret nil;
+}
+
+@[[if: os == "windows"]]
+ext fn crypto_random_bytes(stack u8 *w+ buf, u32 len): error {
+    // dwFlags = 2 = BCRYPT_USE_SYSTEM_PREFERRED_RNG (no algorithm handle needed)
+    i32 rc = BCryptGenRandom(nil, buf, len, 2);
+    if (rc != 0) {
+        ret error.('BCryptGenRandom failed');
     }
     ret nil;
 }

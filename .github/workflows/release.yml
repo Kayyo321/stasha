@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -40,14 +42,17 @@ jobs:
             arch: arm64
             archive_ext: tar.gz
 
-          # windows-x86_64: temporarily disabled — compiler segfaults on
-          # specific stdlib modules under msys2/mingw build. Re-enable after
-          # debugging. See install.ps1 for graceful fallback messaging.
-          # - target: windows-x86_64
-          #   runner: windows-latest
-          #   os_name: windows
-          #   arch: x86_64
-          #   archive_ext: zip
+          - target: windows-x86_64
+            runner: windows-latest
+            os_name: windows
+            arch: x86_64
+            archive_ext: zip
+
+          - target: windows-arm64
+            runner: windows-11-arm
+            os_name: windows
+            arch: arm64
+            archive_ext: zip
 
     steps:
       - name: Checkout (with submodules)
@@ -74,7 +79,12 @@ jobs:
         id: llvm-cache
         with:
           path: build/llvm
-          key: llvm-${{ matrix.target }}-v2-${{ hashFiles('Makefile') }}
+          # Static token (not hashFiles(Makefile)) so routine Makefile edits
+          # don't trigger a ~30min LLVM rebuild. Bump v3 -> v4 manually when
+          # LLVM_TARGETS or the LLVM submodule commit changes.
+          key: llvm-${{ matrix.target }}-v3
+          restore-keys: |
+            llvm-${{ matrix.target }}-
 
       - name: Build LLVM (non-Windows)
         if: runner.os != 'Windows' && steps.llvm-cache.outputs.cache-hit != 'true'
@@ -93,19 +103,22 @@ jobs:
         if: runner.os != 'Windows' && steps.openssl-cache.outputs.cache-hit != 'true'
         run: make openssl
 
-      # ── Windows: MSYS2 UCRT64 toolchain (clang + llvm + lld + make) ───
+      # ── Windows: MSVC Build Tools (for emitted-binary ABI) + MSYS2 (drives make) ─
+      - name: Setup MSVC Build Tools (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
+
       - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: ${{ matrix.arch == 'arm64' && 'CLANGARM64' || 'UCRT64' }}
           update: false
+          path-type: inherit
           install: >-
-            mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-llvm
-            mingw-w64-ucrt-x86_64-lld
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
+            ${{ matrix.arch == 'arm64' && 'mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-llvm mingw-w64-clang-aarch64-lld mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-ninja' || 'mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja' }}
             make
 
       # ── build compiler + stdlib ─────────────────────────────────
@@ -119,11 +132,58 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         env:
-          LLVM_BUILD: /ucrt64
+          # Use MSYS2-prebuilt LLVM for the host compiler binary (avoids the
+          # multi-hour LLVM CMake build). Runtime objects are still emitted
+          # via clang --target=*-pc-windows-msvc per the Makefile.
+          LLVM_BUILD: ${{ matrix.arch == 'arm64' && '/clangarm64' || '/ucrt64' }}
           STASHA_NO_OPENSSL: "1"
         run: |
+          # path-type: inherit means LIB/INCLUDE from the MSVC dev env are
+          # visible in this msys2 shell — required for clang to find the
+          # MSVC CRT headers and for lld-link to locate ucrt.lib etc.
+          echo "LIB=$LIB"
+          echo "INCLUDE=$INCLUDE"
           make
           make stdlib
+
+      # ── test suite (per-platform, before packaging) ──────────────
+      # `make stdlib` already runs `stdlib-test` as a prerequisite, so the
+      # standard-library tests have run by the time we land here.  The
+      # extra targets below exercise the C-interop, thread, and LLVM smoke
+      # paths.  Each platform fails fast on a regression so we don't ship
+      # broken binaries.
+      - name: Run cinterop tests (non-Windows)
+        if: runner.os != 'Windows'
+        run: make test-cinterop
+
+      - name: Run cinterop tests (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          STASHA_NO_OPENSSL: "1"
+        run: make test-cinterop
+
+      - name: Run thread tests (non-Windows)
+        if: runner.os != 'Windows'
+        run: make test-threads
+
+      - name: Run thread tests (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          STASHA_NO_OPENSSL: "1"
+        run: make test-threads
+
+      - name: Run LLVM smoke test (non-Windows)
+        if: runner.os != 'Windows'
+        run: make test-llvm-smoke
+
+      - name: Run LLVM smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          STASHA_NO_OPENSSL: "1"
+        run: make test-llvm-smoke
 
       # ── upload build dir on failure for debugging ────────────────
       - name: Upload build artifacts on failure
@@ -157,27 +217,116 @@ jobs:
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
+        env:
+          STS_ARCH: ${{ matrix.arch }}
         run: |
-          ARCHIVE="stasha-windows-x86_64.zip"
+          ARCHIVE="stasha-windows-${STS_ARCH}.zip"
           mkdir -p _dist/bin/stdlib
           cp bin/stasha.exe _dist/bin/
           cp bin/thread_runtime.a bin/zone_runtime.a \
              bin/coro_runtime.a bin/crash_runtime.a _dist/bin/
           cp -r bin/stdlib/. _dist/bin/stdlib/
-          # Bundle DLL deps (LLVM, lld, libstdc++, winpthread, libgcc) from ucrt64.
-          ldd bin/stasha.exe | awk '/=> \/ucrt64/{print $3}' | while read dll; do
-            cp "$dll" _dist/bin/
+
+          # ── Bundle MSYS2 runtime DLLs that stasha.exe links against ──
+          # Two-stage: run ldd to discover the direct dependency set, then
+          # close over it transitively so DLLs-of-DLLs are also copied.
+          # Finally validate with a clean-PATH smoke test so a missing DLL
+          # fails CI rather than shipping a broken zip.
+          if [ "$STS_ARCH" = "arm64" ]; then
+            MSYSROOT=/clangarm64
+          else
+            MSYSROOT=/ucrt64
+          fi
+
+          copy_msys_deps() {
+            local exe="$1"
+            ldd "$exe" 2>/dev/null \
+              | grep -i "${MSYSROOT}/" \
+              | awk '{print $3}' \
+              | grep -i '\.dll$' \
+              | while IFS= read -r dll; do
+                  local name; name=$(basename "$dll")
+                  if [ -f "$dll" ] && [ ! -f "_dist/bin/$name" ]; then
+                    cp "$dll" _dist/bin/
+                    echo "  bundled: $name"
+                  fi
+                done
+          }
+
+          echo "── discovering DLL deps of stasha.exe ──"
+          copy_msys_deps bin/stasha.exe
+
+          # Transitive closure: walk over each DLL we just copied and
+          # repeat until nothing new shows up.  Caps at 5 passes to avoid
+          # accidental infinite loops on cyclic deps.
+          for pass in 1 2 3 4 5; do
+            before=$(ls _dist/bin/*.dll 2>/dev/null | wc -l)
+            for dll in _dist/bin/*.dll; do
+              [ -f "$dll" ] && copy_msys_deps "$dll"
+            done
+            after=$(ls _dist/bin/*.dll 2>/dev/null | wc -l)
+            [ "$before" = "$after" ] && break
           done
+
+          echo "── DLLs bundled into _dist/bin/ ──"
+          ls _dist/bin/*.dll 2>/dev/null || echo "(none)"
+
+          # Smoke check: run stasha.exe with PATH scrubbed of MSYS2 so
+          # only the bundled DLLs and Windows system DLLs are visible.
+          # If a runtime dep is missing the loader will fail with
+          # "missing X.dll", failing the workflow loudly.
+          echo "── clean-PATH smoke check ──"
+          DIST_BIN_WIN=$(cygpath -w "$(pwd)/_dist/bin")
+          SYSROOT_WIN="C:\\Windows\\System32;C:\\Windows"
+          PATH_SCRUBBED="${DIST_BIN_WIN};${SYSROOT_WIN}" \
+            cmd.exe /c "_dist\\bin\\stasha.exe --version" \
+            || { echo "ERROR: stasha.exe failed under scrubbed PATH — missing runtime DLLs?"; exit 1; }
+
           (cd _dist && powershell -Command "Compress-Archive -Path * -DestinationPath ../$ARCHIVE -Force")
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
-      # ── upload to GitHub Release ─────────────────────────────────
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+      # ── upload per-platform archive as a workflow artifact ───────
+      # Uploaded on every build (tag and non-tag) so the consolidation
+      # job and the release job can download them.
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: stasha-${{ matrix.target }}
+          path: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
+
+  # ── consolidation job: build SHA256SUMS + attach to release ─────
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          # Download every stasha-* artifact into subdirs named after the artifact.
+          pattern: stasha-*
+          merge-multiple: true
+          path: _release/
+
+      - name: Generate consolidated SHA256SUMS
+        run: |
+          cd _release
+          # Gather all .tar.gz and .zip (not the .sha256 sidecars).
+          sha256sum stasha-*.tar.gz stasha-*.zip 2>/dev/null > SHA256SUMS || true
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: Create GitHub Release and upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          files: |
+            _release/stasha-*.tar.gz
+            _release/stasha-*.zip
+            _release/stasha-*.sha256
+            _release/SHA256SUMS

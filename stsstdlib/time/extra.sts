@@ -2,7 +2,14 @@ mod extra;
 
 lib "time"    = ctime;
 lib "stdio"   = cio;
+
+@[[if: os != "windows"]]
 lib "unistd"  = cunistd;
+
+@[[if: os == "windows"]]
+lib "kernel32" = ckernel32_time;
+@[[if: os == "windows"]]
+ext fn Sleep(u32 dwMilliseconds): void;
 
 // ── Formatting ────────────────────────────────────────────────────────────
 
@@ -22,13 +29,26 @@ ext fn time_now_formatted(stack i8 *w+ buf, u32 buf_len): void {
 // ── Sleep ─────────────────────────────────────────────────────────────────
 
 // Sleep for ms milliseconds.
+@[[if: os != "windows"]]
 ext fn time_sleep_ms(u32 ms): void {
     cunistd.usleep(ms * 1000);
 }
+@[[if: os == "windows"]]
+ext fn time_sleep_ms(u32 ms): void {
+    Sleep(ms);
+}
 
 // Sleep for us microseconds.
+@[[if: os != "windows"]]
 ext fn time_sleep_us(u64 us): void {
     cunistd.usleep((u32)us);
+}
+@[[if: os == "windows"]]
+ext fn time_sleep_us(u64 us): void {
+    // Windows Sleep() takes milliseconds; round up.
+    u32 ms = (u32)((us + 999) / 1000);
+    if (ms == 0) { ms = 1; }
+    Sleep(ms);
 }
 
 // ── timer_t ───────────────────────────────────────────────────────────────

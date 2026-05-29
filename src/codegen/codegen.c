@@ -594,8 +594,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 triple = LLVMCreateMessage("aarch64-unknown-linux-gnu");
             #elif defined(__linux__) && defined(__x86_64__)
                 triple = LLVMCreateMessage("x86_64-unknown-linux-gnu");
-            #elif defined(_WIN32) && defined(__x86_64__)
-                triple = LLVMCreateMessage("x86_64-w64-windows-gnu");
+            #elif defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64))
+                triple = LLVMCreateMessage("aarch64-pc-windows-msvc");
+            #elif defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+                triple = LLVMCreateMessage("x86_64-pc-windows-msvc");
             #else
                 triple = LLVMCreateMessage("");
             #endif
@@ -668,11 +670,22 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         cg.di_scope = cg.di_compile_unit;
 
-        /* Required module-level flags for DWARF consumers. */
-        LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorWarning,
-            "Dwarf Version", 13,
-            LLVMValueAsMetadata(
-                LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 4, 0)));
+        /* Required module-level flags. Windows-MSVC consumes CodeView
+           (.pdb); everyone else consumes DWARF. */
+        boolean_t is_windows_msvc =
+            triple && (strstr(triple, "windows-msvc") != Null ||
+                       strstr(triple, "pc-windows") != Null);
+        if (is_windows_msvc) {
+            LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorWarning,
+                "CodeView", 8,
+                LLVMValueAsMetadata(
+                    LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 1, 0)));
+        } else {
+            LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorWarning,
+                "Dwarf Version", 13,
+                LLVMValueAsMetadata(
+                    LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 4, 0)));
+        }
         LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorError,
             "Debug Info Version", 18,
             LLVMValueAsMetadata(
@@ -955,6 +968,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         /* skip generic template structs — they have no concrete LLVM type */
         if (decl->as.type_decl.type_param_count > 0) continue;
+
+        /* @[[if: ...]] gated out — skip entirely */
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
 
         struct_reg_t *sr = find_struct(&cg, decl->as.type_decl.name);
         if (!sr) continue;
@@ -1362,7 +1378,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes,
                 (unsigned)total_params, decl->as.fn_decl.is_variadic ? 1 : 0);
-            LLVMValueRef fn = LLVMAddFunction(cg.module, fn_name, fn_type);
+            /* If this symbol was already pre-declared (e.g. `printf` from
+               the C runtime hookup at codegen.c:700, or any earlier
+               cheader pass), reuse the existing decl instead of letting
+               LLVM mangle the second one to "<name>.1" — that mangled
+               symbol would never link.  Reusing the existing pointer is
+               safe for C externs: signatures must match by ABI anyway. */
+            LLVMValueRef fn = LLVMGetNamedFunction(cg.module, fn_name);
+            if (!fn) fn = LLVMAddFunction(cg.module, fn_name, fn_type);
             if (decl->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
@@ -1412,6 +1435,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             continue;
         /* skip generic template structs */
         if (decl->as.type_decl.type_param_count > 0) continue;
+        /* @[[if: ...]] gated out — skip entirely */
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
 
@@ -1775,6 +1800,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         /* skip generic template structs — methods generated lazily */
         if (decl->as.type_decl.type_param_count > 0) continue;
 
+        /* @[[if: ...]] gated out — skip entirely */
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
+
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
             char fn_name[512];
@@ -1947,11 +1975,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     /* pass 3: generate test blocks (test mode only) */
     if (cg.test_mode) {
-        /* count test blocks */
+        /* count test blocks (skip any gated out by @[[if: ...]]) */
         usize_t test_count = 0;
-        for (usize_t i = 0; i < ast->as.module.decls.count; i++)
-            if (ast->as.module.decls.items[i]->kind == NodeTestBlock)
-                test_count++;
+        for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
+            node_t *d = ast->as.module.decls.items[i];
+            if (d->kind != NodeTestBlock) continue;
+            if (cg_fh_skip_decl(&cg, d->headers, d->line)) continue;
+            test_count++;
+        }
 
         /* forward-declare test functions */
         LLVMValueRef *test_fns = Null;
@@ -1967,6 +1998,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
             node_t *decl = ast->as.module.decls.items[i];
             if (decl->kind != NodeTestBlock) continue;
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
             char fn_name[256];
             snprintf(fn_name, sizeof(fn_name), "__test_%lu", ti);
             LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(cg.ctx), Null, 0, 0);
@@ -1982,6 +2014,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
             node_t *decl = ast->as.module.decls.items[i];
             if (decl->kind != NodeTestBlock) continue;
+            if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
             cg.current_fn = test_fns[ti];
             cg.locals.count = 0;
             cg.dtor_depth = 0;

@@ -17,14 +17,25 @@ endif
 LLVM_BUILD ?= build/llvm
 LLVM_CFG   = $(LLVM_BUILD)/bin/llvm-config$(EXE_SUFFIX)
 
+UNAME_S := $(shell uname -s 2>/dev/null)
+UNAME_M := $(shell uname -m 2>/dev/null)
+
 # Flags resolved at recipe time (recursive =) so llvm-config is found after build
 LLVM_CFLAGS  = $(shell "$(LLVM_CFG)" --cflags  2>/dev/null)
+# Target backends the local LLVM was actually built with, lowercased to
+# llvm-config component names (AArch64->aarch64, X86->x86). Passing a
+# component for a target that wasn't built makes llvm-config fail and
+# emit nothing, which would silently break the link.
+LLVM_TARGET_LIBS = $(shell "$(LLVM_CFG)" --targets-built 2>/dev/null | \
+                   tr 'A-Z ' 'a-z\n' | grep -E '^(x86|aarch64)$$' | tr '\n' ' ')
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
-LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis native \
-               lto passes option codegen bitwriter debuginfodwarf \
-               objcarcopts textapi object --system-libs 2>/dev/null) \
+LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs core analysis $(LLVM_TARGET_LIBS) \
+               lto passes option codegen bitwriter debuginfodwarf debuginfocodeview \
+               objcarcopts textapi object windowsdriver windowsmanifest \
+               libdriver dlltooldriver \
+               --system-libs 2>/dev/null) \
                -lLLVMDTLTO
 else
 LLVM_LDFLAGS = $(shell "$(LLVM_CFG)" --ldflags --libs --system-libs 2>/dev/null)
@@ -50,8 +61,35 @@ else
 LDFLAGS  = -Wl,--start-group $(LLD_LDLIBS) $(LLVM_LDFLAGS) -Wl,--end-group -lstdc++ -lzstd -lz
 endif
 
+# ── Runtime + extlib target ABI ────────────────────────────────────────────
+# On Windows we emit MSVC-ABI code (triples *-pc-windows-msvc) from codegen,
+# so runtime/extlib object files MUST be built for the same ABI to link.
+# Use clang with an explicit --target and let it find the MSVC headers/libs
+# from the active Developer Command Prompt (LIB / INCLUDE env).
+ifeq ($(EXE_SUFFIX),.exe)
+  ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+    RUNTIME_TARGET = aarch64-pc-windows-msvc
+  else
+    RUNTIME_TARGET = x86_64-pc-windows-msvc
+  endif
+  RUNTIME_CC     = clang --target=$(RUNTIME_TARGET)
+  RUNTIME_AR     = llvm-ar
+  RUNTIME_RANLIB = llvm-ranlib
+  RUNTIME_EXTRA  = -fms-runtime-lib=dll
+else
+  RUNTIME_CC     = $(CC)
+  RUNTIME_AR     = ar
+  RUNTIME_RANLIB = ranlib
+  RUNTIME_EXTRA  =
+endif
+
 # ── Extlib C flags (no -Wall spam from third-party code) ─────────────────────
+# -fPIC and _GNU_SOURCE/_DARWIN_C_SOURCE are POSIX-only; suppress on Windows.
+ifeq ($(EXE_SUFFIX),.exe)
+EXTLIB_CFLAGS = -std=c11 -O2 $(RUNTIME_EXTRA)
+else
 EXTLIB_CFLAGS = -std=c11 -O2 -fPIC -D_GNU_SOURCE -D_DARWIN_C_SOURCE
+endif
 
 # ── cJSON (single-file C library) ─────────────────────────────────────────────
 CJSON_SRC = extlib/cjson/cJSON.c
@@ -72,6 +110,18 @@ HTTP_WRAP_OBJ = build/obj/std/http/http_wrapper.o
 # ── cl_args runtime ─────────────────────────────────────────────────────────
 CLARGS_RT_SRC = std/cl_args/cl_args_rt.c
 CLARGS_RT_OBJ = build/obj/std/cl_args/cl_args_rt.o
+
+# ── crypto (SHA-256) runtime ────────────────────────────────────────────────
+SHA256_RT_SRC = std/crypto/sha256_rt.c
+SHA256_RT_OBJ = build/obj/std/crypto/sha256_rt.o
+
+# ── clock (monotonic wall-clock) runtime ────────────────────────────────────
+CLOCK_RT_SRC = std/clock/clock_rt.c
+CLOCK_RT_OBJ = build/obj/std/clock/clock_rt.o
+
+# ── regex (portable backtracking engine) runtime ────────────────────────────
+REGEX_RT_SRC = std/regex/regex_rt.c
+REGEX_RT_OBJ = build/obj/std/regex/regex_rt.o
 
 SRCS = src/main.c                       \
        src/common/common.c               \
@@ -109,20 +159,23 @@ CRASH_RUNTIME_OBJ = build/obj/runtime/crash_runtime.o
 CRASH_RUNTIME_LIB = bin/crash_runtime.a
 
 # ── Thread test programs ────────────────────────────────────────────────────
-THREAD_TEST_SRCS = examples/thread_basic.sts    \
-                   examples/thread_return.sts   \
-                   examples/thread_many_jobs.sts \
-                   examples/thread_stress.sts   \
-                   examples/future_wait.sts
+THREAD_TEST_SRCS = examples/ex_threads.sts
 
 # ── Standard library ──────────────────────────────────────────────────────
 STDLIB_SRCS_ALL := $(shell find stsstdlib -name '*.sts' 2>/dev/null)
 
+# complex_rng requires OpenSSL libcrypto. When STASHA_NO_OPENSSL=1 (Windows
+# CI, where the MSYS2 perl can't drive the OpenSSL Configure) drop it from
+# every derived list so neither the build nor the test pulls in OpenSSL.
+ifeq ($(STASHA_NO_OPENSSL),1)
+STDLIB_SRCS_ALL := $(filter-out stsstdlib/random/complex_rng.sts,$(STDLIB_SRCS_ALL))
+endif
+
 # Modules that have custom bundled-archive rules (exclude from default foreach).
 ifeq ($(STASHA_NO_OPENSSL),1)
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts stsstdlib/time/clock.sts stsstdlib/regex/regex.sts
 else
-STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts
+STDLIB_BUNDLED := stsstdlib/serial/json.sts stsstdlib/net/http.sts stsstdlib/random/complex_rng.sts stsstdlib/sys/cl_args.sts stsstdlib/crypto/crypto.sts stsstdlib/time/clock.sts stsstdlib/regex/regex.sts
 endif
 
 # Files for the default compile-only rule.
@@ -131,16 +184,17 @@ STDLIB_SRCS := $(filter-out $(STDLIB_BUNDLED),$(STDLIB_SRCS_ALL))
 # All .a targets (used by 'stdlib' phony target to know what to build).
 STDLIB_LIBS := $(foreach s,$(STDLIB_SRCS_ALL),$(dir $(s))lib$(notdir $(basename $(s))).a)
 
-UNAME_S := $(shell uname -s 2>/dev/null)
-UNAME_M := $(shell uname -m 2>/dev/null)
-
 # ── OpenSSL (static libcrypto) ────────────────────────────────────────────
 OPENSSL_SRC   = extlib/openssl
 OPENSSL_BUILD = build/openssl
 
 ifeq ($(EXE_SUFFIX),.exe)
   OPENSSL_LIB       = $(OPENSSL_BUILD)/lib/libcrypto.lib
-  OPENSSL_TARGET    = VC-WIN64A
+  ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+    OPENSSL_TARGET  = VC-WIN64-ARM
+  else
+    OPENSSL_TARGET  = VC-WIN64A
+  endif
   OPENSSL_CONFIGURE = perl Configure
   OPENSSL_BUILD_CMD = nmake build_libs && nmake install_dev
 else ifeq ($(UNAME_S),Darwin)
@@ -158,6 +212,10 @@ else
   OPENSSL_BUILD_CMD = $(MAKE) build_libs && $(MAKE) install_dev
   ifeq ($(UNAME_M),aarch64)
     OPENSSL_TARGET = linux-aarch64
+    # ld.lld can't resolve the LSE outline-atomic helpers
+    # (__aarch64_ldadd8_*) that GCC emits by default; disable them so
+    # OpenSSL uses inline atomics instead.
+    OPENSSL_EXTRA  = -mno-outline-atomics
   else
     OPENSSL_TARGET = linux-x86_64
   endif
@@ -169,7 +227,7 @@ all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
-stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stdlib-test
+stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stsstdlib/time/libclock.a stsstdlib/regex/libregex.a stdlib-test
 	@mkdir -p bin/stdlib
 	@for s in $(STDLIB_SRCS); do \
 	    a="$$(dirname $$s)/lib$$(basename $${s%.sts}).a"; \
@@ -182,6 +240,12 @@ stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhtt
 	@cp stsstdlib/net/http.sts     bin/stdlib/
 	@cp stsstdlib/sys/libcl_args.a bin/stdlib/
 	@cp stsstdlib/sys/cl_args.sts  bin/stdlib/
+	@cp stsstdlib/crypto/libcrypto.a bin/stdlib/
+	@cp stsstdlib/crypto/crypto.sts  bin/stdlib/
+	@cp stsstdlib/time/libclock.a    bin/stdlib/
+	@cp stsstdlib/time/clock.sts     bin/stdlib/
+	@cp stsstdlib/regex/libregex.a   bin/stdlib/
+	@cp stsstdlib/regex/regex.sts    bin/stdlib/
 	@echo "stdlib installed -> bin/stdlib/"
 
 # Modules that require platform-specific external libs not available everywhere.
@@ -194,18 +258,21 @@ STDLIB_TEST_BUNDLED_JSON      = stsstdlib/serial/json.sts
 STDLIB_TEST_BUNDLED_HTTP      = stsstdlib/net/http.sts
 STDLIB_TEST_BUNDLED_CRNG      = stsstdlib/random/complex_rng.sts
 STDLIB_TEST_BUNDLED_CLARGS    = stsstdlib/sys/cl_args.sts
+STDLIB_TEST_BUNDLED_CRYPTO    = stsstdlib/crypto/crypto.sts
+STDLIB_TEST_BUNDLED_CLOCK     = stsstdlib/time/clock.sts
+STDLIB_TEST_BUNDLED_REGEX     = stsstdlib/regex/regex.sts
 STDLIB_BUNDLED_CRNG_LIB       = stsstdlib/random/libcomplex_rng.a
 
 # Run 'stasha test' on every stdlib source file.
 # Prints a pass/fail summary and exits non-zero if any test fails.
 ifeq ($(STASHA_NO_OPENSSL),1)
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stsstdlib/time/libclock.a stsstdlib/regex/libregex.a
 else
-stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a $(STDLIB_BUNDLED_CRNG_LIB)
+stdlib-test: $(TARGET) stsstdlib/serial/libjson.a stsstdlib/net/libhttp.a stsstdlib/sys/libcl_args.a stsstdlib/crypto/libcrypto.a stsstdlib/time/libclock.a stsstdlib/regex/libregex.a $(STDLIB_BUNDLED_CRNG_LIB)
 endif
 	@echo ""
 	@echo "=== stdlib tests ==="
-	@pass=0; fail=0; skip=0; \
+	@pass=0; fail=0; skip=0; dumped=; \
 	for f in $(STDLIB_SRCS); do \
 	    skip_this=0; \
 	    for s in $(STDLIB_TEST_SKIP); do \
@@ -221,7 +288,13 @@ endif
 	        echo "PASS"; pass=$$((pass+1)); \
 	    else \
 	        echo "FAIL"; fail=$$((fail+1)); \
-	        echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	        if [ -z "$$dumped" ]; then \
+	            echo "      ---- full output ($$f) ----"; \
+	            echo "$$out" | tail -40 | sed 's/^/      /'; \
+	            echo "      ---- end ----"; \
+	            dumped=1; \
+	        fi; \
+	        echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	    fi; \
 	done; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_JSON) ..."; \
@@ -231,7 +304,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_HTTP) ..."; \
 	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_HTTP)" -l stsstdlib/net/libhttp.a 2>&1); \
@@ -240,7 +313,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	if [ "$(STASHA_NO_OPENSSL)" != "1" ]; then \
 	  printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRNG) ..."; \
@@ -250,7 +323,7 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	  else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	  fi; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLARGS) ..."; \
@@ -260,7 +333,34 @@ endif
 	    echo "PASS"; pass=$$((pass+1)); \
 	else \
 	    echo "FAIL"; fail=$$((fail+1)); \
-	    echo "$$out" | grep -E "^error:|FAIL|failed" | head -3 | sed 's/^/      /'; \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
+	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRYPTO) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRYPTO)" -l stsstdlib/crypto/libcrypto.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
+	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLOCK) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CLOCK)" -l stsstdlib/time/libclock.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
+	fi; \
+	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_REGEX) ..."; \
+	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_REGEX)" -l stsstdlib/regex/libregex.a 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then \
+	    echo "PASS"; pass=$$((pass+1)); \
+	else \
+	    echo "FAIL"; fail=$$((fail+1)); \
+	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	echo ""; \
 	echo "  Passed: $$pass   Failed: $$fail   Skipped: $$skip   Total: $$((pass+fail+skip))"; \
@@ -275,23 +375,35 @@ endif
 
 $(CJSON_OBJ): $(CJSON_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
 
 $(JSON_WRAP_OBJ): $(JSON_WRAP_SRC) std/json/json_wrapper.h extlib/cjson/cJSON.h
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/cjson -c -o $@ $<
 
 $(MONGOOSE_OBJ): $(MONGOOSE_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -DMG_ENABLE_LINES=1 -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -DMG_ENABLE_LINES=1 -c -o $@ $<
 
 $(HTTP_WRAP_OBJ): $(HTTP_WRAP_SRC) std/http/http_wrapper.h extlib/mongoose/mongoose.h
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -Iextlib/mongoose -c -o $@ $<
 
 $(CLARGS_RT_OBJ): $(CLARGS_RT_SRC) std/cl_args/cl_args_rt.h
 	@mkdir -p $(dir $@)
-	$(CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+
+$(SHA256_RT_OBJ): $(SHA256_RT_SRC) std/crypto/sha256_rt.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+
+$(CLOCK_RT_OBJ): $(CLOCK_RT_SRC) std/clock/clock_rt.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
+
+$(REGEX_RT_OBJ): $(REGEX_RT_SRC) std/regex/regex_rt.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) $(EXTLIB_CFLAGS) -c -o $@ $<
 
 # ── Generated rule: stsstdlib/<cat>/lib<name>.a ← stsstdlib/<cat>/<name>.sts ─
 #
@@ -312,8 +424,8 @@ stsstdlib/serial/libjson.a: stsstdlib/serial/json.sts $(TARGET) \
                               $(CJSON_OBJ) $(JSON_WRAP_OBJ)
 	@mkdir -p stsstdlib/serial
 	$(TARGET) lib stsstdlib/serial/json.sts -o $@
-	ar q $@ $(CJSON_OBJ) $(JSON_WRAP_OBJ)
-	ranlib $@
+	$(RUNTIME_AR) -q $@ $(CJSON_OBJ) $(JSON_WRAP_OBJ)
+	$(RUNTIME_RANLIB) $@
 
 # ── HTTP: bundle mongoose + wrapper into the archive ──────────────────────────
 
@@ -321,23 +433,47 @@ stsstdlib/net/libhttp.a: stsstdlib/net/http.sts $(TARGET) \
                            $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
 	@mkdir -p stsstdlib/net
 	$(TARGET) lib stsstdlib/net/http.sts -o $@
-	ar q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
-	ranlib $@
+	$(RUNTIME_AR) -q $@ $(MONGOOSE_OBJ) $(HTTP_WRAP_OBJ)
+	$(RUNTIME_RANLIB) $@
 
 # ── cl_args: bundle C runtime into the archive ───────────────────────────────
 
 stsstdlib/sys/libcl_args.a: stsstdlib/sys/cl_args.sts $(TARGET) $(CLARGS_RT_OBJ)
 	@mkdir -p stsstdlib/sys
 	$(TARGET) lib stsstdlib/sys/cl_args.sts -o $@
-	ar q $@ $(CLARGS_RT_OBJ)
-	ranlib $@
+	$(RUNTIME_AR) -q $@ $(CLARGS_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
+
+# ── crypto: bundle the portable SHA-256 shim into the archive ────────────────
+
+stsstdlib/crypto/libcrypto.a: stsstdlib/crypto/crypto.sts $(TARGET) $(SHA256_RT_OBJ)
+	@mkdir -p stsstdlib/crypto
+	$(TARGET) lib stsstdlib/crypto/crypto.sts -o $@
+	$(RUNTIME_AR) -q $@ $(SHA256_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
+
+# ── clock: bundle the portable monotonic-clock shim into the archive ─────────
+
+stsstdlib/time/libclock.a: stsstdlib/time/clock.sts $(TARGET) $(CLOCK_RT_OBJ)
+	@mkdir -p stsstdlib/time
+	$(TARGET) lib stsstdlib/time/clock.sts -o $@
+	$(RUNTIME_AR) -q $@ $(CLOCK_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
+
+# ── regex: bundle the portable regex engine into the archive ─────────────────
+
+stsstdlib/regex/libregex.a: stsstdlib/regex/regex.sts $(TARGET) $(REGEX_RT_OBJ)
+	@mkdir -p stsstdlib/regex
+	$(TARGET) lib stsstdlib/regex/regex.sts -o $@
+	$(RUNTIME_AR) -q $@ $(REGEX_RT_OBJ)
+	$(RUNTIME_RANLIB) $@
 
 # ── complex_rng: bundle OpenSSL libcrypto into the archive ────────────────────
 
 $(STDLIB_BUNDLED_CRNG_LIB): stsstdlib/random/complex_rng.sts $(TARGET) $(OPENSSL_LIB)
 	@mkdir -p stsstdlib/random
 	$(TARGET) lib stsstdlib/random/complex_rng.sts -o $@
-	ranlib $@
+	$(RUNTIME_RANLIB) $@
 
 clean-stdlib:
 	find stsstdlib -name '*.a' -delete 2>/dev/null; true
@@ -347,41 +483,41 @@ thread-runtime: $(THREAD_RUNTIME_LIB)
 
 build/obj/runtime/thread_runtime.o: src/runtime/thread_runtime.c src/runtime/thread_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c2x -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 build/obj/runtime/executor.o: src/runtime/executor.c src/runtime/executor.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c2x -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c2x -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(THREAD_RUNTIME_LIB): $(THREAD_RUNTIME_OBJ) | bin
-	ar rcs $@ $^
+	$(RUNTIME_AR) rcs $@ $^
 
 zone-runtime: $(ZONE_RUNTIME_LIB)
 
 $(ZONE_RUNTIME_OBJ): $(ZONE_RUNTIME_SRC) src/runtime/zone_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c11 -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(ZONE_RUNTIME_LIB): $(ZONE_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	$(RUNTIME_AR) rcs $@ $<
 
 crash-runtime: $(CRASH_RUNTIME_LIB)
 
 $(CRASH_RUNTIME_OBJ): $(CRASH_RUNTIME_SRC) src/runtime/crash_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c11 -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(CRASH_RUNTIME_LIB): $(CRASH_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	$(RUNTIME_AR) rcs $@ $<
 
 coro-runtime: $(CORO_RUNTIME_LIB)
 
 $(CORO_RUNTIME_OBJ): $(CORO_RUNTIME_SRC) src/runtime/coro_runtime.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -c -o $@ $<
+	$(RUNTIME_CC) -std=c11 -O2 -Wall $(RUNTIME_EXTRA) -c -o $@ $<
 
 $(CORO_RUNTIME_LIB): $(CORO_RUNTIME_OBJ) | bin
-	ar rcs $@ $<
+	$(RUNTIME_AR) rcs $@ $<
 
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
@@ -470,12 +606,11 @@ bin:
 	@mkdir -p bin
 
 # ── LLVM + LLD build (one-time) ──────────────────────────────
-UNAME_M := $(shell uname -m)
-ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
-  LLVM_TARGETS = AArch64
-else
-  LLVM_TARGETS = X86
-endif
+# Build LLVM with both X86 and AArch64 targets on all hosts so the stasha
+# binary can emit code for either architecture (needed for Windows arm64
+# and for any future cross-compilation work). The marginal build cost is
+# small compared with shipping a single-target compiler.
+LLVM_TARGETS = X86;AArch64
 
 LLD_LIB = $(LLVM_BUILD)/lib/liblldCommon.a
 
@@ -518,8 +653,9 @@ $(OPENSSL_LIB): $(OPENSSL_SRC)/Configure
 	cd $(OPENSSL_SRC) && $(OPENSSL_CONFIGURE) \
 	    --prefix=$(abspath $(OPENSSL_BUILD)) \
 	    --openssldir=$(abspath $(OPENSSL_BUILD))/ssl \
+	    --libdir=lib \
 	    $(OPENSSL_TARGET) \
-	    no-shared no-tests no-docs
+	    no-shared no-tests no-docs $(OPENSSL_EXTRA)
 	cd $(OPENSSL_SRC) && $(OPENSSL_BUILD_CMD)
 
 clean-openssl:

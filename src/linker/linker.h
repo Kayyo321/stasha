@@ -4,6 +4,12 @@
 #include "../common/common.h"
 
 /*
+ * Toggle debug-info linker flags (currently /debug + /pdb:<out>.pdb on
+ * the COFF backend).  Honored by the next link_object / link_dynamic call.
+ */
+void linker_set_debug_mode(boolean_t on);
+
+/*
  * extra_libs: NULL-terminated array of .a library paths to link in addition
  * to the object file (from `lib "name" from "path"` declarations).
  * May be NULL if there are no custom libraries.

@@ -7,6 +7,7 @@
 #  include <sys/wait.h>
 #elif defined(_WIN32)
 #  include <process.h>
+#  include <windows.h>
 #  define getpid _getpid
 #endif
 #if defined(__APPLE__)
@@ -24,7 +25,7 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #include "cinterop/cheader.h"
 #include "cinterop/cheader.c"
 
-#define STASHA_VERSION "0.1.9_005"
+#define STASHA_VERSION "0.1.9_006"
 
 /* ── binary directory (for stdlib resolution) ── */
 
@@ -52,6 +53,14 @@ static void init_bin_dir(const char *argv0) {
     if (n > 0) {
         exe[n] = '\0';
         char *sep = strrchr(exe, '/');
+        if (sep) { *sep = '\0'; strncpy(bin_dir, exe, sizeof(bin_dir) - 1); return; }
+    }
+#elif defined(_WIN32)
+    char exe[512];
+    DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    if (n > 0 && n < sizeof(exe)) {
+        char *sep = strrchr(exe, '\\');
+        if (!sep) sep = strrchr(exe, '/');
         if (sep) { *sep = '\0'; strncpy(bin_dir, exe, sizeof(bin_dir) - 1); return; }
     }
 #endif
@@ -1405,7 +1414,11 @@ static result_t run_editor_check(const char *source, const char *input_path) {
         snprintf(obj_path, sizeof(obj_path), "%s\\stasha-check-%d.o", tmp, (int)getpid());
     }
 #else
-    snprintf(obj_path, sizeof(obj_path), "/tmp/stasha-check-%d.o", (int)getpid());
+    {
+        const char *tmp = getenv("TMPDIR");
+        if (!tmp) tmp = "/tmp";
+        snprintf(obj_path, sizeof(obj_path), "%s/stasha-check-%d.o", tmp, (int)getpid());
+    }
 #endif
     if (codegen(ast, obj_path, False, Null, input_path, False, 0) == Ok)
         remove(obj_path);
@@ -1700,15 +1713,43 @@ static result_t compile_file(const cfile_params_t *p) {
             const char *src = cheader_c_srcs[i];
             const char *dst = cheader_obj_paths[cheader_obj_count];
 #if defined(__APPLE__) || defined(__linux__)
-            pid_t pid = fork();
-            if (pid == 0) {
-                execlp("cc", "cc", "-std=c11", "-O0", "-fPIC", "-c", "-o", dst, src,
-                       (char *)Null);
-                _exit(1);
-            } else if (pid > 0) {
-                int status;
-                waitpid(pid, &status, 0);
-                if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+            {
+                const char *cc = getenv("CC");
+                if (!cc || !cc[0]) cc = "cc";
+                pid_t pid = fork();
+                if (pid == 0) {
+                    execlp(cc, cc, "-std=c11", "-O0", "-fPIC", "-c", "-o", dst, src,
+                           (char *)Null);
+                    _exit(1);
+                } else if (pid > 0) {
+                    int status;
+                    waitpid(pid, &status, 0);
+                    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+                        cheader_obj_count++;
+                    else
+                        remove(dst);
+                }
+            }
+#elif defined(_WIN32)
+            /* Pick a C compiler: honor $CC if set; else prefer clang-cl
+               (works in MSYS2 + bare Windows when LLVM is on PATH);
+               else fall back to MSVC `cl`. */
+            {
+                const char *cc = getenv("CC");
+                static int probed = 0;
+                static int has_clang_cl = 0;
+                if (!cc || !cc[0]) {
+                    if (!probed) {
+                        probed = 1;
+                        has_clang_cl = (system("where clang-cl >NUL 2>&1") == 0);
+                    }
+                    cc = has_clang_cl ? "clang-cl" : "cl";
+                }
+                char cmd[1024];
+                snprintf(cmd, sizeof(cmd),
+                         "%s /nologo /std:c11 /O1 /c /Fo\"%s\" \"%s\"", cc, dst, src);
+                int rc = system(cmd);
+                if (rc == 0)
                     cheader_obj_count++;
                 else
                     remove(dst);
@@ -1733,6 +1774,8 @@ static result_t compile_file(const cfile_params_t *p) {
 
     /* ── link / archive ── */
     result_t link_result = Ok;
+
+    linker_set_debug_mode(p->debug_mode ? True : False);
 
     if (p->mode == EmitLib) {
         log_msg("archiving");
@@ -1859,7 +1902,11 @@ static int run_project_tests(sproj_t *proj, const char *proj_dir) {
         if (m->has_output)
             snprintf(full_output, sizeof(full_output), "%s/%s", proj_dir, m->output);
         else
+#if defined(_WIN32)
+            snprintf(full_output, sizeof(full_output), "%s/a_%s.test.exe", proj_dir, m->name);
+#else
             snprintf(full_output, sizeof(full_output), "%s/a_%s.test", proj_dir, m->name);
+#endif
 
         /* ── collect extra lib paths: root ext_libs then module ext_libs ── */
         const char *lib_ptrs[SPROJ_MAX_LIBS * 2 + 1];
@@ -1933,8 +1980,20 @@ static int run_project_tests(sproj_t *proj, const char *proj_dir) {
             printf("  [FAIL] '%s'  (fork failed)\n\n", m->name);
             fail++;
         }
+#elif defined(_WIN32)
+        /* Windows: use _spawnl (process.h) — synchronous child process. */
+        {
+            intptr_t rc = _spawnl(_P_WAIT, full_output, full_output, (char *)Null);
+            if (rc == 0) {
+                printf("  [PASS] '%s'\n\n", m->name);
+                pass++;
+            } else {
+                printf("  [FAIL] '%s'  (exit %d)\n\n", m->name, (int)rc);
+                fail++;
+            }
+        }
 #else
-        /* Fallback for platforms without fork/exec: just report the binary. */
+        /* Fallback for platforms without fork/exec or _spawnl. */
         printf("  [SKIP] '%s'  (auto-run not supported on this platform; binary at %s)\n\n",
                m->name, full_output);
 #endif
@@ -2265,10 +2324,18 @@ int main(int argc, char **argv) {
                     output_path = lib_name_buf;
                     break;
                 case EmitTest:
+#if defined(_WIN32)
+                    output_path = "a.test.exe";
+#else
                     output_path = "a.test";
+#endif
                     break;
                 default:
+#if defined(_WIN32)
+                    output_path = "a.out.exe";
+#else
                     output_path = "a.out";
+#endif
                     break;
             }
         }

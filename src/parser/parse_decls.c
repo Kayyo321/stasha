@@ -149,12 +149,14 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
             return;
         }
 
-        /* dotted lhs: target.arch == "x86_64" */
+        /* dotted lhs: target.arch == "x86_64" (or !=) */
         if (check(p, TokDot)) {
             advance_parser(p);
             token_t second = p->current;
             if (is_name_token(p)) advance_parser(p);
-            consume(p, TokEqEq, "'==' in condition");
+            boolean_t is_ne = False;
+            if (check(p, TokBangEq)) { is_ne = True; advance_parser(p); }
+            else consume(p, TokEqEq, "'==' or '!=' in condition");
             token_t rhs_tok = p->current;
             if (check(p, TokStackStr) || check(p, TokHeapStr)) {
                 advance_parser(p);
@@ -162,9 +164,9 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
                 char *lhs1 = copy_token_text(first);
                 char *lhs2 = copy_token_text(second);
                 if (strcmp(lhs1, "target") == 0 && strcmp(lhs2, "arch") == 0) {
-                    e.cond.op = FhCondArchEq;
+                    e.cond.op = is_ne ? FhCondArchNe : FhCondArchEq;
                 } else if (strcmp(lhs1, "target") == 0 && strcmp(lhs2, "os") == 0) {
-                    e.cond.op = FhCondOsEq;
+                    e.cond.op = is_ne ? FhCondOsNe : FhCondOsEq;
                 } else {
                     e.cond.op = FhCondAlwaysFalse;
                 }
@@ -182,8 +184,9 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
             return;
         }
 
-        /* simple lhs: os/arch/pointer_width == value */
-        if (check(p, TokEqEq)) {
+        /* simple lhs: os/arch/pointer_width == value  (or !=) */
+        if (check(p, TokEqEq) || check(p, TokBangEq)) {
+            boolean_t is_ne = check(p, TokBangEq);
             advance_parser(p);
             char *lhs = copy_token_text(first);
             e.vkind = FhCond;
@@ -191,9 +194,9 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
                 token_t t = p->current;
                 advance_parser(p);
                 if (strcmp(lhs, "os") == 0 || strcmp(lhs, "platform") == 0)
-                    e.cond.op = FhCondOsEq;
+                    e.cond.op = is_ne ? FhCondOsNe : FhCondOsEq;
                 else if (strcmp(lhs, "arch") == 0)
-                    e.cond.op = FhCondArchEq;
+                    e.cond.op = is_ne ? FhCondArchNe : FhCondArchEq;
                 else
                     e.cond.op = FhCondAlwaysFalse;
                 e.cond.str_rhs = ast_strdup(t.start + 1, t.length - 2);
@@ -205,13 +208,13 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
                 memcpy(numbuf, t.start, nlen);
                 numbuf[nlen] = '\0';
                 if (strcmp(lhs, "pointer_width") == 0)
-                    e.cond.op = FhCondPtrWidthEq;
+                    e.cond.op = is_ne ? FhCondPtrWidthNe : FhCondPtrWidthEq;
                 else
                     e.cond.op = FhCondAlwaysFalse;
                 e.cond.int_rhs = (int)strtol(numbuf, Null, 0);
             } else {
                 e.cond.op = FhCondAlwaysFalse;
-                diag_begin_error("expected string or integer after '=='");
+                diag_begin_error("expected string or integer after '%s'", is_ne ? "!=" : "==");
                 diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                           True, "expected condition value");
                 diag_finish();
