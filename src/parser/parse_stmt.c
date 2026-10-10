@@ -137,7 +137,7 @@ static node_t *parse_if_stmt(parser_t *p) {
     node_t *else_block = Null;
     if (match_tok(p, TokElse)) {
         if (check(p, TokIf))
-            else_block = parse_if_stmt(p);
+            else_block = parse_statement(p);
         else
             else_block = parse_body(p);
     }
@@ -533,7 +533,7 @@ static node_t *parse_var_decl(parser_t *p, linkage_t linkage) {
     while (check(p, TokLBracket) && arr_ndim < 8) {
         advance_parser(p); /* consume '[' */
         if (check(p, TokIntLit)) {
-            arr_sizes[arr_ndim] = parse_int_value(p->current);
+            arr_sizes[arr_ndim] = (long)parse_int_value(p, p->current, LONG_MAX, "array dimension");
             advance_parser(p);
         } else if (is_name_token(p)) {
             arr_size_names[arr_ndim] = copy_name_text(p->current);
@@ -808,7 +808,18 @@ static node_t *parse_defer_stmt(parser_t *p) {
     return n;
 }
 
+static node_t *parse_statement_impl(parser_t *p);
+
 static node_t *parse_statement(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    parser_state_t before = save_state(p);
+    node_t *result = parse_statement_impl(p);
+    ensure_parser_progress(p, before);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_statement_impl(parser_t *p) {
     if (check(p, TokLBrace))       return parse_block(p);
     if (check(p, TokFor))          return parse_for_stmt(p);
     if (check(p, TokForeach))      return parse_foreach_stmt(p);

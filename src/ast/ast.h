@@ -1,6 +1,7 @@
 #ifndef AstH
 #define AstH
 
+#include <stdint.h>
 #include "../common/common.h"
 #include "../lexer/lexer.h"
 
@@ -519,7 +520,10 @@ struct node {
         struct { node_t *target; node_t *value; } assign;
         struct { node_list_t targets; node_list_t values; } multi_assign;
         struct { char *name; } ident;
-        struct { long value; } int_lit;
+        /* Literal magnitude, independent of host long and not yet contextually
+           typed. Unary minus is a separate node, including for INT64_MIN.
+           The supported scalar domain is bounded to UINT64_MAX. */
+        struct { uint64_t value; } int_lit;
         struct { double value; } float_lit;
         struct { char *value; boolean_t is_heap; usize_t len; } str_lit;
         struct { char value; } char_lit;

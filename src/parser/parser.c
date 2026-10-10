@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <limits.h>
 #include "parser.h"
 
 typedef struct {
@@ -28,6 +29,11 @@ typedef struct {
        (if/while/for/do-while condition, etc.).  Counter, not bool, so
        nesting works correctly. */
     int no_trailing_closure;
+
+    /* Bound recursive productions before adversarial nesting exhausts the
+       compiler's C stack. This budget is shared by types and expressions. */
+    unsigned nesting_depth;
+    boolean_t nesting_limit_hit;
 } parser_t;
 
 /* ── save / restore for speculative parsing (casts) ── */
@@ -59,11 +65,35 @@ static void restore_state(parser_t *p, parser_state_t s) {
     p->lexer             = s.lexer;
     p->current           = s.current;
     p->previous          = s.previous;
+    if (p->nesting_limit_hit) p->current.kind = TokEof;
 }
 
 /* ── helpers ── */
 
+enum { ParserMaxNesting = 256 };
+
+static boolean_t enter_parser_nesting(parser_t *p) {
+    if (p->nesting_limit_hit) return False;
+    if (p->nesting_depth >= ParserMaxNesting) {
+        diag_begin_error("parser nesting limit exceeded (maximum %u)",
+                         (unsigned)ParserMaxNesting);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "reduce expression, statement, or type nesting");
+        diag_finish();
+        p->had_error = True;
+        p->panic_mode = True;
+        p->nesting_limit_hit = True;
+        /* End this parse deterministically. Speculative restore and advance
+           must not revive the remaining tokens after a fatal resource limit. */
+        p->current.kind = TokEof;
+        return False;
+    }
+    p->nesting_depth++;
+    return True;
+}
+
 static void advance_parser(parser_t *p) {
+    if (p->nesting_limit_hit) return;
     p->previous = p->current;
 
     if (p->stream) {
@@ -116,6 +146,26 @@ static void advance_parser(parser_t *p) {
         }
         p->current_expansion = NULL;
     }
+}
+
+/* Error recovery may stop before a delimiter owned by an enclosing rule.
+   Declaration/statement loops must still consume input if that delimiter has
+   no owner here (for example, a stray top-level '}'). */
+static void ensure_parser_progress(parser_t *p, parser_state_t before) {
+    if (p->current.kind == TokEof) return;
+    boolean_t moved = p->stream
+        ? p->stream_idx != before.stream_idx
+        : p->lexer.current != before.lexer.current;
+    if (moved) return;
+    if (!p->had_error) {
+        diag_begin_error("unexpected token '%.*s'", (int)p->current.length,
+                         p->current.start);
+        diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
+                  True, "expected a declaration or statement");
+        diag_finish();
+    }
+    p->had_error = True;
+    advance_parser(p);
 }
 
 static boolean_t check(parser_t *p, token_kind_t kind) {
@@ -215,7 +265,16 @@ static const char *comptime_type_name(type_info_t ti) {
     }
 }
 
+static type_info_t parse_type_impl(parser_t *p);
+
 static type_info_t parse_type(parser_t *p) {
+    if (!enter_parser_nesting(p)) return NO_TYPE;
+    type_info_t result = parse_type_impl(p);
+    p->nesting_depth--;
+    return result;
+}
+
+static type_info_t parse_type_impl(parser_t *p) {
     type_info_t info = NO_TYPE;
 
     /* nullable pointer type: ?T *p — the ? prefixes the entire type */
@@ -816,6 +875,7 @@ node_t *parse(const char *source) {
     p.had_error = False;
     init_lexer(&p.lexer, source);
     advance_parser(&p);
+    if (p.had_error) return Null; /* lexical failure; avoid unrelated syntax errors */
 
     return run_parse(&p);
 }
@@ -832,6 +892,7 @@ node_t *parse_from_stream(const pp_stream_t *stream) {
     p.stream_idx   = 0;
     p.had_error    = False;
     advance_parser(&p);
+    if (p.had_error) return Null; /* lexical failure; avoid unrelated syntax errors */
 
     return run_parse(&p);
 }

@@ -116,11 +116,7 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
     if (check(p, TokIntLit)) {
         token_t t = p->current;
         advance_parser(p);
-        char numbuf[64];
-        usize_t nlen = t.length < sizeof(numbuf) - 1 ? t.length : sizeof(numbuf) - 1;
-        memcpy(numbuf, t.start, nlen);
-        numbuf[nlen] = '\0';
-        long val = strtol(numbuf, Null, 0);
+        long val = (long)parse_int_value(p, t, LONG_MAX, "fileheader value");
         e.vkind = FhInt;
         e.int_val = val;
         fileheader_push(fh, e);
@@ -203,15 +199,11 @@ static void parse_fileheader_entry(parser_t *p, fileheader_t *fh) {
             } else if (check(p, TokIntLit)) {
                 token_t t = p->current;
                 advance_parser(p);
-                char numbuf[32];
-                usize_t nlen = t.length < sizeof(numbuf) - 1 ? t.length : sizeof(numbuf) - 1;
-                memcpy(numbuf, t.start, nlen);
-                numbuf[nlen] = '\0';
                 if (strcmp(lhs, "pointer_width") == 0)
                     e.cond.op = is_ne ? FhCondPtrWidthNe : FhCondPtrWidthEq;
                 else
                     e.cond.op = FhCondAlwaysFalse;
-                e.cond.int_rhs = (int)strtol(numbuf, Null, 0);
+                e.cond.int_rhs = (int)parse_int_value(p, t, INT_MAX, "fileheader condition");
             } else {
                 e.cond.op = FhCondAlwaysFalse;
                 diag_begin_error("expected string or integer after '%s'", is_ne ? "!=" : "==");
@@ -704,7 +696,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
                 while (check(p, TokLBracket) && _ndim < 8) {
                     advance_parser(p); /* consume '[' */
                     if (check(p, TokIntLit)) {
-                        field->as.var_decl.array_sizes[_ndim] = parse_int_value(p->current);
+                        field->as.var_decl.array_sizes[_ndim] = (long)parse_int_value(p, p->current, LONG_MAX, "array dimension");
                         advance_parser(p);
                     } else if (is_name_token(p)) {
                         field->as.var_decl.array_size_names[_ndim] = copy_name_text(p->current);
@@ -721,7 +713,7 @@ static void parse_struct_body(parser_t *p, node_t *decl) {
             /* bitfield: type name: width */
             if (!in_comptime_section && match_tok(p, TokColon)) {
                 if (check(p, TokIntLit)) {
-                    field->as.var_decl.bitfield_width = (int)parse_int_value(p->current);
+                    field->as.var_decl.bitfield_width = (int)parse_positive_int_value(p, p->current, INT_MAX, "bitfield width");
                     advance_parser(p);
                 } else {
                     diag_begin_error("expected an integer literal for bitfield width");
@@ -1095,8 +1087,10 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
                 advance_parser(p);
                 consume(p, TokLParen, "'('");
                 if (check(p, TokIntLit)) {
-                    n->as.type_decl.align_value = (unsigned)parse_int_value(p->current);
+                    n->as.type_decl.align_value = (unsigned)parse_positive_int_value(p, p->current, UINT_MAX, "alignment");
                     advance_parser(p);
+                } else {
+                    consume(p, TokIntLit, "an integer literal for alignment");
                 }
                 consume(p, TokRParen, "')'");
             } else if (len == 8 && memcmp(s, "comptime", 8) == 0) {
@@ -1532,7 +1526,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
                 while (check(p, TokLBracket) && _pndim < 8) {
                     advance_parser(p); /* consume '[' */
                     if (check(p, TokIntLit)) {
-                        param->as.var_decl.array_sizes[_pndim] = parse_int_value(p->current);
+                        param->as.var_decl.array_sizes[_pndim] = (long)parse_int_value(p, p->current, LONG_MAX, "array dimension");
                         advance_parser(p);
                     } else if (is_name_token(p)) {
                         param->as.var_decl.array_size_names[_pndim] = copy_name_text(p->current);
@@ -1732,7 +1726,15 @@ static node_t *parse_asm_stmt(parser_t *p) {
  * The body parser: key == "value" { ... } [else { ... } | else @comptime if ...]
  * Called after the 'comptime_if' / '@comptime if' keyword has been consumed.
  */
+static node_t *parse_comptime_if_body_impl(parser_t *p);
 static node_t *parse_comptime_if_body(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    node_t *result = parse_comptime_if_body_impl(p);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_comptime_if_body_impl(parser_t *p) {
     usize_t line = p->current.line;
 
     /* key == "value" */
@@ -1885,7 +1887,18 @@ static node_t *parse_submod_block(parser_t *p, linkage_t linkage) {
     return n;
 }
 
+static node_t *parse_top_decl_impl(parser_t *p);
+
 static node_t *parse_top_decl(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    parser_state_t before = save_state(p);
+    node_t *result = parse_top_decl_impl(p);
+    ensure_parser_progress(p, before);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_top_decl_impl(parser_t *p) {
     /* ── Collect leading @[[...]] fileheader groups ── */
     fileheader_t pending;
     fileheader_init(&pending);

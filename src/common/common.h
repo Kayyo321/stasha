@@ -40,7 +40,7 @@ usize_t get_error_count(void);
 usize_t get_warn_count(void);
 
 #ifdef Testing
-void restore_diagnostic_counts(usize warn_count, usize error_count);
+void restore_diagnostic_counts(usize_t warn_count, usize_t error_count);
 #endif // Testing
 
 heap_t allocate(usize_t count, usize_t bytes);

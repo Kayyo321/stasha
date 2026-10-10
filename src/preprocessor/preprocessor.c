@@ -982,13 +982,15 @@ pp_stream_t *pp_process(const char *source, const char *file_path,
     /* ── Lex all tokens, tagging each with file_path ── */
     raw_arr_t raw;
     ra_init(&raw);
+    boolean_t had_lex_error = False;
     {
         lexer_t lex;
         init_lexer(&lex, source);
         for (;;) {
             token_t t = next_token(&lex);
             t.file = file_path;
-            /* Keep lex errors in the stream; the parser will report them. */
+            /* Lexical failure must survive unused/discarded macro bodies. */
+            if (t.kind == TokError) had_lex_error = True;
             ra_push(&raw, t);
             if (t.kind == TokEof) break;
         }
@@ -1000,6 +1002,19 @@ pp_stream_t *pp_process(const char *source, const char *file_path,
     stream->cap    = 256;
     stream->tokens = malloc((size_t)stream->cap * sizeof(pp_token_t));
     pool_init(stream);
+
+    /* Do not scan or expand lexically invalid input: definition skipping can
+       otherwise swallow an error in an unused macro. Hand the parser each
+       original error exactly once, with its source location, followed by EOF. */
+    if (had_lex_error) {
+        for (int i = 0; i < raw.count; i++) {
+            if (raw.toks[i].kind == TokError || raw.toks[i].kind == TokEof)
+                emit_token(stream, raw.toks[i], NULL);
+        }
+        stream->exports = pp_macro_set_new();
+        ra_free(&raw);
+        return stream;
+    }
 
     /* ── Pass 1: collect macro definitions ── */
     pp_macro_set_t *local_ms = pp_macro_set_new();

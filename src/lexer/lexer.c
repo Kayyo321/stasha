@@ -62,7 +62,8 @@ static token_t error_token(lexer_t *lex, const char *msg) {
     return tok;
 }
 
-static void skip_whitespace(lexer_t *lex) {
+/* Return an error token once, after consuming the incomplete comment. */
+static boolean_t skip_whitespace(lexer_t *lex, token_t *error) {
     for (;;) {
         char c = peek(lex);
         switch (c) {
@@ -85,9 +86,12 @@ static void skip_whitespace(lexer_t *lex) {
                     break;
                 }
                 if (peek_next(lex) == '*') {
-                    /* block comment: supports nesting */
+                    /* Iterative nesting uses no C call stack. Keep the opening
+                       location: EOF can be many lines after the missing close. */
+                    usize_t comment_line = lex->line;
+                    usize_t comment_col = (usize_t)(lex->current - lex->line_start) + 1;
                     advance(lex); advance(lex);
-                    int depth = 1;
+                    size_t depth = 1;
                     while (!is_at_end(lex) && depth > 0) {
                         if (peek(lex) == '/' && peek_next(lex) == '*') {
                             advance(lex); advance(lex);
@@ -104,11 +108,17 @@ static void skip_whitespace(lexer_t *lex) {
                             }
                         }
                     }
+                    if (depth != 0) {
+                        *error = error_token(lex, "unterminated block comment");
+                        error->line = comment_line;
+                        error->col = comment_col;
+                        return False;
+                    }
                     break;
                 }
-                return;
+                return True;
             default:
-                return;
+                return True;
         }
     }
 }
@@ -230,6 +240,11 @@ static token_t scan_number(lexer_t *lex) {
     /* hex literal: 0x... */
     if (lex->start[0] == '0' && (peek(lex) == 'x' || peek(lex) == 'X')) {
         advance(lex); /* consume 'x' */
+        if (!is_hex_digit(peek(lex))) {
+            token_t err = error_token(lex, "expected hexadecimal digit after '0x'");
+            err.col = (usize_t)(lex->start - lex->line_start) + 1;
+            return err;
+        }
         while (is_hex_digit(peek(lex))) advance(lex);
         return make_token(lex, TokIntLit);
     }
@@ -288,7 +303,8 @@ void init_lexer(lexer_t *lex, const char *source) {
 }
 
 token_t next_token(lexer_t *lex) {
-    skip_whitespace(lex);
+    token_t error;
+    if (!skip_whitespace(lex, &error)) return error;
     lex->start = lex->current;
 
     if (is_at_end(lex)) return make_token(lex, TokEof);

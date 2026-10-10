@@ -53,22 +53,61 @@ static boolean_t try_parse_capture_list(parser_t *p,
     return True;
 }
 
-static long parse_int_value(token_t t) {
-    long val = 0;
-    if (t.length > 2 && t.start[0] == '0' && (t.start[1] == 'x' || t.start[1] == 'X')) {
-        for (usize_t i = 2; i < t.length; i++) {
-            char c = t.start[i];
-            int d;
-            if (c >= '0' && c <= '9') d = c - '0';
-            else if (c >= 'a' && c <= 'f') d = 10 + c - 'a';
-            else d = 10 + c - 'A';
-            val = val * 16 + d;
-        }
-        return val;
+/* Parse an unsigned magnitude, never a host-sized signed integer. Stasha's
+   current scalar types stop at u64; larger literals are rejected instead of
+   silently wrapping or pretending to support arbitrary-precision evaluation.
+   Minus remains a unary operator so -9223372036854775808 is representable. */
+static uint64_t parse_int_value(parser_t *p, token_t t, uint64_t maximum,
+                                const char *context) {
+    uint64_t value = 0;
+    unsigned base = 10;
+    usize_t i = 0;
+    if (t.length >= 2 && t.start[0] == '0'
+        && (t.start[1] == 'x' || t.start[1] == 'X')) {
+        base = 16;
+        i = 2;
     }
-    for (usize_t i = 0; i < t.length; i++)
-        val = val * 10 + (t.start[i] - '0');
-    return val;
+    boolean_t invalid = i == t.length;
+    boolean_t overflow = False;
+    for (; i < t.length; i++) {
+        char c = t.start[i];
+        unsigned digit;
+        if (c >= '0' && c <= '9') digit = (unsigned)(c - '0');
+        else if (base == 16 && c >= 'a' && c <= 'f') digit = (unsigned)(10 + c - 'a');
+        else if (base == 16 && c >= 'A' && c <= 'F') digit = (unsigned)(10 + c - 'A');
+        else { invalid = True; break; }
+        if (digit >= base) { invalid = True; break; }
+        if (value > (UINT64_MAX - digit) / base) { overflow = True; break; }
+        value = value * base + digit;
+    }
+    if (invalid || overflow || value > maximum) {
+        if (invalid)
+            diag_begin_error("invalid integer literal");
+        else if (overflow)
+            diag_begin_error("integer literal exceeds maximum supported magnitude (18446744073709551615)");
+        else
+            diag_begin_error("integer literal out of range for %s", context);
+        diag_span(SRC_LOC(t.line, t.col, t.length), True, "here");
+        diag_finish();
+        p->had_error = True;
+        return 0;
+    }
+    return value;
+}
+
+/* Zero is the omitted/default sentinel for this metadata. Reject it while the
+   explicit token is still available, rather than losing that distinction. */
+static uint64_t parse_positive_int_value(parser_t *p, token_t t, uint64_t maximum,
+                                         const char *context) {
+    usize_t errors_before = get_error_count();
+    uint64_t value = parse_int_value(p, t, maximum, context);
+    if (value == 0 && get_error_count() == errors_before) {
+        diag_begin_error("%s must be greater than zero", context);
+        diag_span(SRC_LOC(t.line, t.col, t.length), True, "here");
+        diag_finish();
+        p->had_error = True;
+    }
+    return value;
 }
 
 static double parse_float_value(token_t t) {
@@ -210,6 +249,7 @@ static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usiz
         memset(&sub, 0, sizeof(sub));
         sub.stream    = Null;
         sub.had_error = False;
+        sub.nesting_depth = p->nesting_depth;
         init_lexer(&sub.lexer, expr_src);
         advance_parser(&sub);
         node_t *expr_node = parse_expr(&sub);
@@ -338,7 +378,8 @@ static node_t *parse_primary(parser_t *p) {
     if (check(p, TokIntLit)) {
         advance_parser(p);
         node_t *n = make_node(NodeIntLitExpr, p->previous.line);
-        n->as.int_lit.value = parse_int_value(p->previous);
+        n->as.int_lit.value = parse_int_value(p, p->previous, UINT64_MAX, "integer literal");
+        ast_set_loc(n, p->previous);
         return n;
     }
 
@@ -1410,7 +1451,16 @@ static void parse_trailing_closure(parser_t *p, node_list_t *args_dest) {
 
 /* ── postfix: calls, indexing, member access, ++/-- ── */
 
+static node_t *parse_postfix_impl(parser_t *p);
+
 static node_t *parse_postfix(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    node_t *result = parse_postfix_impl(p);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_postfix_impl(parser_t *p) {
     node_t *expr = parse_primary(p);
 
     for (;;) {
@@ -1804,7 +1854,16 @@ static node_t *parse_postfix(parser_t *p) {
 
 /* ── unary prefix: ++ -- ! - ~ ── */
 
+static node_t *parse_unary_impl(parser_t *p);
+
 static node_t *parse_unary(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    node_t *result = parse_unary_impl(p);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_unary_impl(parser_t *p) {
     /* address-of: &expr (unary prefix, distinct from binary &) */
     if (check(p, TokAmp)) {
         usize_t line = p->current.line;
@@ -2159,7 +2218,16 @@ static node_t *parse_logical_or(parser_t *p) {
 
 /* ── ternary: cond ? then : else ── */
 
+static node_t *parse_ternary_impl(parser_t *p);
+
 static node_t *parse_ternary(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    node_t *result = parse_ternary_impl(p);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_ternary_impl(parser_t *p) {
     node_t *cond = parse_logical_or(p);
     if (check(p, TokQuestion)) {
         usize_t line = p->current.line;
@@ -2276,7 +2344,16 @@ static boolean_t is_compound_assign(token_kind_t k) {
         || k == TokLtLtEq  || k == TokGtGtEq;
 }
 
+static node_t *parse_assignment_impl(parser_t *p);
+
 static node_t *parse_assignment(parser_t *p) {
+    if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    node_t *result = parse_assignment_impl(p);
+    p->nesting_depth--;
+    return result;
+}
+
+static node_t *parse_assignment_impl(parser_t *p) {
     node_t *expr = parse_pipeline(p);
 
     if (expr->kind == NodeIdentExpr || expr->kind == NodeIndexExpr
