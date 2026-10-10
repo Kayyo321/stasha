@@ -9,3 +9,7 @@
 /bin/
 **/logs/
 .claude/
+
+# Local Python test caches
+__pycache__/
+*.pyc

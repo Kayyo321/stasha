@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -31,7 +31,7 @@ jobs:
             archive_ext: tar.gz
 
           - target: linux-x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             os_name: linux
             arch: x86_64
             archive_ext: tar.gz
@@ -43,7 +43,7 @@ jobs:
             archive_ext: tar.gz
 
           - target: windows-x86_64
-            runner: windows-latest
+            runner: windows-2025
             os_name: windows
             arch: x86_64
             archive_ext: zip
@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
 
@@ -72,19 +72,20 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y cmake ninja-build clang lld
 
+      - name: Record toolchain build inputs (non-Windows)
+        if: runner.os != 'Windows'
+        id: toolchain-inputs
+        run: python3 scripts/toolchain_fingerprint.py --github-output --output build/toolchain-inputs.json
+
       # ── LLVM cache ──────────────────────────────────────────────
       - name: Cache LLVM build
         if: runner.os != 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: llvm-cache
         with:
           path: build/llvm
-          # Static token (not hashFiles(Makefile)) so routine Makefile edits
-          # don't trigger a ~30min LLVM rebuild. Bump v3 -> v4 manually when
-          # LLVM_TARGETS or the LLVM submodule commit changes.
-          key: llvm-${{ matrix.target }}-v3
-          restore-keys: |
-            llvm-${{ matrix.target }}-
+          # Exact submodule, options, host tools and host identity; no fallback.
+          key: llvm-${{ matrix.target }}-${{ steps.toolchain-inputs.outputs.key }}
 
       - name: Build LLVM (non-Windows)
         if: runner.os != 'Windows' && steps.llvm-cache.outputs.cache-hit != 'true'
@@ -93,7 +94,7 @@ jobs:
       # ── OpenSSL cache (non-Windows) ──────────────────────────────
       - name: Cache OpenSSL build
         if: runner.os != 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: openssl-cache
         with:
           path: build/openssl
@@ -106,20 +107,20 @@ jobs:
       # ── Windows: MSVC Build Tools (for emitted-binary ABI) + MSYS2 (drives make) ─
       - name: Setup MSVC Build Tools (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
 
       - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: ${{ matrix.arch == 'arm64' && 'CLANGARM64' || 'UCRT64' }}
           update: false
           path-type: inherit
           install: >-
             ${{ matrix.arch == 'arm64' && 'mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-llvm mingw-w64-clang-aarch64-lld mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-ninja' || 'mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja' }}
-            make
+            make python
 
       # ── build compiler + stdlib ─────────────────────────────────
       - name: Build stasha (non-Windows)
@@ -152,6 +153,21 @@ jobs:
       # extra targets below exercise the C-interop, thread, and LLVM smoke
       # paths.  Each platform fails fast on a regression so we don't ship
       # broken binaries.
+      - name: Run test-oracle selftests and diagnostics (non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          bash scripts/test_harness_selftest.sh
+          bash tests/diag/run_diag_tests.sh ./bin/stasha --artifacts build/qualification/diag
+          STASHA=./bin/stasha bash tests/signals/run_tests.sh --artifacts build/qualification/signals
+
+      - name: Run test-oracle selftests and diagnostics (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          bash scripts/test_harness_selftest.sh
+          bash tests/diag/run_diag_tests.sh ./bin/stasha.exe --artifacts build/qualification/diag
+          STASHA=./bin/stasha.exe bash tests/signals/run_tests.sh --artifacts build/qualification/signals
+
       - name: Run cinterop tests (non-Windows)
         if: runner.os != 'Windows'
         run: make test-cinterop
@@ -188,7 +204,7 @@ jobs:
       # ── upload build dir on failure for debugging ────────────────
       - name: Upload build artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-${{ matrix.target }}-failure
           path: |
@@ -290,7 +306,7 @@ jobs:
       # Uploaded on every build (tag and non-tag) so the consolidation
       # job and the release job can download them.
       - name: Upload archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: stasha-${{ matrix.target }}
           path: |
@@ -299,13 +315,15 @@ jobs:
 
   # ── consolidation job: build SHA256SUMS + attach to release ─────
   release:
+    permissions:
+      contents: write
     name: Publish GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           # Download every stasha-* artifact into subdirs named after the artifact.
           pattern: stasha-*
@@ -316,12 +334,13 @@ jobs:
         run: |
           cd _release
           # Gather all .tar.gz and .zip (not the .sha256 sidecars).
-          sha256sum stasha-*.tar.gz stasha-*.zip 2>/dev/null > SHA256SUMS || true
+          find . -maxdepth 1 -type f \( -name "stasha-*.tar.gz" -o -name "stasha-*.zip" \) -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS
+          test -s SHA256SUMS
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS
 
       - name: Create GitHub Release and upload artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true

@@ -554,24 +554,9 @@ test-cinterop: $(TARGET) $(CINTEROP_SUPPORT_LIB)
 # link the .sts directly.  Also verifies the produced binary emits a
 # valid LLVM IR module to stdout.
 LLVM_SMOKE_SRC  = $(CINTEROP_DIR)/llvm_smoke.sts
-LLVM_SMOKE_BIN  = $(CINTEROP_BUILD)/llvm_smoke
 
 test-llvm-smoke: $(TARGET) $(LLVM_SMOKE_SRC) | $(LLVM_CFG)
-	@mkdir -p $(CINTEROP_BUILD)
-	@echo "=== LLVM C API capstone ==="
-	@LIBS=$$($(LLVM_CFG) --libfiles core analysis native lto passes option codegen bitwriter debuginfodwarf objcarcopts textapi object 2>/dev/null); \
-	LARGS=""; for L in $$LIBS; do LARGS="$$LARGS -l $$L"; done; \
-	OUT=$$($(TARGET) build $(LLVM_SMOKE_SRC) -o $(LLVM_SMOKE_BIN) $$LARGS 2>&1); \
-	if [ ! -x $(LLVM_SMOKE_BIN) ]; then \
-	    echo "  FAIL llvm_smoke (compile/link):"; echo "$$OUT" | grep -E '^error:|ld64.lld' | head -5; exit 1; \
-	fi; \
-	OUT=$$($(LLVM_SMOKE_BIN) 2>&1); \
-	if echo "$$OUT" | grep -qE 'ModuleID|target triple'; then \
-	    echo "  PASS llvm_smoke"; \
-	    echo "$$OUT" | head -3 | sed 's/^/    | /'; \
-	else \
-	    echo "  FAIL llvm_smoke (no IR in stdout):"; echo "$$OUT" | head -5; exit 1; \
-	fi
+	@bash $(CINTEROP_DIR)/run_cinterop_tests.sh "$(abspath $(TARGET))" --filter '^llvm_smoke$$' --require-prerequisites --llvm-config "$(abspath $(LLVM_CFG))"
 
 clean-cinterop:
 	rm -rf $(CINTEROP_BUILD)
@@ -591,16 +576,23 @@ test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
 
 HDRS := $(shell find src -name '*.h')
 CODEGEN_IMPLS := $(wildcard src/codegen/*.c)
+PARSER_IMPLS := $(wildcard src/parser/*.c)
+COMMON_IMPLS := $(wildcard src/common/*.c)
+
+# Unity-build includes must trigger recompilation too.
+-include $(OBJS:.o=.d) $(LINKER_OBJ:.o=.d)
 
 build/obj/%.o: src/%.c $(HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 build/obj/codegen/codegen.o: $(CODEGEN_IMPLS)
+build/obj/parser/parser.o: $(PARSER_IMPLS)
+build/obj/common/common.o: $(COMMON_IMPLS)
 
 $(LINKER_OBJ): src/linker/linker.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 
 bin:
 	@mkdir -p bin
@@ -610,7 +602,9 @@ bin:
 # binary can emit code for either architecture (needed for Windows arm64
 # and for any future cross-compilation work). The marginal build cost is
 # small compared with shipping a single-target compiler.
-LLVM_TARGETS = X86;AArch64
+LLVM_TARGETS ?= X86;AArch64
+LLVM_BUILD_JOBS ?= 4
+LLVM_LINK_JOBS ?= 1
 
 LLD_LIB = $(LLVM_BUILD)/lib/liblldCommon.a
 
@@ -621,6 +615,7 @@ $(LLD_LIB): $(LLVM_CFG)
 	      -DCMAKE_BUILD_TYPE=Release                       \
 	      -DLLVM_ENABLE_PROJECTS="lld"                     \
 	      -DLLVM_TARGETS_TO_BUILD="$(LLVM_TARGETS)"       \
+	      -DLLVM_PARALLEL_LINK_JOBS=$(LLVM_LINK_JOBS)        \
 	      -DLLVM_BUILD_TOOLS=ON                            \
 	      -DLLVM_BUILD_UTILS=OFF                           \
 	      -DLLVM_BUILD_EXAMPLES=OFF                        \
@@ -629,13 +624,14 @@ $(LLD_LIB): $(LLVM_CFG)
 	      -DLLVM_ENABLE_ZLIB=OFF                           \
 	      -DLLVM_ENABLE_TERMINFO=OFF                       \
 	      -DLLVM_ENABLE_ZSTD=OFF
-	cmake --build $(LLVM_BUILD) -- -j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+	cmake --build $(LLVM_BUILD) --parallel $(LLVM_BUILD_JOBS)
 
 $(LLVM_CFG):
 	cmake -S extlib/llvm/llvm -B $(LLVM_BUILD)            \
 	      -DCMAKE_BUILD_TYPE=Release                       \
 	      -DLLVM_ENABLE_PROJECTS="lld"                     \
 	      -DLLVM_TARGETS_TO_BUILD="$(LLVM_TARGETS)"       \
+	      -DLLVM_PARALLEL_LINK_JOBS=$(LLVM_LINK_JOBS)        \
 	      -DLLVM_BUILD_TOOLS=ON                            \
 	      -DLLVM_BUILD_UTILS=OFF                           \
 	      -DLLVM_BUILD_EXAMPLES=OFF                        \
@@ -644,7 +640,7 @@ $(LLVM_CFG):
 	      -DLLVM_ENABLE_ZLIB=OFF                           \
 	      -DLLVM_ENABLE_TERMINFO=OFF                       \
 	      -DLLVM_ENABLE_ZSTD=OFF
-	cmake --build $(LLVM_BUILD) -- -j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+	cmake --build $(LLVM_BUILD) --parallel $(LLVM_BUILD_JOBS)
 
 # ── OpenSSL build ─────────────────────────────────────────────
 openssl: $(OPENSSL_LIB)

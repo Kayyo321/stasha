@@ -1,0 +1,258 @@
+{
+  "schema": 1,
+  "target": "x86_64-unknown-linux-gnu",
+  "kernel_target_provisional": "x86_64-unknown-none-elf",
+  "suites": [
+    {
+      "id": "frontend",
+      "scope": "parser-only",
+      "status": "runner-in-progress",
+      "owner": "compiler",
+      "gate": "P0/P1/P10"
+    },
+    {
+      "id": "harness-selftests",
+      "scope": "test-oracle",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0",
+      "command": [
+        "bash",
+        "scripts/test_harness_selftest.sh"
+      ],
+      "qualification": "mock-only; no real compiler"
+    },
+    {
+      "id": "driver-transactions",
+      "scope": "driver-unit",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0",
+      "source": "tests/driver/output_transaction.c"
+    },
+    {
+      "id": "diagnostics",
+      "scope": "hosted",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0",
+      "command": [
+        "bash",
+        "tests/diag/run_diag_tests.sh"
+      ],
+      "case_inventory": [
+        "python3",
+        "tests/harness/compiler_suites.py",
+        "diag",
+        "--list"
+      ],
+      "execution": "pending exact compiler build",
+      "evidence": "tests/harness/README.md"
+    },
+    {
+      "id": "cinterop",
+      "scope": "hosted",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0/P4",
+      "command": [
+        "bash",
+        "tests/cinterop/run_cinterop_tests.sh"
+      ],
+      "case_inventory": [
+        "python3",
+        "tests/harness/compiler_suites.py",
+        "cinterop",
+        "--list"
+      ],
+      "execution": "pending exact compiler build",
+      "evidence": "tests/harness/README.md"
+    },
+    {
+      "id": "llvm-smoke",
+      "scope": "hosted",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0/P4",
+      "command": [
+        "make",
+        "test-llvm-smoke"
+      ]
+    },
+    {
+      "id": "stdlib",
+      "scope": "hosted",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0",
+      "command": [
+        "make",
+        "stdlib-test"
+      ]
+    },
+    {
+      "id": "threads",
+      "scope": "hosted",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0",
+      "command": [
+        "make",
+        "test-threads"
+      ]
+    },
+    {
+      "id": "signals",
+      "scope": "hosted",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P0",
+      "command": [
+        "bash",
+        "tests/signals/run_tests.sh"
+      ],
+      "case_inventory": [
+        "python3",
+        "tests/harness/compiler_suites.py",
+        "signals",
+        "--list"
+      ],
+      "execution": "pending exact compiler build",
+      "evidence": "tests/harness/README.md"
+    },
+    {
+      "id": "core-language",
+      "scope": "hosted",
+      "status": "needs-case-inventory",
+      "owner": "compiler",
+      "gate": "P0",
+      "sources": [
+        "tests/test_features.sts",
+        "tests/test_new_features.sts",
+        "tests/test_sugar.sts"
+      ]
+    },
+    {
+      "id": "fileheaders",
+      "scope": "hosted/freestanding",
+      "status": "needs-case-inventory",
+      "owner": "compiler",
+      "gate": "P0/P5/P6",
+      "directory": "tests/fileheaders"
+    },
+    {
+      "id": "capture-negative",
+      "scope": "hosted",
+      "status": "needs-diagnostic-contract",
+      "owner": "compiler",
+      "gate": "P0/P3",
+      "source": "tests/neg/capture.sts"
+    },
+    {
+      "id": "scalars",
+      "scope": "hosted/freestanding",
+      "status": "runner-in-progress",
+      "owner": "compiler",
+      "gate": "P1"
+    },
+    {
+      "id": "cleanup-memory",
+      "scope": "hosted/freestanding",
+      "status": "not-implemented",
+      "owner": "compiler",
+      "gate": "P3"
+    },
+    {
+      "id": "kernel-machine-policy",
+      "scope": "freestanding",
+      "status": "not-implemented",
+      "owner": "compiler",
+      "gate": "P4"
+    },
+    {
+      "id": "kernel-component",
+      "scope": "freestanding",
+      "status": "not-implemented",
+      "owner": "compiler",
+      "gate": "P5/P8"
+    },
+    {
+      "id": "kernel-boot",
+      "scope": "freestanding",
+      "status": "not-implemented",
+      "owner": "compiler",
+      "gate": "P6/P8"
+    },
+    {
+      "id": "kernel-interrupts",
+      "scope": "freestanding-K1",
+      "status": "not-implemented",
+      "owner": "compiler",
+      "gate": "P7/P8"
+    },
+    {
+      "id": "kernel-smp",
+      "scope": "freestanding-K2",
+      "status": "not-implemented",
+      "owner": "compiler",
+      "gate": "P9"
+    }
+  ],
+  "policy": "No skips qualify as passes. Entries without runners block their declared gate. Platform xfails require explicit exact failure signatures in their runner.",
+  "unclassified_fixtures": [
+    {
+      "source": "tests/diag/error_bad_type.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_break_outside_loop.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_missing_semicolon.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_pointer_safety.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_ptr_arith_no_permission.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_unexpected_token.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_unknown_function.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/error_unknown_variable.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    },
+    {
+      "source": "tests/diag/warn_unused_variable.sts",
+      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
+      "owner": "compiler",
+      "blocks": "P0 completion"
+    }
+  ]
+}
