@@ -6345,20 +6345,112 @@ static LLVMValueRef gen_copy_expr(cg_t *cg, node_t *node) {
 
 /* ── NodeLenExpr / NodeCapExpr ── */
 
-static LLVMValueRef gen_len_expr(cg_t *cg, node_t *node) {
+/* The ordinary shape/address helpers both allow some legacy projections from
+ * unselected arrays of struct elements. Their agreement does not establish a
+ * scalar member owner. Check every edge without evaluating the operand, and
+ * leave excluded paths on their unchanged ordinary expression route. */
+static boolean_t query_array_path_eligible(cg_t *cg, node_t *node) {
+    if (!node) return False;
+    node_t *object = Null;
+    boolean_t scalar_owner = False;
+    if (node->kind == NodeMemberExpr) {
+        object = node->as.member_expr.object;
+        /* gen_member owns this scalar pseudo-member, even when the element's
+         * struct happens to declare an array field named "len". */
+        if (object->kind == NodeIdentExpr && !strcmp(node->as.member_expr.field, "len")) {
+            symbol_t *sym = cg_lookup(cg, object->as.ident.name);
+            if (sym && sym->array_size >= 0) return False;
+        }
+        scalar_owner = True;
+    } else if (node->kind == NodeIndexExpr) object = node->as.index_expr.object;
+    else if (node->kind == NodeFlaggedIndex) object = node->as.flagged_index.object;
+    else if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar) {
+        object = node->as.unary.operand;
+        scalar_owner = True;
+    }
+    if (!object) return True;
+    if (!query_array_path_eligible(cg, object)) return False;
+    LLVMTypeRef storage = access_storage_type(cg, object);
+    /* Storage wins over source element type: an array of pointers is still
+     * an array until explicit indexing has removed every owner rank. */
+    return !scalar_owner || !storage || LLVMGetTypeKind(storage) != LLVMArrayTypeKind;
+}
+
+/* Address-only lowering does not call gen_self_member. Preserve its receiver
+ * checks at every self root, including roots hidden under indexes/members. */
+static boolean_t query_array_self_context(cg_t *cg, node_t *node) {
+    if (!node) return True;
+    if (node->kind == NodeSelfMemberExpr) {
+        if (!node->as.self_member.type_name && !cg->current_fn_is_inline_method) {
+            diag_begin_error("'this' used outside of a struct body method");
+            diag_span(DIAG_NODE(node), True, "only valid inside 'fn method()' defined within a struct body");
+            diag_note("move this function inside the struct body to make it an instance method");
+            diag_finish();
+            return False;
+        }
+        if (!scalar_symbol(cg, "this")) {
+            scalar_error(node, "fixed-array query requires an instance-method self receiver");
+            return False;
+        }
+    }
+    if (node->kind == NodeMemberExpr)
+        return query_array_self_context(cg, node->as.member_expr.object);
+    if (node->kind == NodeIndexExpr)
+        return query_array_self_context(cg, node->as.index_expr.object);
+    if (node->kind == NodeFlaggedIndex)
+        return query_array_self_context(cg, node->as.flagged_index.object);
+    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar)
+        return query_array_self_context(cg, node->as.unary.operand);
+    return True;
+}
+
+static LLVMValueRef gen_array_query(cg_t *cg, node_t *node, unsigned descriptor_field) {
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
-    LLVMValueRef val   = gen_expr(cg, node->as.len_expr.operand);
+    node_t *operand = node->as.len_expr.operand;
+    LLVMTypeRef candidate = query_array_path_eligible(cg, operand)
+        ? access_storage_type(cg, operand) : Null;
+    if (candidate && LLVMGetTypeKind(candidate) == LLVMArrayTypeKind) {
+        /* Same original-AST entry/result transaction as gen_expr; the outer
+         * query's transaction cannot substitute for its operand's. Nested
+         * calls/index values still go through gen_expr in the access helpers. */
+        if (!iface_local_expression(cg, operand) || !iface_source_preflight_call(cg, operand))
+            return LLVMConstInt(i32_ty, 0, 0);
+        if (!query_array_self_context(cg, operand)) return LLVMConstInt(i32_ty, 0, 0);
+        LLVMTypeRef actual = Null;
+        usize_t errors = get_error_count();
+        LLVMValueRef address = scalar_member_address(cg, operand, &actual, Null, PtrRead);
+        if (!address || !actual || LLVMGetTypeKind(actual) != LLVMArrayTypeKind || actual != candidate) {
+            if (get_error_count() == errors)
+                scalar_error(operand, "fixed-array query requires matching readable addressable array storage");
+            /* Never fall back after attempted lowering: it may have evaluated
+             * a base/index already, or rejected an access permission. */
+            return LLVMConstInt(i32_ty, 0, 0);
+        }
+        iface_local_result(cg, operand, address);
+        uint64_t extent = LLVMGetArrayLength2(actual);
+        if (extent > INT32_MAX) {
+            scalar_error(node, descriptor_field == 1
+                ? "fixed-array len extent exceeds INT32_MAX"
+                : "fixed-array cap extent exceeds INT32_MAX");
+            return LLVMConstInt(i32_ty, 0, 0);
+        }
+        return LLVMConstInt(i32_ty, extent, 0);
+    }
+    /* Preserve slices and the existing non-array compatibility route. A raw
+     * pointer or decayed array does not acquire an inferred extent. */
+    LLVMValueRef val = gen_expr(cg, operand);
     if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMStructTypeKind)
-        return LLVMBuildExtractValue(cg->builder, val, 1, "sl.len");
+        return LLVMBuildExtractValue(cg->builder, val, descriptor_field,
+                                     descriptor_field == 1 ? "sl.len" : "sl.cap");
     return LLVMConstInt(i32_ty, 0, 0);
 }
 
+static LLVMValueRef gen_len_expr(cg_t *cg, node_t *node) {
+    return gen_array_query(cg, node, 1);
+}
+
 static LLVMValueRef gen_cap_expr(cg_t *cg, node_t *node) {
-    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
-    LLVMValueRef val   = gen_expr(cg, node->as.len_expr.operand);
-    if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMStructTypeKind)
-        return LLVMBuildExtractValue(cg->builder, val, 2, "sl.cap");
-    return LLVMConstInt(i32_ty, 0, 0);
+    return gen_array_query(cg, node, 2);
 }
 
 /* ── NodeAnyTypeExpr: any.(expr) — extract type discriminant tag ── */

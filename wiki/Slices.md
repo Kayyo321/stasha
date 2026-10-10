@@ -36,6 +36,49 @@ Stack slices never own their data. `rem.()` on a stack slice is a compile error.
 
 ---
 
+## Fixed-array and slice length queries
+
+`len.(value)` and `cap.(value)` return signed `i32` element counts. For supported
+fixed-array storage, both return the actual selected array extent. For a
+`matrix[2][3]`, either query of `matrix` returns 2; either query of `matrix[i]`
+returns 3 after evaluating and checking `i` against the outer extent. Zero-length
+local arrays return zero. A selected extent above `INT32_MAX` is rejected rather
+than narrowed. This does not extend zero-length field layout support.
+
+The operand is evaluated exactly once, including calls, indexes and their access
+checks. Knowing an extent does not make the operand unevaluated or grant read
+permission through a write-only owner. Supported aliases, readable const/final
+storage, nested fields and instance self fields retain these rules. Array storage
+must be fully selected before projecting its element's fields. Unselected or
+partially selected array-owner projections remain outside this corrected-query
+guarantee and retain their legacy behavior. The legacy
+`a.len` pseudo-member spelling is unchanged.
+
+Slice queries still read the descriptor's logical length and capacity; capacity
+is not permission to read uninitialized or out-of-length elements. Raw pointers
+and decayed array values acquire no inferred array extent. Existing non-array
+fallback behavior is outside this fixed-array contract.
+
+For I1b.2 concrete copy-then-use checks, use a typed scalar index when a query
+computes the index:
+
+```sts
+stack i32 last = len.(values) - 1;
+stack S selected = values[last];
+```
+
+The equivalent inline query inside the index remains an unsupported source-proof
+form for this interface-local subset. This limitation does not change ordinary
+query arithmetic or bounds evaluation.
+
+### Rebuild affected providers; ABI remains 9
+
+This numerical correction applies to newly compiled bodies. Rebuild every affected Stasha provider from source and relink its consumers. ABI9
+layout, function signatures and interface safety-contract checks are unchanged,
+so old ABI9 archives are still accepted. An old provider may retain its wrong
+zero-return query body even when its consumer is rebuilt. Metadata does not
+attest universal behavioral correctness, and relabeling it cannot repair a body.
+
 ## A1: Explicit Access and View Bounds
 
 Explicit slice reads, stores, compound updates, and indexed addresses require

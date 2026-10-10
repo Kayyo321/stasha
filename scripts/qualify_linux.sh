@@ -22,6 +22,7 @@ python3 tests/harness/compiler_suites.py cinterop "$compiler" --llvm-config "$ll
 python3 tests/scalars/run.py --compiler "$compiler" --opt 0,1,2,3 --build-trap-hook --require-trap-reasons --artifacts "$artifacts/scalars"
 python3 tests/memory/run_bounds_a1.py --compiler "$compiler" --cc "${CC:-clang}" --opt 0,1,2,3 --artifacts "$artifacts/bounds-a1"
 python3 tests/memory/run_make_b1.py --compiler "$compiler" --cc "${CC:-clang}" --opt 0,1,2,3 --artifacts "$artifacts/make-b1"
+python3 tests/memory/run_array_queries.py --compiler "$compiler" --opt 0,1,2,3 --artifacts "$artifacts/array-queries"
 # Genuine historical archive controls require separately frozen compilers and
 # run in local checkpoint qualification. This CI stage does not claim them.
 python3 tests/interfaces/run_i0.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i0"

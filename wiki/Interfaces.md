@@ -502,8 +502,8 @@ not attest arbitrary foreign object files.
 
 ### Separate known extent-query limitation
 
-The existing fixed-array `len.(a)`/`cap.(a)` expression route can return zero rather than
-the array extent. I1b.2 does not repair or qualify that expression behavior; its
+The I1b.2 compiler's fixed-array `len.(a)`/`cap.(a)` expression route could return zero rather than
+the array extent. I1b.2 did not repair or qualify that expression behavior; its
 local array proof uses the original declaration extent. This limitation is
 separate from the checked index bounds and concrete transfer rules.
 
@@ -531,3 +531,10 @@ Follow-up review checklist:
 - Cover aliases, fields and side-effecting array expressions; preserve single evaluation.
 - Repeat checked-index boundary controls independently of query results.
 - Retain the original failed test receipt separately from corrected I1b.2 tests.
+
+The subsequent bounded query correction fixes supported newly compiled bodies;
+see [fixed-array query semantics and rebuild guidance](Slices.md#fixed-array-and-slice-length-queries).
+The original failure and baseline evidence remain historical. ABI9 archives are
+still accepted and affected providers must be rebuilt. Within the closed-local
+interface subset, compute the query-derived index in a typed `i32` local first;
+inline len/cap index expressions remain unsupported source-proof forms.

@@ -239,3 +239,31 @@ reinterpretation, integer-pointer conversions, lifetimes and nullable flow are
 not qualified by this suite. Fresh-address arithmetic and bare-star declarations
 remain compatibility controls. Existing explicit pointer-permission `unsafe`
 escapes remain supported; this does not disable ordinary A1 bounds checks.
+
+## Fixed-array len/cap correction
+
+```sh
+python3 tests/memory/run_array_queries.py --compiler bin/stasha-array-query-dev1 \
+  --opt 0,1,2,3 --artifacts /tmp/array-queries
+python3 tests/memory/test_array_queries.py
+```
+
+The maintained inventory has 156 fixtures at O0–O3 (624 outcomes): 41 valid
+runtime sources, 44 expected source rejections, 48 invalid-runtime bounds IR
+controls, 14 legacy malformed-route IR characterizations and 9 boundary IR
+controls. The last three categories are compile-only. Acceptance of those
+artifacts never authorizes executing them and is not a general safety pass.
+Unexpected accepted rejection fixtures also never execute. Runner units verify
+classification and fail-closed command, diagnostic, artifact and IR behavior.
+
+The correction applies to newly compiled fixed-array query bodies while keeping
+ABI9. Independent archive evidence must retain a genuine old provider that still
+returns zero and compare genuinely rebuilt providers at O0–O3. Rebuild every affected provider from source and relink its consumers; an
+accepted old marker does not imply a corrected body.
+
+Exact actual storage rank, operand evaluation, access permission, slice behavior,
+raw-pointer non-inference and I1b.2 hook preservation are distinct controls.
+Within the closed-local interface subset, use a typed `i32` query-derived index;
+the equivalent inline query remains a known source-proof exclusion. Historical
+len-minus-one invalid-index IR becomes a valid last-element case after correction,
+so current out-of-range tests use independent literal and adjusted query boundaries.

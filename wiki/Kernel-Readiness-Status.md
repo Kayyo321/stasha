@@ -1,6 +1,37 @@
 # Kernel-readiness status
 
-## I1b.2 local transfer and projection checkpoint (10 October 2026)
+## Fixed-array query correction (10 October 2026)
+
+Supported newly compiled `len.(array)` and `cap.(array)` expressions now return
+the actual selected element extent, preserving operand evaluation, access checks,
+array rank and interface-local proof hooks. Slice descriptor behavior is unchanged.
+See [query semantics and migration](Slices.md#fixed-array-and-slice-length-queries).
+
+**ABI remains 9. Rebuild every affected provider from source and relink its
+consumers.** Existing ABI9 archives stay accepted and can retain the old wrong
+zero-return body. Genuine old/new provider evidence demonstrates that boundary;
+metadata is not universal behavioral attestation. There is no physical layout,
+function signature or interface safety-contract marker change.
+
+Frozen compiler SHA-256:
+`e6c28df52b705364b266c47635b2b9856d7fb08208001fa021ffc8fedd8d6db6`.
+The complete hosted gate, all 36 rebuilt standard libraries and qualified memory
+regressions pass. Dedicated query controls pass 624/624 at O0–O3, with 28
+runner unit tests and ten mocked hosted fail-closed controls. Independent review
+adds 80 safe runtime observations, 168 normal source rejections, 208 compile-only
+IR controls and eight genuine old/rebuilt-provider consumers. Invalid runtime
+and malformed-route IR controls never execute and are not broad safety passes.
+See the [query checkpoint receipt](../tests/qualification/checkpoint-array-queries-2026-10-10.json).
+
+The correction does not infer raw-pointer extent or repair general nullable,
+owner/lifetime or unsupported array-owner routes. Within the I1b.2 closed-local
+subset, use an explicit typed `i32` query-derived index; the inline query form
+remains an existing source-proof exclusion. Earlier descriptor/helper/return,
+generated-access and growth gaps remain open. No fresh kernel/hardware or native
+non-Linux readiness claim follows.
+
+
+## Historical I1b.2 local transfer and projection checkpoint (10 October 2026)
 
 Bounded ordinary concrete local copies/reassignments and field/fixed-array
 copy-then-use projections now retain checked producer and write identity at
