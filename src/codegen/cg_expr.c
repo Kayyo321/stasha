@@ -5445,18 +5445,10 @@ static LLVMValueRef gen_err_prop(cg_t *cg, node_t *node) {
 
 /* Apply generic type-param substitution to a slice element type. */
 static LLVMTypeRef get_slice_elem_llvm_type(cg_t *cg, type_info_t elem_ti) {
-    if (elem_ti.base == TypeUser && elem_ti.user_name && cg->generic_n > 0) {
-        for (usize_t i = 0; i < cg->generic_n; i++) {
-            if (strcmp(elem_ti.user_name, cg->generic_params[i]) == 0) {
-                elem_ti = cg->generic_concs[i];
-                break;
-            }
-        }
-        if (elem_ti.base == TypeUser && elem_ti.user_name) {
-            const char *sub = cg_subst_name(cg, elem_ti.user_name);
-            if (sub != elem_ti.user_name) elem_ti.user_name = (char *)sub;
-        }
-    }
+    /* The constructor and subsequent indexed accesses must agree on stride,
+     * including multi-link aliases and concrete generic pointer layers. */
+    if (!slice_source_resolve(cg, elem_ti, &elem_ti, Null))
+        return LLVMInt8TypeInContext(cg->ctx); /* diagnosed recovery only */
     return get_llvm_type(cg, elem_ti);
 }
 
@@ -6032,31 +6024,81 @@ static LLVMValueRef gen_make_init(cg_t *cg, node_t *node) {
     return result;
 }
 
+static LLVMValueRef make_count_value(cg_t *cg, node_t *node) {
+    type_info_t type = scalar_expr_type(cg, node, NO_TYPE);
+    if (!scalar_integer(type)) {
+        scalar_error(node, "explicit-count make requires integer length and capacity"); return Null;
+    }
+    LLVMValueRef value = gen_expr(cg, node);
+    if (!llvm_is_int(LLVMTypeOf(value))) {
+        scalar_error(node, "explicit-count make count did not produce an integer"); return Null;
+    }
+    return LLVMBuildIntCast2(cg->builder, value, LLVMInt64TypeInContext(cg->ctx),
+                             !scalar_unsigned(type), "make.count.wide");
+}
+
 static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
     if (node->as.make_expr.init)
         return gen_make_init(cg, node);
 
-    type_info_t elem_ti = node->as.make_expr.elem_type;
-    LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
-
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef i64_ty = LLVMInt64TypeInContext(cg->ctx);
     LLVMTypeRef sl_ty  = slice_struct_type(cg);
+    type_info_t elem_ti;
+    if (!slice_source_resolve(cg, node->as.make_expr.elem_type, &elem_ti, node))
+        return LLVMConstNull(sl_ty);
+    /* Zero bytes are valid defaults only for this deliberately small element
+     * class. In particular enum identity must survive until this predicate. */
+    if (!scalar_numeric(elem_ti)) {
+        scalar_error(node, "explicit-count make supports only builtin integer, bool, f32 or f64 elements");
+        return LLVMConstNull(sl_ty);
+    }
+    if (!cg->di_data_layout || LLVMPointerSize(cg->di_data_layout) != 8) {
+        scalar_error(node, "explicit-count make requires a 64-bit target allocator ABI");
+        return LLVMConstNull(sl_ty);
+    }
+    LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
+    uint64_t stride = LLVMABISizeOfType(cg->di_data_layout, elem_ty);
+    if (!stride || stride > cg_layout_max_size(cg)) {
+        scalar_error(node, "explicit-count make element has unsupported allocation stride");
+        return LLVMConstNull(sl_ty);
+    }
 
-    LLVMValueRef len_val = coerce_int(cg, gen_expr(cg, node->as.make_expr.len), i32_ty);
-    LLVMValueRef cap_val = node->as.make_expr.cap
-        ? coerce_int(cg, gen_expr(cg, node->as.make_expr.cap), i32_ty)
-        : len_val;
+    /* Capture both operands, in source order, before rejecting their values.
+     * Signed widening followed by unsigned comparisons rejects negatives and
+     * full-width u64 values without truncating either descriptor count. */
+    LLVMValueRef len64 = make_count_value(cg, node->as.make_expr.len);
+    if (!len64) return LLVMConstNull(sl_ty);
+    LLVMValueRef cap64 = node->as.make_expr.cap
+        ? make_count_value(cg, node->as.make_expr.cap) : len64;
+    if (!cap64) return LLVMConstNull(sl_ty);
+    LLVMValueRef bad_order = LLVMBuildICmp(cg->builder, LLVMIntUGT, len64, cap64, "make.len.exceeds.cap");
+    LLVMValueRef bad_count = LLVMBuildICmp(cg->builder, LLVMIntUGT, cap64,
+        LLVMConstInt(i64_ty, INT32_MAX, 0), "make.cap.unrepresentable");
+    LLVMValueRef bad_size = LLVMBuildICmp(cg->builder, LLVMIntUGT, cap64,
+        LLVMConstInt(i64_ty, cg_layout_max_size(cg) / stride, 0), "make.size.overflow");
+    scalar_trap_if(cg, LLVMBuildOr(cg->builder, bad_order,
+        LLVMBuildOr(cg->builder, bad_count, bad_size, "make.cap.invalid"), "make.count.invalid"), 6);
 
-    /* bytes = (i64)cap * sizeof(elem) */
-    LLVMValueRef elem_sz = LLVMSizeOf(elem_ty);
-    LLVMValueRef cap64   = LLVMBuildZExt(cg->builder, cap_val, i64_ty, "cap64");
-    LLVMValueRef bytes   = LLVMBuildMul(cg->builder, cap64, elem_sz, "mk.bytes");
+    /* With <=8-byte scalars on a 64-bit target, INT32_MAX*stride fits the
+     * address limit. Keep the DataLayout size invariant explicit nonetheless. */
+    LLVMValueRef len_val = LLVMBuildTrunc(cg->builder, len64, i32_ty, "make.len");
+    LLVMValueRef cap_val = LLVMBuildTrunc(cg->builder, cap64, i32_ty, "make.cap");
+    LLVMBasicBlockRef empty_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "make.empty");
+    LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "make.allocate");
+    LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "make.result");
+    LLVMBuildCondBr(cg->builder, LLVMBuildICmp(cg->builder, LLVMIntEQ, cap64,
+        LLVMConstInt(i64_ty, 0, 0), "make.zero.cap"), empty_bb, alloc_bb);
+    LLVMPositionBuilderAtEnd(cg->builder, empty_bb);
+    LLVMBuildBr(cg->builder, merge_bb);
 
-    /* ptr = malloc(bytes); zero-init with memset */
+    LLVMPositionBuilderAtEnd(cg->builder, alloc_bb);
+    LLVMValueRef bytes = LLVMBuildMul(cg->builder, cap64,
+        LLVMConstInt(i64_ty, stride, 0), "make.bytes");
     LLVMValueRef margs[1] = { bytes };
     LLVMValueRef ptr = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
                                       margs, 1, "mk.ptr");
+    scalar_trap_if(cg, LLVMBuildIsNull(cg->builder, ptr, "make.allocation.failed"), 8);
     LLVMBuildMemSet(cg->builder, ptr,
                     LLVMConstInt(LLVMInt8TypeInContext(cg->ctx), 0, 0),
                     bytes, 0);
@@ -6065,7 +6107,14 @@ static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
     result = LLVMBuildInsertValue(cg->builder, result, ptr,     0, "mk.0");
     result = LLVMBuildInsertValue(cg->builder, result, len_val, 1, "mk.1");
     result = LLVMBuildInsertValue(cg->builder, result, cap_val, 2, "mk.2");
-    return result;
+    LLVMBuildBr(cg->builder, merge_bb);
+    alloc_bb = LLVMGetInsertBlock(cg->builder);
+    LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
+    LLVMValueRef values[2] = {LLVMConstNull(sl_ty), result};
+    LLVMBasicBlockRef blocks[2] = {empty_bb, alloc_bb};
+    LLVMValueRef phi = LLVMBuildPhi(cg->builder, sl_ty, "make.slice");
+    LLVMAddIncoming(phi, values, blocks, 2);
+    return phi;
 }
 
 /* ── NodeAppendExpr: append.(slice, val) ── */

@@ -382,7 +382,7 @@ can reach realloc/free; neither `heap` nor `cap` proves a live owning allocation
 base. Existing K0 restrictions and indexed `++`/`--` rejection remain unchanged.
 
 These source-compatibility changes require rebuilding source-backed archives for
-**ABI 4**, even though the three-field slice descriptor layout is unchanged.
+**ABI 5**, even though the three-field slice descriptor layout is unchanged.
 The archive marker alone does not change native C ABI shape. See
 [Safety System](wiki/Safety-System.md), [Slices](wiki/Slices.md), and the
 [memory regression contract](tests/memory/README.md).

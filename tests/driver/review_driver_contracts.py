@@ -95,7 +95,7 @@ def run_case(case, compiler, directory, timeout):
             if not data.startswith(b'!<arch>\n'):
                 problems.append('archive magic mismatch')
             metadata = Path(str(output) + '.stasha-abi')
-            if not metadata.is_file() or metadata.read_text() != f'STASHA_ABI 4\nTARGET {TARGET}\n':
+            if not metadata.is_file() or metadata.read_text() != f'STASHA_ABI 5\nTARGET {TARGET}\n':
                 problems.append('archive ABI sidecar missing or wrong')
     return dict(case=case, source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 compile=result, problems=problems, status='FAIL' if problems else 'PASS')

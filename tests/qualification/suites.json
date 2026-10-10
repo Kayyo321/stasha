@@ -232,6 +232,24 @@
         "0,1,2,3"
       ],
       "qualification": "Fixed-array/slice explicit reads, writes, compound updates, indexed addresses and views; exact reason-6 hooks. Excludes allocation, initialization validity, lifetime/ownership, append/copy and implicit generated accesses. See checkpoint-bounds-a1-2026-10-10.json."
+    },
+    {
+      "id": "explicit-count-construction-b1",
+      "scope": "hosted-bounded-constructor",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P3",
+      "command": [
+        "python3",
+        "tests/memory/run_make_b1.py",
+        "--compiler",
+        "./bin/stasha",
+        "--cc",
+        "clang",
+        "--opt",
+        "0,1,2,3"
+      ],
+      "qualification": "Full-width counts, defaultable scalar elements, canonical zero capacity, retained-allocation OOM, implicit slice-element compatibility; normal allocation elision permitted. No ownership/lifetime or append/spread claim. See checkpoint-make-b1-2026-10-10.json."
     }
   ],
   "policy": "No skips qualify as passes. Entries without runners block their declared gate. Platform xfails require explicit exact failure signatures in their runner.",

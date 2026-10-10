@@ -32,6 +32,9 @@ class QualificationShellTests(unittest.TestCase):
     def test_bounds_stage_failure_blocks_receipt(self):
         result,receipt=self.invoke(74,stale=True,fail_match='tests/memory/run_bounds_a1.py')
         self.assertEqual(result.returncode,74,result.stderr); self.assertIsNone(receipt)
+    def test_constructor_stage_failure_blocks_receipt(self):
+        result,receipt=self.invoke(75,stale=True,fail_match='tests/memory/run_make_b1.py')
+        self.assertEqual(result.returncode,75,result.stderr); self.assertIsNone(receipt)
     def test_all_mock_stages_reach_explicit_bounded_receipt(self):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)

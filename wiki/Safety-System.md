@@ -219,10 +219,10 @@ assertion, not physical backing or ownership evidence.
 Invalid index/range/shape checks call nonreturning
 `void __stasha_panic(u32 reason)` with reason **6**. The hosted weak default traps
 without I/O. Freestanding final images must supply the hook. Scalar reasons 1–5
-are unchanged; 7 (null) and 8 (allocation) remain reserved. Returning from the
+are unchanged; 7 (null) remains reserved; B1 uses 8 for retained allocation failure. Returning from the
 hook violates its ABI; there is no unwinding or defer-on-panic guarantee.
 
-Rebuild source-backed archives for **ABI 4** after these source-compatibility
+Rebuild source-backed archives for **ABI 5** after these source-compatibility
 changes. The three-field descriptor layout is unchanged; the marker alone does
 not change native C ABI shape.
 

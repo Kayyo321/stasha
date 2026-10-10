@@ -1,8 +1,36 @@
 # Kernel-readiness status
 
-## A1 explicit-access checkpoint (10 October 2026)
+## B1 explicit-count construction checkpoint (10 October 2026)
 
-The current bounded hardening stage adds checked fixed-array and slice explicit
+B1 adds checked scalar `make.([]T, len[, cap])`: full-width counts, selected-target
+allocation-size guards, canonical empty construction, and reason-8 failure before
+using or publishing a retained failed allocation. Normal allocation elision
+remains permitted. Implicit slice conversions now compare source element identity
+instead of relying on erased LLVM descriptors. See the
+[B1 receipt](../tests/qualification/checkpoint-make-b1-2026-10-10.json) and
+[construction contract](Slices.md#b1-checked-explicit-count-construction).
+
+The frozen compiler is SHA-256
+`c1fb7d98ae03a1d4b783f7b8c0a03b6df22346ac471f46f7190947049ab832dc`.
+Rebuild source-backed archives for **ABI 5**: old ABI 4 objects can contain
+unchecked constructor bodies and are rejected. This semantic compatibility
+marker does not change the physical slice descriptor or native C layout.
+
+Focused B1 qualification passes 313 outcomes, including O0–O3 retained-allocation
+and fault-injection checks, source diagnostics, IR/layout invariants, and genuine
+old/new archive controls. Nine oracle-unit checks, the local hosted gate and all
+36 ABI5-rebuilt standard-library modules pass. Receipt source hashes identify
+the exact tested compiler. Historical evidence below remains snapshot-specific.
+
+B1 does not establish ownership, alias lifetime, complete nested nullability,
+concurrency or all initialization paths. General append/copy, initializer/spread
+construction, and raw new/mov remain open. B1 has no fresh kernel boot/hardware or
+native non-Linux release claim. Interface signatures are the next correctness
+milestone; the separate owned-buffer/borrowed-slice proposal remains design-only.
+
+## Historical A1 explicit-access checkpoint (10 October 2026)
+
+The A1 bounded hardening stage adds checked fixed-array and slice explicit
 access, logical-length view bounds, unsafe-only local unchecked indexing, and a
 shared reason-6 panic hook. Source-backed archives now require **ABI 4** rebuilds;
 the descriptor physical layout is unchanged. See the

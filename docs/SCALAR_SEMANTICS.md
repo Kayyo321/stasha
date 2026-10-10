@@ -117,7 +117,7 @@ reason plus a fixed exit code; a signal alone does not qualify reason selection.
 
 A1 uses the same reason-6 hook for explicit indexed reads, stores, compound
 updates, and address formation, plus view-range/descriptor-shape checks. Reasons
-1–5 remain stable, and 7 (null) and 8 (allocation) remain reserved. These calls
+1–5 remain stable, and 7 (null) remains reserved; B1 uses 8 for retained allocation failure. These calls
 have no implicit I/O or unwinding/defer-on-panic guarantee.
 
 Index and range expressions retain their full source integer width and
@@ -162,7 +162,7 @@ and returned views. K0 restrictions and indexed `++`/`--` rejection are unchange
 See [Safety System](../wiki/Safety-System.md) and [Slices](../wiki/Slices.md).
 
 These source-compatibility changes require rebuilding source-backed archives
-for **ABI 4**, although the three-field slice descriptor layout is unchanged.
+for **ABI 5**, although the three-field slice descriptor layout is unchanged.
 This compatibility marker alone does not change native C ABI shape.
 
 ## Constant evaluation

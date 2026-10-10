@@ -58,6 +58,184 @@ static void scalar_error(node_t *node, const char *message) {
     if (node) diag_span(DIAG_NODE(node), True, "scalar expression here");
     diag_finish();
 }
+
+/* Slice element identity is a source property: neither LLVM's erased slice
+ * descriptor nor scalar_resolve (which lowers ordinary enums to i32) can prove
+ * it. Resolve aliases and active generic parameters without erasing nominal
+ * types or dropping a concrete generic argument's pointer layers. */
+static boolean_t slice_source_resolve(cg_t *cg, type_info_t input,
+                                      type_info_t *out, node_t *node) {
+    type_info_t t = input;
+    usize_t remaining = cg->alias_count + cg->generic_n + 1;
+    while (t.base == TypeUser && t.user_name) {
+        type_info_t next = t;
+        boolean_t rewritten = False;
+        for (usize_t i = 0; i < cg->alias_count; ++i) {
+            if (!strcmp(t.user_name, cg->aliases[i].name)) {
+                next = resolve_alias(cg, t);
+                /* resolve_alias composes pointer layers but does not carry
+                 * the use-site outer nullable marker onto an alias result. */
+                if (t.is_pointer) next.nullable = t.nullable;
+                rewritten = True; break;
+            }
+        }
+        if (!rewritten) for (usize_t i = 0; i < cg->generic_n; ++i) {
+            if (strcmp(t.user_name, cg->generic_params[i])) continue;
+            next = cg->generic_concs[i];
+            if (t.is_pointer) {
+                int outer = t.ptr_depth > 0 ? t.ptr_depth : 1;
+                int inner = next.is_pointer ? (next.ptr_depth > 0 ? next.ptr_depth : 1) : 0;
+                if (outer + inner > 8) {
+                    scalar_error(node, "slice element pointer composition exceeds the supported depth of 8");
+                    return False;
+                }
+                ptr_perm_t permissions[8] = {0};
+                for (int p = 0; p < outer; ++p)
+                    permissions[p] = p == 0 ? t.ptr_perm : t.ptr_perms[p];
+                for (int p = 0; p < inner; ++p)
+                    permissions[outer + p] = p == 0 ? next.ptr_perm : next.ptr_perms[p];
+                next.is_pointer = True; next.ptr_depth = outer + inner;
+                memcpy(next.ptr_perms, permissions, sizeof(permissions));
+                next.ptr_perm = permissions[0]; next.nullable = t.nullable;
+            }
+            rewritten = True; break;
+        }
+        if (!rewritten) {
+            const char *name = cg_subst_name(cg, t.user_name);
+            t.user_name = (char *)name;
+            break;
+        }
+        if (!remaining--) {
+            scalar_error(node, "cyclic or unresolved slice element type");
+            return False;
+        }
+        t = next;
+    }
+    *out = t;
+    return True;
+}
+
+typedef struct slice_type_path {
+    const type_info_t *element;
+    const fn_ptr_desc_t *signature;
+    const struct slice_type_path *parent;
+} slice_type_path_t;
+
+/* Capture concrete nested types while a generic instantiation is active.
+ * Detect actual descriptor cycles, rather than accepting an arbitrary depth
+ * cutoff as equality. Struct/enum bodies are nominal leaves, not traversed. */
+static boolean_t slice_canonical_type(cg_t *cg, type_info_t input,
+                                      type_info_t *out, node_t *node,
+                                      const slice_type_path_t *path) {
+    type_info_t t;
+    if (!slice_source_resolve(cg, input, &t, node)) return False;
+    if (t.base == TypeUser) {
+        if (t.user_name && !find_struct(cg, t.user_name) && !find_enum(cg, t.user_name)) {
+            if (strstr(t.user_name, "_G_")) (void)get_llvm_type(cg, t);
+        }
+        if (!t.user_name || (!find_struct(cg, t.user_name) && !find_enum(cg, t.user_name))) {
+            scalar_error(node, "unresolved slice element type"); return False;
+        }
+    }
+    if (t.base == TypeInfer || (t.base == TypeSlice && !t.elem_type)) {
+        scalar_error(node, "unresolved slice element type"); return False;
+    }
+    for (const slice_type_path_t *p = path; p; p = p->parent) {
+        if ((t.elem_type && t.elem_type == p->element) ||
+            (t.fn_ptr_desc && t.fn_ptr_desc == p->signature)) {
+            scalar_error(node, "cyclic slice element type"); return False;
+        }
+    }
+    slice_type_path_t here = {t.elem_type, t.fn_ptr_desc, path};
+    if (t.elem_type) {
+        type_info_t element;
+        if (!slice_canonical_type(cg, t.elem_type[0], &element, node, &here)) return False;
+        t.elem_type = alloc_type_array(1); t.elem_type[0] = element;
+    }
+    if (t.fn_ptr_desc) {
+        fn_ptr_desc_t *old = t.fn_ptr_desc, *sig = alloc_fn_ptr_desc(old->param_count);
+        sig->is_c_abi = old->is_c_abi; sig->is_variadic = old->is_variadic;
+        if (!slice_canonical_type(cg, old->ret_type, &sig->ret_type, node, &here)) return False;
+        for (usize_t i = 0; i < old->param_count; ++i) {
+            sig->params[i].storage = old->params[i].storage;
+            if (!slice_canonical_type(cg, old->params[i].type, &sig->params[i].type, node, &here)) return False;
+        }
+        t.fn_ptr_desc = sig;
+    } else if (t.base == TypeFnPtr || t.base == TypeClosure) {
+        scalar_error(node, "unresolved slice element function signature"); return False;
+    }
+    *out = t; return True;
+}
+
+static boolean_t slice_same_type(type_info_t a, type_info_t b) {
+    if (a.base != b.base || a.is_pointer != b.is_pointer || a.nullable != b.nullable) return False;
+    if (a.is_pointer) {
+        int ad = a.ptr_depth > 0 ? a.ptr_depth : 1, bd = b.ptr_depth > 0 ? b.ptr_depth : 1;
+        if (ad != bd) return False;
+        for (int i = 0; i < ad; ++i)
+            if ((i ? a.ptr_perms[i] : a.ptr_perm) != (i ? b.ptr_perms[i] : b.ptr_perm)) return False;
+    }
+    if (a.base == TypeUser && strcmp(a.user_name, b.user_name)) return False;
+    if (!!a.elem_type != !!b.elem_type || !!a.fn_ptr_desc != !!b.fn_ptr_desc) return False;
+    if (a.elem_type && !slice_same_type(a.elem_type[0], b.elem_type[0])) return False;
+    if (a.fn_ptr_desc) {
+        fn_ptr_desc_t *x = a.fn_ptr_desc, *y = b.fn_ptr_desc;
+        if (x->param_count != y->param_count || x->is_c_abi != y->is_c_abi ||
+            x->is_variadic != y->is_variadic || !slice_same_type(x->ret_type, y->ret_type)) return False;
+        for (usize_t i = 0; i < x->param_count; ++i)
+            if (x->params[i].storage != y->params[i].storage ||
+                !slice_same_type(x->params[i].type, y->params[i].type)) return False;
+    }
+    return True;
+}
+
+static type_info_t scalar_signature_type(cg_t *cg, type_info_t t, node_t *node) {
+    t = scalar_resolve(cg, t);
+    if (t.base == TypeSlice) {
+        type_info_t concrete;
+        if (slice_canonical_type(cg, t, &concrete, node, Null)) return concrete;
+    }
+    return t;
+}
+
+/* Array-to-slice views retain the declared element identity, even though enum
+ * values participating in scalar arithmetic still lower to their integer tag.
+ * Recurse through storage projections without applying that scalar erasure. */
+static type_info_t slice_view_source_type(cg_t *cg, node_t *node) {
+    if (!node) return NO_TYPE;
+    type_info_t t = NO_TYPE;
+    if (node->kind == NodeIdentExpr) {
+        symbol_t *s = cg_lookup(cg, node->as.ident.name);
+        if (s) t = s->stype;
+    } else if (node->kind == NodeMemberExpr || node->kind == NodeSelfMemberExpr) {
+        const char *field;
+        if (node->kind == NodeMemberExpr) {
+            t = slice_view_source_type(cg, node->as.member_expr.object);
+            field = node->as.member_expr.field;
+        } else {
+            t.base = TypeUser;
+            t.user_name = node->as.self_member.type_name ? node->as.self_member.type_name : cg->current_struct_name;
+            field = node->as.self_member.field;
+        }
+        struct_reg_t *sr = t.user_name ? find_struct(cg, t.user_name) : Null;
+        t = NO_TYPE;
+        if (sr) for (usize_t i = 0; i < sr->field_count; ++i)
+            if (!strcmp(sr->fields[i].name, field)) { t = sr->fields[i].type; break; }
+    } else if (node->kind == NodeIndexExpr || node->kind == NodeFlaggedIndex) {
+        node_t *object = node->kind == NodeIndexExpr ? node->as.index_expr.object : node->as.flagged_index.object;
+        t = slice_view_source_type(cg, object);
+        LLVMTypeRef storage = access_storage_type(cg, object);
+        if (!storage || LLVMGetTypeKind(storage) != LLVMArrayTypeKind) {
+            if (t.base == TypeSlice && !t.is_pointer && t.elem_type) t = t.elem_type[0];
+            else if (t.is_pointer) t = ti_deref_one(t);
+        }
+    } else if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar) {
+        t = ti_deref_one(slice_view_source_type(cg, node->as.unary.operand));
+    } else if (node->kind == NodeCastExpr) t = node->as.cast_expr.target;
+    else t = scalar_expr_type(cg, node, NO_TYPE);
+    if (!slice_source_resolve(cg, t, &t, node)) return NO_TYPE;
+    return t;
+}
 static boolean_t scalar_literal(node_t *n, uint64_t *magnitude, boolean_t *negative) {
     if (!n) return False;
     *negative = False;
@@ -121,11 +299,11 @@ static void scalar_register_signature(cg_t *cg, symbol_t *s, node_t *decl) {
     usize_t pc = decl->as.fn_decl.params.count;
     fn_ptr_desc_t *sig = alloc_fn_ptr_desc(pc);
     for (usize_t i = 0; i < pc; ++i) {
-        sig->params[i].type = scalar_resolve(cg, decl->as.fn_decl.params.items[i]->as.var_decl.type);
+        sig->params[i].type = scalar_signature_type(cg, decl->as.fn_decl.params.items[i]->as.var_decl.type, decl);
         sig->params[i].storage = decl->as.fn_decl.params.items[i]->as.var_decl.storage;
     }
     sig->ret_type = decl->as.fn_decl.return_count == 1
-        ? scalar_resolve(cg, decl->as.fn_decl.return_types[0]) : NO_TYPE;
+        ? scalar_signature_type(cg, decl->as.fn_decl.return_types[0], decl) : NO_TYPE;
     sig->is_c_abi = s->c_abi != Null;
     sig->is_variadic = decl->as.fn_decl.is_variadic;
     s->scalar_signature = sig;
@@ -333,7 +511,7 @@ static type_info_t scalar_expr_type(cg_t *cg, node_t *n, type_info_t expected) {
         return t.is_pointer ? ti_deref_one(t) : t;
     }
     case NodeSliceExpr: {
-        type_info_t source = scalar_resolve(cg, scalar_expr_type(cg, n->as.slice_expr.object, NO_TYPE));
+        type_info_t source = slice_view_source_type(cg, n->as.slice_expr.object);
         LLVMTypeRef storage = access_storage_type(cg, n->as.slice_expr.object);
         if (source.base == TypeSlice && !source.is_pointer &&
             (!storage || LLVMGetTypeKind(storage) != LLVMArrayTypeKind)) return source;
@@ -341,6 +519,13 @@ static type_info_t scalar_expr_type(cg_t *cg, node_t *n, type_info_t expected) {
         t.elem_type = alloc_type_array(1);
         t.elem_type[0] = source.is_pointer && (!storage || LLVMGetTypeKind(storage) != LLVMArrayTypeKind)
             ? ti_deref_one(source) : source;
+        return t;
+    }
+    case NodeMakeExpr: {
+        if (n->as.make_expr.init) return NO_TYPE; /* context-typed make.{...} is separate */
+        type_info_t t = scalar_type(TypeSlice), element;
+        if (!slice_source_resolve(cg, n->as.make_expr.elem_type, &element, n)) return NO_TYPE;
+        t.elem_type = alloc_type_array(1); t.elem_type[0] = element;
         return t;
     }
     case NodeMemberExpr: case NodeSelfMemberExpr: {
@@ -485,6 +670,16 @@ static LLVMValueRef scalar_coerce(cg_t *cg, LLVMValueRef v, type_info_t from,
     from = scalar_resolve(cg, from); to = scalar_resolve(cg, to);
     cg_abi_check_fnptr_conversion(cg, from, to, n);
     LLVMTypeRef dst = get_llvm_type(cg, to), src = LLVMTypeOf(v);
+    if (!explicit_cast && from.base == TypeSlice && !from.is_pointer &&
+        to.base == TypeSlice && !to.is_pointer) {
+        type_info_t a, b;
+        if (!slice_canonical_type(cg, from, &a, n, Null) ||
+            !slice_canonical_type(cg, to, &b, n, Null)) return LLVMConstNull(dst);
+        if (!slice_same_type(a, b)) {
+            scalar_error(n, "implicit slice conversion requires identical element types");
+            return LLVMConstNull(dst);
+        }
+    }
     if (!scalar_check_pointer_permissions(cg, from, to, n)) return LLVMConstNull(dst);
     /* Source typing is incomplete for some address-producing expressions.
      * Checking the emitted pointer shape too closes the legacy NO_TYPE path

@@ -110,10 +110,11 @@ Raw `new`/`mov` policies are unchanged.
 Invalid bounds or descriptor shape call the nonreturning
 `void __stasha_panic(u32)` hook with reason **6**. The hosted weak default traps
 without I/O; freestanding final images must provide the hook. Reasons 1–5 are
-unchanged, while 7 (null) and 8 (allocation) remain reserved. No unwind or
+unchanged. Reason 7 (null) remains reserved; B1 uses 8 for allocation failure. No unwind or
 defer-on-panic behavior is promised.
 
-Rebuild source-backed archives for **ABI 4** after these semantic changes. The
+A1 introduced archive marker **ABI 4**. Current B1 use requires **ABI 5**,
+as described below. The
 three-field descriptor layout remains unchanged, and the archive marker alone
 does not change native C ABI shape. A1 does not qualify initialization-produced
 writes/ranges/spreads, `foreach`-generated indexing, `copy`, `append`, allocation,
@@ -123,14 +124,57 @@ rejection are unchanged.
 
 ## Building Slices
 
-### `make.([]T, len)` — Owned, Zeroed
+### B1: Checked Explicit-Count Construction
+
+`make.([]T, len[, cap])` initially supports only builtin integers, `bool`,
+`f32`, and `f64`, including compatible aliases and generic substitutions.
+Pointers, references, enums, aggregates, interfaces, nested slices and other
+elements are rejected even for an empty request: zero bytes are not a general
+proof of a valid default value. This restriction does not apply a new rule to
+`make.{...}`, which remains separately unqualified.
+
+Length then explicit capacity evaluate once. Omitted capacity reuses length.
+Full-width signedness-preserving checks require `0 <= len <= cap <= INT32_MAX`
+and a byte size representable under the selected target DataLayout before
+count narrowing or allocation-size multiplication. Invalid counts/size call
+reason **6**, including inside `unsafe`. The constructor currently requires a
+64-bit target because the shared generated allocator ABI still uses i64 size;
+32-bit targets receive an explicit diagnostic. Raw `new`/`mov` are unchanged.
+
+Zero capacity produces `{null, 0, 0}` without allocation or memset. A retained
+positive allocation is checked for null before initialization or descriptor
+publication; failure calls nonreturning panic reason **8**. An allocation whose
+result is otherwise unobservable may be optimized away; no allocator-call count
+or OOM event is promised for such an elided allocation. This is not rollback of
+side effects performed by length/capacity expressions, nor panic unwinding.
+
+Supported elements in `[0, len)` have valid zero defaults. Spare capacity never
+authorizes a read or reslice beyond logical length, even if its bytes were zeroed.
+The constructor does not establish unique ownership, alias lifetime, or permission
+to realloc an arbitrary descriptor later. General `append`, `rem`, `copy`, and
+initializer/spread allocation remain outside B1 qualification.
+
+Implicit slice conversions now require the same source element type, preserving
+nominal enum/aggregate identity, pointer depth and per-layer permissions, the
+currently represented outer nullable flag, and nested element/function types.
+This is not a complete nested-nullability or lifetime analysis. Compatible aliases remain usable. This applies
+through assignments, arguments, returns, and conditional arms; LLVM descriptor
+equality does not imply source-type compatibility. Explicit casts remain a
+separate, unqualified boundary.
+
+Rebuild source-backed archives for **ABI 5** before using B1. ABI 4 archive bodies
+are linked without regeneration and may contain old unchecked constructors, so
+they are rejected. This is a semantic compatibility marker; the descriptor and
+native C ABI physical layout have not changed.
+
+### `make.([]T, len)` — Allocated, Zeroed Scalars
 
 ```stasha
 heap []i32 s = make.([]i32, 6);    // [0 0 0 0 0 0]  len=cap=6
 defer rem.(s);
 ```
 
-### `make.([]T, len, cap)` — Owned, Explicit Capacity
+### `make.([]T, len, cap)` — Allocated, Explicit Capacity
 
 ```stasha
 heap []i32 buf = make.([]i32, 0, 8);   // len=0 cap=8 — no realloc until 9th append
