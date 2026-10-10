@@ -1,0 +1,17 @@
+mod independent;
+type I: interface { get(void): i32; bump(void): i32; };
+type S: struct.[I] {
+ ext i32 n;
+ ext fn get(void): i32 { ret this.n; }
+ ext fn bump(void): i32 { this.n += 1; ret this.n; }
+};
+type T: struct { ext i32 n; };
+type H: struct { ext S value; ext i32 flag; };
+type Deep: struct { ext H inner; };
+type Row: struct { ext S items[2]; ext i32 flag; };
+fn consume(stack I value): i32 { ret value.get(); }
+fn mutate(stack I value): i32 { ret value.bump(); }
+
+fn main(void): i32 {
+stack H a=.{.value=.{.n=41},.flag=0}; stack H b; b=a; a=b; stack S value=b.value; ret consume(value);
+}

@@ -92,7 +92,10 @@ static unsigned iface_type_origin(cg_t *cg, type_info_t type) {
     }
 }
 static boolean_t iface_concrete_origin_allowed(cg_t *cg, node_t *use, symbol_t *symbol) {
+    int local = iface_local_eligibility(cg, use, symbol);
+    if (local < 0) return False;
     unsigned origin = symbol->iface_excluded_origin | iface_type_origin(cg, symbol->stype);
+    if (local > 0 && !(origin & IfaceOriginGeneric)) return True;
     if (!origin) return True;
     ast_source_loc_t loc = iface_node_loc(use);
     const char *saved = diag_get_file();
@@ -103,7 +106,7 @@ static boolean_t iface_concrete_origin_allowed(cg_t *cg, node_t *use, symbol_t *
     diag_span(SRC_LOC(loc.line,loc.col,loc.len), True, "used here");
     diag_note("use a directly declared ordinary concrete value or a call with a declared ordinary result at this interface boundary");
     if (!(origin & IfaceOriginGeneric))
-        diag_note("field/index-derived and other unresolved initialization origins are not yet qualified for concrete interface use");
+        diag_note("this field/index-derived or unresolved use lacks a supported exact closed-local proof; direct declared ordinary routes remain available");
     diag_finish();
     diag_set_file(saved);
     return False;

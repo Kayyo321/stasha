@@ -1,0 +1,15 @@
+mod independent;
+type I: interface { get(void): i32; bump(void): i32; };
+type S: struct.[I] {
+ ext i32 n;
+ ext fn get(void): i32 { ret this.n; }
+ ext fn bump(void): i32 { this.n += 1; ret this.n; }
+};
+type T: struct { ext i32 n; };
+type H: struct { ext S value; ext i32 flag; };
+type Deep: struct { ext H inner; };
+type Row: struct { ext S items[2]; ext i32 flag; };
+fn consume(stack I value): i32 { ret value.get(); }
+fn mutate(stack I value): i32 { ret value.bump(); }
+type E: enum {Full(stack i32),Empty};type F: enum {Empty(stack i32)};
+fn main(void): i32 {stack S value=.{.n=41};stack T bad=.{.n=7};stack E e=E.Empty;match e {E.Full(n) => {if(n==0){ret 0;}} F.Empty(value) => {value=bad;}} ret value.I.get();}

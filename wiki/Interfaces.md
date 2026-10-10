@@ -418,11 +418,10 @@ The bounded conversion rules are:
   not infer the domain, ownership or lifetime of its backing object. Interface
   J does not become I merely because both descriptors contain two pointers.
 
-Existing readable identifier-valued concrete boxing remains bounded by I1a's
+Existing readable identifier-valued concrete boxing remains bounded by checked
 eligibility rules. No new implicit pointer boxing or general expression boxing
-is introduced. Field/index-derived concrete initialization and other unresolved
-initialization origins still cannot acquire eligibility through a typed local.
-Checked local transfer and projection restoration is the next separate stage.
+is introduced. I1b.2 adds the closed-local copy-then-use subset described below;
+a typed destination alone does not establish eligibility.
 
 ### Scope of source evidence
 
@@ -452,3 +451,83 @@ cannot make an old body satisfy the new contract; rebuild its source instead.
 Runtime table membership, indirect-call CFI, object/table consistency, liveness,
 ownership and concurrency remain independent requirements. This checkpoint does
 not establish general memory safety or kernel readiness.
+
+
+## I1b.2 checked local copies and projections
+
+The bounded local-transfer check preserves the original concrete declaration
+through admitted local producers, copies and assignments. A whole-body inventory
+checks relevant writes before a particular interface use is admitted. Matching
+storage sizes or similarly spelled generic instantiations do not establish the
+same concrete type.
+
+Supported copy-then-use paths include ordinary value fields, nested value fields,
+and one fixed-array step. Each selected array element needs an explicit initial
+witness, even if the eventual read uses a constant index. New local plans do not
+cover generic or generated function bodies. For example, after a fully initialized local Holder
+with an ordinary S value field, `stack let value = holder.value;` can supply the
+existing identifier-valued interface boxing route when that exact use has a
+closed local proof. Exact aliases and typed copies work under the same rule.
+This does not add direct boxing syntax for arbitrary field/index expressions.
+
+The proof is specific to the original expression, lexical binding and function
+body. Address exposure of any descendant, array decay, deferred effects, or an
+unknown mutation can prevent a new projection proof. A narrowly supported terminal
+qualified receiver call may mutate the original receiver; it does not grant
+eligibility to later identity uses. Primitive observations and independent copies
+saved before the single direct, same-block, non-loop receiver frontier remain
+available. Relevant unsupported multiassignment forms, including
+repeated concrete targets, diagnose. Missing producers and incomplete inventories
+cannot be treated as successful proofs. Existing access, bounds and permission
+checks still apply.
+
+Ordinary declared helper parameters/results and existing pointer-derived routes
+remain explicit weaker source-contract boundaries. They do not seed the new
+closed-local projection guarantee. A helper annotation, destination annotation,
+or ordinary wrapper cannot establish the checked producer history of its fields.
+Named aggregates containing interface descriptors remain usable but their nested
+descriptor contents are unqualified. General helper/return/store closure, default
+or partial descriptor initialization, ownership, lifetime, concurrency, table
+membership and indirect-call CFI remain separate work.
+
+### Archive migration: ABI 9
+
+Rebuild all Stasha providers and consumers for ABI 9. This semantic compatibility
+marker changes neither the two-word interface representation nor I0's slot order.
+A genuine ABI8 archive can retain a mismatched concrete local store in its compiled
+body even when its imported declarations look valid. Source-backed incompatible
+archives must be rejected before their retained bodies are used. Relabeling
+sidecar metadata is not a migration; rebuild the original source. The marker does
+not attest arbitrary foreign object files.
+
+### Separate known extent-query limitation
+
+The existing fixed-array `len.(a)`/`cap.(a)` expression route can return zero rather than
+the array extent. I1b.2 does not repair or qualify that expression behavior; its
+local array proof uses the original declaration extent. This limitation is
+separate from the checked index bounds and concrete transfer rules.
+
+Reproduction retained for the follow-up review:
+
+```sts
+mod extent;
+type I: interface { m(void): i32; };
+fn main(void): i32 {
+    stack i32 values[2] = .{17,24};
+    ret len.(values) + cap.(values);
+}
+```
+
+Baseline ABI8 and the initial I1b.2 Gate B compiler both emitted a constant-zero
+return for the compact equivalent fixture (source SHA-256
+`50d33538836e67dcbd2f51c27b6ef35c3b7158628767c0078e84f63323ab7d5e`).
+That characterization was compile-only. Checked array indexing independently
+uses the actual storage extent, so this query error does not remove its bounds
+check. Explicit unchecked indexing remains outside that bound guarantee.
+
+Follow-up review checklist:
+
+- Repair fixed-array len/cap values without changing slice descriptor semantics.
+- Cover aliases, fields and side-effecting array expressions; preserve single evaluation.
+- Repeat checked-index boundary controls independently of query results.
+- Retain the original failed test receipt separately from corrected I1b.2 tests.

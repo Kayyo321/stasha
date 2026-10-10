@@ -33,11 +33,25 @@ def scalar_source(typ, value, prelude=''):
 
 def cases(r):
     # Source-only eligibility controls never execute, even on unexpected accept.
+    # I1b.2 checks these same forbidden ordinary-destination transfers earlier.
+    # Exact per-case diagnostics change; source fixtures and negative-only execution do not.
+    local_transfer_messages = {
+        'generic-designated-typed': 'named constructor identity does not match selected concrete destination',
+        'generic-call-typed': 'concrete source identity does not match the original local destination',
+        'generic-typed-copy': 'concrete source identity does not match the original local destination',
+        'generic-lambda-result': 'concrete source identity does not match the original local destination',
+        'generic-callback-result': 'concrete source identity does not match the original local destination',
+    }
+    restored_local_projections = {"unknown-inferred-projection", "unknown-typed-projection"}
     for item in origin_matrix():
-        pattern = ('(?:generic-origin concrete interface use|unresolved/dependent concrete interface origin).*unsupported'
+        # Original historical fixtures stay byte-identical and compile-only.
+        restored = item["name"] in restored_local_projections
+        pattern = (None if restored else 'interface local transfer: '+re.escape("'"+local_transfer_messages[item['name']]+"'")
+                   if item['name'] in local_transfer_messages else
+                   '(?:generic-origin concrete interface use|unresolved/dependent concrete interface origin).*unsupported'
                    if item['negative'] else None)
         r.case('origin-'+item['name'],item['source'],pattern=pattern,files=item['files'])
-        if item['negative']:
+        if item['negative'] and not restored and item['name'] not in local_transfer_messages:
             diagnostic=(r.work/('origin-'+item['name'])/'compile.stderr').read_text()
             if 'use a directly declared ordinary concrete value or a call with a declared ordinary result' not in diagnostic:
                 r.results[-1]['issues'].append('missing actionable interface-origin guidance')

@@ -214,7 +214,7 @@ def archives(r):
     # Both providers genuinely compile interface dispatch through inherited slots.
     source=diamond_source().replace('mod diamond;','mod provider;').replace('type ','ext type ').replace('fn call(','ext fn call(')
     source=source[:source.index('fn main(')]+'ext fn run(void): i32 { stack S s = .{ .x = 1 }; ret call(s); }'
-    for abi,compiler in [(8,r.compiler)]:
+    for abi,compiler in [(9,r.compiler)]:
         case=r.work/f'archive-abi{abi}';case.mkdir();libsrc=case/'provider.sts';libsrc.write_text(source)
         archive=case/'provider.a'
         build=r.process([compiler,'lib',libsrc,'-o',archive,'-o=0'],case/'library')
@@ -225,10 +225,10 @@ def archives(r):
         output=case/'caller'
         if not issues:
             result=r.process([r.compiler,'build',caller,'-o',output,'-o=0'],case/'caller-compile')
-            if positive_issues(result,output): issues.append('ABI8 caller failed')
+            if positive_issues(result,output): issues.append('ABI9 caller failed')
             else:
                 ran=r.process([output],case/'caller-run')
-                if ran['category']!='exit' or ran['returncode']!=0 or ran['stdout'] or ran['stderr']: issues.append('ABI8 inherited-slot execution failed')
+                if ran['category']!='exit' or ran['returncode']!=0 or ran['stdout'] or ran['stderr']: issues.append('ABI9 inherited-slot execution failed')
         r.results.append({'name':f'genuine-interface-archive-abi{abi}','issues':issues})
 
 def main():

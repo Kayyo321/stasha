@@ -27,6 +27,7 @@ python3 tests/memory/run_make_b1.py --compiler "$compiler" --cc "${CC:-clang}" -
 python3 tests/interfaces/run_i0.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i0"
 python3 tests/interfaces/run_i1a.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i1a"
 python3 tests/interfaces/run_i1b.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i1b1"
+python3 tests/interfaces/i1b2_run.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i1b2"
 python3 tests/layout/run_layout_tests.py --compiler "$compiler" --cc "${CC:-clang}"
 python3 tests/abi/run_sysv_aggregates.py "$compiler" --cc "${CC:-clang}" --out "$artifacts/abi"
 python3 tests/abi/run_c_callbacks.py "$compiler" --cc "${CC:-clang}" --out "$artifacts/callbacks"

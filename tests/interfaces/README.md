@@ -227,3 +227,44 @@ four times in one process; CLI repetition is not substituted for that test.
 Explicit root-import controls do not claim transitive import resolution is
 repaired. The full hosted gate, rebuilt standard library, independent review
 and publication remain separate coordinator-owned qualification steps.
+
+## I1b.2 bounded local transfer and projection controls
+
+Run the current concrete-copy inventory with:
+
+```sh
+python3 tests/interfaces/i1b2_run.py \
+  --compiler bin/stasha-interface-i1b2-final-dev1 --artifacts /tmp/i1b2-current
+python3 tests/interfaces/i1b2_test_inventory.py
+python3 tests/interfaces/i1b2_test_units.py \
+  --llvm-build build/llvm --artifacts /tmp/i1b2-units
+```
+
+The maintained inventory contains 67 source programs at O0–O3, for 268 checks.
+It preserves exact binding/effect regressions alongside ordinary field/fixed-array
+copy-then-use positives. All intended rejections remain compile-only; unexpected
+acceptance is a failure and never permission to execute them. Inventory guards
+cover all 107 AST node kinds and the runner's rejection/acceptance contracts.
+
+I1b.2 uses semantic ABI9. All source-backed archives and consumers must be rebuilt;
+there is no new physical descriptor layout. Retained I0/I1a/I1b archive runners
+now require genuine current ABI9 output while their historical provider markers
+remain unchanged. Genuine ABI8 local-transfer history and the new cross-archive
+runtime controls are preserved in independent checkpoint evidence; those local
+history gates are not claimed by hosted CI.
+
+Two formerly unsupported exact projection fixtures in the I1a origin inventory
+are compile-only acceptance controls in this stage. Equivalent separate positive
+programs check concrete returned values. Five generic-to-ordinary collision
+fixtures reject earlier at exact local-transfer checks. No generic-origin or
+nominal mismatch is changed into a permissive fallback.
+
+Independent ordinary functional units and compiler sanitizer units are separate
+evidence. The independent sanitizer run hit the executor's LeakSanitizer ptrace
+restriction and is not a pass. Writer GCC ASan/UBSan-only results use explicitly
+recorded options and do not establish leak cleanliness.
+
+The fixed-array `len.(a)`/`cap.(a)` numerical-value issue is recorded in
+[Interfaces](../../wiki/Interfaces.md), including its reproduction and follow-up
+checklist. Correcting an unrelated fixture assumption does not count that query
+operation as qualified. The original failed receipt remains preserved.

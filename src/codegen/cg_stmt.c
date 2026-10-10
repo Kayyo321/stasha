@@ -11,6 +11,7 @@ static boolean_t is_primitive_type(type_info_t ti) {
 }
 
 static void gen_local_var(cg_t *cg, node_t *node) {
+    if(!iface_local_lowering(cg,node))return;
     /* blank identifier: silently skip — the value will be discarded */
     if (node->as.var_decl.name && strcmp(node->as.var_decl.name, "_") == 0)
         return;
@@ -23,6 +24,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             && node->as.var_decl.init) {
         LLVMValueRef init_val = gen_expr(cg, node->as.var_decl.init);
         LLVMTypeRef  inferred = LLVMTypeOf(init_val);
+        if(!iface_local_declaration_storage(cg,node,inferred))return;
         type_info_t ti = scalar_expr_type(cg, node->as.var_decl.init, NO_TYPE);
         if (ti.base == TypeVoid && !ti.is_pointer) ti = llvm_type_to_ti(inferred);
         /* Infer future.[T] / stream.[T] when the RHS is a thread/async
@@ -140,9 +142,12 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 
         /* Resolve each dimension's size (named const or literal). */
         unsigned long long sizes[8] = {0,0,0,0,0,0,0,0};
+        uint64_t local_extent=0;int local_extent_plan=iface_local_declaration_extent(cg,node,&local_extent);
+        if(local_extent_plan&&node->as.var_decl.array_size_names[0])cg_lookup(cg,node->as.var_decl.array_size_names[0]);
+        if(local_extent_plan<0)return;
         for (int _d = 0; _d < ndim; _d++) {
-            sizes[_d] = (unsigned long long)node->as.var_decl.array_sizes[_d];
-            if (node->as.var_decl.array_size_names[_d]) {
+            sizes[_d] = local_extent_plan&&_d==0?local_extent:(unsigned long long)node->as.var_decl.array_sizes[_d];
+            if (node->as.var_decl.array_size_names[_d] && !local_extent_plan) {
                 symbol_t *sym = cg_lookup(cg, node->as.var_decl.array_size_names[_d]);
                 if (sym) {
                     if (sym->const_int_val >= 0) {
@@ -189,6 +194,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     } else {
         type = get_llvm_type(cg, ti);
     }
+
+    if(!iface_local_declaration_storage(cg,node,type))return;
 
     /* ── New allocation rule:
        - Non-pointer variables are always stack-allocated (StorageDefault).
@@ -1294,6 +1301,7 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         LLVMValueRef ret_val = gen_expr(cg, values->items[0]);
         for (usize_t i = 0; i < targets->count; i++) {
             LLVMValueRef elem = LLVMBuildExtractValue(cg->builder, ret_val, (unsigned)i, "");
+            if(!iface_local_extracted(cg,node,targets->items[i],i,elem))return;
             symbol_t *sym = cg_lookup(cg, targets->items[i]->as.var_decl.name);
             if (sym) {
                 node_t *f = scalar_call_decl(cg, values->items[0]);
@@ -2123,6 +2131,7 @@ static void gen_stmt(cg_t *cg, node_t *node) {
 }
 
 static void gen_block(cg_t *cg, node_t *node) {
+    if(!iface_local_lowering(cg,node))return;
     usize_t old_count = cg->locals.count;
     push_dtor_scope(cg);
     boolean_t block_terminated = False;

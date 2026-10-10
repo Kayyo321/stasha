@@ -236,6 +236,7 @@ static long count_spread_values(cg_t *cg, node_t *node, boolean_t *ok) {
     return 0;
 }
 
+static LLVMValueRef gen_compound_init_at(cg_t *cg, node_t *node, node_t *original);
 static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node);
 
 /* Element-store helpers come in two flavours:
@@ -516,7 +517,11 @@ static boolean_t store_struct_field(cg_t *cg, LLVMValueRef tmp, struct_reg_t *sr
 }
 
 static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node) {
+    return gen_compound_init_at(cg,node,node);
+}
+static LLVMValueRef gen_compound_init_at(cg_t *cg, node_t *node, node_t *original) {
     LLVMTypeRef target_ty = cg->hint_ret_type;
+    if(target_ty && !iface_local_constructor(cg,original,node,target_ty))return LLVMConstNull(target_ty);
     if (!target_ty) {
         diag_begin_error("compound initializer requires a known target type");
         diag_span(DIAG_NODE(node), True, "target type is not known here");
@@ -1303,7 +1308,7 @@ static iface_arg_status_t try_coerce_arg_to_iface(cg_t *cg, LLVMValueRef value,
     if (!value) return IfaceArgError;
     iface_source_fact_t target_fact=iface_source_from_type(cg,(type_info_t){.base=TypeUser,.user_name=target->name},StorageDefault,arg);
     iface_source_fact_t source_fact=iface_source_expr_at(cg,arg,NO_TYPE,0);
-    if(target_fact.status!=IfaceSourceKnown || iface_source_transfer(cg,arg,source_fact,target_fact.contract,True)==IfaceTransferReject) return IfaceArgError;
+    if(target_fact.status!=IfaceSourceKnown || iface_source_transfer(cg,arg,arg,source_fact,target_fact.contract,True)==IfaceTransferReject) return IfaceArgError;
     if (LLVMTypeOf(value) == formal) return IfaceArgReady; /* already source-admitted exact descriptor copy */
     symbol_t *sym = arg && arg->kind == NodeIdentExpr ? cg_lookup(cg, arg->as.ident.name) : Null;
     if (!sym || sym->stype.is_pointer || sym->stype.base != TypeUser || !sym->stype.user_name) {
@@ -3945,6 +3950,7 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
+    if(!iface_local_lowering(cg,node))return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     node_t *target = node->as.assign.target;
 
     if (target->kind == NodeIdentExpr) {
@@ -6430,7 +6436,13 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
     return ret;
 }
 
+static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node);
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
+    if(!iface_local_expression(cg,node))return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
+    LLVMValueRef value=gen_expr_unchecked(cg,node);
+    return iface_local_result(cg,node,value);
+}
+static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
     if (!iface_source_preflight_call(cg,node)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     switch (node->kind) {
         case NodeIntLitExpr:       return gen_int_lit(cg, node);
@@ -6618,7 +6630,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
                 item->as.init_field.value = fval_node;
                 node_list_push(&lowered.as.compound_init.items, item);
             }
-            LLVMValueRef val = gen_compound_init(cg, &lowered);
+            LLVMValueRef val = gen_compound_init_at(cg, &lowered, node);
             cg->hint_ret_type = saved_hint;
             return val;
         }

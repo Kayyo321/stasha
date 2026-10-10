@@ -1,0 +1,46 @@
+{
+  "nested-cleanup-boundary": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'local storage or repeated receiver effects are outside closed proof'"
+  },
+  "array-cast-decay": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'array-valued occurrence exposes containing storage outside an internal element/extent access'"
+  },
+  "array-conditional-decay": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'array-valued occurrence exposes containing storage outside an internal element/extent access'"
+  },
+  "field-array-decay-call": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'array-valued occurrence exposes containing storage outside an internal element/extent access'"
+  },
+  "with-both-arms-scope": {
+    "positive": true,
+    "diagnostic": null
+  },
+  "defer-shadow-declaration-point": {
+    "positive": true,
+    "diagnostic": null
+  },
+  "vararg-inline-outer-write": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'concrete source identity does not match the original local destination'"
+  },
+  "terminal-child-projection-after": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'concrete source read occurs outside its exact before-call frontier'"
+  },
+  "terminal-saved-before-use-after": {
+    "positive": true,
+    "diagnostic": null
+  },
+  "holder-uninitialized-copy-cycle": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'selected concrete storage lacks an explicit initializer witness'"
+  },
+  "holder-missing-child-cycle": {
+    "positive": false,
+    "diagnostic": "interface declaration: interface local transfer: 'selected nominal child lacks an explicit checked initializer'"
+  }
+}

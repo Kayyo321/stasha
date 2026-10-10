@@ -42,6 +42,7 @@ typedef struct iface_signature iface_signature_t;
 typedef struct iface_binding iface_binding_t;
 typedef struct iface_native iface_native_t;
 typedef struct iface_source_record iface_source_record_t;
+typedef struct iface_local_plan iface_local_plan_t;
 typedef struct {
     char *name;
     node_t **origins;            /* distinct declarations, including conflicts */
@@ -448,6 +449,7 @@ typedef struct {
     iface_binding_t *iface_bindings;
     iface_native_t *iface_natives;
     iface_source_record_t *iface_sources;
+    iface_local_plan_t *iface_local_plan; /* exact body-owned immutable local-transfer plan */
 
     /* vtable for one (struct, interface) pair */
     struct {
@@ -611,6 +613,19 @@ static void gen_send_stmt(cg_t *cg, node_t *node);
 static void gen_quit_stmt(cg_t *cg, node_t *node);
 
 #include "name_mangle.c"
+/* I1b.2 opaque lifecycle/query seams. No generated body inherits eligibility. */
+static symbol_t *iface_local_lookup(cg_t *, const char *, boolean_t *);
+static int iface_local_eligibility(cg_t *, node_t *, symbol_t *);
+static iface_local_plan_t *iface_local_begin(cg_t *, node_t *, node_t *);
+static void iface_local_end(cg_t *, iface_local_plan_t *);
+static boolean_t iface_local_lowering(cg_t *, node_t *);
+static boolean_t iface_local_declaration_storage(cg_t *, node_t *, LLVMTypeRef);
+static int iface_local_declaration_extent(cg_t *, node_t *, uint64_t *);
+static boolean_t iface_local_extracted(cg_t *, node_t *, node_t *, usize_t, LLVMValueRef);
+static boolean_t iface_local_expression(cg_t *, node_t *);
+static LLVMValueRef iface_local_result(cg_t *, node_t *, LLVMValueRef);
+static boolean_t iface_local_constructor(cg_t *, node_t *, node_t *, LLVMTypeRef);
+
 #include "cg_symtab.c"
 #include "cg_safety.c"
 #include "cg_lookup.c"
@@ -622,6 +637,7 @@ static void gen_quit_stmt(cg_t *cg, node_t *node);
 static boolean_t cg_fh_skip_decl(cg_t *cg, fileheader_t *fh, usize_t line);
 #include "cg_interfaces.c"
 #include "cg_expr.c"
+#include "cg_iface_locals.c"
 #include "cg_global_const.c"
 #include "cg_stmt.c"
 #include "cg_generics.c"
@@ -1756,7 +1772,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             cg.cur_coro.active = 0;
         }
 
+        iface_local_plan_t *previous_local_plan = iface_local_begin(&cg, decl, decl->as.fn_decl.body);
         gen_block(&cg, decl->as.fn_decl.body);
+        iface_local_end(&cg, previous_local_plan);
 
         /* Leak check: warn on any future.[T] local never passed to
            await / future.* / a combinator / defer. */
@@ -1988,7 +2006,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 cg.cur_coro.active = 0;
             }
 
-            gen_block(&cg, method->as.fn_decl.body);
+            iface_local_plan_t *previous_local_plan = iface_local_begin(&cg, method, method->as.fn_decl.body);
+        gen_block(&cg, method->as.fn_decl.body);
+        iface_local_end(&cg, previous_local_plan);
             check_unconsumed_futures(&cg, method);
 
             LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
@@ -2060,7 +2080,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             cg.dtor_depth = 0;
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, cg.current_fn, "entry");
             LLVMPositionBuilderAtEnd(cg.builder, entry);
-            gen_block(&cg, decl->as.test_block.body);
+            iface_local_plan_t *previous_local_plan = iface_local_begin(&cg, decl, decl->as.test_block.body);
+        gen_block(&cg, decl->as.test_block.body);
+        iface_local_end(&cg, previous_local_plan);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg.builder)))
                 LLVMBuildRetVoid(cg.builder);
             ti++;

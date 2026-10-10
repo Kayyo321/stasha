@@ -28,6 +28,7 @@ typedef enum { IfaceTransferReject, IfaceTransferExact, IfaceTransferPrimitive,
                IfaceTransferNullableNil, IfaceTransferDescriptorCopy,
                IfaceTransferConcreteBox } iface_transfer_t;
 
+static boolean_t iface_local_fact(cg_t *, node_t *, iface_source_fact_t *);
 static iface_source_fact_t iface_source_expr_at(cg_t *, node_t *, type_info_t, usize_t);
 static symbol_t *iface_source_selected(cg_t *, node_t *, usize_t);
 static iface_signature_t *iface_source_slot(cg_t *, node_t *, usize_t);
@@ -41,7 +42,9 @@ static boolean_t iface_source_error(node_t *n, const char *why) {
 /* cg_lookup marks symbols used. This equivalent lookup is intentionally pure. */
 static symbol_t *iface_source_lookup(cg_t *cg, const char *name) {
     if(!name)return Null;
-    symbol_t *s=symtab_lookup(&cg->locals,name); char qualified[1024];
+    boolean_t planned=False;
+    symbol_t *s=iface_local_lookup(cg,name,&planned);
+    if(!planned)s=symtab_lookup(&cg->locals,name); char qualified[1024];
     if(!s && cg->current_module_prefix[0]) {
         int z=snprintf(qualified,sizeof(qualified),"%s__%s",cg->current_module_prefix,name);
         if(z>=0 && (size_t)z<sizeof(qualified))s=symtab_lookup(&cg->globals,qualified);
@@ -258,6 +261,7 @@ static boolean_t iface_source_immediate_conversion(node_t *rhs,iface_source_fact
 }
 static iface_source_fact_t iface_source_expr_at(cg_t *cg,node_t *n,type_info_t context,usize_t depth) {
     if(!n||depth>IfaceMaxMetadataDepth)return iface_source_unknown("missing expression or source metadata depth exceeds 256");
+    iface_source_fact_t cached; if(iface_local_fact(cg,n,&cached))return cached;
     iface_source_fact_t f={.status=IfaceSourceKnown,.access=PtrRead,.evidence=n};
     uint64_t magnitude;boolean_t negative;
     if(scalar_literal(n,&magnitude,&negative)){f.status=IfaceSourceLiteral;f.contract.type=scalar_literal_type(n,context);return f;}
@@ -270,6 +274,7 @@ static iface_source_fact_t iface_source_expr_at(cg_t *cg,node_t *n,type_info_t c
     case NodeSizeofExpr:f.contract.type=scalar_type(TypeU64);return f;
     case NodeStrLitExpr:f.contract.type=(type_info_t){.base=TypeI8,.is_pointer=True,.ptr_depth=1,.ptr_perm=PtrRead,.ptr_perms={PtrRead}};return f;
     case NodeIdentExpr:return iface_source_symbol(cg,iface_source_lookup(cg,n->as.ident.name));
+    case NodeDesigInit:return iface_source_from_type(cg,(type_info_t){.base=TypeUser,.user_name=n->as.desig_init.type_name,.generic_use=n->generic_use},StorageDefault,n);
     case NodeMemberExpr:case NodeSelfMemberExpr:return iface_source_field(cg,n,depth+1);
     case NodeCallExpr:case NodeMethodCall:case NodeSelfMethodCall:case NodeColonCall:case NodeConstructorCall:case NodeLambdaCall:return iface_source_result(cg,n,depth+1);
     case NodeIndexExpr:case NodeFlaggedIndex:{
@@ -491,7 +496,7 @@ static boolean_t iface_source_constant_tree(cg_t *cg,node_t *n,usize_t depth) {
     default:return False;
     }
 }
-static iface_transfer_t iface_source_transfer(cg_t *cg,node_t *arg,iface_source_fact_t f,iface_type_t formal,boolean_t boxing) {
+static iface_transfer_t iface_source_transfer(cg_t *cg,node_t *arg,node_t *original,iface_source_fact_t f,iface_type_t formal,boolean_t boxing) {
     if(f.status==IfaceSourceNull){if(!formal.type.is_pointer||!formal.type.nullable){iface_source_error(arg,"nil requires a nullable pointer formal");return IfaceTransferReject;}
         if(formal.domain!=StorageDefault){iface_source_error(arg,"nullable nil with a required pointee domain is unsupported");return IfaceTransferReject;}return IfaceTransferNullableNil;}
     if(f.status!=IfaceSourceKnown&&f.status!=IfaceSourceLiteral){iface_source_error(arg,f.reason?f.reason:"unknown source contract");return IfaceTransferReject;}
@@ -506,7 +511,7 @@ static iface_transfer_t iface_source_transfer(cg_t *cg,node_t *arg,iface_source_
         if(a.nominal==formal.nominal)return IfaceTransferDescriptorCopy;
         if(a.nominal&&a.nominal->as.type_decl.decl_kind==TypeDeclStruct&&boxing&&arg->kind==NodeIdentExpr){
             symbol_t *s=iface_source_lookup(cg,arg->as.ident.name);
-            if(!s||!iface_concrete_origin_allowed(cg,arg,s))return IfaceTransferReject;
+            if(!s||!iface_concrete_origin_allowed(cg,original,s))return IfaceTransferReject;
             usize_t ii=find_interface_index(cg,formal.nominal->as.type_decl.name);iface_binding_t *b=iface_find_binding(cg,a.nominal,ii);
             if(b&&(b->state==IfaceBindingTableReady||b->state==IfaceBindingNativeReady))return IfaceTransferConcreteBox;
             if(b&&b->state==IfaceBindingLocalUnavailable){
@@ -542,7 +547,7 @@ static boolean_t iface_source_check_slot(cg_t *cg,node_t *node,iface_signature_t
         type_info_t context=!s->params[i].nominal&&scalar_numeric(s->params[i].type)?s->params[i].type:NO_TYPE;
         iface_source_fact_t f=iface_source_expr_at(cg,args.items[i],context,0);
         node_t located=*args.items[i];if(!located.col){located.col=node->col;located.len=node->len;}
-        if(iface_source_transfer(cg,&located,f,s->params[i],False)==IfaceTransferReject)return False;
+        if(iface_source_transfer(cg,&located,args.items[i],f,s->params[i],False)==IfaceTransferReject)return False;
     }
     return before==get_error_count();
 }
@@ -666,7 +671,7 @@ static boolean_t iface_source_preflight_selected(cg_t *cg,node_t *n,symbol_t *s)
             }
             iface_source_fact_t f=iface_source_expr_at(cg,args.items[i],NO_TYPE,0);
             node_t located=*args.items[i];if(!located.col){located.col=n->col;located.len=n->len;}
-            if(iface_source_transfer(cg,&located,f,formal,iface_source_call_is_boxing(cg,n,s))==IfaceTransferReject)return False;
+            if(iface_source_transfer(cg,&located,args.items[i],f,formal,iface_source_call_is_boxing(cg,n,s))==IfaceTransferReject)return False;
         }else if((s->scalar_signature&&i<s->scalar_signature->param_count&&iface_source_mentions_type(cg,s->scalar_signature->params[i].type,0)) ||
             iface_source_actual_bears(cg,args.items[i]))return iface_source_error(args.items[i],"interface actual requires a complete exact interface formal; dependent or unknown carriers are unsupported");
     }
@@ -678,4 +683,20 @@ static LLVMValueRef iface_source_gen_arg(cg_t *cg,node_t *call,node_t *arg,usize
     symbol_t *s=iface_source_selected(cg,call,0);iface_type_t formal;
     if(iface_source_formal(cg,s,index,&formal))return gen_expr(cg,arg);
     return gen_scalar_as(cg,arg,fallback);
+}
+
+/* Exact local concrete-value transfer. This does not grant stored-value proof,
+ * descriptor validity, or a new native formal conversion. Queries stay quiet. */
+typedef enum { IfaceLocalCopyBoundary, IfaceLocalCopyExact, IfaceLocalCopyMismatch } iface_local_copy_t;
+static iface_local_copy_t iface_source_local_copy(iface_source_fact_t source, iface_source_fact_t target) {
+    if (target.status != IfaceSourceKnown || !target.contract.nominal ||
+        target.contract.nominal->as.type_decl.decl_kind != TypeDeclStruct ||
+        target.contract.type.is_pointer || target.dimensions) return IfaceLocalCopyBoundary;
+    if (source.status == IfaceSourceExcluded || (source.origin & IfaceOriginGeneric))
+        return IfaceLocalCopyMismatch;
+    if (source.status == IfaceSourceUnknown) return IfaceLocalCopyBoundary;
+    if (source.status != IfaceSourceKnown || source.contract.nominal != target.contract.nominal ||
+        source.contract.type.is_pointer || source.dimensions || !(source.access & PtrRead))
+        return IfaceLocalCopyMismatch;
+    return IfaceLocalCopyExact;
 }

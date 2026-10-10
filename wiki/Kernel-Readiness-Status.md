@@ -1,6 +1,44 @@
 # Kernel-readiness status
 
-## I1b.1 interface source-call checkpoint (10 October 2026)
+## I1b.2 local transfer and projection checkpoint (10 October 2026)
+
+Bounded ordinary concrete local copies/reassignments and field/fixed-array
+copy-then-use projections now retain checked producer and write identity at
+admitted interface uses. The immutable local inventory follows original lexical
+bindings, effects and use frontiers. Exact aliases are supported; a typed
+annotation or matching storage size is not sufficient evidence. See the
+[local transfer contract](Interfaces.md#i1b2-checked-local-copies-and-projections).
+
+Rebuild **all source-backed Stasha archives and consumers for semantic ABI 9**.
+Descriptor layout and slot ordering are unchanged. Genuine ABI8 retained-body
+mismatches reject before import/codegen/link; corrected ABI9 consumers execute
+provider-owned indirect dispatch at O0–O3. Historical invalid programs remain
+compile/link-only and are never run; sidecars are not relabeled.
+
+Frozen compiler SHA-256:
+`c656109409bd2aa7935d2315f7cdb20107d6e79f4e19224968fd4a33d14eabf5`.
+The full hosted gate, all 36 rebuilt standard libraries and qualified memory
+regressions pass. Maintained checks: local transfers 268, source calls 568,
+binding 274 and graph 82. Independent review covers 192 valid executions,
+284 normal source rejections, 55 retained/inventory controls, 996 ordinary
+functional assertions and 24 genuine archive controls. The independent sanitizer run
+was unavailable because of LeakSanitizer's ptrace restriction; writer 603
+ASan/UBSan-only local checks are separate evidence. See the
+[I1b.2 receipt](../tests/qualification/checkpoint-interface-i1b2-2026-10-10.json).
+
+Seven retained accepted gap characterizations are compile-only and remain
+unqualified. Ordinary helper parameters/results, broad descriptor stores/returns,
+default initialization and aggregate descriptor contents remain open. This stage
+does not prove object liveness, ownership, CFI/table membership or concurrency.
+Generated access/growth gaps and full native/kernel qualification remain open.
+
+The existing fixed-array len/cap numerical query issue is explicitly deferred:
+it can return zero, although checked indexing independently retains the actual
+storage bound. Original failed evidence is preserved, and the reproduction,
+risk and bounded follow-up checklist are in [Interfaces](Interfaces.md#separate-known-extent-query-limitation).
+
+
+## Historical I1b.1 interface source-call checkpoint (10 October 2026)
 
 Supported interface-slot calls now compare every actual's source contract before
 lowering. Supported native adapters check interface-valued formals, including
