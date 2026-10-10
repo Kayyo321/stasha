@@ -222,9 +222,10 @@ without I/O. Freestanding final images must supply the hook. Scalar reasons 1–
 are unchanged; 7 (null) remains reserved; B1 uses 8 for retained allocation failure. Returning from the
 hook violates its ABI; there is no unwinding or defer-on-panic guarantee.
 
-Rebuild source-backed archives for **ABI 5** after these source-compatibility
-changes. The three-field descriptor layout is unchanged; the marker alone does
-not change native C ABI shape.
+B1 introduced archive marker **ABI 5** for these source-compatibility changes.
+The current I0 compiler requires **ABI 6** for its interface slot-order change;
+[rebuild all Stasha archives and consumers](Interfaces.md#archive-migration-abi-6).
+The three-field slice descriptor and native C ABI shape remain unchanged.
 
 A1 excludes initialization-produced writes/ranges/spreads, `foreach`-generated
 indexing, `copy`, `append`, allocation, general raw-pointer access, initialization,

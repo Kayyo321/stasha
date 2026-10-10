@@ -357,7 +357,7 @@ static boolean_t eval_comptime_condition(const char *key, const char *value) {
 /* Called after '[' has been consumed. Fills in type_params/type_param_count on node. */
 static void parse_type_params_into(parser_t *p,
                                    char **params_out, usize_t *count_out,
-                                   usize_t max_params) {
+                                   generic_param_meta_t *meta, usize_t max_params) {
     *count_out = 0;
     while (!check(p, TokRBracket) && !check(p, TokEof)) {
         if (*count_out >= max_params) {
@@ -365,18 +365,23 @@ static void parse_type_params_into(parser_t *p,
             diag_span(SRC_LOC(p->current.line, p->current.col, p->current.length),
                       True, "too many parameters");
             diag_finish();
+            p->had_error = True;
             break;
         }
         token_t ptok = consume(p, TokIdent, "type parameter name");
-        params_out[(*count_out)++] = copy_token_text(ptok);
+        usize_t index = (*count_out)++;
+        params_out[index] = copy_token_text(ptok);
+        meta[index].source_loc = ast_source_loc(ptok);
         /* consume optional .[constraint1, constraint2] syntax */
         if (check(p, TokDot)) {
             parser_state_t saved = save_state(p);
             advance_parser(p); /* consume '.' */
             if (match_tok(p, TokLBracket)) {
-                /* consume constraint list */
+                meta[index].constraints = ast_generic_use(params_out[index],
+                                                           ast_source_loc(ptok));
                 while (!check(p, TokRBracket) && !check(p, TokEof)) {
-                    advance_parser(p); /* skip constraint name */
+                    if (!ast_generic_arg_push(meta[index].constraints, parse_type(p)))
+                        p->had_error = True;
                     if (!match_tok(p, TokComma)) break;
                 }
                 consume(p, TokRBracket, "']'");
@@ -1092,7 +1097,7 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
                 advance_parser(p); /* consume 'comptime' */
                 if (match_tok(p, TokLBracket)) {
                     parse_type_params_into(p, n->as.type_decl.type_params,
-                                          &n->as.type_decl.type_param_count, 8);
+                                          &n->as.type_decl.type_param_count, n->as.type_decl.type_param_meta, 8);
                 }
             } else {
                 diag_begin_error("unknown attribute '@%.*s'", (int)len, s);
@@ -1115,10 +1120,16 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
             advance_parser(p); /* consume '.' */
             if (match_tok(p, TokLBracket)) {
                 while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    token_t pname = consume(p, TokIdent, "interface parent name");
                     if (n->as.type_decl.impl_iface_count < 8) {
-                        token_t pname = consume(p, TokIdent, "interface parent name");
-                        n->as.type_decl.impl_ifaces[n->as.type_decl.impl_iface_count++] =
-                            copy_name_text(pname);
+                        usize_t index = n->as.type_decl.impl_iface_count++;
+                        n->as.type_decl.impl_ifaces[index] = copy_name_text(pname);
+                        n->as.type_decl.impl_iface_locs[index] = ast_source_loc(pname);
+                    } else {
+                        diag_begin_error("maximum of 8 interface parents exceeded");
+                        diag_span(DIAG_TOK(pname), True, "excess interface parent");
+                        diag_finish();
+                        p->had_error = True;
                     }
                     if (!match_tok(p, TokComma)) break;
                 }
@@ -1138,10 +1149,16 @@ static node_t *parse_type_decl(parser_t *p, linkage_t linkage) {
             advance_parser(p); /* consume '.' */
             if (match_tok(p, TokLBracket)) {
                 while (!check(p, TokRBracket) && !check(p, TokEof)) {
+                    token_t iname = consume(p, TokIdent, "implemented interface name");
                     if (n->as.type_decl.impl_iface_count < 8) {
-                        token_t iname = consume(p, TokIdent, "interface name");
-                        n->as.type_decl.impl_ifaces[n->as.type_decl.impl_iface_count++] =
-                            copy_token_text(iname);
+                        usize_t index = n->as.type_decl.impl_iface_count++;
+                        n->as.type_decl.impl_ifaces[index] = copy_name_text(iname);
+                        n->as.type_decl.impl_iface_locs[index] = ast_source_loc(iname);
+                    } else {
+                        diag_begin_error("maximum of 8 implemented interfaces exceeded");
+                        diag_span(DIAG_TOK(iname), True, "excess implemented interface");
+                        diag_finish();
+                        p->had_error = True;
                     }
                     if (!match_tok(p, TokComma)) break;
                 }
@@ -1372,6 +1389,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
 
     /* optional @comptime[T, U, ...] type parameters after 'fn' */
     char *fn_type_params[8];
+    generic_param_meta_t fn_type_param_meta[8] = {0};
     usize_t fn_type_param_count = 0;
     if (check(p, TokAt)) {
         parser_state_t snap = save_state(p);
@@ -1381,7 +1399,7 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
             advance_parser(p); /* consume 'comptime' */
             if (check(p, TokLBracket)) {
                 advance_parser(p); /* consume '[' */
-                parse_type_params_into(p, fn_type_params, &fn_type_param_count, 8);
+                parse_type_params_into(p, fn_type_params, &fn_type_param_count, fn_type_param_meta, 8);
             } else {
                 restore_state(p, snap);
             }
@@ -1601,8 +1619,10 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
     n->as.fn_decl.is_variadic        = is_variadic;
     n->as.fn_decl.is_typed_variadic  = is_typed_variadic;
     n->as.fn_decl.type_param_count = fn_type_param_count;
-    for (usize_t _i = 0; _i < fn_type_param_count; _i++)
+    for (usize_t _i = 0; _i < fn_type_param_count; _i++) {
         n->as.fn_decl.type_params[_i] = fn_type_params[_i];
+        n->as.fn_decl.type_param_meta[_i] = fn_type_param_meta[_i];
+    }
     return n;
 }
 

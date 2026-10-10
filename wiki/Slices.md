@@ -113,8 +113,9 @@ without I/O; freestanding final images must provide the hook. Reasons 1–5 are
 unchanged. Reason 7 (null) remains reserved; B1 uses 8 for allocation failure. No unwind or
 defer-on-panic behavior is promised.
 
-A1 introduced archive marker **ABI 4**. Current B1 use requires **ABI 5**,
-as described below. The
+A1 introduced archive marker **ABI 4** and B1 introduced **ABI 5**,
+as described below. The current I0 compiler requires **ABI 6**; rebuild all
+archives and consumers for the [interface slot-order migration](Interfaces.md#archive-migration-abi-6). The
 three-field descriptor layout remains unchanged, and the archive marker alone
 does not change native C ABI shape. A1 does not qualify initialization-produced
 writes/ranges/spreads, `foreach`-generated indexing, `copy`, `append`, allocation,
@@ -162,7 +163,8 @@ through assignments, arguments, returns, and conditional arms; LLVM descriptor
 equality does not imply source-type compatibility. Explicit casts remain a
 separate, unqualified boundary.
 
-Rebuild source-backed archives for **ABI 5** before using B1. ABI 4 archive bodies
+B1 introduced source-backed archive marker **ABI 5**. The current compiler
+requires **ABI 6**, including the interface migration linked above. ABI 4 archive bodies
 are linked without regeneration and may contain old unchecked constructors, so
 they are rejected. This is a semantic compatibility marker; the descriptor and
 native C ABI physical layout have not changed.

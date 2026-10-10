@@ -1,6 +1,45 @@
 # Kernel-readiness status
 
-## B1 explicit-count construction checkpoint (10 October 2026)
+## I0 interface graph and metadata checkpoint (10 October 2026)
+
+I0 validates inheritance graphs before lowering, retains source contract metadata,
+and rejects unsupported or over-limit declarations instead of silently discarding
+information. Diamond inheritance now deduplicates repeated paths to the same
+method declaration while preserving distinct same-name origins for later signature
+comparison. Such unresolved groups cannot produce a table in this checkpoint.
+See [interface scope and migration](Interfaces.md#i0-graph-and-metadata-checkpoint).
+
+Rebuild **all Stasha archives and consumers for ABI 6**. This is a real interface
+slot-order change: a duplicated ancestor slot in an old diamond table is removed.
+The object/table descriptor remains two words. Genuine ABI5 and ABI6 archive
+fixtures compare actual table entries and cross-archive inherited calls; no
+sidecar relabeling is used. The frozen B1 provider writes the old archive but
+returns a known cleanup-only failure, retained separately from the successful
+old-archive rejection control.
+
+The imported diagnostic source registry now owns its source text, so diagnostics
+can safely render an imported declaration after the driver releases its input
+buffer. This is separate from the earlier stable diagnostic filename repair.
+
+The frozen compiler SHA-256 is
+`da886d196626f05786492ef9ae52e71f4a98335bc9de2b1842078177644de253`.
+The final hosted gate passes, including 80 mandatory I0 checks; the local focused
+run passes 81 with the genuine legacy-archive control. All 36 ABI6-rebuilt
+standard-library modules and qualified memory regressions pass. There are 24
+oracle-unit checks and 237 ASan/UBSan metadata/graph/source-ownership checks.
+Independent review adds 1,541 frontend and 554 diagnostic ownership checks.
+Full LeakSanitizer is unavailable in this executor; direct allocation/cleanup
+assertions are separate evidence. See the
+[I0 receipt](../tests/qualification/checkpoint-interface-i0-2026-10-10.json).
+
+I0 does not certify full method signatures or missing implementations, all boxing
+routes, dispatch membership/CFI, object lifetime, ownership, or concrete object /
+table pairing. I1 binding and call agreement is the next milestone. Owned buffers
+remain design-only. A1 implicit generated accesses and B1 append/copy, initializer,
+spread, lifetime and nullable/concurrency gaps remain open. No fresh I0 kernel
+boot, hardware, or native non-Linux release qualification is claimed.
+
+## Historical B1 explicit-count construction checkpoint (10 October 2026)
 
 B1 adds checked scalar `make.([]T, len[, cap])`: full-width counts, selected-target
 allocation-size guards, canonical empty construction, and reason-8 failure before

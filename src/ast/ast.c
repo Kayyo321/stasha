@@ -83,6 +83,47 @@ char *ast_strdup(const char *src, usize_t len) {
     return s;
 }
 
+ast_source_loc_t ast_source_loc(token_t tok) {
+    const char *file = tok.file ? tok.file : diag_get_file();
+    return (ast_source_loc_t){file ? ast_strdup(file, strlen(file)) : Null,
+                              tok.line, tok.col, tok.length};
+}
+
+generic_use_t *ast_generic_use(char *base_name, ast_source_loc_t loc) {
+    heap_t h = allocate(1, sizeof(generic_use_t));
+    arena_track(h);
+    generic_use_t *use = h.pointer;
+    memset(use, 0, sizeof(*use));
+    use->base_name = base_name;
+    if (!loc.file && diag_get_file()) loc.file = ast_strdup(diag_get_file(), strlen(diag_get_file()));
+    use->source_loc = loc;
+    return use;
+}
+
+boolean_t ast_generic_arg_push(generic_use_t *use, type_info_t arg) {
+    if (use->count >= SIZE_MAX / sizeof(type_info_t) ||
+        (use->count == use->capacity && use->capacity > SIZE_MAX / sizeof(type_info_t) / 2)) {
+        diag_begin_error("generic argument metadata allocation limit exceeded");
+        diag_span(SRC_LOC(use->source_loc.line, use->source_loc.col, use->source_loc.len),
+                  True, "application starts here");
+        diag_finish();
+        return False;
+    }
+    if (use->count == use->capacity) {
+        use->capacity = use->capacity ? use->capacity * 2 : 4;
+        if (!use->args_heap.pointer) {
+            use->args_heap = allocate(use->capacity, sizeof(type_info_t));
+            arena_track(use->args_heap);
+        } else {
+            use->args_heap = reallocate(use->args_heap,
+                                        use->capacity * sizeof(type_info_t));
+        }
+        use->args = use->args_heap.pointer;
+    }
+    use->args[use->count++] = arg;
+    return True;
+}
+
 /* ── escape-processing string copy ── */
 
 static char decode_escape(char c) {

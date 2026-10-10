@@ -46,6 +46,16 @@ enum {
     PtrReadWrite = (PtrRead | PtrWrite), // rw
 };
 
+/* Source-only metadata is immutable after parsing and owned by the AST arena.
+ * Shallow AST/type copies borrow it until ast_free_all(); codegen caches never
+ * own or mutate it, including during generic substitution. */
+typedef struct {
+    char *file;
+    usize_t line, col, len;
+} ast_source_loc_t;
+typedef enum { StorageDefault, StorageStack, StorageHeap } storage_t;
+typedef struct generic_use generic_use_t;
+
 /* ── rich type descriptor ── */
 
 typedef struct type_info type_info_t;
@@ -59,15 +69,27 @@ struct type_info {
     ptr_perm_t ptr_perms[8];    /* per-level perms: [0]=outermost … [depth-1]=innermost */
     type_info_t *elem_type;     /* non-null when base == TypeSlice; heap-allocated [1] */
     boolean_t nullable;         /* True when written as ?T *p — pointer may be nil */
+    ast_source_loc_t source_loc;
+    storage_t written_storage; /* parse_type prefix, especially return domains */
+    boolean_t written_nullable; /* raw '?' retained even on legacy composites */
+    generic_use_t *generic_use; /* null for a literal name containing _G_ */
 };
 
 /* ── storage / linkage ── */
 
-typedef enum {
-    StorageDefault,
-    StorageStack,
-    StorageHeap,
-} storage_t;
+struct generic_use {
+    char *base_name;             /* original spelling, before legacy mangling */
+    ast_source_loc_t source_loc;
+    type_info_t *args;           /* ordered, recursive source descriptors */
+    usize_t count, capacity;
+    heap_t args_heap;
+    generic_use_t *previous;     /* repeated applications retain provenance */
+};
+
+typedef struct {
+    ast_source_loc_t source_loc;
+    generic_use_t *constraints;  /* ordered constraint types; null if absent */
+} generic_param_meta_t;
 
 typedef enum {
     CoroNone,
@@ -384,6 +406,7 @@ struct node {
     /* fileheader entries attached to the node (decls + module).
        NULL if no @[[...]] attributes were applied to this node. */
     fileheader_t *headers;
+    generic_use_t *generic_use; /* expression application / designated init */
 
     union {
         /* ── top-level ── */
@@ -406,6 +429,7 @@ struct node {
             int attr_flags;             /* AttrWeak | AttrHidden */
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
+            generic_param_meta_t type_param_meta[8];
             char *iface_qualifier;      /* non-null for "fn flyable_i.move()" inside struct body */
             boolean_t is_async;         /* `async fn ...` marker — enables async.()/await.() shorthand */
             coro_flavor_t coro_flavor;  /* inferred coroutine flavor for async fns */
@@ -441,8 +465,10 @@ struct node {
             unsigned align_value;       /* @align(N): 0 = default */
             char *type_params[8];       /* @comptime[T, U, ...] — generic type parameter names */
             usize_t type_param_count;
+            generic_param_meta_t type_param_meta[8];
             char *impl_ifaces[8];       /* interface parents (if interface) OR implemented interfaces (if struct) */
             usize_t impl_iface_count;
+            ast_source_loc_t impl_iface_locs[8];
         } type_decl;
 
         struct {
@@ -737,5 +763,8 @@ void node_list_push(node_list_t *list, node_t *node);
 
 void ast_arena_track(heap_t h);
 void ast_free_all(void);
+ast_source_loc_t ast_source_loc(token_t tok);
+generic_use_t *ast_generic_use(char *base_name, ast_source_loc_t loc);
+boolean_t ast_generic_arg_push(generic_use_t *use, type_info_t arg);
 
 #endif

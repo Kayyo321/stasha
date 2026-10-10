@@ -31,15 +31,27 @@ static boolean_t   g_render_enabled = True;
 
 /* File names may come from temporary import-resolution buffers. Intern them
  * for the diagnostic context lifetime; diag_get_file() pointers stay stable
- * when a nested parser switches to another file. Source text remains borrowed. */
+ * when a nested parser switches to another file. Registered source text is owned. */
 typedef struct diag_filename_entry {
     struct diag_filename_entry *next;
     char text[];
 } diag_filename_entry_t;
 static diag_filename_entry_t *g_diag_filenames;
+static boolean_t g_diag_cleanup_registered;
+static void diag_cleanup_at_exit(void);
+static void diag_register_cleanup(void) {
+    if (!g_diag_cleanup_registered) {
+        if (atexit(diag_cleanup_at_exit) != 0) {
+            fputs("fatal: cannot register diagnostic cleanup\n", stderr);
+            exit(EXIT_FAILURE);
+        }
+        g_diag_cleanup_registered = True;
+    }
+}
 
 static const char *diag_own_filename(const char *filename) {
     if (!filename) return "<unknown>";
+    diag_register_cleanup();
     for (diag_filename_entry_t *entry = g_diag_filenames; entry; entry = entry->next)
         if (strcmp(entry->text, filename) == 0) return entry->text;
     size_t length = strlen(filename);
@@ -71,35 +83,74 @@ static boolean_t    g_has_pending = False;
 
 /* ── Multi-file source registry ── */
 
-#define DIAG_MAX_REGISTERED_SOURCES 64
-
-typedef struct {
-    const char *filename;
-    const char *source;
+typedef struct diag_source_entry {
+    struct diag_source_entry *next;
+    const char *filename;       /* stable interned filename */
+    char *source;               /* owned until replacement / explicit clear */
 } diag_source_entry_t;
 
-static diag_source_entry_t g_source_registry[DIAG_MAX_REGISTERED_SOURCES];
-static int                 g_source_registry_count = 0;
+static diag_source_entry_t *g_source_registry;
 static captured_diag_t     g_captured_diags[DIAG_MAX_CAPTURED];
 static usize_t             g_captured_diag_count = 0;
 static usize_t             g_suppressed_count = 0;   /* overflow tracking */
 
 #define DIAG_ERROR_LIMIT 100
 
+/* Pending/captured diagnostics store coordinates and copied text, never source
+ * pointers. Clearing snippets does not invalidate AST locations or filenames. */
+void diag_clear_sources(void) {
+    while (g_source_registry) {
+        diag_source_entry_t *entry = g_source_registry;
+        g_source_registry = entry->next;
+        free(entry->source);
+        free(entry);
+    }
+    g_source = Null;
+}
+
+static void diag_cleanup_at_exit(void) {
+    diag_clear_sources();
+    while (g_diag_filenames) {
+        diag_filename_entry_t *entry = g_diag_filenames;
+        g_diag_filenames = entry->next;
+        free(entry);
+    }
+    g_filename = "<unknown>";
+}
+
 void diag_register_source(const char *filename, const char *source) {
     if (!filename || !source) return;
-    /* Update existing entry if already registered. */
-    for (int i = 0; i < g_source_registry_count; i++) {
-        if (strcmp(g_source_registry[i].filename, filename) == 0) {
-            g_source_registry[i].source = source;
+    diag_register_cleanup();
+    size_t length = strlen(source);
+    if (length == SIZE_MAX) {
+        fputs("fatal: diagnostic source is too long\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+    char *copy = malloc(length + 1);
+    if (!copy) {
+        fputs("fatal: cannot retain diagnostic source\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+    memcpy(copy, source, length + 1); /* copy before freeing an aliased old source */
+    for (diag_source_entry_t *entry = g_source_registry; entry; entry = entry->next) {
+        if (strcmp(entry->filename, filename) == 0) {
+            if (g_source == entry->source || strcmp(g_filename, filename) == 0) g_source = copy;
+            free(entry->source);
+            entry->source = copy;
             return;
         }
     }
-    if (g_source_registry_count < DIAG_MAX_REGISTERED_SOURCES) {
-        g_source_registry[g_source_registry_count].filename = diag_own_filename(filename);
-        g_source_registry[g_source_registry_count].source   = source;
-        g_source_registry_count++;
+    diag_source_entry_t *entry = malloc(sizeof(*entry));
+    if (!entry) {
+        free(copy);
+        fputs("fatal: cannot retain diagnostic source entry\n", stderr);
+        exit(EXIT_FAILURE);
     }
+    entry->filename = diag_own_filename(filename);
+    entry->source = copy;
+    entry->next = g_source_registry;
+    g_source_registry = entry;
+    if (strcmp(g_filename, filename) == 0) g_source = copy;
 }
 
 void diag_set_render_enabled(boolean_t enabled) {
@@ -121,10 +172,8 @@ const captured_diag_t *diag_get_captured(usize_t index) {
 
 static const char *lookup_registered_source(const char *filename) {
     if (!filename) return Null;
-    for (int i = 0; i < g_source_registry_count; i++) {
-        if (strcmp(g_source_registry[i].filename, filename) == 0)
-            return g_source_registry[i].source;
-    }
+    for (diag_source_entry_t *entry = g_source_registry; entry; entry = entry->next)
+        if (strcmp(entry->filename, filename) == 0) return entry->source;
     return Null;
 }
 
@@ -132,11 +181,13 @@ void diag_set_file(const char *filename) {
     g_filename = diag_own_filename(filename);
     /* Auto-switch the active source text for snippet rendering. */
     const char *registered = lookup_registered_source(g_filename);
-    if (registered) g_source = registered;
+    g_source = registered;
 }
 
 void diag_set_source(const char *source) {
-    g_source = source;
+    if (!source) { g_source = Null; return; }
+    diag_register_source(g_filename, source);
+    g_source = lookup_registered_source(g_filename);
 }
 
 const char *diag_get_file(void) {

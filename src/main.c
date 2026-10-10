@@ -82,6 +82,7 @@ static heap_t source_heap = {0};
 
 static void compile_cleanup(void) {
     ast_free_all();
+    diag_clear_sources();
     if (source_heap.pointer) {
         deallocate(source_heap);
         source_heap.pointer = NULL; /* clear so re-entrant compile_file() is safe */

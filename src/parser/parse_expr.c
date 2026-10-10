@@ -1476,6 +1476,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
             }
             consume(p, TokRParen, "')'");
             node_t *n = make_node(NodeSelfMethodCall, line);
+            n->generic_use = expr->generic_use;
             n->as.self_method_call.type_name = type_name;
             n->as.self_method_call.method = method_name;
             n->as.self_method_call.args = args;
@@ -1496,6 +1497,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
             }
             consume(p, TokRParen, "')'");
             node_t *n = make_node(NodeCallExpr, line);
+            n->generic_use = expr->generic_use;
             n->col = expr->col;
             n->source_file = expr->source_file;
             n->as.call.callee = name;
@@ -1571,24 +1573,11 @@ static node_t *parse_postfix_impl(parser_t *p) {
 
             /* generic instantiation in expression context: ident.[T1, T2] → ident_G_T1_G_T2 */
             if (check(p, TokLBracket) && expr->kind == NodeIdentExpr) {
-                advance_parser(p); /* consume '[' */
-                char mangled[512];
-                usize_t mlen = strlen(expr->as.ident.name);
-                if (mlen < sizeof(mangled) - 1)
-                    memcpy(mangled, expr->as.ident.name, mlen);
-                while (!check(p, TokRBracket) && !check(p, TokEof)) {
-                    type_info_t arg = parse_type(p);
-                    const char *aname = comptime_type_name(arg);
-                    usize_t alen = strlen(aname);
-                    if (mlen + 3 + alen < sizeof(mangled) - 1) {
-                        memcpy(mangled + mlen, "_G_", 3); mlen += 3;
-                        memcpy(mangled + mlen, aname, alen); mlen += alen;
-                    }
-                    if (!match_tok(p, TokComma)) break;
-                }
-                consume(p, TokRBracket, "']'");
-                mangled[mlen] = '\0';
-                expr->as.ident.name = ast_strdup(mangled, mlen);
+                generic_use_t *previous = expr->generic_use;
+                expr->generic_use = parse_generic_use(p, expr->as.ident.name,
+                    (ast_source_loc_t){expr->source_file, expr->line, expr->col, expr->len},
+                    &expr->as.ident.name);
+                expr->generic_use->previous = previous;
                 /* check for designated initializer: Type.[T] { .field = val, ... } */
                 if (check(p, TokLBrace)) {
                     parser_state_t di_snap = save_state(p);
@@ -1596,6 +1585,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
                     if (check(p, TokDot)) {
                         node_t *di = make_node(NodeDesigInit, expr->line);
                         di->as.desig_init.type_name = expr->as.ident.name;
+                        di->generic_use = expr->generic_use;
                         node_list_init(&di->as.desig_init.fields);
                         node_list_init(&di->as.desig_init.values);
                         do {
@@ -1647,6 +1637,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
                     }
                     consume(p, TokRParen, "')'");
                     node_t *n = make_node(NodeSelfMethodCall, line);
+            n->generic_use = expr->generic_use;
                     n->col = field_tok.col;
                     n->source_file = field_tok.file ? ast_strdup(field_tok.file, strlen(field_tok.file)) : Null;
                     n->as.self_method_call.type_name = Null;
@@ -1676,6 +1667,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
                 }
                 consume(p, TokRParen, "')'");
                 node_t *n = make_node(NodeErrPropCall, line);
+            n->generic_use = expr->generic_use;
                 if (expr->kind == NodeIdentExpr)
                     n->as.err_prop_call.callee = expr->as.ident.name;
                 else
@@ -1698,6 +1690,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
                 }
                 consume(p, TokRParen, "')'");
                 node_t *n = make_node(NodeConstructorCall, line);
+            n->generic_use = expr->generic_use;
                 n->as.ctor_call.type_name = type_name;
                 n->as.ctor_call.args = args;
                 parse_trailing_closure(p, &n->as.ctor_call.args);
@@ -1799,6 +1792,7 @@ static node_t *parse_postfix_impl(parser_t *p) {
             consume(p, TokRParen, "')'");
 
             node_t *n = make_node(NodeColonCall, line);
+            n->generic_use = expr->generic_use;
             n->as.colon_call.module_name = module_name;
             n->as.colon_call.type_name   = type_name;
             n->as.colon_call.method_name = method_name;
@@ -2295,6 +2289,7 @@ static node_t *parse_pipeline(parser_t *p) {
                 /* bare ident pipes auto-call: a |> f → f.(a) */
                 node_t *n = make_node(NodeCallExpr, line);
                 n->as.call.callee = right->as.ident.name;
+                n->generic_use = right->generic_use;
                 node_list_init(&n->as.call.args);
                 node_list_push(&n->as.call.args, left);
                 left = n;

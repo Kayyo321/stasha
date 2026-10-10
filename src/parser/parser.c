@@ -265,11 +265,68 @@ static const char *comptime_type_name(type_info_t ti) {
     }
 }
 
+static type_info_t parse_type(parser_t *p);
+
+/* '[' is current. Retain source arguments independently of lossy legacy names.
+ * No bounded string operation is allowed to silently omit an argument. */
+static generic_use_t *parse_generic_use(parser_t *p, char *base_name,
+                                       ast_source_loc_t loc, char **mangled_out) {
+    generic_use_t *use = ast_generic_use(base_name, loc);
+    consume(p, TokLBracket, "'['");
+    while (!check(p, TokRBracket) && !check(p, TokEof)) {
+        if (!ast_generic_arg_push(use, parse_type(p))) p->had_error = True;
+        if (!match_tok(p, TokComma)) break;
+    }
+    consume(p, TokRBracket, "']'");
+    char mangled[512];
+    usize_t len = strlen(base_name);
+    boolean_t overflow = len >= sizeof(mangled);
+    if (!overflow) memcpy(mangled, base_name, len);
+    for (usize_t i = 0; i < use->count; i++) {
+        const char *name = comptime_type_name(use->args[i]);
+        usize_t n = strlen(name);
+        if (overflow || n > sizeof(mangled) - 1 - len ||
+                3 > sizeof(mangled) - 1 - len - n) {
+            overflow = True;
+            break;
+        }
+        memcpy(mangled + len, "_G_", 3); len += 3;
+        memcpy(mangled + len, name, n); len += n;
+    }
+    if (overflow) {
+        diag_begin_error("generic application name exceeds maximum of 511 bytes");
+        diag_span(SRC_LOC(loc.line, loc.col, loc.len), True, "application starts here");
+        diag_finish();
+        p->had_error = True;
+        *mangled_out = base_name;
+    } else {
+        mangled[len] = '\0';
+        *mangled_out = ast_strdup(mangled, len);
+    }
+    return use;
+}
+
 static type_info_t parse_type_impl(parser_t *p);
 
 static type_info_t parse_type(parser_t *p) {
     if (!enter_parser_nesting(p)) return NO_TYPE;
+    token_t start = p->current;
+    storage_t written_storage = StorageDefault;
+    if (check(p, TokHeap) || check(p, TokStack)) {
+        written_storage = check(p, TokHeap) ? StorageHeap : StorageStack;
+        advance_parser(p);
+    }
     type_info_t result = parse_type_impl(p);
+    result.source_loc = ast_source_loc(start);
+    if (written_storage != StorageDefault) {
+        if (result.written_storage != StorageDefault) {
+            diag_begin_error("duplicate storage qualifiers in type");
+            diag_span(DIAG_TOK(start), True, "one storage qualifier is permitted");
+            diag_finish();
+            p->had_error = True;
+        }
+        result.written_storage = written_storage;
+    }
     p->nesting_depth--;
     return result;
 }
@@ -283,6 +340,12 @@ static type_info_t parse_type_impl(parser_t *p) {
         advance_parser(p); /* consume '?' */
         nullable = True;
     }
+    info.written_nullable = nullable;
+    /* Legacy ordering permits ?heap T *r as well as heap ?T *r. */
+    if (check(p, TokHeap) || check(p, TokStack)) {
+        info.written_storage = check(p, TokHeap) ? StorageHeap : StorageStack;
+        advance_parser(p);
+    }
 
     /* slice type: []T — [ immediately followed by ] */
     if (check(p, TokLBracket)) {
@@ -294,6 +357,8 @@ static type_info_t parse_type_impl(parser_t *p) {
             type_info_t elem = parse_type(p);
             type_info_t ti = NO_TYPE;
             ti.base = TypeSlice;
+            ti.written_nullable = nullable;
+            ti.written_storage = info.written_storage;
             ti.elem_type = alloc_type_array(1);
             ti.elem_type[0] = elem;
             return ti;
@@ -360,37 +425,16 @@ static type_info_t parse_type_impl(parser_t *p) {
         return info;
     }
 
-    /* optional storage qualifier prefix on pointer return types (e.g. heap u8 *r) */
-    if (check(p, TokHeap) || check(p, TokStack)) {
-        advance_parser(p);
-    }
-
     /* any.[T1, T2, ...] — inline tagged-union type */
     if (check(p, TokAny)) {
-        usize_t line = p->current.line;
+        token_t any_token = p->current;
         advance_parser(p); /* consume 'any' */
         if (check(p, TokDot)) {
             advance_parser(p); /* consume '.' */
             if (check(p, TokLBracket)) {
-                advance_parser(p); /* consume '[' */
-                char mangled[512];
-                usize_t mlen = 3;
-                memcpy(mangled, "any", 3);
-                while (!check(p, TokRBracket) && !check(p, TokEof)) {
-                    type_info_t arg = parse_type(p);
-                    const char *aname = comptime_type_name(arg);
-                    usize_t alen = strlen(aname);
-                    if (mlen + 3 + alen < sizeof(mangled) - 1) {
-                        memcpy(mangled + mlen, "_G_", 3); mlen += 3;
-                        memcpy(mangled + mlen, aname, alen); mlen += alen;
-                    }
-                    if (!match_tok(p, TokComma)) break;
-                }
-                consume(p, TokRBracket, "']'");
-                mangled[mlen] = '\0';
                 info.base = TypeUser;
-                info.user_name = ast_strdup(mangled, mlen);
-                (void)line;
+                info.generic_use = parse_generic_use(p, ast_strdup("any", 3),
+                    ast_source_loc(any_token), &info.user_name);
                 goto parse_type_ptr;
             }
         }
@@ -474,6 +518,7 @@ static type_info_t parse_type_impl(parser_t *p) {
         return info;
     } else if (check(p, TokIdent)) {
         info.base = TypeUser;
+        token_t type_name_token = p->current;
         info.user_name = copy_token_text(p->current);
         advance_parser(p);
 
@@ -482,24 +527,8 @@ static type_info_t parse_type_impl(parser_t *p) {
             parser_state_t snap = save_state(p);
             advance_parser(p); /* consume '.' */
             if (check(p, TokLBracket)) {
-                advance_parser(p); /* consume '[' */
-                char mangled[512];
-                usize_t mlen = strlen(info.user_name);
-                if (mlen < sizeof(mangled) - 1)
-                    memcpy(mangled, info.user_name, mlen);
-                while (!check(p, TokRBracket) && !check(p, TokEof)) {
-                    type_info_t arg = parse_type(p);
-                    const char *aname = comptime_type_name(arg);
-                    usize_t alen = strlen(aname);
-                    if (mlen + 3 + alen < sizeof(mangled) - 1) {
-                        memcpy(mangled + mlen, "_G_", 3); mlen += 3;
-                        memcpy(mangled + mlen, aname, alen); mlen += alen;
-                    }
-                    if (!match_tok(p, TokComma)) break;
-                }
-                consume(p, TokRBracket, "']'");
-                mangled[mlen] = '\0';
-                info.user_name = ast_strdup(mangled, mlen);
+                info.generic_use = parse_generic_use(p, info.user_name,
+                    ast_source_loc(type_name_token), &info.user_name);
             } else {
                 restore_state(p, snap);
             }
@@ -524,7 +553,15 @@ static type_info_t parse_type_impl(parser_t *p) {
     {
         ptr_perm_t tmp[8];
         int depth = 0;
-        while (check(p, TokStar) && depth < 8) {
+        boolean_t pointer_limit_reported = False;
+        while (check(p, TokStar)) {
+            if (depth == 8 && !pointer_limit_reported) {
+                diag_begin_error("pointer type exceeds maximum of 8 levels");
+                diag_span(DIAG_TOK(p->current), True, "excess pointer level");
+                diag_finish();
+                p->had_error = True;
+                pointer_limit_reported = True;
+            }
             advance_parser(p);
             ptr_perm_t perm = PtrRead | PtrWrite | PtrArith; /* bare * = rw+ */
             if (check(p, TokIdent)) {
@@ -540,7 +577,7 @@ static type_info_t parse_type_impl(parser_t *p) {
             }
             /* optional + grants pointer arithmetic for this level */
             if (check(p, TokPlus)) { perm |= PtrArith; advance_parser(p); }
-            tmp[depth++] = perm;
+            if (depth < 8) tmp[depth++] = perm;
         }
         if (depth > 0) {
             info.is_pointer = True;

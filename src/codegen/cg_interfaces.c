@@ -3,103 +3,368 @@
  * Included by codegen.c (unity build).
  * ────────────────────────────────────────────────────────────────────────── */
 
-/* Forward declare iface_reg_t and vtable_entry_t using the anonymous structs
-   from cg_t — we reference them via cg->interfaces[i] and cg->vtables[i] */
-
 /* ── forward declarations ── */
 static struct_reg_t *find_struct_by_llvm_type(cg_t *cg, LLVMTypeRef ty);
 
-/* ── interface registry helpers ── */
-
-/* Find interface by name */
-static usize_t *find_interface_idx(cg_t *cg, const char *name) {
-    /* Linear search — return index via static local */
-    static usize_t idx_buf;
-    for (usize_t i = 0; i < cg->iface_count; i++) {
-        if (strcmp(cg->interfaces[i].name, name) == 0) {
-            idx_buf = i;
-            return &idx_buf;
-        }
-    }
-    return Null;
-}
-
-/* Get all methods of an interface (own + inherited, depth-first, deduped)
-   Returns count stored in out_names/out_rets (up to max_out). */
-static usize_t collect_all_iface_methods(cg_t *cg, const char *iface_name,
-                                          char **out_names, type_info_t *out_rets,
-                                          usize_t max_out) {
-    usize_t *idx = find_interface_idx(cg, iface_name);
-    if (!idx) return 0;
-    usize_t ii = *idx;
-    usize_t count = 0;
-    /* first collect parent methods (inherited first) */
-    for (usize_t p = 0; p < cg->interfaces[ii].parent_count && count < max_out; p++) {
-        count += collect_all_iface_methods(cg, cg->interfaces[ii].parent_names[p],
-                                            out_names + count,
-                                            out_rets + count,
-                                            max_out - count);
-    }
-    /* then own methods (dedup) */
-    for (usize_t m = 0; m < cg->interfaces[ii].method_count && count < max_out; m++) {
-        boolean_t found = False;
-        for (usize_t j = 0; j < count; j++) {
-            if (strcmp(out_names[j], cg->interfaces[ii].method_names[m]) == 0) {
-                found = True; break;
-            }
-        }
-        if (!found) {
-            out_names[count] = cg->interfaces[ii].method_names[m];
-            out_rets[count]  = cg->interfaces[ii].method_ret_types[m];
-            count++;
-        }
-    }
-    return count;
-}
-
-/* Register an interface from its AST decl node */
-static void register_interface(cg_t *cg, node_t *decl) {
-    if (cg->iface_count >= cg->iface_cap) {
-        usize_t new_cap = cg->iface_cap < 8 ? 8 : cg->iface_cap * 2;
-        if (cg->ifaces_heap.pointer == Null)
-            cg->ifaces_heap = allocate(new_cap, sizeof(cg->interfaces[0]));
-        else
-            cg->ifaces_heap = reallocate(cg->ifaces_heap,
-                                          new_cap * sizeof(cg->interfaces[0]));
-        cg->interfaces = cg->ifaces_heap.pointer;
-        cg->iface_cap = new_cap;
-    }
-    usize_t ii = cg->iface_count++;
-    memset(&cg->interfaces[ii], 0, sizeof(cg->interfaces[0]));
-    cg->interfaces[ii].name = decl->as.type_decl.name;
-
-    /* store parent names */
-    for (usize_t i = 0; i < decl->as.type_decl.impl_iface_count && i < 8; i++)
-        cg->interfaces[ii].parent_names[cg->interfaces[ii].parent_count++] =
-            decl->as.type_decl.impl_ifaces[i];
-
-    /* collect own methods */
-    for (usize_t i = 0; i < decl->as.type_decl.methods.count && cg->interfaces[ii].method_count < 32; i++) {
-        node_t *m = decl->as.type_decl.methods.items[i];
-        cg->interfaces[ii].method_names[cg->interfaces[ii].method_count] = m->as.fn_decl.name;
-        if (m->as.fn_decl.return_count > 0)
-            cg->interfaces[ii].method_ret_types[cg->interfaces[ii].method_count] =
-                m->as.fn_decl.return_types[0];
-        cg->interfaces[ii].method_count++;
-    }
-
-    /* store fat pointer type (already created in pass 0) */
-    struct_reg_t *sr = find_struct(cg, decl->as.type_decl.name);
-    if (sr) {
-        cg->interfaces[ii].fat_ptr_type = sr->llvm_type;
-    }
-}
-
-/* Find interface idx — public version returns pointer to the struct */
 static usize_t find_interface_index(cg_t *cg, const char *name) {
     for (usize_t i = 0; i < cg->iface_count; i++)
         if (strcmp(cg->interfaces[i].name, name) == 0) return i;
     return (usize_t)-1;
+}
+
+static ast_source_loc_t iface_node_loc(node_t *node) {
+    return (ast_source_loc_t){node->source_file, node->line, node->col, node->len};
+}
+
+/* Diagnostic file switches are restored; imported declarations must not borrow
+ * the entry module's path. Metadata has its own arena-owned source file. */
+static void iface_error(ast_source_loc_t loc, const char *message,
+                         const char *name) {
+    const char *saved = diag_get_file();
+    if (loc.file) diag_set_file(loc.file);
+    diag_begin_error("interface declaration: %s '%s'", message, name ? name : "");
+    diag_span(SRC_LOC(loc.line, loc.col, loc.len), True, "declared here");
+    diag_finish();
+    diag_set_file(saved);
+}
+
+static void free_interface_registry(cg_t *cg) {
+    for (usize_t i = 0; i < cg->iface_count; i++)
+        for (usize_t j = 0; j < cg->interfaces[i].group_count; j++)
+            if (cg->interfaces[i].groups[j].origins_heap.pointer)
+                deallocate(cg->interfaces[i].groups[j].origins_heap);
+    if (cg->ifaces_heap.pointer) deallocate(cg->ifaces_heap);
+    cg->interfaces = Null;
+    cg->iface_count = cg->iface_cap = 0;
+    cg->ifaces_heap = NullHeap;
+}
+
+static void register_interface(cg_t *cg, node_t *decl) {
+    if (cg->iface_count == cg->iface_cap) {
+        if (cg->iface_cap > SIZE_MAX / sizeof(iface_reg_t) / 2) {
+            iface_error(iface_node_loc(decl), "registry allocation limit exceeded for", decl->as.type_decl.name);
+            return;
+        }
+        usize_t cap = cg->iface_cap ? cg->iface_cap * 2 : 8;
+        cg->ifaces_heap = cg->ifaces_heap.pointer
+            ? reallocate(cg->ifaces_heap, cap * sizeof(iface_reg_t))
+            : allocate(cap, sizeof(iface_reg_t));
+        cg->interfaces = cg->ifaces_heap.pointer;
+        cg->iface_cap = cap;
+    }
+    iface_reg_t *iface = &cg->interfaces[cg->iface_count++];
+    memset(iface, 0, sizeof(*iface));
+    iface->name = decl->as.type_decl.name;
+    iface->decl = decl;
+    iface->parent_count = decl->as.type_decl.impl_iface_count;
+}
+
+/* Same method spelling is a group, NOT signature equality. A diamond repeats
+ * the same originating declaration only once. Distinct same-name declarations
+ * remain present, even when they will conflict under I1's signature rules. */
+static boolean_t iface_add_origin(iface_reg_t *iface, node_t *method) {
+    usize_t slot = 0;
+    while (slot < iface->group_count &&
+           strcmp(iface->groups[slot].name, method->as.fn_decl.name)) slot++;
+    if (slot == iface->group_count) {
+        if (slot == IfaceMaxMethods) {
+            iface_error(iface_node_loc(iface->decl),
+                "maximum of 32 unique flattened methods exceeded for", iface->name);
+            return False;
+        }
+        iface->group_count++;
+        iface->groups[slot].name = method->as.fn_decl.name;
+        iface->groups[slot].signature_pending = True;
+    }
+    iface_method_group_t *group = &iface->groups[slot];
+    for (usize_t i = 0; i < group->origin_count; i++)
+        if (group->origins[i] == method) return True;
+    if (group->origin_count == group->origin_cap) {
+        if (group->origin_cap > SIZE_MAX / sizeof(node_t *) / 2) {
+            iface_error(iface_node_loc(iface->decl), "method-origin allocation limit exceeded for", iface->name);
+            return False;
+        }
+        usize_t cap = group->origin_cap ? group->origin_cap * 2 : 2;
+        group->origins_heap = group->origins_heap.pointer
+            ? reallocate(group->origins_heap, cap * sizeof(node_t *))
+            : allocate(cap, sizeof(node_t *));
+        group->origins = group->origins_heap.pointer;
+        group->origin_cap = cap;
+    }
+    group->origins[group->origin_count++] = method;
+    return True;
+}
+
+static boolean_t flatten_interface(cg_t *cg, usize_t index, usize_t depth) {
+    iface_reg_t *iface = &cg->interfaces[index];
+    if (iface->graph_state == IfaceGraphReady) return True;
+    if (iface->graph_state == IfaceInvalid) return False;
+    if (depth > IfaceMaxDepth) {
+        iface_error(iface_node_loc(iface->decl),
+            "maximum inheritance path of 64 interfaces exceeded at", iface->name);
+        iface->graph_state = IfaceInvalid;
+        return False;
+    }
+    iface->graph_state = IfaceVisiting;
+    iface->path_depth = 1;
+    for (usize_t p = 0; p < iface->parent_count; p++) {
+        usize_t pi = iface->parent_indices[p];
+        iface_reg_t *parent = &cg->interfaces[pi];
+        if (parent->graph_state == IfaceVisiting) {
+            iface_error(iface->decl->as.type_decl.impl_iface_locs[p],
+                         "inheritance cycle through parent", parent->name);
+            iface->graph_state = IfaceInvalid;
+            return False;
+        }
+        if (!flatten_interface(cg, pi, depth + 1)) {
+            iface->graph_state = IfaceInvalid;
+            return False;
+        }
+        usize_t height = parent->path_depth + 1;
+        if (height > IfaceMaxDepth) {
+            iface_error(iface->decl->as.type_decl.impl_iface_locs[p],
+                "maximum inheritance path of 64 interfaces exceeded through", parent->name);
+            iface->graph_state = IfaceInvalid;
+            return False;
+        }
+        if (height > iface->path_depth) iface->path_depth = height;
+        for (usize_t g = 0; g < parent->group_count; g++)
+            for (usize_t o = 0; o < parent->groups[g].origin_count; o++)
+                if (!iface_add_origin(iface, parent->groups[g].origins[o])) {
+                    iface->graph_state = IfaceInvalid;
+                    return False;
+                }
+    }
+    node_list_t *methods = &iface->decl->as.type_decl.methods;
+    for (usize_t m = 0; m < methods->count; m++)
+        if (!iface_add_origin(iface, methods->items[m])) {
+            iface->graph_state = IfaceInvalid;
+            return False;
+        }
+    iface->graph_state = IfaceGraphReady;
+    return True;
+}
+
+static void iface_check_constraints(generic_param_meta_t *meta, usize_t count) {
+    for (usize_t i = 0; i < count; i++)
+        if (meta[i].constraints)
+            iface_error(meta[i].constraints->source_loc,
+                "generic interface constraints are unsupported for", meta[i].constraints->base_name);
+}
+
+/* Metadata inspection follows aliases without asserting canonical equality.
+ * The bound is explicit because aliases can add nesting beyond parser nesting. */
+enum { IfaceMaxMetadataDepth = 256 };
+static void iface_check_return_metadata(cg_t *cg, type_info_t type,
+                                        boolean_t is_return, node_t **aliases,
+                                        usize_t alias_count, usize_t depth) {
+    if (depth > IfaceMaxMetadataDepth) {
+        iface_error(type.source_loc, "metadata nesting exceeds maximum of 256 at", "type");
+        return;
+    }
+    if (is_return && type.written_storage != StorageDefault)
+        iface_error(type.source_loc, "storage-qualified interface returns are unsupported:",
+                    type.written_storage == StorageHeap ? "heap" : "stack");
+    if (type.written_nullable && !type.is_pointer &&
+        (type.base == TypeFnPtr || type.base == TypeClosure || type.base == TypeSlice))
+        iface_error(type.source_loc, "nullable composite interface types are unsupported:", "?");
+    if (type.elem_type)
+        iface_check_return_metadata(cg, *type.elem_type, False, aliases, alias_count, depth + 1);
+    if (type.fn_ptr_desc) {
+        iface_check_return_metadata(cg, type.fn_ptr_desc->ret_type, True, aliases, alias_count, depth + 1);
+        for (usize_t i = 0; i < type.fn_ptr_desc->param_count; i++)
+            iface_check_return_metadata(cg, type.fn_ptr_desc->params[i].type, False, aliases, alias_count, depth + 1);
+    }
+    if (type.generic_use)
+        for (usize_t i = 0; i < type.generic_use->count; i++)
+            iface_check_return_metadata(cg, type.generic_use->args[i], False, aliases, alias_count, depth + 1);
+    if (type.base != TypeUser || !type.user_name) return;
+    node_t *alias = Null;
+    node_list_t *decls = &cg->ast->as.module.decls;
+    for (usize_t i = 0; i < decls->count; i++) {
+        node_t *decl = decls->items[i];
+        if (decl->kind != NodeTypeDecl || decl->as.type_decl.decl_kind != TypeDeclAlias ||
+            strcmp(type.user_name, decl->as.type_decl.name) ||
+            cg_fh_skip_decl(cg, decl->headers, decl->line)) continue;
+        if (alias) {
+            iface_error(type.source_loc, "ambiguous alias in interface metadata:", type.user_name);
+            return;
+        }
+        alias = decl;
+    }
+    if (!alias) return;
+    for (usize_t i = 0; i < alias_count; i++)
+        if (aliases[i] == alias) {
+            iface_error(type.source_loc, "alias cycle in interface metadata:", type.user_name);
+            return;
+        }
+    if (alias_count == IfaceMaxMetadataDepth) {
+        iface_error(type.source_loc, "metadata nesting exceeds maximum of 256 at", type.user_name);
+        return;
+    }
+    aliases[alias_count] = alias;
+    iface_check_return_metadata(cg, alias->as.type_decl.alias_type, is_return,
+                                 aliases, alias_count + 1, depth + 1);
+}
+
+static void iface_check_method_metadata(cg_t *cg, node_t *method) {
+    node_t *aliases[IfaceMaxMetadataDepth];
+    for (usize_t i = 0; i < method->as.fn_decl.return_count; i++)
+        iface_check_return_metadata(cg, method->as.fn_decl.return_types[i], True, aliases, 0, 0);
+    for (usize_t i = 0; i < method->as.fn_decl.params.count; i++)
+        iface_check_return_metadata(cg, method->as.fn_decl.params.items[i]->as.var_decl.type, False, aliases, 0, 0);
+}
+
+/* Legacy interface lowerers use 512-byte formatted names. Account for the
+ * longest vtable suffix and qualified method spelling before any lowering. */
+static usize_t iface_module_prefix_length(const char *name) {
+    usize_t n = 0;
+    if (name) for (; *name; name++) n += *name == '.' ? 2 : 1;
+    return n;
+}
+
+static void iface_check_name_lengths(cg_t *cg) {
+    for (usize_t i = 0; i < cg->iface_count; i++) {
+        iface_reg_t *iface = &cg->interfaces[i];
+        usize_t prefix = iface_module_prefix_length(iface->decl->module_name);
+        if (strlen(iface->name) + (prefix ? prefix + 2 : 0) > 511)
+            iface_error(iface_node_loc(iface->decl),
+                "formatted type name exceeds maximum of 511 bytes for", iface->name);
+    }
+    node_list_t *decls = &cg->ast->as.module.decls;
+    for (usize_t i = 0; i < decls->count; i++) {
+        node_t *decl = decls->items[i];
+        if (decl->kind != NodeTypeDecl || cg_fh_skip_decl(cg, decl->headers, decl->line)) continue;
+        if (decl->as.type_decl.decl_kind != TypeDeclStruct) continue;
+        for (usize_t p = 0; p < decl->as.type_decl.impl_iface_count; p++) {
+            usize_t ii = find_interface_index(cg, decl->as.type_decl.impl_ifaces[p]);
+            if (ii == (usize_t)-1) continue;
+            iface_reg_t *iface = &cg->interfaces[ii];
+            usize_t base = strlen(decl->as.type_decl.name) + strlen(iface->name);
+            boolean_t too_long = base + strlen("____vtable_t") + 2 > 511;
+            usize_t prefix = iface_module_prefix_length(decl->module_name);
+            for (usize_t g = 0; g < iface->group_count; g++)
+                if (base + strlen(iface->groups[g].name) +
+                    (prefix ? prefix + 6 : 2) > 511) too_long = True;
+            if (too_long)
+                iface_error(iface_node_loc(decl),
+                    "formatted interface name exceeds maximum of 511 bytes for", decl->as.type_decl.name);
+        }
+    }
+}
+
+static void validate_interface_declarations(cg_t *cg) {
+    node_list_t *decls = &cg->ast->as.module.decls;
+    usize_t before = get_error_count();
+    /* Register declarations first, allowing forward parents and module order. */
+    for (usize_t i = 0; i < decls->count; i++) {
+        node_t *decl = decls->items[i];
+        if (decl->kind != NodeTypeDecl && decl->kind != NodeFnDecl) continue;
+        if (cg_fh_skip_decl(cg, decl->headers, decl->line)) continue;
+        if (decl->kind == NodeFnDecl) {
+            iface_check_constraints(decl->as.fn_decl.type_param_meta, decl->as.fn_decl.type_param_count);
+            continue;
+        }
+        if (decl->as.type_decl.impl_iface_count > IfaceMaxParents) {
+            iface_error(iface_node_loc(decl), "maximum of 8 direct parents/implementations exceeded for", decl->as.type_decl.name);
+            continue;
+        }
+        iface_check_constraints(decl->as.type_decl.type_param_meta, decl->as.type_decl.type_param_count);
+        for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
+            node_t *method = decl->as.type_decl.methods.items[m];
+            iface_check_constraints(method->as.fn_decl.type_param_meta, method->as.fn_decl.type_param_count);
+        }
+        if (decl->as.type_decl.decl_kind != TypeDeclInterface) continue;
+        if (find_interface_index(cg, decl->as.type_decl.name) != (usize_t)-1) {
+            iface_error(iface_node_loc(decl), "duplicate interface definition", decl->as.type_decl.name);
+            continue;
+        }
+        register_interface(cg, decl);
+        if (decl->as.type_decl.type_param_count)
+            iface_error(iface_node_loc(decl), "generic interfaces are unsupported:", decl->as.type_decl.name);
+        if (decl->as.type_decl.methods.count > IfaceMaxMethods)
+            iface_error(iface_node_loc(decl->as.type_decl.methods.items[IfaceMaxMethods]),
+                "maximum of 32 own methods exceeded for", decl->as.type_decl.name);
+        for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
+            node_t *method = decl->as.type_decl.methods.items[m];
+            iface_check_method_metadata(cg, method);
+            for (usize_t j = 0; j < m; j++)
+                if (!strcmp(method->as.fn_decl.name, decl->as.type_decl.methods.items[j]->as.fn_decl.name)) {
+                    iface_error(iface_node_loc(method), "duplicate own method", method->as.fn_decl.name);
+                    break;
+                }
+        }
+    }
+    /* Bare-name registries cannot safely resolve an interface/type collision. */
+    for (usize_t i = 0; i < decls->count; i++) {
+        node_t *decl = decls->items[i];
+        if (decl->kind != NodeTypeDecl || cg_fh_skip_decl(cg, decl->headers, decl->line)) continue;
+        if (decl->as.type_decl.impl_iface_count > IfaceMaxParents) continue;
+        usize_t ii = find_interface_index(cg, decl->as.type_decl.name);
+        if (ii != (usize_t)-1 && cg->interfaces[ii].decl != decl &&
+                decl->as.type_decl.decl_kind != TypeDeclInterface)
+            iface_error(iface_node_loc(decl), "ambiguous interface/type name", decl->as.type_decl.name);
+        for (usize_t p = 0; p < decl->as.type_decl.impl_iface_count; p++) {
+            char *name = decl->as.type_decl.impl_ifaces[p];
+            ast_source_loc_t loc = decl->as.type_decl.impl_iface_locs[p];
+            for (usize_t j = 0; j < p; j++)
+                if (!strcmp(name, decl->as.type_decl.impl_ifaces[j])) {
+                    iface_error(loc, "duplicate parent/implementation", name);
+                    break;
+                }
+            usize_t pi = find_interface_index(cg, name);
+            if (pi == (usize_t)-1) {
+                boolean_t known = False;
+                for (usize_t j = 0; j < decls->count; j++) {
+                    node_t *other = decls->items[j];
+                    if (other->kind == NodeTypeDecl && !strcmp(other->as.type_decl.name, name) &&
+                        !cg_fh_skip_decl(cg, other->headers, other->line)) { known = True; break; }
+                }
+                iface_error(loc, known ? "parent/implementation is not an interface:" :
+                            "unknown parent/implementation", name);
+            } else if (decl->as.type_decl.decl_kind == TypeDeclInterface && ii != (usize_t)-1) {
+                cg->interfaces[ii].parent_indices[p] = pi;
+            }
+        }
+    }
+    if (get_error_count() != before) return;
+    for (usize_t i = 0; i < cg->iface_count; i++) flatten_interface(cg, i, 1);
+    if (get_error_count() == before) iface_check_name_lengths(cg);
+}
+
+/* Compatibility adapter for existing consumers. I0 supplies deterministic group
+ * order, but intentionally does not certify pending source signatures. Returning
+ * zero is safe only after an explicit diagnostic, never as truncation. */
+static usize_t collect_all_iface_methods(cg_t *cg, const char *iface_name,
+                                         char **out_names, type_info_t *out_rets,
+                                         usize_t max_out) {
+    usize_t index = find_interface_index(cg, iface_name);
+    if (index == (usize_t)-1) {
+        iface_error(iface_node_loc(cg->ast), "unknown interface requested by collector", iface_name);
+        return 0;
+    }
+    iface_reg_t *iface = &cg->interfaces[index];
+    if (iface->graph_state != IfaceGraphReady || max_out < iface->group_count) {
+        iface_error(iface_node_loc(iface->decl),
+            max_out < iface->group_count ? "collector capacity is smaller than complete graph for" :
+                                          "collector requires a ready graph for", iface_name);
+        return 0;
+    }
+    for (usize_t i = 0; i < iface->group_count; i++) {
+        if (iface->groups[i].origin_count > 1) {
+            iface_error(iface_node_loc(iface->decl),
+                "multiple distinct origins for method require signature validation (unsupported in I0):",
+                iface->groups[i].name);
+            return 0;
+        }
+    }
+    for (usize_t i = 0; i < iface->group_count; i++) {
+        node_t *origin = iface->groups[i].origins[0];
+        out_names[i] = iface->groups[i].name;
+        out_rets[i] = origin->as.fn_decl.return_count
+            ? origin->as.fn_decl.return_types[0] : NO_TYPE;
+    }
+    return iface->group_count;
 }
 
 /* Find vtable for (struct_name, iface_name) pair */
@@ -132,8 +397,27 @@ static usize_t ensure_vtable(cg_t *cg, const char *struct_name, const char *ifac
     type_info_t method_rets[32];
     usize_t method_count = collect_all_iface_methods(cg, iface_name,
                                                       method_names, method_rets, 32);
-    if (method_count == 0) return (usize_t)-1;
+    if (method_count == 0) {
+        if (cg->interfaces[ii].group_count == 0)
+            iface_error(iface_node_loc(cg->interfaces[ii].decl),
+                "empty-interface table construction is unsupported in I0:", iface_name);
+        return (usize_t)-1;
+    }
 
+    struct_reg_t *sr = find_struct(cg, struct_name);
+    usize_t base = strlen(struct_name) + strlen(iface_name);
+    boolean_t names_fit = base <= 511 - 14; /* __S__I__vtable_t */
+    for (usize_t i = 0; i < method_count; i++) {
+        usize_t length = base + strlen(method_names[i]);
+        if (length + 2 > 511 ||
+            (sr && sr->mod_prefix && sr->mod_prefix[0] &&
+             length + strlen(sr->mod_prefix) + 6 > 511)) names_fit = False;
+    }
+    if (!names_fit) {
+        iface_error(iface_node_loc(cg->interfaces[ii].decl),
+            "formatted interface name exceeds maximum of 511 bytes for", struct_name);
+        return (usize_t)-1;
+    }
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
 
     /* vtable type: struct of N ptr (one per method) */
@@ -149,7 +433,6 @@ static usize_t ensure_vtable(cg_t *cg, const char *struct_name, const char *ifac
     deallocate(vt_fields_heap);
 
     /* find function pointer for each method */
-    struct_reg_t *sr = find_struct(cg, struct_name);
     heap_t fn_ptrs_heap = allocate(method_count, sizeof(LLVMValueRef));
     LLVMValueRef *fn_ptrs = fn_ptrs_heap.pointer;
 

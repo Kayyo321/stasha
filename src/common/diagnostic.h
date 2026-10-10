@@ -100,10 +100,13 @@ const char *diag_get_file(void);
  * Register a (file → source text) mapping so that the diagnostic renderer
  * can show code snippets for any file, not just the main translation unit.
  * Called by the preprocessor for every file it processes.
- * The filename is retained internally.
- * The `source` pointer must outlive all diagnostics for that file.
+ * Both filename and source text are copied internally. Re-registration replaces
+ * the source snapshot; existing coordinate-based locations remain valid.
  */
 void diag_register_source(const char *filename, const char *source);
+/* Release registered source snapshots after compilation. Idempotent; stable
+ * filenames and captured coordinate-based diagnostics remain available. */
+void diag_clear_sources(void);
 void diag_set_render_enabled(boolean_t enabled);
 void diag_clear_captured(void);
 usize_t diag_get_captured_count(void);

@@ -250,6 +250,22 @@
         "0,1,2,3"
       ],
       "qualification": "Full-width counts, defaultable scalar elements, canonical zero capacity, retained-allocation OOM, implicit slice-element compatibility; normal allocation elision permitted. No ownership/lifetime or append/spread claim. See checkpoint-make-b1-2026-10-10.json."
+    },
+    {
+      "id": "interface-graph-metadata-i0",
+      "scope": "hosted-bounded-interface-graph",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P4",
+      "command": [
+        "python3",
+        "tests/interfaces/run_i0.py",
+        "--compiler",
+        "./bin/stasha",
+        "--artifacts",
+        "build/qualification/interfaces-i0"
+      ],
+      "qualification": "Graph diagnostics, preserved metadata, diamond slot order and bounded positive dispatch only. Genuine ABI5/6 archive controls require --b1-compiler pointing to the separately frozen B1 compiler and are explicitly excluded when unavailable. Full signatures, missing methods, boxing validity, CFI and lifetimes remain pending."
     }
   ],
   "policy": "No skips qualify as passes. Entries without runners block their declared gate. Platform xfails require explicit exact failure signatures in their runner.",

@@ -1,6 +1,6 @@
 # Interfaces
 
-Interfaces define a contract — a set of methods that a type must implement. Stasha uses interfaces for polymorphism without virtual dispatch overhead (implementations are statically resolved where possible).
+Interfaces declare a set of methods. Concrete calls can resolve statically; interface-typed calls use a fat pointer and an indirect vtable call. The current compiler does not yet verify the complete source signature and implementation contract. See the bounded I0 status below.
 
 ---
 
@@ -18,7 +18,7 @@ type Drawable: interface {
 ```stasha
 type Entity: interface {
     id(void): i32;
-    name(void): stack i8 *r;
+    name(void): i8 *r;
 }
 ```
 
@@ -93,7 +93,7 @@ fn Player.new(i32 id, health, x, y): Player {
 }
 ```
 
-If the struct doesn't implement all required methods, the compiler errors.
+Complete missing-method and signature rejection is pending the I1 implementation. Until that stage is independently qualified, do not rely on an interface declaration as proof that every table entry is valid.
 
 ---
 
@@ -256,3 +256,44 @@ type Foo: struct.[Drawable] {
     ext fn draw(i32 x): void { ... }  // ERROR: signature doesn't match interface
 }
 ```
+
+## I0 graph and metadata checkpoint
+
+I0 validates the selected declaration graph before type lowering. It rejects
+unknown or non-interface parents, duplicate declarations/parents/own methods,
+cycles, and unsupported interface metadata with source diagnostics. Limits are
+8 direct parents or implementations, 32 own methods, 32 unique flattened method
+names, and 64 interfaces on an inheritance path. Exceeding a limit is an error;
+lists are not silently truncated. Interface metadata traversal is bounded at
+256 levels, with alias-cycle diagnostics. Existing fixed representations also
+now diagnose more than 8 pointer levels, more than 32 callback parameters, or
+formatted generic/interface names exceeding 511 bytes instead of losing their
+contract. Previously truncated inputs need to be simplified or split.
+
+Inherited slots follow parent declaration order, recursively, then own methods.
+A repeated path to the same originating method declaration contributes one slot.
+Distinct declarations with the same method name remain separate pending origins,
+even if their signatures appear equal. Consuming such a group for a table or
+interface call is temporarily rejected until I1 implements canonical signature
+comparison. Empty-interface table construction is also temporarily unsupported.
+Generic interfaces, interface return-storage annotations, and generic interface
+constraints are diagnosed rather than interpreted as verified contracts.
+
+### Archive migration: ABI 6
+
+The cached graph removes duplicate ancestor slots that the older collector could
+emit for diamond inheritance. This changes interface dispatch slot ordering.
+ABI 6 therefore rejects ABI 5 and older Stasha archives. Rebuild the compiler,
+all Stasha libraries, and every consumer together. Do not edit archive sidecar
+metadata to bypass the check. The two-word object/table descriptor layout itself
+is unchanged; its slot interpretation is incompatible.
+
+For example, if D inherits B and C, and both inherit A, a method originating in
+A occupies one D slot. Rebuild both the library that creates D interface values
+and every executable or library that calls through them.
+
+I0 is only graph validation and source metadata retention. Full parameter,
+receiver, return, ownership-effect and calling-convention agreement; rejection of
+missing implementations; all boxing routes; protected table membership; indirect
+call CFI; object lifetime and object/table pairing are separate pending gates.
+This checkpoint provides no general interface memory-safety guarantee.

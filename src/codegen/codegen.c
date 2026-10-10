@@ -34,6 +34,29 @@ result_t codegen_resolve_target(const char *requested, sts_target_spec *out) {
     return status == 0 ? Ok : Err;
 }
 
+/* I0 declaration graph bounds, not permission to truncate source lists. */
+enum { IfaceMaxParents = 8, IfaceMaxMethods = 32, IfaceMaxDepth = 64 };
+typedef enum { IfaceUnvisited, IfaceVisiting, IfaceGraphReady, IfaceInvalid } iface_graph_state_t;
+typedef struct {
+    char *name;
+    node_t **origins;            /* distinct declarations, including conflicts */
+    usize_t origin_count, origin_cap;
+    heap_t origins_heap;
+    boolean_t signature_pending; /* equality is intentionally deferred to I1 */
+} iface_method_group_t;
+typedef struct {
+    char *name;
+    node_t *decl;
+    iface_graph_state_t graph_state;
+    usize_t parent_indices[IfaceMaxParents];
+    usize_t parent_count;
+    iface_method_group_t groups[IfaceMaxMethods];
+    usize_t group_count;
+    usize_t path_depth;
+    boolean_t signatures_ready; /* remains false in I0 */
+    LLVMTypeRef fat_ptr_type;
+} iface_reg_t;
+
 /* ── DI type cache ── */
 
 static LLVMCodeGenOptLevel map_opt_level(int level) {
@@ -406,17 +429,9 @@ typedef struct {
     /* root AST — used by cg_generics.c to scan top-level decls */
     node_t *root_ast;
 
-    /* ── interface registry ── */
-    /* flattened method list for one interface (own + inherited) */
-    struct {
-        char *name;
-        char *method_names[32];
-        type_info_t method_ret_types[32];
-        usize_t method_count;
-        char *parent_names[8];
-        usize_t parent_count;
-        LLVMTypeRef fat_ptr_type; /* { ptr, ptr } */
-    } *interfaces;
+    /* Per-codegen graph cache. Graph readiness never implies signature/table
+     * readiness. All AST references are borrowed and immutable. */
+    iface_reg_t *interfaces;
     usize_t iface_count;
     usize_t iface_cap;
     heap_t ifaces_heap;
@@ -591,6 +606,7 @@ static void gen_quit_stmt(cg_t *cg, node_t *node);
 #include "cg_coro.c"
 #include "cg_registry.c"
 #include "cg_layout.c"
+static boolean_t cg_fh_skip_decl(cg_t *cg, fileheader_t *fh, usize_t line);
 #include "cg_interfaces.c"
 #include "cg_expr.c"
 #include "cg_global_const.c"
@@ -911,6 +927,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         ast->as.module.decls = flat;
     }
 
+    /* Resolve and validate the whole selected declaration graph before any
+     * type lowering can observe incomplete interface metadata. */
+    validate_interface_declarations(&cg);
+    if (get_error_count() > errors_before) goto cg_cleanup;
+
     /* pass 0: register type declarations, lib declarations */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
@@ -990,8 +1011,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                             ast_strdup(pfx, strlen(pfx));
                     }
                 }
-                /* Register in interface registry */
-                register_interface(&cg, decl);
+                usize_t ii = find_interface_index(&cg, decl->as.type_decl.name);
+                if (ii != (usize_t)-1) cg.interfaces[ii].fat_ptr_type = fat_type;
             } else if (decl->as.type_decl.decl_kind == TypeDeclStruct
                 || decl->as.type_decl.decl_kind == TypeDeclUnion) {
 
@@ -1505,6 +1526,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (decl->kind != NodeTypeDecl) continue;
         if (decl->as.type_decl.decl_kind != TypeDeclStruct) continue;
         if (decl->as.type_decl.impl_iface_count == 0) continue;
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
         if (decl->as.type_decl.type_param_count > 0) continue; /* skip generic templates */
         for (usize_t j = 0; j < decl->as.type_decl.impl_iface_count; j++) {
             ensure_vtable(&cg, decl->as.type_decl.name,
@@ -2231,6 +2253,11 @@ cg_cleanup:
 
     /* error dedup strings (strdup'd) are intentionally not freed here;
      * they are small and the process is about to exit. */
+
+    /* Context-owned graph/table arrays never survive a codegen invocation.
+     * AST metadata remains arena-owned until the caller frees the AST. */
+    free_interface_registry(&cg);
+    if (cg.vtables_heap.pointer) deallocate(cg.vtables_heap);
 
     /* free registries */
     for (usize_t i = 0; i < cg.struct_count; i++)
