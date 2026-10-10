@@ -1,6 +1,11 @@
 #ifndef STASHA_ABI_H
 #define STASHA_ABI_H
-/* ABI 9 requires rebuilding source-backed archives after checked exact ordinary
+/* ABI 10 requires rebuilding source-backed archives after bounded immediate
+ * nominal mismatch rejection at ordinary named-direct arguments and explicit
+ * single-result returns to ordinary concrete interface implementers. Native
+ * layout is unchanged. Matching annotations, prior stores, helper histories,
+ * unsupported routes and projection eligibility are not newly certified.
+ * ABI 9 requires rebuilding source-backed archives after checked exact ordinary
  * concrete local transfers and bounded copy-then-use field/fixed-array proofs.
  * Earlier retained bodies bypass these local checks. Descriptor bytes and native
  * ABI layout are unchanged. Helper/result closure, descriptor validity, general
@@ -24,6 +29,6 @@
  * ABI 3 adds classified C aggregate calls and explicit static/instance receivers.
  * ABI 2 corrected C, union and tagged-payload layout and scalar semantics.
  * Source-backed archives produced by older compilers must be rebuilt. */
-#define STASHA_ABI_VERSION 9
+#define STASHA_ABI_VERSION 10
 #define STASHA_ABI_MAGIC "STASHA_ABI"
 #endif

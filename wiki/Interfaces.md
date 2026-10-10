@@ -534,7 +534,53 @@ Follow-up review checklist:
 
 The subsequent bounded query correction fixes supported newly compiled bodies;
 see [fixed-array query semantics and rebuild guidance](Slices.md#fixed-array-and-slice-length-queries).
-The original failure and baseline evidence remain historical. ABI9 archives are
-still accepted and affected providers must be rebuilt. Within the closed-local
+The original failure and baseline evidence remain historical. That query-only
+checkpoint retained ABI9; I1b.3a below separately requires ABI10. Affected
+providers must be rebuilt. Within the closed-local
 interface subset, compute the query-derived index in a typed `i32` local first;
 inline len/cap index expressions remain unsupported source-proof forms.
+
+## I1b.3a immediate nominal boundary checks
+
+Ordinary named-direct arguments and explicit single-result returns reject a
+provable immediate nominal mismatch when the destination is an ordinary concrete
+interface implementer. This applies even without a downstream interface call
+and even when the two values have the same native storage representation.
+Exact aliases resolve to their original declaration; a generic application is
+not an unrelated ordinary declaration that happens to have a generated-looking
+name. Existing primitive conversions remain unchanged.
+
+The admitted argument route is the ordinary named-function branch with a fixed
+arity and no implicit receiver, using the actual selected declaration/native
+identity. The return route is an original explicit single-value return in an
+ordinary nongeneric, nonasync, non-C, non-instance source body with one result.
+Nested/generated contexts cannot borrow the outer function's identity. Invalid
+mapping correspondence diagnoses before expected-type conversion.
+
+The immediate source forms are supported typed/inferred identifiers, explicitly
+named construction and a uniquely selected ordinary named call's declared single
+result. Other forms do not gain a proof from missing or ambiguous information.
+Method/module/static-dot/colon/constructor adapters, indirect calls, generated
+bodies, multi-results and bare or missing returns are outside this new boundary
+promise. An ordinary nonimplementing Holder is not included merely because one
+of its fields implements an interface.
+
+### Declarations are still not stored-history proof
+
+Matching immediate annotations are not certificates for earlier writes or helper
+bodies. A typed S local previously populated from a wrong value can still present
+an immediate S contract on a route without an independently checked local sink.
+Those accepted cases remain compile-only known gaps, not passing safety tests.
+The existing I1b.2 local checks are unchanged, and no factory/helper projection
+becomes eligible because of this stage. Default descriptors, return completeness,
+all call adapters and full helper/descriptor flow still require later gates.
+
+### Archive migration: semantic ABI 10
+
+Rebuild all source-backed Stasha providers and consumers for ABI10. Genuine ABI9
+archives can retain precisely the newly rejected argument/return mismatch in a
+compiled provider body; valid declarations alone do not repair it. Incompatible
+source-backed archives reject before import/code generation/linking. Do not
+relabel sidecars. This is a bounded source-contract compatibility change, with
+no physical descriptor, slot-order, data-layout or signature change. It does not
+attest arbitrary foreign objects or universal behavioral correctness.

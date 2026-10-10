@@ -700,3 +700,217 @@ static iface_local_copy_t iface_source_local_copy(iface_source_fact_t source, if
         return IfaceLocalCopyMismatch;
     return IfaceLocalCopyExact;
 }
+
+/* I1b.3a is a negative-only comparison of immediate declarations. It never
+ * consults stored-history origin/exclusion bits or grants local eligibility. */
+typedef enum { IfaceImmediateNotApplicable, IfaceImmediateDeclaredNominalEqual,
+               IfaceImmediateDefiniteNominalMismatch, IfaceImmediateNoEvidence } iface_immediate_status_t;
+typedef struct { node_t *decl; boolean_t generic; } iface_immediate_nominal_t;
+
+/* Resolve only original nominal metadata. Generic application provenance takes
+ * precedence over its legacy mangled spelling, including spelling collisions.
+ * Unknown/dependent arguments, aliases and repeated applications stay unknown. */
+static iface_immediate_nominal_t iface_immediate_type_at(cg_t *cg,type_info_t raw,
+                                                         node_t **seen,usize_t depth) {
+    iface_immediate_nominal_t none={0};
+    if(depth>=IfaceMaxMetadataDepth||raw.base!=TypeUser||!raw.user_name||raw.is_pointer||
+       raw.ptr_depth||raw.elem_type||raw.fn_ptr_desc||raw.nullable||raw.written_nullable)return none;
+    for(usize_t i=0;i<cg->generic_n;i++)
+        if(!strcmp(raw.user_name,cg->generic_params[i]))return none;
+    seen[depth]=Null;
+    if(raw.generic_use){
+        generic_use_t *use=raw.generic_use;
+        node_t *d=iface_quiet_type(cg,use->base_name);
+        if(!d||use->previous||!d->as.type_decl.type_param_count||
+           d->as.type_decl.type_param_count!=use->count)return none;
+        for(usize_t i=0;i<use->count;i++){
+            type_info_t arg=use->args[i];
+            /* Primitive and explicitly pointer-qualified primitive arguments
+             * are resolved without imposing interface-signature restrictions. */
+            if(arg.base>=TypeVoid&&arg.base<=TypeF64&&!arg.generic_use&&!arg.elem_type&&!arg.fn_ptr_desc)continue;
+            if(arg.base!=TypeUser)return none;
+            arg.is_pointer=False;arg.ptr_depth=0;arg.nullable=False;arg.written_nullable=False;
+            if(!iface_immediate_type_at(cg,arg,seen,depth+1).decl)return none;
+        }
+        return (iface_immediate_nominal_t){d,True};
+    }
+    node_t *d=iface_quiet_type(cg,raw.user_name);if(!d)return none;
+    if(d->as.type_decl.decl_kind==TypeDeclAlias){
+        for(usize_t i=0;i<depth;i++)if(seen[i]==d)return none;
+        seen[depth]=d;
+        return iface_immediate_type_at(cg,d->as.type_decl.alias_type,seen,depth+1);
+    }
+    return (iface_immediate_nominal_t){d,d->as.type_decl.type_param_count!=0};
+}
+static iface_immediate_nominal_t iface_immediate_type(cg_t *cg,type_info_t raw) {
+    node_t *seen[IfaceMaxMetadataDepth]={0};return iface_immediate_type_at(cg,raw,seen,0);
+}
+static node_t *iface_immediate_destination(cg_t *cg,type_info_t raw) {
+    iface_immediate_nominal_t t=iface_immediate_type(cg,raw);
+    return t.decl&&!t.generic&&t.decl->as.type_decl.decl_kind==TypeDeclStruct&&
+        t.decl->as.type_decl.impl_iface_count?t.decl:Null;
+}
+static boolean_t iface_immediate_error(node_t *at,node_t *fallback,const char *route,const char *reason) {
+    ast_source_loc_t loc=iface_node_loc(at);
+    if(fallback){ast_source_loc_t parent=iface_node_loc(fallback);
+        if(!loc.col){loc.col=parent.col;loc.len=parent.len;}
+        if(!loc.file)loc.file=parent.file;
+    }
+    if(!loc.col)loc.col=1;if(!loc.len)loc.len=1;
+    const char *saved=diag_get_file();if(loc.file)diag_set_file(loc.file);
+    diag_begin_error("interface immediate %s: %s",route,reason);
+    diag_span(SRC_LOC(loc.line,loc.col,loc.len),True,"immediate contract here");
+    diag_finish();diag_set_file(saved);return False;
+}
+static iface_native_t *iface_immediate_native(cg_t *cg,LLVMValueRef function,boolean_t *ambiguous) {
+    iface_native_t *found=Null;*ambiguous=False;
+    for(iface_native_t *n=cg->iface_natives;n;n=n->next)if(n->function==function){
+        if(found&&found!=n){*ambiguous=True;return Null;}found=n;
+    }
+    return found;
+}
+static boolean_t iface_immediate_ordinary(iface_native_t *native) {
+    node_t *d=native?native->decl:Null;
+    return d&&d->kind==NodeFnDecl&&!native->owner&&!native->instance&&!native->c_abi&&
+        !d->is_c_extern&&!d->as.fn_decl.type_param_count&&!d->as.fn_decl.is_async&&
+        !d->as.fn_decl.is_variadic&&!d->as.fn_decl.is_typed_variadic;
+}
+static boolean_t iface_immediate_native_arity(iface_native_t *native) {
+    return native&&LLVMIsAFunction(native->function)&&
+        LLVMGetFunctionCallConv(native->function)==LLVMCCallConv&&
+        !LLVMIsFunctionVarArg(LLVMGlobalGetValueType(native->function))&&
+        LLVMCountParams(native->function)==native->decl->as.fn_decl.params.count;
+}
+static LLVMTypeRef iface_immediate_storage(cg_t *cg,node_t *decl) {
+    struct_reg_t *s=decl?find_struct(cg,decl->as.type_decl.name):Null;
+    return s&&s->layout_decl==decl&&!s->is_union&&!s->is_interface?s->llvm_type:Null;
+}
+/* Exactly four source forms. Inferred identifiers consume an already retained
+ * declaration-time contract, never re-query their initializer or prior stores. */
+static iface_immediate_nominal_t iface_immediate_source(cg_t *cg,node_t *n,const char **mapping) {
+    iface_immediate_nominal_t none={0};if(!n)return none;
+    switch(n->kind){
+    case NodeIdentExpr:{
+        symbol_t *s=iface_source_lookup(cg,n->as.ident.name);
+        iface_source_record_t *r=s?s->iface_source:Null;
+        node_t *d=r?r->decl:Null;if(!d||d->kind!=NodeVarDecl)return none;
+        if(d->as.var_decl.array_ndim||(d->as.var_decl.flags&VdeclArray))return none;
+        if(d->as.var_decl.flags&VdeclLet){
+            if(r->fact.dimensions||(r->fact.status!=IfaceSourceKnown&&r->fact.status!=IfaceSourceExcluded))return none;
+            return iface_immediate_type(cg,r->fact.contract.type);
+        }
+        return iface_immediate_type(cg,d->as.var_decl.type);
+    }
+    case NodeDesigInit:return iface_immediate_type(cg,(type_info_t){.base=TypeUser,
+        .user_name=n->as.desig_init.type_name,.generic_use=n->generic_use});
+    case NodeCallExpr:{
+        if(n->generic_use)return none;
+        symbol_t *s=iface_source_lookup(cg,n->as.call.callee);
+        if(!s||s->c_abi||s->stype.base==TypeFnPtr||s->stype.base==TypeClosure)return none;
+        boolean_t ambiguous;iface_native_t *native=iface_immediate_native(cg,s->value,&ambiguous);
+        if(ambiguous){*mapping="source call has ambiguous native identity";return none;}
+        if(!iface_immediate_ordinary(native)||native->decl->as.fn_decl.is_method)return none;
+        if(native->decl->as.fn_decl.return_count!=1)return none;
+        if(s->requires_receiver||!iface_immediate_native_arity(native)||
+           n->as.call.args.count!=native->decl->as.fn_decl.params.count||
+           !s->scalar_signature||s->scalar_signature->param_count!=native->decl->as.fn_decl.params.count){
+            *mapping="source call declaration/native mapping disagrees";return none;
+        }
+        iface_immediate_nominal_t result=iface_immediate_type(cg,native->decl->as.fn_decl.return_types[0]);
+        if(result.decl&&!result.generic&&result.decl->as.type_decl.decl_kind==TypeDeclStruct){
+            iface_immediate_nominal_t signature=iface_immediate_type(cg,s->scalar_signature->ret_type);
+            LLVMTypeRef physical=iface_immediate_storage(cg,result.decl);
+            if(!physical||signature.generic||signature.decl!=result.decl||
+               LLVMGetAttributeCountAtIndex(native->function,LLVMAttributeReturnIndex)||
+               LLVMGetReturnType(LLVMGlobalGetValueType(native->function))!=physical){
+                *mapping="source call result/native correspondence disagrees";return none;
+            }
+        }
+        return result;
+    }
+    default:return none;
+    }
+}
+static iface_immediate_status_t iface_immediate_compare(cg_t *cg,node_t *source,node_t *target,const char **mapping) {
+    if(!target)return IfaceImmediateNotApplicable;
+    iface_immediate_nominal_t from=iface_immediate_source(cg,source,mapping);
+    if(!from.decl)return IfaceImmediateNoEvidence;
+    return !from.generic&&from.decl==target?IfaceImmediateDeclaredNominalEqual:IfaceImmediateDefiniteNominalMismatch;
+}
+/* Called with the copied symbol actually selected by gen_call, before argument
+ * inference/evaluation. It neither reselects a fitting callable nor emits IR. */
+static boolean_t iface_immediate_arguments(cg_t *cg,node_t *call,symbol_t *selected,boolean_t sibling) {
+    if(!cg->iface_count||call->kind!=NodeCallExpr||call->generic_use||sibling||!selected||selected->c_abi||
+       selected->stype.base==TypeFnPtr||selected->stype.base==TypeClosure)return True;
+    boolean_t ambiguous;iface_native_t *native=iface_immediate_native(cg,selected->value,&ambiguous);
+    if(native&&(!iface_immediate_ordinary(native)||native->decl->as.fn_decl.is_method))return True;
+    node_t *d=native?native->decl:Null;boolean_t affected=False;
+    if(d)for(usize_t i=0;i<d->as.fn_decl.params.count;i++){
+        node_t *p=d->as.fn_decl.params.items[i];
+        if(p&&p->kind==NodeVarDecl&&!p->as.var_decl.array_ndim&&!(p->as.var_decl.flags&VdeclArray)&&
+           iface_immediate_destination(cg,p->as.var_decl.type))affected=True;
+    }
+    /* Missing/ambiguous registration cannot hide an affected retained native
+     * formal. This is only a rejection trigger, never nominal evidence. */
+    if(!d&&selected->scalar_signature)for(usize_t i=0;i<selected->scalar_signature->param_count;i++)
+        if(iface_immediate_destination(cg,selected->scalar_signature->params[i].type))affected=True;
+    if(!affected)return True;
+    node_t *owner=Null;int original=iface_immediate_original(cg,call,&owner);
+    if(!original)return True;
+    if(original<0)return iface_immediate_error(call,Null,"argument","original call/body correspondence is incomplete");
+    if(ambiguous||!d||selected->requires_receiver||!iface_immediate_native_arity(native)||
+       !selected->scalar_signature||selected->scalar_signature->param_count!=d->as.fn_decl.params.count||
+       call->as.call.args.count!=d->as.fn_decl.params.count)
+        return iface_immediate_error(call,Null,"argument","selected declaration/native arity or identity disagrees");
+    for(usize_t i=0;i<d->as.fn_decl.params.count;i++){
+        node_t *p=d->as.fn_decl.params.items[i];
+        if(!p||p->kind!=NodeVarDecl||p->as.var_decl.array_ndim||(p->as.var_decl.flags&VdeclArray))continue;
+        node_t *target=iface_immediate_destination(cg,p->as.var_decl.type);if(!target)continue;
+        LLVMTypeRef physical=iface_immediate_storage(cg,target);
+        if(!physical||LLVMGetAttributeCountAtIndex(native->function,(LLVMAttributeIndex)i+1)||
+           LLVMTypeOf(LLVMGetParam(native->function,(unsigned)i))!=physical||
+           iface_immediate_destination(cg,selected->scalar_signature->params[i].type)!=target)
+            return iface_immediate_error(call,Null,"argument","selected formal/native ordinal disagrees");
+        const char *mapping=Null;
+        iface_immediate_status_t status=iface_immediate_compare(cg,call->as.call.args.items[i],target,&mapping);
+        if(mapping)return iface_immediate_error(call->as.call.args.items[i],call,"argument",mapping);
+        if(status==IfaceImmediateDefiniteNominalMismatch)
+            return iface_immediate_error(call->as.call.args.items[i],call,"argument","definite nominal mismatch");
+    }
+    return True;
+}
+static boolean_t iface_immediate_return(cg_t *cg,node_t *ret) {
+    if(!cg->iface_count||ret->kind!=NodeRetStmt||ret->as.ret_stmt.values.count!=1||cg->cur_coro.active)return True;
+    node_t *owner=Null;int original=iface_immediate_original(cg,ret,&owner);
+    if(!original)return True;
+    boolean_t ambiguous;iface_native_t *native=iface_immediate_native(cg,cg->current_fn,&ambiguous);
+    /* Generated/generic/instance/C bodies are expressly outside this route. */
+    if(native&&!iface_immediate_ordinary(native))return True;
+    node_t *decl=native?native->decl:owner;
+    if(!decl||decl->kind!=NodeFnDecl||decl->as.fn_decl.type_param_count||decl->as.fn_decl.is_async||
+       decl->as.fn_decl.is_variadic||decl->as.fn_decl.is_typed_variadic||decl->is_c_extern)return True;
+    node_t *target=decl->as.fn_decl.return_count==1?
+        iface_immediate_destination(cg,decl->as.fn_decl.return_types[0]):Null;
+    /* A stale/missing owner cannot turn a registered affected body into a
+     * supported exclusion. Neither candidate repairs the broken mapping. */
+    if(!target&&owner&&owner->kind==NodeFnDecl&&owner->as.fn_decl.return_count==1)
+        target=iface_immediate_destination(cg,owner->as.fn_decl.return_types[0]);
+    if(!target)return True;
+    /* Compound/return AST nodes may have only a line. Their exact body owner
+     * supplies the source file, never the importing caller's diagnostic file. */
+    node_t location=*ret;
+    if(!location.source_file)location.source_file=decl->source_file?decl->source_file:
+        decl->as.fn_decl.return_count?decl->as.fn_decl.return_types[0].source_loc.file:Null;
+    if(original<0||ambiguous||!native||native->decl!=owner||!owner||owner->kind!=NodeFnDecl||
+       owner->as.fn_decl.return_count!=1||!iface_immediate_native_arity(native)||
+       cg->current_return_count!=1||cg->current_return_types!=owner->as.fn_decl.return_types||
+       !iface_immediate_storage(cg,target)||
+       LLVMGetAttributeCountAtIndex(native->function,LLVMAttributeReturnIndex)||
+       LLVMGetReturnType(LLVMGlobalGetValueType(native->function))!=iface_immediate_storage(cg,target))
+        return iface_immediate_error(&location,Null,"return","original body/result native correspondence disagrees");
+    const char *mapping=Null;
+    iface_immediate_status_t status=iface_immediate_compare(cg,ret->as.ret_stmt.values.items[0],target,&mapping);
+    if(mapping)return iface_immediate_error(ret->as.ret_stmt.values.items[0],&location,"return",mapping);
+    return status!=IfaceImmediateDefiniteNominalMismatch||
+        iface_immediate_error(ret->as.ret_stmt.values.items[0],&location,"return","definite nominal mismatch");
+}

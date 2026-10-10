@@ -1,0 +1,3698 @@
+[
+  {
+    "name": "valid-exact-default",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "declared",
+    "boundary": "matching declarations only; no downstream interface sink",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "222e78c9ad8a268c98c08422f6bd908a65fb1ba8a92f4acc246a2c7ad077891a",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-exact-internal",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "declared",
+    "boundary": "matching declarations only; no downstream interface sink",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4c21d28edf9c89d00a243a9775ec669913bc1e507da2a1327864d8cab94fa7fc",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-exact-public",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "declared",
+    "boundary": "matching declarations only; no downstream interface sink",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "467afedc95acb064711c45708bf89cfa20aeed9591815ec7b825b2b4d57aea42",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-alias-chain",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "ordinary aliases",
+    "boundary": "existing behavior",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "8d6a53331197681ab9879f0f0487378d1a1aade3e2723a6f6fb44ecacaa59fe4",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-reversed-declarations",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "inferred identifier and named-call result",
+    "boundary": "existing behavior",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "5d9f8fa180387b1747901e95995f4ea0a742059be3d22102a3555799bbc953be",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-transitive-implementer",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "declared",
+    "boundary": "validated inherited interface membership",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "fdf371f185bb910f6db39b8ce76646004046e72a5f17a7cab9492f09e3caee05",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-scalar-conversions",
+    "category": "valid",
+    "route": "compatibility",
+    "source_contract": "primitive literal, widening, signedness and explicit cast",
+    "boundary": "primitive destinations excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "3de331e063191f44c7b7fc54444eeeb2257e6c06e9024eaffebf20683a12600f",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-same-generic",
+    "category": "valid",
+    "route": "compatibility",
+    "source_contract": "same generic application",
+    "boundary": "generic destinations and generic calls excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "aebe3b731de9501d0af407d2b364b9fea592a77e8a66dc62b81049d4ca0b1b71",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-literal-generic-spelling",
+    "category": "valid",
+    "route": "compatibility",
+    "source_contract": "ordinary declaration whose spelling contains _G_",
+    "boundary": "spelling is not origin",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "ab81570611a5f0581ab1a793fbc7fbaf25fd88ea3285a4327218e1ee130c40ed",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-generic-ordinary-result",
+    "category": "valid",
+    "route": "compatibility",
+    "source_contract": "generic producer with ordinary declared result",
+    "boundary": "no body certification",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4c272428b07addfa92c03228a40e8e2b1da3c1c5bb634279eeebfa2b6cf7e92c",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-holder-factory-without-projection",
+    "category": "valid",
+    "route": "compatibility",
+    "source_contract": "Holder",
+    "boundary": "containing aggregates do not recursively enter destination set",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "d48ac37236ee183216a1002ec225d41b52c569246a148df1d834f85c95dc6aba",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-nonimplementing-aggregate",
+    "category": "valid",
+    "route": "compatibility",
+    "source_contract": "nonimplementing ordinary aggregate",
+    "boundary": "destination excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "c86cd52e8e94bc730e1f022d0e7888e7b636e1834b3e91fdb8e9b1b599d1e1d0",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-c-aggregate",
+    "category": "valid",
+    "route": "C ABI",
+    "source_contract": "ordinary nonimplementing C aggregate",
+    "boundary": "C adapters and bodies excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "8c57e26b6d7e3aa0cbc518215769f47212c23826690acda654d2f4dee61e7d7e",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-callback",
+    "category": "valid",
+    "route": "callback",
+    "source_contract": "declared",
+    "boundary": "indirect argument route excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "8c9251ac9589092e32ffe66568acc003e79a1649d7e73a6271b91227f04b6302",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-methods",
+    "category": "valid",
+    "route": "instance method",
+    "source_contract": "declared",
+    "boundary": "receiver adapters and instance return bodies excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4c0884cb06db01a3f8c91acc08e04e8a93f55da49a3bf8851632a8516d74e13d",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-static-adapter",
+    "category": "valid",
+    "route": "static adapter",
+    "source_contract": "declared",
+    "boundary": "call adapter excluded; exact receiver-free return body remains ordinary",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "bbd476179c0206e197253bf1cbe17cea40fc49a24290b4877ea52d5dacd79fd8",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-varargs",
+    "category": "valid",
+    "route": "variadic",
+    "source_contract": "primitive varargs",
+    "boundary": "variadic transport excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "1f512c0c6d82a53b9120972ce2cfcf62da5632797ab127bb08c91a7b3331d9dd",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-async",
+    "category": "valid",
+    "route": "async",
+    "source_contract": "primitive coroutine",
+    "boundary": "promise returns and async adapters excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "bf724b038127a2267341f6cfb7bef62d170e3578904688eacbe1fa0d7c01c209",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-thread",
+    "category": "valid",
+    "route": "thread",
+    "source_contract": "primitive thread worker",
+    "boundary": "thread adapter excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "7d2da49bafb3cc0a8110320df2e64c47714848f3b725e5933c624957cc5d3c5d",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-lambda",
+    "category": "valid",
+    "route": "lambda",
+    "source_contract": "declared",
+    "boundary": "generated lambda body excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "eb8d8d723eea2a2f4d292db4ccaaf259fa0c56bcfe60d1e72f36773c35d551f6",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-multi-results",
+    "category": "valid",
+    "route": "multi-result",
+    "source_contract": "declared",
+    "boundary": "multiple returns and extraction excluded",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "9980dee85ac40fff88dd840880ccc6e14481229c16fca5bcb340a0072ebe5f50",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-anonymous-construction",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "anonymous contextual construction",
+    "boundary": "NoImmediateEvidence; existing construction rules",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "0353fc025c58e855efa84b5b8c0ed3824333ce957fe3409df765617d8a7850eb",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-evaluation-once-order",
+    "category": "valid",
+    "route": "argument+return",
+    "source_contract": "effectful named-call result",
+    "boundary": "source queries emit no IR and evaluate no operand",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4d84b41815b754cece58ba53181b58e7caf1ac76e453d1d8943c684832bcb2b4",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-return-before-cleanup",
+    "category": "valid",
+    "route": "return",
+    "source_contract": "effectful named-call result",
+    "boundary": "return operand evaluates once before cleanup",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "35f37ec7e4d9cda94deaaaa0dbb933aa22ba1ffef47ffde471603af2d6e59f66",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-nested-generic-lambda-context",
+    "category": "valid",
+    "route": "return",
+    "source_contract": "declared",
+    "boundary": "ordinary body identity restored after nested generation",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "e0ccb3db06a5d4b241a04fc3ad712abed83e8c4dd570ff28d85b77b2bdd87a34",
+    "file_sha256": {}
+  },
+  {
+    "name": "valid-generic-argument-preparation",
+    "category": "valid",
+    "route": "argument",
+    "source_contract": "declared",
+    "boundary": "selected named-function metadata survives generic argument preparation",
+    "execute": true,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "c896a12bf6ead972e4c90ad2d29cb4d98fab10722e48eec0b35111d33006e5d2",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-typed-identifier",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed-identifier",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8176631ebc23082e29cc90ff4f0d388303614ca3c5189ee4c03fe2b5d8ecc8ab",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-typed-identifier",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed-identifier",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "ca10df9a41e47cca5e9b181a8c17f0e0d4bf89b132d21b1d3c9a3e09c843e249",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-inferred-identifier",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary inferred-identifier",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "69d0900f8ecf2aa571016acc63a3fd76ff3169cc7a75f404240d1fb1c43c03b1",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-inferred-identifier",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary inferred-identifier",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "a184b95b4e7cd2e639cbf3ff97a79139930ad45a722f76d5775325616a2c7019",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-named-construction",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary named-construction",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4703ebc1946fa6f6f40aa67a18e46fd2dfd160cf06b518041a6b3b1c5c32f97c",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-named-construction",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary named-construction",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      1
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "20596033c470213fe74828c54651647ed0dc3ac6a7566186a3757d84d4188596",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-named-call-result",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary named-call-result",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "c42e635ee7740339aea2d73a8cafa60f636d82e52b293c35b406ff798200ff8f",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-named-call-result",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary named-call-result",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "1ed70a11e406a7467b10180baa867275a9f07f721732055f419e6e27fced50c6",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-typed-identifier",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic typed-identifier",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4a8fb02ea9d6a9314f9daccb618dfc4ec79bb0f9eb38b3a921c141161df37dc1",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-typed-identifier",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic typed-identifier",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "57b94f51b05059acaafe7bc13d5645a96e8229ef79903241374f7f0e1419d956",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-inferred-identifier",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic inferred-identifier",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "27d4fa9b146c2f542fd8f6e0d87e2c45e537ebfa62921ee8cee372495a519d23",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-inferred-identifier",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic inferred-identifier",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "78924f6a66e09513d037d451bcd59ffab3aa392d9772183d97d61b3feeaf8f11",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-named-construction",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic named-construction",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "177e13ca889057dab03db844c7253bd1d8d43d1801fe24e5a5867ee2b8f559f3",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-named-construction",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic named-construction",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      1
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "824edecdaa86cbee75af9195077445659b83c82fb931c70d28381af6267f0e2c",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-named-call-result",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic named-call-result",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "af927184b0f43f675e5c2bcbf15fbf27332178758e46c0142a0bef895c8caacc",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-named-call-result",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic named-call-result",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "7fe68191e1bd65df3c04508593b2619a43103ea0483ed270a7dd09e83a415ca7",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-typed-identifier",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native typed-identifier",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "881d835b9bd4c5bf6b5a015c593a96975288345329004a6dde2196e63b4be2c2",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-typed-identifier",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native typed-identifier",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "69ad428e300d90d591c58f27a257233025f516245508af03ad3ff9d2051f61c3",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-inferred-identifier",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native inferred-identifier",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "1a28829acec7e5403185b41fc08adb99023e28a47fe5449d70c6024a3fe2a9cd",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-inferred-identifier",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native inferred-identifier",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6ba2a63989abf3de5a5adcfc0e8291072d21827192fba1a7f004baa733fb18ef",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-named-construction",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native named-construction",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "5bceaadfb462816ea171c5a9189ea17f0c4e7e4411cba0998295fb9760138f82",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-named-construction",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native named-construction",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      1
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4374cc734dcbc4fda01900f1f772b377c30f216c4f3f38a5e49757e637865b47",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-named-call-result",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native named-call-result",
+    "boundary": "immediate mismatch; no downstream interface sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "64f733c0cc0859f9aa8a2b1107e5b050f097995f5ae061d926a9d4e7e1ff8f7d",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-named-call-result",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native named-call-result",
+    "boundary": "emitted explicit return checked even when function is never called",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "124587f32502fef637bd80dbe4d31c49ee8584c856b3537d9bbcce53513bac68",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-aliases",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "aliases",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "b743e3f70dc71fb01ffeed5db7c0d8772735685ec1b8539484a769367a62238d",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-reversed",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "reversed",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f48a0927daa56326c0f7cc5085b3b0d43828e86e28b7278670e44f37a7bfa871",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-downstream-sink",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "downstream-sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "907203791aeeb6d4f8c0d873e449878ffef81e667ca5a34f763352b0f7a5ca43",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-internal",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "internal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8ca034b2aaefd2cf92d54b8d8ff02a3a21ef435c97732337aa67bf0f7cb2d995",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-ordinary-public",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "public",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "ea0259959649753df806f054b63f7a1e26bc6f1b19d0b34846becd767757fb69",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-aliases",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "aliases",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f31a5e0078d49bcf0d6aa0453f5614edc4cc6c9f8f34ae20712ab904ff525332",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-reversed",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "reversed",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "ca08ccd0f670fd33162e652d64cfe83ee6e195c8425d02a64a87dc7cb975abd8",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-downstream-sink",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "downstream-sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "7bfc3b5946e97f9751386677ad57bd2a3a46def978eb203cc0741655d5d3f4ab",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-internal",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "internal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "904bb13e891334f8110c627af75205a1bddba0636bec01d38097d0c6104c8383",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-generic-equal-native-public",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "public",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "e75502573c8ae40cc7d2b4aaa50ea70800bd62ae22c5b06842d08ebcbf48c816",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-aliases",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "aliases",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8efb616172f2009b03e60298ec140ef42fea05c7cbaff900cee3ee0a6d60dba2",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-reversed",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "reversed",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "5154bd3d09d71ee5a09cdaa5c25d0cc84fd09c7f5dfc7aafd420fb7af1bd2362",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-downstream-sink",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "downstream-sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8bad185bb9fa924ebae8c09aca8bc8e0f1bbca333f843e1b1e8ba7c52bdfbf8d",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-internal",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "internal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "53f7bd61d7e9956e2325b60b19f25733d378fbbc4d4035bd8f36cdf4ebfc9341",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-ordinary-public",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "public",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "bbfeebd4fb124f735070723fcb47cfd8771086a2b4c4a5003220466afac0ac6e",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-aliases",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "aliases",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "802452a0f37e983f875c49bc98084ad1073d859078022fcc050aa66bfbd78be7",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-reversed",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "reversed",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "b0a28330a8ab30aaa171b64bd8fa647f5b43ee6281e6469f5860b773850d4b47",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-downstream-sink",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "downstream-sink",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      10,
+      7
+    ],
+    "seam_span": [
+      10,
+      3
+    ],
+    "diagnostic_span": [
+      10,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "cd0f10006888a6a86f5f30b5c4c0b1217d38d62a91d224d9b64d6397aea593e8",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-internal",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "internal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "01f0f192edbe1d6736de6e7d05f3a91c7911c35229954c971f6a55ff446e3dfd",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-generic-equal-native-public",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "generic-equal-native typed identifier",
+    "boundary": "public",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6bee3a1a65c67a383ba6a5970165ff4ec383148d2147160b2e0df34b35285d9e",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-branches-wrong-second-flat",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "each emitted original explicit return; independent of source order",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      36
+    ],
+    "seam_span": [
+      8,
+      32
+    ],
+    "diagnostic_span": [
+      8,
+      36
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "085d75332407e1ef45a2b8e7cdfde1f79a0f93dc7e1c8631b2a248f5ad9e1929",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-branches-wrong-second-nested",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "each emitted original explicit return; independent of source order",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      40
+    ],
+    "seam_span": [
+      8,
+      36
+    ],
+    "diagnostic_span": [
+      8,
+      40
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6dc4a7d6c896a870db983ceb7b092c8ea45b4644375f8e45f7ab5b58ff1000ac",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-branches-wrong-first-flat",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "each emitted original explicit return; independent of source order",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      17
+    ],
+    "seam_span": [
+      8,
+      13
+    ],
+    "diagnostic_span": [
+      8,
+      17
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "e437d8259ec6cfe683948b15a7cbce0bb073edfe6909fc2e644d2c16f53234ec",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-branches-wrong-first-nested",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "each emitted original explicit return; independent of source order",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      21
+    ],
+    "seam_span": [
+      8,
+      17
+    ],
+    "diagnostic_span": [
+      8,
+      21
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "222f80174b631428da78a3859ca66bab9ad4d8bf9c9b45b00a2ed243d85e1c06",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-parameter",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "typed formal identifier",
+    "boundary": "raw immediate declaration; no ingress theorem",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "51520bbd10411a231ac5ec93a946a057077ef3021fd196700cc8f2b3040a212f",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-parameter",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "typed formal identifier",
+    "boundary": "raw immediate declaration; no ingress theorem",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      8,
+      7
+    ],
+    "seam_span": [
+      8,
+      3
+    ],
+    "diagnostic_span": [
+      8,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "bc987d9b7bdc5161337f6640d0002df40998c2b41902489295b2314f4279e924",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-shadowed-local-selection",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "nearest typed identifier",
+    "boundary": "do not select an outer same-name declaration",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "49aa7b2d13313d424adeee10b35dc26d1be28961f9aaa1bc898a09cdb1590f40",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-return-after-generic-lambda-preparation",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "current original ordinary body restored after nested generated bodies",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      12,
+      7
+    ],
+    "seam_span": [
+      12,
+      3
+    ],
+    "diagnostic_span": [
+      12,
+      7
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "46accfd8082dc1c755856f2aafccad3a59d6808193d3c36ad9fc9da26c46b10e",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-argument-after-generic-preparation",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "all immediate comparisons precede generic argument preparation",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      10,
+      30
+    ],
+    "seam_span": [
+      10,
+      7
+    ],
+    "diagnostic_span": [
+      10,
+      30
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "7e8eab43fa8554bf53f123b57568f46c96ca782af74b40b1e16ecc5f2ab6df05",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-bodyless-formal-contract",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic typed identifier",
+    "boundary": "complete native declaration supplies immediate formal without body proof",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      9,
+      12
+    ],
+    "seam_span": [
+      9,
+      7
+    ],
+    "diagnostic_span": [
+      9,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "10f70bbde46e14d2ee11f83adeb06c3be9c12ca3c8e304f8c4121b7f43c78499",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-bodyless-result-contract",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "generic named-call result",
+    "boundary": "declared result suffices; producer body unavailable and not inspected",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      10,
+      12
+    ],
+    "seam_span": [
+      10,
+      7
+    ],
+    "diagnostic_span": [
+      10,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "172b23f3899e0671eb1bd0bce5c5086e9956e7493270884ad10bc9a7bafdcfcd",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-global-original-contract",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed global identifier",
+    "boundary": "original global declaration only; no initialization theorem",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      10,
+      12
+    ],
+    "seam_span": [
+      10,
+      7
+    ],
+    "diagnostic_span": [
+      10,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "af605f746f9191586ce68b8fa2f1e92f537082b9819163f60df7de00f2cf8ea2",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-transitive-implementer-target",
+    "category": "reject",
+    "route": "argument",
+    "source_contract": "ordinary typed identifier",
+    "boundary": "target explicitly implements inherited interface graph",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate argument: definite nominal mismatch",
+    "operand_span": [
+      11,
+      12
+    ],
+    "seam_span": [
+      11,
+      7
+    ],
+    "diagnostic_span": [
+      11,
+      12
+    ],
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "48198341af64ef6c4f8aacfa2c60da578a7b48c60bebc566ed145b3b6206618a",
+    "file_sha256": {}
+  },
+  {
+    "name": "reject-imported-named-constructor-return",
+    "category": "reject",
+    "route": "return",
+    "source_contract": "ordinary named-construction",
+    "boundary": "fallback span belongs to the original imported function source",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": "interface immediate return: definite nominal mismatch",
+    "operand_span": [
+      6,
+      7
+    ],
+    "seam_span": [
+      6,
+      3
+    ],
+    "diagnostic_span": [
+      6,
+      1
+    ],
+    "diagnostic_file": "wrong.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8034ca80ebfa712e5a6e5d8d0f3d8ba8c2fabb861c39d15f83feb0849ffe06a4",
+    "file_sha256": {
+      "wrong.sts": "f42f9de0af042dabd855a686c1b978f668c5902f080a3b4d6e599fe28a173197"
+    }
+  },
+  {
+    "name": "deferred-stored-history-ordinary-argument-initializer",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "matching ordinary annotation with prior ordinary writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "3184aaff9ad4421571f30c213c021057c82363f27014dc5a9a6ce54cc46b97f1",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-ordinary-argument-assignment",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "matching ordinary annotation with prior ordinary writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "1b0bcf69e31569916eb7a34b864ebed9d33ccaceeef5a925f4a77548f8b73c7d",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-ordinary-return-initializer",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "matching ordinary annotation with prior ordinary writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f3475c69c6e55bb0d287142a1772529b15fefe68306d11e91d24d67c9f9ac5bc",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-ordinary-return-assignment",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "matching ordinary annotation with prior ordinary writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "c7bcbc3a673f810ad4fd602a261309d13149d7d84af21cff5107a86a073d0211",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-argument-initializer",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "matching ordinary annotation with prior generic writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "48dce9040282f307a2a767f99c13228e4fb2d3d9c81f8ad29769a4753a4164aa",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-argument-assignment",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "matching ordinary annotation with prior generic writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "fbc1fdc0351345f0c7a53df250e9811c61c3ea765867db99aece6518055318cd",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-return-initializer",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "matching ordinary annotation with prior generic writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "b76e59368d883e273e161a452ee3259fc517fcd2aff7adff99b199c89dd9ddf6",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-return-assignment",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "matching ordinary annotation with prior generic writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4450336e563628e2380fb61af717ca622f0d1409a8eef4cfdc1102177ed8f843",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-equal-native-argument-initializer",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "matching ordinary annotation with prior generic-equal-native writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f3b4a2f1be76a730b5444edd5f89addeb93f242ae512f9fec830923de796c302",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-equal-native-argument-assignment",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "matching ordinary annotation with prior generic-equal-native writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8d84407eda6988d88fc7f83888974f02ac3d0cb0131ef59bbd39045568db006f",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-equal-native-return-initializer",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "matching ordinary annotation with prior generic-equal-native writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "b6930c0701715a7eba4d4a41f080e8e276dbe213514499171cbb5b4ba54cfb84",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-stored-history-generic-equal-native-return-assignment",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "matching ordinary annotation with prior generic-equal-native writer",
+    "boundary": "unclosed stored-history boundary; inherited generic-origin bit is not immediate mismatch",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "cf15a61b6b5070e7377fd9ba2b51128b934e16ba53bbe64d59fc5c0804e5c281",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-field-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "field",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "52d0ec571064ed697c4083451b930279fe422cb91fc0e9d3b6b3a7ff32912c43",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-field-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "field",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "851b1f5084e3f517c907974bfc5601c61a4948b724798358ed8f80854e20a868",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-index-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "index",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6344ea637802339a4457d2fe5deb01cace80ab4e9b3d947b118d82e93d0e0548",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-index-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "index",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "0b1053b3d559091d5f79234b9629bfb04341ec4d220ea8c8da01e2484bca64ed",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-dereference-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "dereference",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "96a89dc3f02e5e4e786e6726dde605c7bf91a8b1f7926a167ad90a856e77a618",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-dereference-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "dereference",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "5a477981ae0270b087a0702e03bc808989304f93ca1f2fa7d84bd8e608455454",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-conditional-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "conditional",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "efa157d93b8e195a00e5a247356d76811309442fc9ba4151ef2d8343e09cd0ec",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-conditional-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "conditional",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "be0db7bc829b73aacf50bb5c0d87037fd1e22b7ec174ad13994578405697fe70",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-assignment-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "assignment",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "381d0beca83c5577b0097507bbb5d750b974264d0ddaadd899b1860a442db69a",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-assignment-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "assignment",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "9cdc73a9191bf18342962f0940e051492b5dc9e649f34cbf3a99600dea65f204",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-cast-dereference-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "cast-dereference",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "88fe329d52babc308966b67255adafbe5660a5c66ff7e117cb0df2504309c05e",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-cast-dereference-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "cast-dereference",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "344d44da59cb2bef14c3a45bc792d4967d4bf5e7d895f1ff70cc36b34d40fe0f",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-callback-result-argument",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "callback-result",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "2cd7b429b5182e2566f001824ffc327a41ec643dabb2183f577fdbb71706f36d",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-expression-callback-result-return",
+    "category": "deferred",
+    "route": "return",
+    "source_contract": "callback-result",
+    "boundary": "unsupported immediate expression; no recursive producer/history traversal",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "d5e6aeea3455f4d103e88a5c651a5422b685bb161a23bd0356a3a42ac646eb27",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-holder-target",
+    "category": "deferred",
+    "route": "argument",
+    "source_contract": "Holder with wrong prior child",
+    "boundary": "Holder is not an affected destination",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "e08c1646ec0f035dcd3ffaf248ff1982b6a11d802f09dfd3bb17f8fab6f83461",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-indirect-argument",
+    "category": "deferred",
+    "route": "callback",
+    "source_contract": "immediate generic actual",
+    "boundary": "function-pointer load excluded from ordinary named route",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "717584eeea756b4ff905cd36c419e86f4cfd1f37727065519115bd05516139ae",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-shadowed-function-value",
+    "category": "deferred",
+    "route": "callback",
+    "source_contract": "same-name function-pointer local",
+    "boundary": "selected physical route wins over same-name top-level declaration",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f4cedf2379c74e300d253ad6fde9f34e5bc71999e7872b6f57872e6ed2bcabfd",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-instance-adapter",
+    "category": "deferred",
+    "route": "instance adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "implicit receiver mapping excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "05cc3a7d90dc32957a4316d8661ffc6f49805640ff69944426f2abd779a942d7",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-static-adapter",
+    "category": "deferred",
+    "route": "static-dot adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "static-dot call adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "cdaf46fb2d864e29d342db6752447e5423b3715154a9f66a2d6353652c4ad4a7",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-constructor-adapter",
+    "category": "deferred",
+    "route": "constructor adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "constructor call adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "ae775993789cb553666c4c3a9f75f1707f13f43515595b82b3240b66be0d338d",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-self-adapter",
+    "category": "deferred",
+    "route": "self adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "implicit receiver adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "bad3c4032df02cce243b4edd59ca451d4ad158db853db09f0cd48fb9e299afe5",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-sibling-adapter",
+    "category": "deferred",
+    "route": "sibling adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "implicit receiver adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6cd4f21cae1b6a650f9e4f3df327640c9222f46ff3a5395273b1ef90d8a1ca4c",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-module-dot-adapter",
+    "category": "deferred",
+    "route": "module-dot adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "module adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "64e358f5c674fa0d6959f4ea56a285135ec87ee58dda97112d20efcc5c7c7d12",
+    "file_sha256": {
+      "api.sts": "adcf0aefd7d0b9f1762ef61d8d46c2b0e800319dacc244879c20eb485eae2703"
+    }
+  },
+  {
+    "name": "deferred-module-colon-adapter",
+    "category": "deferred",
+    "route": "module-colon adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "module adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "0ce5265bb46f5845b52554565d8d748dd54bea1d804a3232c181c50e0e0caeba",
+    "file_sha256": {
+      "api.sts": "adcf0aefd7d0b9f1762ef61d8d46c2b0e800319dacc244879c20eb485eae2703"
+    }
+  },
+  {
+    "name": "deferred-c-argument-adapter",
+    "category": "deferred",
+    "route": "C ABI argument",
+    "source_contract": "immediate generic actual",
+    "boundary": "C ABI transport excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "47ca1ffa0a8d60d3d86598a60de50f7830e6cb744d3636009cecd98db13b876d",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-thread-argument-adapter",
+    "category": "deferred",
+    "route": "thread adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "generated dispatch excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "9638c918aaa693735ae8a94e01bdb4cdd17c3f9c0f85d342c2edb1bc36756978",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-async-argument-adapter",
+    "category": "deferred",
+    "route": "async adapter",
+    "source_contract": "immediate generic actual",
+    "boundary": "async call adapter excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "75bcef0406fb066559ca280eaff9a368cd5eabcfd9a93bcc16357d4dddfbdaf9",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-instance-return",
+    "category": "deferred",
+    "route": "instance return",
+    "source_contract": "immediate generic operand",
+    "boundary": "instance body excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "7a163db328b64bfb57d468908f14ba394d28bc6987d8a72bb93ea3ae3110bb27",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-generic-body-return",
+    "category": "deferred",
+    "route": "generic body return",
+    "source_contract": "immediate generic operand",
+    "boundary": "instantiated generic body excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "7cd89a24e4add39cc312862edea5f57cb475b9a13be4eda362660977e1d06b64",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-lambda-body-return",
+    "category": "deferred",
+    "route": "lambda return",
+    "source_contract": "immediate generic operand",
+    "boundary": "generated lambda body excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6368fe2cbb9493e8254ee72147db59539f83cb0bf327caa08f6c4194900d923d",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-async-body-return",
+    "category": "deferred",
+    "route": "async return",
+    "source_contract": "immediate generic operand",
+    "boundary": "coroutine promise return excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "761284905829e5099641edb309a406b2bbe6f38cc6de402d8f63674a46887f33",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-multi-result-return",
+    "category": "deferred",
+    "route": "multi-result return",
+    "source_contract": "immediate generic operand",
+    "boundary": "multiple result body and extraction excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "68ad43c77253935275d17a501bcc5eb4c8c7c5edfb74b252b9a30aad83ed6076",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-missing-return",
+    "category": "deferred",
+    "route": "fallthrough",
+    "source_contract": "no explicit value",
+    "boundary": "no initialization or return coverage theorem",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "3837eae72dddbcb7dc9552476da0ce7276a7bd721eb8dd33bde9ecf170be7e7c",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-bare-return",
+    "category": "deferred",
+    "route": "bare return",
+    "source_contract": "no explicit value",
+    "boundary": "bare return excluded",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "11bb86f62fc3bff528e65158bd862420684fefffd8de9a7dcf9a61a5565063cc",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-partial-return",
+    "category": "deferred",
+    "route": "partial fallthrough",
+    "source_contract": "matching explicit return with reachable fallthrough",
+    "boundary": "only emitted explicit operands checked; no return coverage theorem",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "436f0486702aaf86dd3909b96ebb668dbc8f7f852f325a9bbd9c5604b5c05d1e",
+    "file_sha256": {}
+  },
+  {
+    "name": "deferred-default-descriptor",
+    "category": "deferred",
+    "route": "descriptor return",
+    "source_contract": "default descriptor",
+    "boundary": "descriptor authenticity and initialization are not established",
+    "execute": false,
+    "optimization_levels": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "diagnostic": null,
+    "operand_span": null,
+    "seam_span": null,
+    "diagnostic_span": null,
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "c2eeddef7b2bb46dbbb370a7e1964ff60efd7a0752ae5458a334903e3b4ffe3d",
+    "file_sha256": {}
+  }
+]

@@ -1753,9 +1753,6 @@ static LLVMValueRef gen_lambda_call(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
-    /* sugar pack: backfill any TypeInfer params on lambda args */
-    infer_call_lambda_args(cg, node->as.call.callee, node->as.call.args);
-
     symbol_t *sym = cg_lookup(cg, node->as.call.callee);
 
     /* intra-module unqualified call: try module__callee when inside an
@@ -1808,6 +1805,9 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
     }
     symbol_t selected_call_symbol = *sym; /* preparation may grow globals */
     sym = &selected_call_symbol;
+    if (!iface_immediate_arguments(cg,node,sym,is_sibling_call)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
+    /* Argument contextualization follows the immediate source-contract check. */
+    infer_call_lambda_args(cg, node->as.call.callee, node->as.call.args);
     if (!iface_source_preflight_selected(cg,node,sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     usize_t user_argc = node->as.call.args.count;
     if (sym->c_abi)

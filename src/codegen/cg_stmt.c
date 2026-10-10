@@ -653,6 +653,12 @@ static void gen_ret(cg_t *cg, node_t *node) {
     }
 
     usize_t value_count = node->as.ret_stmt.values.count;
+    if (!iface_immediate_return(cg,node)) {
+        /* The rejected expression is still a syntactic read. Keep this usage
+         * bookkeeping outside the quiet raw-contract query. */
+        iface_source_note_use(cg,node->as.ret_stmt.values.items[0],0);
+        return;
+    }
     heap_t moved_heap = value_count ? allocate(value_count, sizeof(LLVMValueRef)) : NullHeap;
     LLVMValueRef *moved = moved_heap.pointer;
     usize_t moved_count = collect_return_moves(cg, node, moved);

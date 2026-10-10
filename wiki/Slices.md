@@ -71,13 +71,16 @@ The equivalent inline query inside the index remains an unsupported source-proof
 form for this interface-local subset. This limitation does not change ordinary
 query arithmetic or bounds evaluation.
 
-### Rebuild affected providers; ABI remains 9
+### Rebuild affected providers; query correction kept ABI 9
 
-This numerical correction applies to newly compiled bodies. Rebuild every affected Stasha provider from source and relink its consumers. ABI9
-layout, function signatures and interface safety-contract checks are unchanged,
-so old ABI9 archives are still accepted. An old provider may retain its wrong
-zero-return query body even when its consumer is rebuilt. Metadata does not
-attest universal behavioral correctness, and relabeling it cannot repair a body.
+This numerical correction applies to newly compiled bodies. Rebuild every affected
+Stasha provider from source and relink its consumers. The query-only checkpoint
+kept ABI9 because layout and function signatures were unchanged; its old ABI9
+providers could still retain the wrong zero-return body. The subsequent I1b.3a
+interface boundary contract separately requires ABI10 and rejects those older
+source-backed archives. See [the current archive migration](Interfaces.md#archive-migration-semantic-abi-10).
+Metadata does not attest universal behavioral correctness, and relabeling it
+cannot repair a body.
 
 ## A1: Explicit Access and View Bounds
 

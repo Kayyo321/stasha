@@ -1,6 +1,40 @@
 # Kernel-readiness status
 
-## Fixed-array query correction (10 October 2026)
+## I1b.3a immediate nominal boundary checkpoint (10 October 2026)
+
+Ordinary named-direct arguments and explicit single-result returns now reject
+provable immediate nominal mismatches when the destination is an ordinary
+concrete interface implementer. The check applies without a downstream interface
+sink and does not confuse equal native representation with source identity.
+See [the exact routes and exclusions](Interfaces.md#i1b3a-immediate-nominal-boundary-checks).
+
+**Rebuild all source-backed Stasha providers and consumers for semantic ABI10.**
+Two genuine ABI9 provider bodies retain the newly rejected argument/return
+mismatch. They reject before import/code generation/link under the new marker;
+corrected providers and consumers execute O0–O3. Historical invalid bodies never
+execute. Layout, signatures and descriptor slots are unchanged; no complete
+helper-history or universal correctness claim follows.
+
+Frozen compiler SHA-256:
+`3365adff9a547b3e8731b6f1c1d17027fc2bc0f5405acbc74203233dd88ab925`.
+Full hosted qualification, all 36 rebuilt standard libraries and qualified memory
+regressions pass. The 528-outcome maintained matrix contains 26 valid sources,
+58 expected rejections and 48 deferred compile-only characterizations at O0–O3.
+Deferred acceptance is not a safety rejection pass. Independent controls include
+40 valid executions, 108 clean rejections, 100 deferred compile-only outcomes,
+12 local no-promotion controls, 12 genuine archive gates and eight retained
+archive declaration-boundary controls. See the
+[I1b.3a receipt](../tests/qualification/checkpoint-interface-i1b3a-2026-10-10.json).
+
+Matching annotations still do not prove prior stores, helper bodies or descriptor
+validity. Factory/parameter-fed projection eligibility is unchanged. Unsupported
+adapters, generated/multi-result/bare-return paths and nonimplementing Holder
+carriers remain explicit boundaries. Earlier ownership, lifetime, CFI, default
+initialization and generated-access/growth work remains open. No new native
+non-Linux or kernel/hardware qualification follows.
+
+
+## Historical fixed-array query correction (10 October 2026)
 
 Supported newly compiled `len.(array)` and `cap.(array)` expressions now return
 the actual selected element extent, preserving operand evaluation, access checks,

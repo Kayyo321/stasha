@@ -268,3 +268,34 @@ The fixed-array `len.(a)`/`cap.(a)` numerical-value issue is recorded in
 [Interfaces](../../wiki/Interfaces.md), including its reproduction and follow-up
 checklist. Correcting an unrelated fixture assumption does not count that query
 operation as qualified. The original failed receipt remains preserved.
+
+## I1b.3a immediate nominal boundary checks
+
+```sh
+python3 tests/interfaces/i1b3a_run.py \
+  --compiler bin/stasha-i1b3a-dev4 --artifacts /tmp/i1b3a-current
+python3 tests/interfaces/i1b3a_test_units.py \
+  --llvm-build build/llvm --artifacts /tmp/i1b3a-units
+```
+
+The inventory contains 132 sources at O0–O3: 26 valid runtime controls,
+58 expected immediate nominal rejections and 48 deferred compile-only
+characterizations (528 total outcomes). Deferred acceptance is not a passing
+history/safety check. Neither deferred nor unexpectedly accepted negative
+programs execute. New rejections require the exact owned diagnostic file/span,
+normal exit and no requested artifact in addition to the shared strict oracle.
+
+The implementation compares original immediate contracts at the ordinary named
+argument and explicit single-return routes documented in
+[Interfaces](../../wiki/Interfaces.md#i1b3a-immediate-nominal-boundary-checks).
+Matching declarations create no stored-history or helper-body certificate.
+Same-annotation laundering, excluded adapters, default/missing returns and
+Holder carriers remain explicit boundaries. Existing I1b.2 local checks and
+projection restrictions stay independent.
+
+Semantic ABI10 requires provider/consumer rebuild. Genuine old ABI9 bodies for
+both new mismatch seams are preserved and only compiled/linked for historical
+characterization; they never execute. Current archive migration checks require
+early refusal of those exact artifacts and genuine corrected provider/consumer
+execution at O0–O3. The archive marker does not transport a helper summary or
+prove arbitrary foreign object correctness.

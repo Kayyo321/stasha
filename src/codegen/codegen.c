@@ -614,6 +614,8 @@ static void gen_quit_stmt(cg_t *cg, node_t *node);
 
 #include "name_mangle.c"
 /* I1b.2 opaque lifecycle/query seams. No generated body inherits eligibility. */
+/* I1b.3a identity-only view: 1 original, 0 excluded, -1 incomplete mapping. */
+static int iface_immediate_original(cg_t *, node_t *, node_t **);
 static symbol_t *iface_local_lookup(cg_t *, const char *, boolean_t *);
 static int iface_local_eligibility(cg_t *, node_t *, symbol_t *);
 static iface_local_plan_t *iface_local_begin(cg_t *, node_t *, node_t *);
@@ -638,6 +640,26 @@ static boolean_t cg_fh_skip_decl(cg_t *cg, fileheader_t *fh, usize_t line);
 #include "cg_interfaces.c"
 #include "cg_expr.c"
 #include "cg_iface_locals.c"
+/* Reuse only the existing AST inventory identity, never its facts/proofs. */
+static int iface_immediate_original(cg_t *cg,node_t *node,node_t **owner) {
+    *owner=Null;iface_local_plan_t *p=iface_local_current(cg);
+    if(!p)return 0;
+    *owner=p->owner;
+    if(!p->owner||!p->frozen||p->building)return -1;
+    if(p->owner->kind==NodeFnDecl){
+        boolean_t ambiguous;iface_native_t *native=iface_immediate_native(cg,cg->current_fn,&ambiguous);
+        if(p->body!=p->owner->as.fn_decl.body||ambiguous||!native||native->decl!=p->owner)return -1;
+    }else if(p->owner->kind==NodeTestBlock){
+        boolean_t ambiguous;iface_native_t *native=iface_immediate_native(cg,cg->current_fn,&ambiguous);
+        if(p->body!=p->owner->as.test_block.body||native||ambiguous)return -1;
+    }else return -1;
+    LLVMBasicBlockRef block=LLVMGetInsertBlock(cg->builder);
+    if(!block||LLVMGetBasicBlockParent(block)!=cg->current_fn)return -1;
+    iface_local_node_t *r=iface_local_node(p,node,False);
+    if(!r)return p->incomplete?-1:0;
+    if(r->inline_carrier)return 0;
+    return 1;
+}
 #include "cg_global_const.c"
 #include "cg_stmt.c"
 #include "cg_generics.c"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Genuine ABI7 semantic rejection and rebuilt ABI9 native source-call controls.
+"""Genuine ABI7 semantic rejection and rebuilt ABI10 native source-call controls.
 
 The old provider and any unexpectedly accepted negative are NEVER executed.
 Sidecars are genuine producer output; no relabeling is permitted.
@@ -45,7 +45,7 @@ def run(compiler,history,artifacts):
  for mode in ['ir','obj','build']:
   out=old/('DO-NOT-RUN-'+mode);result=r.process([r.compiler,mode,old/'consumer.sts','-o',out],old/('reject-'+mode))
   issues=negative_issues(result,out,'incompatible ABI metadata','consumer.sts')
-  if 'required ABI 9 for target' not in result['stderr']:issues.append('missing ABI9 requirement')
+  if 'required ABI 10 for target' not in result['stderr']:issues.append('missing ABI10 requirement')
   if re.search(r'(?m)^\[[^\]]+\] (?:importing|generating code|linking|archiving)',result['stderr']):issues.append('archive reached forbidden later stage')
   r.results.append(dict(name='genuine-ABI7-reject-'+mode,issues=issues))
  out=old/'invalid-provider.ll';result=r.process([r.compiler,'ir',old/'provider.sts','-o',out],old/'source-reject')
@@ -53,7 +53,7 @@ def run(compiler,history,artifacts):
  for level in range(4):
   d=work/f'native-O{level}';d.mkdir();(d/'provider.sts').write_text(PROVIDER);(d/'caller.sts').write_text(CALLER);opt=f'-o={level}';issues=[]
   archive=d/'provider.a';built=r.process([r.compiler,'lib',d/'provider.sts','-o',archive,opt],d/'provider-build');issues+=positive_issues(built,archive)
-  if not Path(str(archive)+'.stasha-abi').is_file() or Path(str(archive)+'.stasha-abi').read_text()!='STASHA_ABI 9\nTARGET x86_64-unknown-linux-gnu\n':issues.append('genuine ABI9 sidecar absent')
+  if not Path(str(archive)+'.stasha-abi').is_file() or Path(str(archive)+'.stasha-abi').read_text()!='STASHA_ABI 10\nTARGET x86_64-unknown-linux-gnu\n':issues.append('genuine ABI10 sidecar absent')
   ir=d/'provider.ll'
   if not issues:issues+=positive_issues(r.process([r.compiler,'ir',d/'provider.sts','-o',ir,opt],d/'provider-ir'),ir)
   if not issues and not re.search(r'\bcall\b[^\n]*%[a-zA-Z_][a-zA-Z_0-9.]*\(',ir.read_text()):issues.append('provider-owned indirect path missing')
@@ -62,7 +62,7 @@ def run(compiler,history,artifacts):
   if not issues:
    ran=r.process([out],d/'execute')
    if ran['category']!='exit' or ran['returncode'] or ran['stdout'] or ran['stderr']:issues.append('native value/mutation/evaluation-count oracle failed')
-  r.results.append(dict(name=f'genuine-ABI9-native-O{level}',issues=issues))
+  r.results.append(dict(name=f'genuine-ABI10-native-O{level}',issues=issues))
  (work/'summary.json').write_text(json.dumps(dict(compiler_sha256=hashlib.sha256(Path(r.compiler).read_bytes()).hexdigest(),historical_hashes=OLD,results=r.results),indent=2)+'\n')
  for c in r.results:print('FAIL' if c['issues'] else 'PASS',c['name'],c['issues'])
  print('Evidence:',work);return any(c['issues'] for c in r.results)
