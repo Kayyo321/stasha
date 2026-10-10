@@ -12,7 +12,7 @@
   "diamond-exact-slot-order",
   "ordinary-return-storage-control",
   "empty-interface-declaration",
-  "distinct-origins-pending",
+  "distinct-origins-conflict",
   "own-methods-32",
   "flattened-methods-32",
   "own-methods-33",
@@ -46,7 +46,7 @@
   "callback-return-storage",
   "distinct-origin-table",
   "distinct-origin-call",
-  "own-redeclaration-pending",
+  "own-redeclaration-equal",
   "empty-table-unsupported",
   "pointer-level-nine",
   "callback-arity-33",
@@ -68,7 +68,7 @@
   "nullable-slice-metadata",
   "any-name-overflow",
   "nullable-storage-order-control",
-  "callback-alias-control",
+  "callback-alias-unsupported",
   "interface-type-name-511",
   "interface-type-name-512",
   "imports-order-ab",
@@ -78,5 +78,7 @@
   "imported-depth-64",
   "imported-depth-65",
   "target-gated-out",
-  "genuine-interface-archive-abi6"
+  "genuine-interface-archive-abi7",
+  "empty-unused-relation",
+  "ordinary-callback-alias-control"
 ]

@@ -539,6 +539,8 @@ static type_info_t scalar_expr_type(cg_t *cg, node_t *n, type_info_t expected) {
         return NO_TYPE;
     }
     case NodeCallExpr: case NodeMethodCall: case NodeSelfMethodCall: case NodeColonCall: case NodeConstructorCall: {
+        iface_signature_t *slot_signature = iface_call_signature(cg, n);
+        if (slot_signature && slot_signature->valid) return slot_signature->result.type;
         if (n->kind == NodeCallExpr) {
             symbol_t *s = scalar_symbol(cg, n->as.call.callee);
             if (s && s->stype.fn_ptr_desc) return scalar_resolve(cg, s->stype.fn_ptr_desc->ret_type);

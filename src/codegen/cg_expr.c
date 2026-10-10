@@ -1221,41 +1221,143 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
     return val;
 }
 
-/* Try to coerce an already-generated arg value to an interface fat-pointer type.
-   If param_type is an interface fat-pointer ({ ptr, ptr }) and arg is a concrete struct,
-   allocate a temporary, store the struct, get its pointer, and build a fat pointer.
-   arg_node is used to find the struct name via symbol lookup.
-   Returns the coerced value, or the original arg_val if no coercion is needed. */
-static LLVMValueRef try_coerce_arg_to_iface(cg_t *cg, LLVMValueRef arg_val,
-                                              LLVMTypeRef param_type, node_t *arg_node) {
-    if (!arg_val || !param_type) return arg_val;
-    LLVMTypeRef arg_type = LLVMTypeOf(arg_val);
-    if (arg_type == param_type) return arg_val; /* already matches */
-
-    /* check if param_type is an interface fat-pointer type by looking up the
-       struct registry entry — more robust than direct pointer comparison */
-    struct_reg_t *param_sr = find_struct_by_llvm_type(cg, param_type);
-    if (!param_sr || !param_sr->is_interface) return arg_val; /* not an interface */
-    usize_t iface_ii = find_interface_index(cg, param_sr->name);
-    if (iface_ii == (usize_t)-1) return arg_val;
-
-    /* find the struct name from the arg node */
-    const char *struct_name = Null;
-    if (arg_node && arg_node->kind == NodeIdentExpr) {
-        symbol_t *asym = cg_lookup(cg, arg_node->as.ident.name);
-        if (asym && asym->stype.user_name) struct_name = asym->stype.user_name;
+/* Non-lowering initializer screening. Ordinary call results are read from their
+ * original declaration, so merely calling a generic factory does not taint an
+ * explicitly ordinary result. No mangled-name substring establishes origin. */
+static node_t *iface_origin_call_decl(cg_t *cg, node_t *n) {
+    symbol_t *symbol = Null; char name[512]; const char *owner = Null, *method = Null;
+    if (n->kind == NodeCallExpr) {
+        symbol = cg_lookup(cg, n->as.call.callee);
+        if (n->generic_use) {
+            node_t *found = Null;
+            for (usize_t i = 0; i < cg->ast->as.module.decls.count; ++i) {
+                node_t *d = cg->ast->as.module.decls.items[i];
+                if (d->kind != NodeFnDecl || !d->as.fn_decl.type_param_count ||
+                    strcmp(d->as.fn_decl.name, n->generic_use->base_name) || !iface_active(cg,d)) continue;
+                if (found) return Null;
+                found = d;
+            }
+            if (found) return found;
+        }
+    } else if (n->kind == NodeConstructorCall) {
+        owner = n->as.ctor_call.type_name; method = "new";
+    } else if (n->kind == NodeMethodCall && n->as.method_call.object->kind == NodeIdentExpr) {
+        const char *obj = n->as.method_call.object->as.ident.name; method = n->as.method_call.method;
+        lib_entry_t *lib = find_lib_entry(cg, obj);
+        if (lib && lib->mod_prefix) { snprintf(name,sizeof(name),"%s__%s",lib->mod_prefix,method); symbol=cg_lookup_symbol(cg,name); }
+        else { symbol_t *s = cg_lookup(cg,obj); owner = s ? s->stype.user_name : obj; }
+    } else if (n->kind == NodeSelfMethodCall) {
+        owner = n->as.self_method_call.type_name ? n->as.self_method_call.type_name : cg->current_struct_name;
+        method = n->as.self_method_call.method;
+    } else if (n->kind == NodeColonCall) {
+        lib_entry_t *lib = find_lib_entry(cg,n->as.colon_call.module_name);
+        if (lib && lib->mod_prefix) {
+            if (n->as.colon_call.type_name) snprintf(name,sizeof(name),"%s__%s__%s",lib->mod_prefix,n->as.colon_call.type_name,n->as.colon_call.method_name);
+            else snprintf(name,sizeof(name),"%s__%s",lib->mod_prefix,n->as.colon_call.method_name);
+            symbol=cg_lookup_symbol(cg,name);
+        }
     }
-    if (!struct_name) return arg_val; /* can't determine source struct */
+    if (owner && method) {
+        struct_reg_t *sr=find_struct(cg,owner);
+        if (sr && sr->mod_prefix && sr->mod_prefix[0]) snprintf(name,sizeof(name),"%s__%s__%s",sr->mod_prefix,owner,method);
+        else snprintf(name,sizeof(name),"%s.%s",owner,method);
+        symbol=cg_lookup_symbol(cg,name);
+    }
+    for (iface_native_t *d=cg->iface_natives; symbol && d; d=d->next)
+        if (d->function==symbol->value) return d->decl;
+    return Null;
+}
+static unsigned iface_initializer_origin_at(cg_t *cg, node_t *n, usize_t depth) {
+    if (!n) return IfaceOriginOrdinary;
+    if (depth > IfaceMaxMetadataDepth) return IfaceOriginUnresolved;
+    switch (n->kind) {
+    case NodeIdentExpr: {
+        symbol_t *s=cg_lookup(cg,n->as.ident.name);
+        return s ? s->iface_excluded_origin | iface_type_origin(cg,s->stype) : IfaceOriginUnresolved;
+    }
+    case NodeDesigInit:
+        return n->generic_use ? IfaceOriginGeneric : iface_type_origin(cg,(type_info_t){.base=TypeUser,.user_name=n->as.desig_init.type_name});
+    case NodeConstructorCall:
+        if (n->generic_use) return IfaceOriginGeneric;
+        /* fall through: ordinary constructor result has a source declaration */
+    case NodeCallExpr: case NodeMethodCall: case NodeSelfMethodCall: case NodeColonCall: {
+        if (n->kind==NodeMethodCall && !strcmp(n->as.method_call.method,"new") &&
+            n->as.method_call.object->generic_use) return IfaceOriginGeneric;
+        node_t *decl=iface_origin_call_decl(cg,n);
+        if (!decl && n->kind==NodeCallExpr) {
+            symbol_t *s=cg_lookup(cg,n->as.call.callee);
+            if (s && s->stype.fn_ptr_desc) return iface_type_origin(cg,s->stype.fn_ptr_desc->ret_type);
+        }
+        if (!decl || decl->as.fn_decl.return_count!=1) return IfaceOriginUnresolved;
+        type_info_t result=decl->as.fn_decl.return_types[0];
+        if (result.base==TypeUser && result.user_name)
+            for (usize_t i=0;i<decl->as.fn_decl.type_param_count;++i)
+                if (!strcmp(result.user_name,decl->as.fn_decl.type_params[i])) return IfaceOriginUnresolved;
+        return iface_type_origin(cg,result);
+    }
+    case NodeLambdaCall:
+        return n->as.lambda_call.lambda && n->as.lambda_call.lambda->kind==NodeLambda
+            ? iface_type_origin(cg,n->as.lambda_call.lambda->as.lambda_expr.ret_type) : IfaceOriginUnresolved;
+    case NodeAddrOf: return iface_initializer_origin_at(cg,n->as.addr_of.operand,depth+1);
+    case NodeUnaryPrefixExpr: case NodeUnaryPostfixExpr:
+        return iface_initializer_origin_at(cg,n->as.unary.operand,depth+1);
+    case NodeBinaryExpr:
+        return iface_initializer_origin_at(cg,n->as.binary.left,depth+1) | iface_initializer_origin_at(cg,n->as.binary.right,depth+1);
+    case NodeCastExpr:
+        return iface_type_origin(cg,n->as.cast_expr.target) | iface_initializer_origin_at(cg,n->as.cast_expr.expr,depth+1);
+    case NodeTernaryExpr:
+        return iface_initializer_origin_at(cg,n->as.ternary.then_expr,depth+1) | iface_initializer_origin_at(cg,n->as.ternary.else_expr,depth+1);
+    case NodeAssignExpr: return iface_initializer_origin_at(cg,n->as.assign.value,depth+1);
+    case NodeMemberExpr: case NodeSelfMemberExpr: case NodeIndexExpr: case NodeFlaggedIndex:
+        /* Broader projection source identity is an explicitly deferred route. */
+        return IfaceOriginUnresolved;
+    case NodeIntLitExpr: case NodeFloatLitExpr: case NodeBoolLitExpr:
+    case NodeCharLitExpr: case NodeStrLitExpr: case NodeNilExpr:
+    case NodeCompoundInit:
+        /* Literals cannot supply a hidden nominal result. Contextual compound
+         * initialization uses the separately screened declared destination;
+         * field/container source transfers remain outside this screening. */
+        return IfaceOriginOrdinary;
+    default:
+        /* Unknown expression kinds are not evidence of ordinary source
+         * identity, even if LLVM or the destination suggests a known layout. */
+        return IfaceOriginUnresolved;
+    }
+}
+static unsigned iface_initializer_origin(cg_t *cg, node_t *n) {
+    return iface_initializer_origin_at(cg,n,0);
+}
 
-    /* ensure vtable exists */
-    usize_t vi = ensure_vtable(cg, struct_name, cg->interfaces[iface_ii].name);
-    if (vi == (usize_t)-1) return arg_val;
-
-    /* get a pointer to the struct value: store arg in a temp alloca */
-    LLVMValueRef tmp = alloc_in_entry(cg, arg_type, "iface_coerce_tmp");
-    LLVMBuildStore(cg->builder, arg_val, tmp);
-
-    return construct_fat_ptr(cg, struct_name, cg->interfaces[iface_ii].name, tmp);
+/* Existing readable identifier-value boxing only. Explicit status prevents a
+ * failed relation from falling through to scalar coercion and call emission. */
+typedef enum { IfaceArgNotApplicable, IfaceArgReady, IfaceArgError } iface_arg_status_t;
+static iface_arg_status_t try_coerce_arg_to_iface(cg_t *cg, LLVMValueRef value,
+                                                  LLVMTypeRef formal, node_t *arg,
+                                                  LLVMValueRef *out) {
+    *out = value;
+    struct_reg_t *target = find_struct_by_llvm_type(cg, formal);
+    if (!target || !target->is_interface) return IfaceArgNotApplicable;
+    if (!value) return IfaceArgError;
+    if (LLVMTypeOf(value) == formal) return IfaceArgReady; /* existing descriptor; full source transfers are I1b */
+    symbol_t *sym = arg && arg->kind == NodeIdentExpr ? cg_lookup(cg, arg->as.ident.name) : Null;
+    if (!sym || sym->stype.is_pointer || sym->stype.base != TypeUser || !sym->stype.user_name) {
+        iface_error(iface_node_loc(arg ? arg : cg->ast), "interface boxing requires a readable concrete value identifier:", target->name);
+        return IfaceArgError;
+    }
+    if (!iface_concrete_origin_allowed(cg,arg,sym)) return IfaceArgError;
+    node_t *owner = iface_named_type(cg, sym->stype.user_name, iface_node_loc(arg));
+    struct_reg_t *sr = owner ? find_struct(cg, owner->as.type_decl.name) : Null;
+    if (!owner || owner->as.type_decl.decl_kind != TypeDeclStruct || owner->as.type_decl.type_param_count ||
+        !sr || sr->llvm_type != LLVMTypeOf(value)) {
+        iface_error(iface_node_loc(arg), "interface boxing requires an ordinary concrete value representation:", sym->stype.user_name);
+        return IfaceArgError;
+    }
+    iface_table_result_t table = ensure_vtable(cg, owner->as.type_decl.name, target->name);
+    if (!table.success) return IfaceArgError;
+    LLVMValueRef tmp = alloc_in_entry(cg, sr->llvm_type, "iface_coerce_tmp");
+    LLVMBuildStore(cg->builder, value, tmp); /* shallow mutable copy, including const/final value sources */
+    *out = construct_fat_ptr(cg, table, tmp);
+    return *out ? IfaceArgReady : IfaceArgError;
 }
 
 /* ── lambda expressions (sugar pack v1) ──
@@ -1866,8 +1968,13 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
                 /* Try interface fat-pointer coercion first */
                 if (i >= arg_offset && (i - arg_offset) < user_argc) {
                     node_t *arg_node = node->as.call.args.items[i - arg_offset];
-                    LLVMValueRef coerced = try_coerce_arg_to_iface(cg, args[i], pt, arg_node);
-                    if (coerced != args[i]) { args[i] = coerced; continue; }
+                    LLVMValueRef coerced;
+                    iface_arg_status_t status = try_coerce_arg_to_iface(cg, args[i], pt, arg_node, &coerced);
+                    if (status == IfaceArgError) {
+                        deallocate(pt_heap); if (args_heap.pointer) deallocate(args_heap);
+                        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                    }
+                    if (status == IfaceArgReady) { args[i] = coerced; continue; }
                 }
                 /* Check if the param is an any.[...] struct and arg needs wrapping */
                 struct_reg_t *any_sr = find_struct_by_llvm_type(cg, pt);
@@ -2215,49 +2322,33 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         } /* close extra scope block for static-method mangling vars */
     }
 
-    /* ── interface-qualified call: d.flyable_i.move() ──
-       obj is NodeMemberExpr where the field name is an interface name */
+    /* Qualified calls consume the very same identity-selected concrete binding. */
     if (obj->kind == NodeMemberExpr) {
-        char *iface_qual = obj->as.member_expr.field;
-        usize_t iface_ii = find_interface_index(cg, iface_qual);
-        if (iface_ii != (usize_t)-1) {
-            /* outer object: d */
+        const char *qualifier = obj->as.member_expr.field;
+        usize_t ii = find_interface_index(cg, qualifier);
+        if (ii != (usize_t)-1) {
+            iface_method_group_t *group = iface_group(cg, ii, method);
+            iface_signature_t *signature = group ? group->signature : Null;
             node_t *outer = obj->as.member_expr.object;
-            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
-            if (outer->kind == NodeIdentExpr) {
-                symbol_t *outer_sym = cg_lookup(cg, outer->as.ident.name);
-                if (outer_sym && outer_sym->stype.user_name) {
-                    /* look up iface-qualified method: "struct.iface.method" */
-                    char mangled[512];
-                    struct_reg_t *outer_sr = find_struct(cg, outer_sym->stype.user_name);
-                    if (outer_sr && outer_sr->mod_prefix && outer_sr->mod_prefix[0]) {
-                        snprintf(mangled, sizeof(mangled), "%s__%s__%s__%s",
-                                 outer_sr->mod_prefix, outer_sym->stype.user_name,
-                                 iface_qual, method);
-                    } else {
-                        snprintf(mangled, sizeof(mangled), "%s.%s.%s",
-                                 outer_sym->stype.user_name, iface_qual, method);
-                    }
-                    symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
-                    if (fn_sym) {
-                        usize_t argc = node->as.method_call.args.count + 1;
-                        heap_t args_heap = allocate(argc, sizeof(LLVMValueRef));
-                        LLVMValueRef *args = args_heap.pointer;
-                        args[0] = outer_sym->stype.is_pointer
-                            ? LLVMBuildLoad2(cg->builder, ptr_t, outer_sym->value, "obj_ptr")
-                            : outer_sym->value;
-                        for (usize_t i = 0; i < node->as.method_call.args.count; i++)
-                            args[i + 1] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
-                        LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
-                        LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_sym->value,
-                                                           args, (unsigned)argc, "");
-                        deallocate(args_heap);
-                        return ret;
-                    }
-                }
+            symbol_t *sym = outer->kind == NodeIdentExpr ? cg_lookup(cg, outer->as.ident.name) : Null;
+            if (!signature || !sym || sym->stype.base != TypeUser || !sym->stype.user_name) {
+                iface_error(iface_node_loc(node), "qualified interface call requires a concrete identifier and known slot:", method);
+                return iface_call_recovery(cg, signature);
             }
-            /* also handle: this.entity.id() where entity is an interface pointer */
-            /* fall through to member-expr handling below */
+            if (!iface_concrete_origin_allowed(cg,node,sym)) return iface_call_recovery(cg,signature);
+            type_info_t type = sym->stype;
+            if ((!type.is_pointer && (sym->flags & (SymConst | SymFinal))) ||
+                (type.is_pointer && (type.ptr_depth > 1 || type.nullable ||
+                    (type.ptr_perm & PtrReadWrite) != PtrReadWrite))) {
+                iface_error(iface_node_loc(node), "qualified interface receiver requires a mutable concrete object:", method);
+                return iface_call_recovery(cg, signature);
+            }
+            iface_table_result_t table = ensure_vtable(cg, type.user_name, qualifier);
+            if (!table.success) return iface_call_recovery(cg, signature);
+            LLVMValueRef receiver = type.is_pointer || (sym->flags & SymHeapVar)
+                ? LLVMBuildLoad2(cg->builder, LLVMPointerTypeInContext(cg->ctx, 0), sym->value, "iface.direct.object") : sym->value;
+            usize_t slot = (usize_t)(group - cg->interfaces[ii].groups);
+            return iface_emit_call(cg, node, signature, table.binding->functions[slot], receiver);
         }
     }
 
@@ -2287,6 +2378,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                             if (fti.base == TypeUser && fti.user_name) {
                                 usize_t fii = find_interface_index(cg, fti.user_name);
                                 if (fii != (usize_t)-1) {
+                                    if (!iface_receiver_value(cg, node, fti)) return iface_call_recovery(cg, iface_call_signature(cg, node));
                                     /* field is interface-typed — do vtable dispatch */
                                     /* generate the field alloca value */
                                     LLVMValueRef fat_alloca = gen_expr(cg, obj);
@@ -2373,7 +2465,13 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     LLVMGetParamTypes(fn_type, param_types);
                     for (usize_t i = offset; i < argc && i < (usize_t)n_params_mc; i++) {
                         node_t *arg_node = node->as.method_call.args.items[i - offset];
-                        args[i] = try_coerce_arg_to_iface(cg, args[i], param_types[i], arg_node);
+                        LLVMValueRef coerced;
+                        iface_arg_status_t status = try_coerce_arg_to_iface(cg, args[i], param_types[i], arg_node, &coerced);
+                        if (status == IfaceArgError) {
+                            deallocate(pt_heap); deallocate(args_heap);
+                            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                        }
+                        args[i] = coerced;
                         args[i] = coerce_int(cg, args[i], param_types[i]);
                     }
                     deallocate(pt_heap);
@@ -2401,6 +2499,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                             /* check for interface type */
                             usize_t fii = find_interface_index(cg, fti.user_name);
                             if (fii != (usize_t)-1) {
+                                if (!iface_receiver_value(cg, node, fti)) return iface_call_recovery(cg, iface_call_signature(cg, node));
                                 /* interface-typed field — vtable dispatch */
                                 LLVMValueRef field_val = gen_expr(cg, obj);
                                 LLVMTypeRef fat_type = cg->interfaces[fii].fat_ptr_type;

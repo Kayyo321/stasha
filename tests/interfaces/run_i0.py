@@ -2,8 +2,9 @@
 """I0 graph/metadata regression runner. Invalid inputs compile only, never run.
 
 Run with the exact candidate compiler and immutable B1 compiler for the real
-ABI5 archive mismatch fixture. The stage does not validate implementation
-signatures, object lifetimes, boxing eligibility or dynamic-call ABIs.
+ABI5 archive mismatch fixture. The historical I0 graph/metadata corpus is retained with explicit current-I1a
+oracles. Object lifetimes and complete source-flow/boxing closure remain outside
+this stage; the separate I1a runner qualifies declaration/table/native guards.
 """
 import argparse
 import hashlib
@@ -114,7 +115,7 @@ def run_cases(r):
     r.results.append({'name':'diamond-exact-slot-order','issues':[] if re.search(wanted,text) else ['wrong four-slot table order']})
     r.case('ordinary-return-storage-control','mod returns; ext fn old(void): heap i32 *r; fn main(void): i32 { ret 0; }',execute=True)
     r.case('empty-interface-declaration','mod empty; type Empty: interface {}; fn main(void): i32 { ret 0; }',execute=True)
-    r.case('distinct-origins-pending','mod pending; type A: interface { x(void): i32; }; type B: interface { x(void): f64; }; type C: interface.[A,B] {};')
+    r.case('distinct-origins-conflict','mod pending; type A: interface { x(void): i32; }; type B: interface { x(void): f64; }; type C: interface.[A,B] {};',pattern='distinct-origin interface signature conflict')
     for n in [32,33]:
         r.case(f'own-methods-{n}','mod own; type I: interface { '+methods(n)+'};'+(implementation(['I'],n)+main_for('I',n) if n==32 else ''),
                pattern='maximum of 32 own methods' if n==33 else None,execute=n==32)
@@ -155,19 +156,20 @@ def run_cases(r):
         'generic-function-constraint':('type I: interface {}; fn @comptime[T.[I]] id(stack T v): T { ret v; }','generic interface constraints are unsupported'),
         'return-storage':('type I: interface { x(void): heap i32 *r; };','storage-qualified interface returns'),
         'callback-return-storage':('type I: interface { x(stack fn*(void): stack i32 *r cb): i32; };','storage-qualified interface returns'),
-        'distinct-origin-table':('type A: interface { m0(void): i32; }; type B: interface { m0(void): i32; }; type I: interface.[A,B] {};'+implementation(['I']),'multiple distinct origins'),
-        'distinct-origin-call':('type A: interface { m0(void): i32; }; type B: interface { m0(void): f64; }; type I: interface.[A,B] {}; fn f(stack I v): i32 { ret v.m0(); }','multiple distinct origins'),
-        'own-redeclaration-pending':('type A: interface { m0(void): i32; }; type I: interface.[A] { m0(void): i32; };'+implementation(['I']),'multiple distinct origins'),
-        'empty-table-unsupported':('type I: interface {}; type S: struct.[I] {};','empty-interface table construction'),
+        'distinct-origin-call':('type A: interface { m0(void): i32; }; type B: interface { m0(void): f64; }; type I: interface.[A,B] {}; fn f(stack I v): i32 { ret v.m0(); }','distinct-origin interface signature conflict'),
+        'empty-table-unsupported':('type I: interface {}; type S: struct.[I] {}; fn consume(stack I v): i32 { ret 0; } fn main(void): i32 { stack S s = .{}; ret consume(s); }','empty-interface table construction'),
         'pointer-level-nine':('type I: interface { p(stack i32 ********* p): i32; };','pointer type exceeds maximum of 8'),
         'callback-arity-33':('type I: interface { p(stack fn*('+','.join(['i32']*33)+'): i32 cb): i32; };','function pointer type exceeds maximum of 32'),
     }
     for name,(source,pattern) in negatives.items():
         r.case(name,'mod rejected; '+source,pattern=pattern)
+    r.case('distinct-origin-table','mod origins; type A: interface { m0(void): i32; }; type B: interface { m0(void): i32; }; type I: interface.[A,B] {};'+implementation(['I'])+main_for('I'),execute=True)
+    r.case('own-redeclaration-equal','mod redeclaration; type A: interface { m0(void): i32; }; type I: interface.[A] { m0(void): i32; };'+implementation(['I'])+main_for('I'),execute=True)
+    r.case('empty-unused-relation','mod empty; type I: interface {}; type S: struct.[I] {};')
     for mode in ['ir','obj','build']:
         r.case('stale-unknown-'+mode,'mod bad; type I: interface.[Missing] {};',pattern='unknown parent/implementation',mode=mode,stale=True)
     r.case('pointer-level-eight','mod ptr; type I: interface { p(stack i32 ******** p): i32; };')
-    r.case('callback-arity-32','mod cb; type I: interface { p(stack fn*('+','.join(['i32']*32)+'): i32 cb): i32; };')
+    r.case('callback-arity-32','mod cb; type I: interface { p(stack fn*('+','.join(['i32']*32)+'): i32 cb): i32; };',pattern='callback/closure interface signatures are unsupported')
     for n in [496,497]:
         iface='I'*n
         r.case(f'formatted-table-name-{n+15}',f'mod names; type {iface}: interface {{ m0(void): i32; }};'+implementation([iface])+ (main_for(iface) if n==496 else ''),
@@ -189,7 +191,8 @@ def run_cases(r):
     }
     for name,(source,pattern) in extra_negatives.items():r.case(name,'mod rejected; '+source,pattern=pattern)
     r.case('nullable-storage-order-control','mod ordinary; ext fn old(void): ?heap i32 *r;')
-    r.case('callback-alias-control','mod ordinary; type CB: fn*(void): i32; type I: interface { x(stack CB p): i32; };')
+    r.case('callback-alias-unsupported','mod ordinary; type CB: fn*(void): i32; type I: interface { x(stack CB p): i32; };',pattern='callback/closure interface signatures are unsupported')
+    r.case('ordinary-callback-alias-control','mod ordinary; type CB: fn*(void): i32; ext fn f(stack CB p): i32;')
     for n in [511,512]:
         r.case(f'interface-type-name-{n}','mod names; type '+('I'*n)+': interface {};',pattern='formatted type name exceeds maximum of 511' if n==512 else None)
     for order in ['ab','ba']:
@@ -211,7 +214,7 @@ def archives(r):
     # Both providers genuinely compile interface dispatch through inherited slots.
     source=diamond_source().replace('mod diamond;','mod provider;').replace('type ','ext type ').replace('fn call(','ext fn call(')
     source=source[:source.index('fn main(')]+'ext fn run(void): i32 { stack S s = .{ .x = 1 }; ret call(s); }'
-    for abi,compiler in [(6,r.compiler)]:
+    for abi,compiler in [(7,r.compiler)]:
         case=r.work/f'archive-abi{abi}';case.mkdir();libsrc=case/'provider.sts';libsrc.write_text(source)
         archive=case/'provider.a'
         build=r.process([compiler,'lib',libsrc,'-o',archive,'-o=0'],case/'library')
@@ -222,10 +225,10 @@ def archives(r):
         output=case/'caller'
         if not issues:
             result=r.process([r.compiler,'build',caller,'-o',output,'-o=0'],case/'caller-compile')
-            if positive_issues(result,output): issues.append('ABI6 caller failed')
+            if positive_issues(result,output): issues.append('ABI7 caller failed')
             else:
                 ran=r.process([output],case/'caller-run')
-                if ran['category']!='exit' or ran['returncode']!=0 or ran['stdout'] or ran['stderr']: issues.append('ABI6 inherited-slot execution failed')
+                if ran['category']!='exit' or ran['returncode']!=0 or ran['stdout'] or ran['stderr']: issues.append('ABI7 inherited-slot execution failed')
         r.results.append({'name':f'genuine-interface-archive-abi{abi}','issues':issues})
 
 def main():

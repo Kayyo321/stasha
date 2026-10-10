@@ -1,6 +1,48 @@
 # Kernel-readiness status
 
-## I0 interface graph and metadata checkpoint (10 October 2026)
+## I1a declared interface binding checkpoint (10 October 2026)
+
+I1a verifies supported declared signatures, complete method binding and native
+entry-point agreement before publishing interface tables. Conflicting inherited
+requirements and missing or incompatible implementations now diagnose. Dynamic
+calls use the formal cached ABI rather than synthesizing it from actual arguments.
+See [the supported interface contract](Interfaces.md#i1a-declared-signatures-and-table-binding).
+
+Rebuild **all Stasha archives and consumers for ABI 7**. This is a semantic
+compatibility boundary: the ABI6 slot ordering and two-word descriptor layout
+remain unchanged. A genuine old provider archive can carry unchecked table
+construction inside its body even when imported declarations look acceptable.
+Tests reject that archive before code generation and exercise new provider /
+consumer dispatch at O0–O3. Historical invalid programs were never executed.
+
+The frozen compiler SHA-256 is
+`732ac8a2b21921f87f50a1e7bf0bd36daf374459eece002be3efec91320d60d1`.
+The maintained I1a suite passes 274 checks, including 37 compile-only origin
+controls. Nine genuine archive controls and 110 binding ASan/UBSan checks pass.
+Retained metadata/graph/diagnostic units pass 241 checks, and frontend checks pass
+1,541. Independent review includes 88 source contracts, O0–O3 cross-provider
+native calls, 32 supplementary controls, 84 synthetic native ABI sanitizer
+checks, and 35 initialization-origin controls. The final hosted suite, all 36
+rebuilt standard libraries and qualified memory regressions pass. See the
+[I1a receipt](../tests/qualification/checkpoint-interface-i1a-2026-10-10.json).
+
+This is bounded declaration and initial-eligibility checking. Concrete values
+with retained generic/dependent or unresolved initialization origins cannot enter
+the admitted boxing/qualified-call seams. Field/index-derived initializers are
+an explicit interim restriction, even when copied to a typed destination. Direct
+ordinary values and calls declaring ordinary return types remain supported,
+including inside unrelated generic functions. Restoring valid projection and
+assignment cases with complete source provenance is a priority for I1b.
+
+Complete actual source-argument checking and descriptor flow through assignments,
+returns, casts, conditional merges, fields and containers remain pending. No
+runtime table-membership check, indirect-call CFI, object liveness, ownership or
+general generic safety is established. Owned buffers remain design-only. A1
+implicit generated accesses and B1 append/copy, initializer/spread and broader
+nullable/concurrency gaps remain open. No fresh I1a kernel boot, hardware or
+native non-Linux release qualification is claimed.
+
+## Historical I0 interface graph and metadata checkpoint (10 October 2026)
 
 I0 validates inheritance graphs before lowering, retains source contract metadata,
 and rejects unsupported or over-limit declarations instead of silently discarding

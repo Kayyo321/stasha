@@ -32,20 +32,21 @@ int main(int argc, char **argv) {
         CHECK(d->groups[i].origin_count == 1 && d->groups[i].signature_pending);
         CHECK(d->groups[i].name[0] == "abcd"[i]);
     }
+    iface_preflight(&cg); CHECK(!get_error_count()); CHECK(d->signatures_ready);
     char *names[4] = {0}; type_info_t returns[4];
     CHECK(collect_all_iface_methods(&cg,"D",names,returns,4) == 4);
     CHECK(collect_all_iface_methods(&cg,"D",names,returns,3) == 0);
     CHECK(get_error_count() == 1);
     restore_diagnostic_counts(0,0);
     char late_name[512]; memset(late_name,'S',sizeof(late_name)-1); late_name[511]=0;
-    CHECK(ensure_vtable(&cg,late_name,"D") == (usize_t)-1);
+    CHECK(!ensure_vtable(&cg,late_name,"D").success);
     CHECK(get_error_count() == 1); /* guarded before LLVM/name formatting */
-    free_interface_registry(&cg);
+    iface_free_contracts(&cg); free_interface_registry(&cg);
     CHECK(!cg.interfaces && !cg.iface_count && !cg.iface_cap && !cg.ifaces_heap.pointer);
     /* Same AST, fresh context: no static memoization or invalid collector state. */
     restore_diagnostic_counts(0,0); init_graph(&cg,ast); CHECK(!get_error_count());
     CHECK(cg.interfaces[find_interface_index(&cg,"D")].group_count == 4);
-    free_interface_registry(&cg); ast_free_all();
+    iface_free_contracts(&cg); free_interface_registry(&cg); ast_free_all();
 
     ast = parse_source("origins.sts","mod origins; type A: interface { m(void): i32; };"
         "type B: interface { m(void): u64; }; type C: interface.[A,B] { m(void): f64; };");
@@ -57,7 +58,9 @@ int main(int argc, char **argv) {
     CHECK(d->groups[0].origins[2]->as.fn_decl.return_types[0].base == TypeF64);
     CHECK(collect_all_iface_methods(&cg,"C",names,returns,4) == 0);
     CHECK(get_error_count() == 1);
-    free_interface_registry(&cg); ast_free_all();
+    restore_diagnostic_counts(0,0);
+    iface_preflight(&cg); CHECK(get_error_count() == 4); CHECK(!d->signatures_ready);
+    iface_free_contracts(&cg); free_interface_registry(&cg); ast_free_all();
 
     /* A new module reuses bare names with a different topology and slot order. */
     for (int pass=0;pass<4;pass++) {

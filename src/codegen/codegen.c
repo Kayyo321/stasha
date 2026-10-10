@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "codegen.h"
 #include "../common/abi.h"
 #include "cg_llvm_constants.h"
@@ -37,12 +38,16 @@ result_t codegen_resolve_target(const char *requested, sts_target_spec *out) {
 /* I0 declaration graph bounds, not permission to truncate source lists. */
 enum { IfaceMaxParents = 8, IfaceMaxMethods = 32, IfaceMaxDepth = 64 };
 typedef enum { IfaceUnvisited, IfaceVisiting, IfaceGraphReady, IfaceInvalid } iface_graph_state_t;
+typedef struct iface_signature iface_signature_t;
+typedef struct iface_binding iface_binding_t;
+typedef struct iface_native iface_native_t;
 typedef struct {
     char *name;
     node_t **origins;            /* distinct declarations, including conflicts */
     usize_t origin_count, origin_cap;
     heap_t origins_heap;
-    boolean_t signature_pending; /* equality is intentionally deferred to I1 */
+    boolean_t signature_pending;
+    iface_signature_t *signature; /* context-owned complete source contract */
 } iface_method_group_t;
 typedef struct {
     char *name;
@@ -53,7 +58,7 @@ typedef struct {
     iface_method_group_t groups[IfaceMaxMethods];
     usize_t group_count;
     usize_t path_depth;
-    boolean_t signatures_ready; /* remains false in I0 */
+    boolean_t signatures_ready;
     LLVMTypeRef fat_ptr_type;
 } iface_reg_t;
 
@@ -128,6 +133,7 @@ typedef struct {
     LLVMValueRef value;
     LLVMTypeRef type;
     type_info_t stype;
+    unsigned iface_excluded_origin; /* known unsupported initialization origin; NOT assignment safety */
     fn_ptr_desc_t *scalar_signature; /* resolved source call types, independent of LLVM */
     boolean_t requires_receiver; /* only methods declared inside a type have hidden this */
     cg_abi_fn_t *c_abi; /* C call lowering, separate from object layout */
@@ -435,6 +441,10 @@ typedef struct {
     usize_t iface_count;
     usize_t iface_cap;
     heap_t ifaces_heap;
+
+    iface_signature_t *iface_signatures;
+    iface_binding_t *iface_bindings;
+    iface_native_t *iface_natives;
 
     /* vtable for one (struct, interface) pair */
     struct {
@@ -930,6 +940,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     /* Resolve and validate the whole selected declaration graph before any
      * type lowering can observe incomplete interface metadata. */
     validate_interface_declarations(&cg);
+    if (get_error_count() == errors_before) iface_preflight(&cg);
     if (get_error_count() > errors_before) goto cg_cleanup;
 
     /* pass 0: register type declarations, lib declarations */
@@ -1157,6 +1168,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                would point to the same address (containing only the last name). */
             symtab_add(&cg.globals, ast_strdup(var_llvm_name, strlen(var_llvm_name)),
                        global, type, ti, sym_flags);
+            cg.globals.entries[cg.globals.count-1].iface_excluded_origin = iface_type_origin(&cg,decl->as.var_decl.type) | iface_initializer_origin(&cg,decl->as.var_decl.init);
             symtab_set_last_storage(&cg.globals, decl->as.var_decl.storage, False);
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
                                   decl->as.var_decl.flags & VdeclFinal, decl->as.var_decl.linkage,
@@ -1390,6 +1402,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
             cg.globals.entries[cg.globals.count - 1].c_abi = c_abi;
             scalar_register_signature(&cg, &cg.globals.entries[cg.globals.count - 1], decl);
+            iface_register_native(&cg, decl, Null, fn, False, c_abi);
             /* C/export spelling changes the linker symbol, not Type.method source
              * lookup. Both names refer to exactly one function and ABI plan. */
             if (decl->as.fn_decl.is_method && strcmp(source_fn_name, fn_name) != 0) {
@@ -1419,6 +1432,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
+            iface_signature_t *interface_contract = iface_cached_signature(&cg, method, decl);
+            if (cg_fh_skip_decl(&cg, method->headers, method->line)) continue;
 
             /* library-backed internal inline methods live in the .a — skip */
             if (decl->from_lib && method->as.fn_decl.linkage == LinkageInternal)
@@ -1454,7 +1469,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             LLVMTypeRef *ptypes = ptypes_heap.pointer;
             ptypes[0] = LLVMPointerTypeInContext(cg.ctx, 0);
             for (usize_t j = 0; j < pc; j++) {
-                type_info_t pti = resolve_alias(&cg,
+                type_info_t pti = interface_contract ? interface_contract->params[j].type : resolve_alias(&cg,
                     method->as.fn_decl.params.items[j]->as.var_decl.type);
                 ptypes[j + 1] = get_llvm_type(&cg, pti);
             }
@@ -1476,7 +1491,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     (unsigned)method->as.fn_decl.return_count, 0);
                 deallocate(rt_heap);
             } else {
-                type_info_t rti = resolve_alias(&cg, method->as.fn_decl.return_types[0]);
+                type_info_t rti = interface_contract ? interface_contract->result.type : resolve_alias(&cg, method->as.fn_decl.return_types[0]);
                 ret_type = get_llvm_type(&cg, rti);
             }
 
@@ -1489,7 +1504,14 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
             scalar_register_signature(&cg, &cg.globals.entries[cg.globals.count - 1], method);
+            if (interface_contract) {
+                fn_ptr_desc_t *scalar_sig = cg.globals.entries[cg.globals.count - 1].scalar_signature;
+                scalar_sig->ret_type = interface_contract->result.type;
+                for (usize_t j = 0; j < interface_contract->count; ++j)
+                    scalar_sig->params[j].type = interface_contract->params[j].type;
+            }
             cg.globals.entries[cg.globals.count - 1].requires_receiver = True;
+            iface_register_native(&cg, method, decl, fn, True, Null);
             deallocate(ptypes_heap);
 
             if (strcmp(method->as.fn_decl.name, "rem") == 0) {
@@ -1519,20 +1541,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
     cg.current_module_prefix[0] = 0;
 
-    /* pass 1b: generate vtable globals for structs implementing interfaces.
-       All functions are forward-declared in pass 1, so we can now create vtables. */
-    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
-        node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeTypeDecl) continue;
-        if (decl->as.type_decl.decl_kind != TypeDeclStruct) continue;
-        if (decl->as.type_decl.impl_iface_count == 0) continue;
-        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
-        if (decl->as.type_decl.type_param_count > 0) continue; /* skip generic templates */
-        for (usize_t j = 0; j < decl->as.type_decl.impl_iface_count; j++) {
-            ensure_vtable(&cg, decl->as.type_decl.name,
-                          decl->as.type_decl.impl_ifaces[j]);
-        }
-    }
+    /* Complete native plans only after every source contract passed preflight.
+     * Parent views have their own independently ordered tables. */
+    iface_finish_bindings(&cg);
 
     /* early abort: declaration errors make body generation unreliable */
     if (get_error_count() > errors_before) goto cg_cleanup;
@@ -1586,8 +1597,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                              cg.current_module_prefix,
                              sizeof(cg.current_module_prefix));
 
-        symbol_t *sym = cg_lookup_symbol(&cg, fn_name);
-        cg.current_fn = sym->value;
+        iface_native_t *native_decl = iface_native(&cg, decl, Null);
+        if (!native_decl) {
+            iface_error(iface_node_loc(decl), "missing registered function identity for body:", decl->as.fn_decl.name);
+            continue;
+        }
+        cg.current_fn = native_decl->function;
         cg.current_return_types = decl->as.fn_decl.return_types;
         cg.current_return_count = decl->as.fn_decl.return_count;
         cg.current_fn_linkage = decl->as.fn_decl.linkage;
@@ -1678,7 +1693,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
             LLVMValueRef alloca_val = LLVMBuildAlloca(cg.builder, ptype,
                                                        param->as.var_decl.name);
-            if (sym->c_abi) cg_abi_bind_param(&cg, sym->c_abi, (unsigned)j, alloca_val);
+            if (native_decl->abi_plan) cg_abi_bind_param(&cg, native_decl->abi_plan, (unsigned)j, alloca_val);
             else LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + param_offset)),
                                 alloca_val);
             {
@@ -1686,6 +1701,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 if (pti.base == TypeZone) param_flags |= SymZone;
                 symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
                            pti, param_flags);
+                cg.locals.entries[cg.locals.count-1].iface_excluded_origin = iface_type_origin(&cg,param->as.var_decl.type);
             }
 
             /* ── DI: parameter variable ── */
@@ -1811,6 +1827,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
+            iface_signature_t *interface_contract = iface_cached_signature(&cg, method, decl);
+            if (cg_fh_skip_decl(&cg, method->headers, method->line)) continue;
             char fn_name[512];
             /* interface-qualified method: fn flyable_i.move() inside duck_t */
             if (method->as.fn_decl.iface_qualifier &&
@@ -1834,10 +1852,15 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                               method->as.fn_decl.name, fn_name, sizeof(fn_name));
             }
 
-            symbol_t *sym = cg_lookup_symbol(&cg, fn_name);
-            if (!sym) continue;
-            cg.current_fn = sym->value;
-            cg.current_return_types = method->as.fn_decl.return_types;
+            iface_native_t *native_decl = iface_native(&cg, method, decl);
+            if (!native_decl) {
+                iface_error(iface_node_loc(method), "missing registered method identity for body:", method->as.fn_decl.name);
+                continue;
+            }
+            cg.current_fn = native_decl->function;
+            cg.current_fn_is_entry_main = False;
+            cg.current_fn_linkage = method->as.fn_decl.linkage;
+            cg.current_return_types = interface_contract ? &interface_contract->result.type : method->as.fn_decl.return_types;
             cg.current_return_count = method->as.fn_decl.return_count;
             cg.current_struct_name = decl->as.type_decl.name;
             cg.current_fn_is_inline_method = True; /* inline struct method — this keyword allowed */
@@ -1898,7 +1921,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             for (usize_t j = 0; j < method->as.fn_decl.params.count; j++) {
                 node_t *param = method->as.fn_decl.params.items[j];
-                type_info_t pti = resolve_alias(&cg, param->as.var_decl.type);
+                type_info_t pti = interface_contract ? interface_contract->params[j].type : resolve_alias(&cg, param->as.var_decl.type);
                 LLVMTypeRef ptype = get_llvm_type(&cg, pti);
                 if (param->as.var_decl.flags & VdeclArray) {
                     int _nd = param->as.var_decl.array_ndim > 0 ? param->as.var_decl.array_ndim : 1;
@@ -1914,6 +1937,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     if (pti.base == TypeZone) param_flags |= SymZone;
                     symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
                                pti, param_flags);
+                    cg.locals.entries[cg.locals.count-1].iface_excluded_origin = iface_type_origin(&cg,param->as.var_decl.type);
                 }
 
                 /* DI: parameter */
@@ -1966,7 +1990,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
                 cg.cur_coro = prev_method_coro;
             } else if (!LLVMGetBasicBlockTerminator(cur_bb)) {
-                type_info_t rti = method->as.fn_decl.return_types[0];
+                type_info_t rti = interface_contract ? interface_contract->result.type : method->as.fn_decl.return_types[0];
                 if (rti.base == TypeVoid && !rti.is_pointer)
                     LLVMBuildRetVoid(cg.builder);
                 else
@@ -2256,6 +2280,7 @@ cg_cleanup:
 
     /* Context-owned graph/table arrays never survive a codegen invocation.
      * AST metadata remains arena-owned until the caller frees the AST. */
+    iface_free_contracts(&cg);
     free_interface_registry(&cg);
     if (cg.vtables_heap.pointer) deallocate(cg.vtables_heap);
 

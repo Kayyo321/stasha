@@ -49,7 +49,7 @@ class RunnerContracts(unittest.TestCase):
     def test_exact_inventory_passes(self):self.assertEqual(module.inventory_issues(['one','two'],['two','one']),[])
     def test_archive_rejection_before_import_codegen(self):
         result={'category':'exit','returncode':1,'stdout':'','stderr':
-                'error: incompatible ABI metadata\n --> caller.sts:1:1\nrequired ABI 6 for target x86_64-unknown-linux-gnu\n'}
+                'error: incompatible ABI metadata\n --> caller.sts:1:1\nrequired ABI 7 for target x86_64-unknown-linux-gnu\n'}
         self.assertEqual(archive_rejection_issues(result,self.root/'absent'),[])
         for stage in ['importing x','generating code','linking','archiving']:
             changed={**result,'stderr':result['stderr']+'[2026-10-10 00:00:00] '+stage+'\n'}

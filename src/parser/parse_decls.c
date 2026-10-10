@@ -1027,6 +1027,14 @@ static void parse_interface_body(parser_t *p, node_t *decl) {
             advance_parser(p);
         }
         consume(p, TokRParen, "')'");
+        /* A failed parameter parse must leave this signature before the outer
+         * method loop retries the same token. Do not admit new qualifier syntax;
+         * recover to its semicolon (or the interface's closing brace). All
+         * temporary parameter allocations remain owned by the AST arena. */
+        if (p->panic_mode) {
+            skip_to_recovery_point(p);
+            continue;
+        }
 
         /* optional return type: ': type' */
         type_info_t ret_type = NO_TYPE;

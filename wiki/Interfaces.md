@@ -259,6 +259,9 @@ type Foo: struct.[Drawable] {
 
 ## I0 graph and metadata checkpoint
 
+The graph rules below remain active. The I1a section that follows supersedes the
+historical unresolved-signature restriction and ABI 6 build requirement.
+
 I0 validates the selected declaration graph before type lowering. It rejects
 unknown or non-interface parents, duplicate declarations/parents/own methods,
 cycles, and unsupported interface metadata with source diagnostics. Limits are
@@ -273,9 +276,9 @@ contract. Previously truncated inputs need to be simplified or split.
 Inherited slots follow parent declaration order, recursively, then own methods.
 A repeated path to the same originating method declaration contributes one slot.
 Distinct declarations with the same method name remain separate pending origins,
-even if their signatures appear equal. Consuming such a group for a table or
-interface call is temporarily rejected until I1 implements canonical signature
-comparison. Empty-interface table construction is also temporarily unsupported.
+even if their signatures appear equal. At the I0 checkpoint, consuming such a group for a table or
+interface call was rejected pending canonical signature comparison; I1a below
+resolves supported equal signatures and rejects conflicts. Empty-interface table construction is also temporarily unsupported.
 Generic interfaces, interface return-storage annotations, and generic interface
 constraints are diagnosed rather than interpreted as verified contracts.
 
@@ -297,3 +300,73 @@ receiver, return, ownership-effect and calling-convention agreement; rejection o
 missing implementations; all boxing routes; protected table membership; indirect
 call CFI; object lifetime and object/table pairing are separate pending gates.
 This checkpoint provides no general interface memory-safety guarantee.
+
+## I1a declared signatures and table binding
+
+I1a checks declared interface contracts before emitting native declarations or
+tables. Same-name inherited requirements can share a slot only when their full
+supported source signatures agree. Signedness, nominal enum/struct/interface
+identity, parameter domains, every pointer permission layer and represented
+outer nullability are significant. Alias names may differ when their supported
+expanded contracts are equal; unsupported inner-nullable alias compositions
+produce a diagnostic. Nullable pointer aliases can carry the marker in their
+alias definition; the existing parser does not admit a use-site `?P` when P hides
+all pointer stars.
+
+A concrete type must explicitly declare the interface, directly or through its
+inherited interface closure. Every required method must have one available,
+compatible instance implementation. Selection chooses the declaration first:
+exact interface-qualified method, then ordinary unqualified method, then one
+unique related qualified implementation. A mismatched higher-priority method
+is an error, not a reason to silently select a lower-priority match. Inline
+owner-self spelling `fn S.m` remains an ordinary instance method; top-level
+`fn S.m` is static and cannot supply the implicit receiver.
+
+The bounded native subset includes fixed-arity ordinary instance methods with
+scalar, plain-enum, supported data-pointer or exact interface-descriptor values.
+Unsupported aggregate, callback/closure, C-ABI, variadic, coroutine and
+caller-effect contracts diagnose explicitly in the checked relations. Generic
+interface integration remains unqualified: an unused generic template can remain
+accepted without its relations being verified. At the admitted concrete boxing
+and qualified-call boundaries, retained generic or dependent source provenance
+is excluded even when a generated LLVM name happens to match an ordinary type.
+Unknown inferred concrete identity also requires a diagnostic at those boundaries.
+Field/index projections are not yet qualified sources for concrete boxing: copying
+one into a typed local does not erase its unresolved eligibility.
+This bounded eligibility check is not generic instantiation or assignment-flow
+verification. Ordinary concrete values inside unrelated generic functions, and
+generic calls whose declared result is a known ordinary type, remain eligible.
+Unrelated ordinary language features remain available. The method receiver is mutable; no readonly receiver
+contract or body-based effect inference is introduced.
+
+A table is published only after every selected declaration agrees with its
+source contract and actual native function ABI. Missing methods never become
+null entries. Dynamic and qualified interface calls use the formal cached
+function type and convention, with arity/representation checks. This does not
+yet provide complete source-type checking of every argument expression or
+conversion route.
+
+Existing readable identifier-valued concrete arguments can be shallow-copied
+into a temporary for boxing when their declared relation is ready. The copy
+retains field pointer permissions. Pointer-to-object boxing and implicit
+pointer-to-interface receivers are not admitted by this stage. Object lifetime,
+all expression forms and ownership remain separate work.
+
+### Archive migration: ABI 7
+
+I1a requires rebuilt Stasha archives and consumers for ABI 7. Unlike I0's ABI 6
+slot-order change, this is a semantic archive compatibility marker: the table
+slot ordering and two-word descriptor layout do not change again. Older bodies
+can contain unchecked table construction, and source-backed imports do not
+regenerate those bodies. Reading declarations alone cannot establish the new
+binding guarantee. Do not relabel sidecars; rebuild the provider and consumer.
+
+### Remaining interface gates
+
+I1a certifies the bounded declared binding/native-entry contract, not general
+interface memory safety. Full source-argument checks, all call/boxing routes,
+casts, conditional merges, return/store/field/array/slice propagation and default
+or partial descriptor initialization remain pending. Runtime table membership,
+indirect-call CFI, object/table pairing, lifetime, ownership and concurrency are
+separate requirements. An exact native call type does not prove that a descriptor
+contains a live or authentic object and table.

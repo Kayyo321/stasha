@@ -210,6 +210,7 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
                        alloca_val);
         symtab_add(&cg->locals, param->as.var_decl.name,
                    alloca_val, ptype, pti, False);
+        cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_type_origin(cg,param->as.var_decl.type);
     }
 
     gen_block(cg, method_decl->as.fn_decl.body);
@@ -546,6 +547,7 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
             LLVMBuildStore(cg->builder, LLVMGetParam(fn, (unsigned)j), alloca_val);
             symtab_add(&cg->locals, param->as.var_decl.name,
                        alloca_val, ptype, pti, False);
+            cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_type_origin(cg,param->as.var_decl.type);
         }
 
         /* Generic coroutine: wrap body with coro prologue/epilogue after

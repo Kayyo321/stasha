@@ -137,7 +137,7 @@ static boolean_t flatten_interface(cg_t *cg, usize_t index, usize_t depth) {
     }
     node_list_t *methods = &iface->decl->as.type_decl.methods;
     for (usize_t m = 0; m < methods->count; m++)
-        if (!iface_add_origin(iface, methods->items[m])) {
+        if (!cg_fh_skip_decl(cg, methods->items[m]->headers, methods->items[m]->line) && !iface_add_origin(iface, methods->items[m])) {
             iface->graph_state = IfaceInvalid;
             return False;
         }
@@ -287,9 +287,11 @@ static void validate_interface_declarations(cg_t *cg) {
                 "maximum of 32 own methods exceeded for", decl->as.type_decl.name);
         for (usize_t m = 0; m < decl->as.type_decl.methods.count; m++) {
             node_t *method = decl->as.type_decl.methods.items[m];
+            if (cg_fh_skip_decl(cg, method->headers, method->line)) continue;
             iface_check_method_metadata(cg, method);
             for (usize_t j = 0; j < m; j++)
-                if (!strcmp(method->as.fn_decl.name, decl->as.type_decl.methods.items[j]->as.fn_decl.name)) {
+                if (!cg_fh_skip_decl(cg, decl->as.type_decl.methods.items[j]->headers, decl->as.type_decl.methods.items[j]->line) &&
+                    !strcmp(method->as.fn_decl.name, decl->as.type_decl.methods.items[j]->as.fn_decl.name)) {
                     iface_error(iface_node_loc(method), "duplicate own method", method->as.fn_decl.name);
                     break;
                 }
@@ -332,260 +334,209 @@ static void validate_interface_declarations(cg_t *cg) {
     if (get_error_count() == before) iface_check_name_lengths(cg);
 }
 
-/* Compatibility adapter for existing consumers. I0 supplies deterministic group
- * order, but intentionally does not certify pending source signatures. Returning
- * zero is safe only after an explicit diagnostic, never as truncation. */
-static usize_t collect_all_iface_methods(cg_t *cg, const char *iface_name,
-                                         char **out_names, type_info_t *out_rets,
-                                         usize_t max_out) {
-    usize_t index = find_interface_index(cg, iface_name);
-    if (index == (usize_t)-1) {
-        iface_error(iface_node_loc(cg->ast), "unknown interface requested by collector", iface_name);
+#include "cg_signatures.c"
+
+/* I0 order is retained; every origin has passed full source equality. */
+static usize_t collect_all_iface_methods(cg_t *cg, const char *name,
+                                         char **names, type_info_t *returns, usize_t capacity) {
+    usize_t ii = find_interface_index(cg, name);
+    if (ii == (usize_t)-1 || !cg->interfaces[ii].signatures_ready ||
+        capacity < cg->interfaces[ii].group_count) {
+        iface_error(iface_node_loc(cg->ast), "collector requires complete signature-ready interface:", name);
         return 0;
     }
-    iface_reg_t *iface = &cg->interfaces[index];
-    if (iface->graph_state != IfaceGraphReady || max_out < iface->group_count) {
-        iface_error(iface_node_loc(iface->decl),
-            max_out < iface->group_count ? "collector capacity is smaller than complete graph for" :
-                                          "collector requires a ready graph for", iface_name);
-        return 0;
+    iface_reg_t *r = &cg->interfaces[ii];
+    for (usize_t i = 0; i < r->group_count; ++i) {
+        names[i] = r->groups[i].name; returns[i] = r->groups[i].signature->result.type;
     }
-    for (usize_t i = 0; i < iface->group_count; i++) {
-        if (iface->groups[i].origin_count > 1) {
-            iface_error(iface_node_loc(iface->decl),
-                "multiple distinct origins for method require signature validation (unsupported in I0):",
-                iface->groups[i].name);
-            return 0;
-        }
-    }
-    for (usize_t i = 0; i < iface->group_count; i++) {
-        node_t *origin = iface->groups[i].origins[0];
-        out_names[i] = iface->groups[i].name;
-        out_rets[i] = origin->as.fn_decl.return_count
-            ? origin->as.fn_decl.return_types[0] : NO_TYPE;
-    }
-    return iface->group_count;
+    return r->group_count;
 }
 
-/* Find vtable for (struct_name, iface_name) pair */
-static usize_t find_vtable_idx(cg_t *cg, const char *struct_name, const char *iface_name) {
-    for (usize_t i = 0; i < cg->vtable_count; i++) {
-        if (strcmp(cg->vtables[i].struct_name, struct_name) == 0 &&
-            strcmp(cg->vtables[i].iface_name, iface_name) == 0)
-            return i;
-    }
-    return (usize_t)-1;
+typedef struct { boolean_t success; usize_t table; iface_binding_t *binding; } iface_table_result_t;
+static iface_table_result_t iface_table_failure(void) {
+    return (iface_table_result_t){False, (usize_t)-1, Null};
 }
-
-/* Create/return vtable for (struct_name, iface_name) pair.
-   Requires: all functions are forward-declared.
-   Builds a global constant struct of function pointers. */
-static usize_t ensure_vtable(cg_t *cg, const char *struct_name, const char *iface_name) {
-    /* check if already exists */
-    usize_t existing = find_vtable_idx(cg, struct_name, iface_name);
-    if (existing != (usize_t)-1) return existing;
-
-    /* find the interface */
+static iface_table_result_t ensure_vtable(cg_t *cg, const char *owner_name, const char *iface_name) {
     usize_t ii = find_interface_index(cg, iface_name);
-    if (ii == (usize_t)-1) {
-        /* unknown interface — skip gracefully */
-        return (usize_t)-1;
+    node_t *owner = iface_named_type(cg, owner_name, iface_node_loc(cg->ast));
+    if (!owner || ii == (usize_t)-1) return iface_table_failure();
+    iface_binding_t *b = iface_find_binding(cg, owner, ii);
+    if (!b) {
+        iface_error(iface_node_loc(owner), "no declared/transitive interface implementation relation for", iface_name);
+        return iface_table_failure();
     }
-
-    /* collect all interface methods */
-    char *method_names[32];
-    type_info_t method_rets[32];
-    usize_t method_count = collect_all_iface_methods(cg, iface_name,
-                                                      method_names, method_rets, 32);
-    if (method_count == 0) {
-        if (cg->interfaces[ii].group_count == 0)
-            iface_error(iface_node_loc(cg->interfaces[ii].decl),
-                "empty-interface table construction is unsupported in I0:", iface_name);
-        return (usize_t)-1;
+    if (b->state == IfaceBindingTableReady) return (iface_table_result_t){True, b->table_index, b};
+    if (b->state == IfaceBindingLocalUnavailable) {
+        iface_error(iface_node_loc(owner), "imported internal interface implementation is unavailable for local table:", iface_name);
+        return iface_table_failure();
     }
-
-    struct_reg_t *sr = find_struct(cg, struct_name);
-    usize_t base = strlen(struct_name) + strlen(iface_name);
-    boolean_t names_fit = base <= 511 - 14; /* __S__I__vtable_t */
-    for (usize_t i = 0; i < method_count; i++) {
-        usize_t length = base + strlen(method_names[i]);
-        if (length + 2 > 511 ||
-            (sr && sr->mod_prefix && sr->mod_prefix[0] &&
-             length + strlen(sr->mod_prefix) + 6 > 511)) names_fit = False;
+    if (b->state != IfaceBindingNativeReady) {
+        iface_error(iface_node_loc(owner), "interface binding is not native-ready for", iface_name);
+        return iface_table_failure();
     }
-    if (!names_fit) {
-        iface_error(iface_node_loc(cg->interfaces[ii].decl),
-            "formatted interface name exceeds maximum of 511 bytes for", struct_name);
-        return (usize_t)-1;
+    iface_reg_t *r = &cg->interfaces[ii];
+    if (!r->group_count) {
+        iface_error(iface_node_loc(owner), "empty-interface table construction is unsupported in I1a:", iface_name);
+        return iface_table_failure();
     }
-    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
-
-    /* vtable type: struct of N ptr (one per method) */
-    heap_t vt_fields_heap = allocate(method_count, sizeof(LLVMTypeRef));
-    LLVMTypeRef *vt_fields = vt_fields_heap.pointer;
-    for (usize_t i = 0; i < method_count; i++) vt_fields[i] = ptr_t;
-
-    char vt_type_name[512];
-    snprintf(vt_type_name, sizeof(vt_type_name), "__%s__%s__vtable_t",
-             struct_name, iface_name);
-    LLVMTypeRef vt_type = LLVMStructCreateNamed(cg->ctx, vt_type_name);
-    LLVMStructSetBody(vt_type, vt_fields, (unsigned)method_count, 0);
-    deallocate(vt_fields_heap);
-
-    /* find function pointer for each method */
-    heap_t fn_ptrs_heap = allocate(method_count, sizeof(LLVMValueRef));
-    LLVMValueRef *fn_ptrs = fn_ptrs_heap.pointer;
-
-    for (usize_t i = 0; i < method_count; i++) {
-        char mangled[512];
-        /* try iface-qualified name first: "struct.iface.method" */
-        snprintf(mangled, sizeof(mangled), "%s.%s.%s",
-                 struct_name, iface_name, method_names[i]);
-        symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
-
-        if (!fn_sym && sr && sr->mod_prefix && sr->mod_prefix[0]) {
-            snprintf(mangled, sizeof(mangled), "%s__%s__%s__%s",
-                     sr->mod_prefix, struct_name, iface_name, method_names[i]);
-            fn_sym = cg_lookup_symbol(cg, mangled);
+    char type_name[512], global_name[512];
+    int tn = snprintf(type_name, sizeof(type_name), "__%s__%s__vtable_t", owner_name, iface_name);
+    int gn = snprintf(global_name, sizeof(global_name), "__%s__%s__vtable", owner_name, iface_name);
+    if (tn < 0 || gn < 0 || (usize_t)tn >= sizeof(type_name) || (usize_t)gn >= sizeof(global_name)) {
+        iface_error(iface_node_loc(owner), "formatted interface name exceeds maximum of 511 bytes for", owner_name);
+        return iface_table_failure();
+    }
+    /* Check the entire temporary slot array before creating any LLVM global. */
+    LLVMTypeRef fields[IfaceMaxMethods]; LLVMValueRef slots[IfaceMaxMethods];
+    for (usize_t i = 0; i < r->group_count; ++i) {
+        if (!b->functions[i]) {
+            iface_error(iface_node_loc(owner), "incomplete native binding for", r->groups[i].name);
+            return iface_table_failure();
         }
-        if (!fn_sym) {
-            /* try plain struct.method */
-            if (sr && sr->mod_prefix && sr->mod_prefix[0]) {
-                snprintf(mangled, sizeof(mangled), "%s__%s__%s",
-                         sr->mod_prefix, struct_name, method_names[i]);
-            } else {
-                snprintf(mangled, sizeof(mangled), "%s.%s",
-                         struct_name, method_names[i]);
-            }
-            fn_sym = cg_lookup_symbol(cg, mangled);
+        fields[i] = LLVMPointerTypeInContext(cg->ctx, 0); slots[i] = b->functions[i];
+    }
+    if (cg->vtable_count == cg->vtable_cap) {
+        if (cg->vtable_cap > SIZE_MAX / sizeof(cg->vtables[0]) / 2) {
+            iface_error(iface_node_loc(owner), "vtable allocation limit exceeded for", owner_name);
+            return iface_table_failure();
         }
-        fn_ptrs[i] = fn_sym ? fn_sym->value : LLVMConstNull(ptr_t);
+        usize_t cap = cg->vtable_cap ? cg->vtable_cap * 2 : 8;
+        cg->vtables_heap = cg->vtables_heap.pointer ? reallocate(cg->vtables_heap, cap * sizeof(cg->vtables[0])) : allocate(cap, sizeof(cg->vtables[0]));
+        cg->vtables = cg->vtables_heap.pointer; cg->vtable_cap = cap;
     }
-
-    /* create global vtable constant */
-    char vt_global_name[512];
-    snprintf(vt_global_name, sizeof(vt_global_name), "__%s__%s__vtable",
-             struct_name, iface_name);
-    LLVMValueRef vt_global = LLVMAddGlobal(cg->module, vt_type, vt_global_name);
-    LLVMSetLinkage(vt_global, LLVMInternalLinkage);
-    LLVMValueRef vt_init = LLVMConstNamedStruct(vt_type, fn_ptrs, (unsigned)method_count);
-    LLVMSetInitializer(vt_global, vt_init);
-    LLVMSetGlobalConstant(vt_global, 1);
-    deallocate(fn_ptrs_heap);
-
-    /* register in vtable registry */
-    if (cg->vtable_count >= cg->vtable_cap) {
-        usize_t new_cap = cg->vtable_cap < 8 ? 8 : cg->vtable_cap * 2;
-        if (cg->vtables_heap.pointer == Null)
-            cg->vtables_heap = allocate(new_cap, sizeof(cg->vtables[0]));
-        else
-            cg->vtables_heap = reallocate(cg->vtables_heap,
-                                           new_cap * sizeof(cg->vtables[0]));
-        cg->vtables = cg->vtables_heap.pointer;
-        cg->vtable_cap = new_cap;
-    }
+    LLVMTypeRef vt = LLVMStructCreateNamed(cg->ctx, type_name);
+    LLVMStructSetBody(vt, fields, (unsigned)r->group_count, 0);
+    LLVMValueRef global = LLVMAddGlobal(cg->module, vt, global_name);
+    LLVMSetLinkage(global, LLVMInternalLinkage);
+    LLVMSetInitializer(global, LLVMConstNamedStruct(vt, slots, (unsigned)r->group_count));
+    LLVMSetGlobalConstant(global, 1);
     usize_t vi = cg->vtable_count++;
-    cg->vtables[vi].struct_name = (char *)struct_name;
-    cg->vtables[vi].iface_name  = (char *)iface_name;
-    cg->vtables[vi].vtable_global = vt_global;
-    cg->vtables[vi].vtable_type   = vt_type;
-    return vi;
+    cg->vtables[vi].struct_name = (char *)owner_name; cg->vtables[vi].iface_name = (char *)iface_name;
+    cg->vtables[vi].vtable_global = global; cg->vtables[vi].vtable_type = vt;
+    b->table_index = vi; b->state = IfaceBindingTableReady;
+    return (iface_table_result_t){True, vi, b};
 }
-
-/* Construct a fat pointer { obj_ptr, vtable_ptr } from a struct pointer and vtable.
-   Returns the fat pointer value (struct value, not pointer). */
-static LLVMValueRef construct_fat_ptr(cg_t *cg, const char *struct_name,
-                                        const char *iface_name,
-                                        LLVMValueRef struct_ptr) {
-    usize_t ii = find_interface_index(cg, iface_name);
-    if (ii == (usize_t)-1) return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
-
-    usize_t vi = find_vtable_idx(cg, struct_name, iface_name);
-    if (vi == (usize_t)-1) {
-        vi = ensure_vtable(cg, struct_name, iface_name);
-        if (vi == (usize_t)-1)
-            return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+static void iface_finish_bindings(cg_t *cg) {
+    usize_t before = get_error_count();
+    for (usize_t ii = 0; ii < cg->iface_count; ++ii)
+        for (usize_t i = 0; i < cg->interfaces[ii].group_count; ++i)
+            iface_native_type(cg, cg->interfaces[ii].groups[i].signature);
+    for (iface_binding_t *b = cg->iface_bindings; b; b = b->next) {
+        if (b->state != IfaceBindingSourceReady) continue;
+        iface_reg_t *r = &cg->interfaces[b->iface_index]; boolean_t good = True, unavailable = False;
+        for (usize_t i = 0; i < r->group_count; ++i) {
+            iface_signature_t *s = b->methods[i];
+            iface_native_t *n = s ? iface_native(cg, s->decl, b->owner) : Null;
+            if (!n && s && b->owner->from_lib && s->decl->as.fn_decl.linkage == LinkageInternal) {
+                unavailable = True; continue; /* provider owns its already-validated table */
+            }
+            if (!iface_native_matches(cg, r->groups[i].signature, n)) {
+                iface_error(iface_node_loc(s ? s->decl : b->owner), "selected implementation native ABI/addressability mismatch:", r->groups[i].name);
+                good = False;
+            } else b->functions[i] = n->function;
+        }
+        b->state = !good ? IfaceBindingInvalid : unavailable ? IfaceBindingLocalUnavailable : IfaceBindingNativeReady;
     }
-
-    LLVMTypeRef fat_type = cg->interfaces[ii].fat_ptr_type;
-    if (!fat_type) return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
-
-    LLVMValueRef fat_alloca = alloc_in_entry(cg, fat_type, "fat_ptr");
-    /* field 0: obj_ptr */
-    LLVMValueRef obj_gep = LLVMBuildStructGEP2(cg->builder, fat_type, fat_alloca, 0, "obj_f");
-    LLVMBuildStore(cg->builder, struct_ptr, obj_gep);
-    /* field 1: vtable_ptr */
-    LLVMValueRef vt_gep = LLVMBuildStructGEP2(cg->builder, fat_type, fat_alloca, 1, "vt_f");
-    LLVMBuildStore(cg->builder, cg->vtables[vi].vtable_global, vt_gep);
-    return LLVMBuildLoad2(cg->builder, fat_type, fat_alloca, "fat_val");
+    if (get_error_count() != before) return;
+    for (iface_binding_t *b = cg->iface_bindings; b; b = b->next)
+        if (b->state == IfaceBindingNativeReady && cg->interfaces[b->iface_index].group_count)
+            ensure_vtable(cg, b->owner->as.type_decl.name, cg->interfaces[b->iface_index].name);
 }
-
-/* Generate a method call via vtable dispatch (for interface-typed variables).
-   obj_sym: the symbol holding the fat-pointer value (alloca of { ptr, ptr }). */
-static LLVMValueRef gen_iface_method_call(cg_t *cg, node_t *node,
-                                            symbol_t *obj_sym, usize_t iface_idx) {
-    char *method = node->as.method_call.method;
-    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(cg->ctx, 0);
-
-    /* collect all interface methods to find the method index */
-    char *all_methods[32];
-    type_info_t all_rets[32];
-    usize_t total = collect_all_iface_methods(cg,
-                        cg->interfaces[iface_idx].name,
-                        all_methods, all_rets, 32);
-
-    usize_t method_idx = (usize_t)-1;
-    for (usize_t i = 0; i < total; i++) {
-        if (strcmp(all_methods[i], method) == 0) { method_idx = i; break; }
+/* Construction consumes a ready relation; there is no null-value recovery that
+ * can be mistaken for a successful descriptor. */
+static LLVMValueRef construct_fat_ptr(cg_t *cg, iface_table_result_t table, LLVMValueRef object) {
+    if (!table.success || !table.binding || !object ||
+        table.binding->state != IfaceBindingTableReady || LLVMGetTypeKind(LLVMTypeOf(object)) != LLVMPointerTypeKind) return Null;
+    LLVMTypeRef fat = cg->interfaces[table.binding->iface_index].fat_ptr_type;
+    LLVMValueRef value = LLVMGetUndef(fat);
+    value = LLVMBuildInsertValue(cg->builder, value, object, 0, "iface.object");
+    return LLVMBuildInsertValue(cg->builder, value, cg->vtables[table.table].vtable_global, 1, "iface.table");
+}
+static type_info_t scalar_expr_type(cg_t *, node_t *, type_info_t);
+static boolean_t scalar_numeric(type_info_t);
+static LLVMValueRef gen_scalar_as(cg_t *, node_t *, type_info_t);
+static LLVMValueRef iface_call_recovery(cg_t *cg, iface_signature_t *s) {
+    LLVMTypeRef t = s && s->valid ? get_llvm_type(cg, s->result.type) : LLVMInt32TypeInContext(cg->ctx);
+    return LLVMGetTypeKind(t) == LLVMVoidTypeKind ? LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0) : LLVMGetUndef(t);
+}
+/* Only reliable primitive conversions use scalar contextualization. Everything
+ * else must already have the formal representation; source flow is I1b. */
+static LLVMValueRef iface_emit_call(cg_t *cg, node_t *node, iface_signature_t *s,
+                                    LLVMValueRef fn, LLVMValueRef object) {
+    if (!s || !s->valid || !s->native_type || !fn || !object) return iface_call_recovery(cg, s);
+    if (node->as.method_call.args.count != s->count) {
+        iface_error(iface_node_loc(node), "interface call argument count does not match declaration:", node->as.method_call.method);
+        return iface_call_recovery(cg, s);
     }
-    if (method_idx == (usize_t)-1) {
-        diag_begin_error("interface '%s' has no method '%s'",
-                         cg->interfaces[iface_idx].name, method);
-        diag_span(DIAG_NODE(node), True, "");
-        diag_finish();
-        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    if (LLVMTypeOf(object) != LLVMPointerTypeInContext(cg->ctx, 0)) {
+        iface_error(iface_node_loc(node), "interface receiver representation mismatch:", node->as.method_call.method);
+        return iface_call_recovery(cg, s);
     }
-
-    /* load the fat pointer { obj_ptr, vtable_ptr } from the alloca */
-    LLVMTypeRef fat_type = cg->interfaces[iface_idx].fat_ptr_type;
-    LLVMValueRef fat_val = LLVMBuildLoad2(cg->builder, fat_type, obj_sym->value, "fat");
-
-    /* extract obj_ptr (field 0) and vtable_ptr (field 1) */
-    LLVMValueRef obj_ptr    = LLVMBuildExtractValue(cg->builder, fat_val, 0, "iface_obj");
-    LLVMValueRef vtable_ptr = LLVMBuildExtractValue(cg->builder, fat_val, 1, "iface_vt");
-
-    /* GEP into the vtable to get the function pointer slot */
-    LLVMValueRef method_idx_val = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
-                                                (unsigned long long)method_idx, 0);
-    LLVMValueRef fn_ptr_ptr = LLVMBuildGEP2(cg->builder, ptr_t, vtable_ptr,
-                                              &method_idx_val, 1, "fn_slot");
-    LLVMValueRef fn_ptr = LLVMBuildLoad2(cg->builder, ptr_t, fn_ptr_ptr, "fn_ptr");
-
-    /* build args: obj_ptr + user args */
-    usize_t user_argc = node->as.method_call.args.count;
-    usize_t argc = user_argc + 1;
-    heap_t args_heap = allocate(argc, sizeof(LLVMValueRef));
-    LLVMValueRef *args = args_heap.pointer;
-    args[0] = obj_ptr;
-    for (usize_t i = 0; i < user_argc; i++)
-        args[i + 1] = gen_expr(cg, node->as.method_call.args.items[i]);
-
-    /* build function type using the interface method's return type */
-    type_info_t ret_ti = (method_idx < total) ? all_rets[method_idx] : NO_TYPE;
-    LLVMTypeRef ret_llvm = (ret_ti.base == TypeVoid && !ret_ti.is_pointer)
-        ? LLVMVoidTypeInContext(cg->ctx)
-        : get_llvm_type(cg, ret_ti);
-
-    heap_t param_types_heap = allocate(argc, sizeof(LLVMTypeRef));
-    LLVMTypeRef *param_types = param_types_heap.pointer;
-    param_types[0] = ptr_t; /* this */
-    for (usize_t i = 1; i < argc; i++)
-        param_types[i] = LLVMTypeOf(args[i]);
-    LLVMTypeRef fn_type = LLVMFunctionType(ret_llvm, param_types, (unsigned)argc, 0);
-    deallocate(param_types_heap);
-
-    LLVMValueRef result = LLVMBuildCall2(cg->builder, fn_type, fn_ptr,
-                                          args, (unsigned)argc, "");
-    deallocate(args_heap);
-    return result;
+    heap_t h = allocate(s->count + 1, sizeof(LLVMValueRef)); LLVMValueRef *args = h.pointer; args[0] = object;
+    usize_t before = get_error_count();
+    for (usize_t i = 0; i < s->count; ++i) {
+        node_t *arg = node->as.method_call.args.items[i]; type_info_t formal = s->params[i].type;
+        type_info_t actual = scalar_expr_type(cg, arg, formal);
+        args[i + 1] = scalar_numeric(actual) && scalar_numeric(formal) ? gen_scalar_as(cg, arg, formal) : gen_expr(cg, arg);
+        if (!args[i + 1] || LLVMTypeOf(args[i + 1]) != get_llvm_type(cg, formal))
+        {
+            ast_source_loc_t loc = iface_node_loc(arg);
+            if (!loc.col) loc = iface_node_loc(node);
+            if (!loc.col) loc.col = 1;
+            if (!loc.len) loc.len = 1;
+            iface_error(loc, "interface argument representation requires unsupported conversion:", node->as.method_call.method);
+        }
+    }
+    LLVMValueRef result;
+    if (get_error_count() != before) result = iface_call_recovery(cg, s);
+    else { result = LLVMBuildCall2(cg->builder, s->native_type, fn, args, (unsigned)s->count + 1, ""); LLVMSetInstructionCallConv(result, LLVMCCallConv); }
+    deallocate(h); return result;
+}
+static boolean_t iface_receiver_value(cg_t *cg, node_t *node, type_info_t t) {
+    node_t *seen[IfaceMaxMetadataDepth]; iface_type_t canonical;
+    if (!iface_canonical_type(cg, t, False, False, seen, 0, &canonical)) return False;
+    if (canonical.type.is_pointer) {
+        iface_error(iface_node_loc(node), "pointer-to-interface descriptor receiver is unsupported:", node->as.method_call.method);
+        return False;
+    }
+    return True;
+}
+static LLVMValueRef gen_iface_method_call(cg_t *cg, node_t *node, symbol_t *object, usize_t ii) {
+    iface_reg_t *r = &cg->interfaces[ii]; iface_method_group_t *g = iface_group(cg, ii, node->as.method_call.method);
+    if (!g || !r->signatures_ready) {
+        iface_error(iface_node_loc(node), "unknown/unready interface method:", node->as.method_call.method);
+        return iface_call_recovery(cg, Null);
+    }
+    if (!iface_receiver_value(cg, node, object->stype)) return iface_call_recovery(cg, g->signature);
+    if (node->as.method_call.args.count != g->signature->count) {
+        iface_error(iface_node_loc(node), "interface call argument count does not match declaration:", g->name);
+        return iface_call_recovery(cg, g->signature);
+    }
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(cg->ctx, 0);
+    if (!object->value || LLVMTypeOf(object->value) != ptr || (object->type && object->type != r->fat_ptr_type)) {
+        iface_error(iface_node_loc(node), "interface receiver storage representation mismatch:", g->name);
+        return iface_call_recovery(cg, g->signature);
+    }
+    LLVMValueRef fat = LLVMBuildLoad2(cg->builder, r->fat_ptr_type, object->value, "fat");
+    LLVMValueRef obj = LLVMBuildExtractValue(cg->builder, fat, 0, "iface_obj");
+    LLVMValueRef table = LLVMBuildExtractValue(cg->builder, fat, 1, "iface_vt");
+    usize_t slot = (usize_t)(g - r->groups);
+    LLVMValueRef index = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), slot, 0);
+    LLVMValueRef address = LLVMBuildGEP2(cg->builder, ptr, table, &index, 1, "fn_slot");
+    LLVMValueRef fn = LLVMBuildLoad2(cg->builder, ptr, address, "fn_ptr");
+    return iface_emit_call(cg, node, g->signature, fn, obj);
+}
+/* The inference seam consults canonical slot metadata before any bare-name
+ * method fallback. This is a result query, not source-actual validation. */
+static iface_signature_t *iface_call_signature(cg_t *cg, node_t *node) {
+    if (!node || node->kind != NodeMethodCall) return Null;
+    node_t *obj = node->as.method_call.object; usize_t ii = (usize_t)-1;
+    if (obj->kind == NodeMemberExpr) ii = find_interface_index(cg, obj->as.member_expr.field);
+    if (ii == (usize_t)-1) {
+        type_info_t t = scalar_expr_type(cg, obj, NO_TYPE);
+        if (t.base == TypeUser && t.user_name) ii = find_interface_index(cg, t.user_name);
+    }
+    if (ii == (usize_t)-1) return Null;
+    iface_method_group_t *g = iface_group(cg, ii, node->as.method_call.method);
+    return g ? g->signature : Null;
 }
