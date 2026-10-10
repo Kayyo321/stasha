@@ -56,6 +56,9 @@ class QualificationShellTests(unittest.TestCase):
     def test_factory_result_failure_blocks_receipt(self):
         result,receipt=self.invoke(82,stale=True,fail_match='tests/interfaces/factory_result_run.py')
         self.assertEqual(result.returncode,82,result.stderr); self.assertIsNone(receipt)
+    def test_descriptor_default_failure_blocks_receipt(self):
+        result,receipt=self.invoke(83,stale=True,fail_match='tests/interfaces/descriptor_defaults_run.py')
+        self.assertEqual(result.returncode,83,result.stderr); self.assertIsNone(receipt)
     def test_all_mock_stages_reach_explicit_bounded_receipt(self):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)

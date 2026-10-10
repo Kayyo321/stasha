@@ -519,13 +519,20 @@ static LLVMValueRef gen_iface_method_call(cg_t *cg, node_t *node, symbol_t *obje
         iface_error(iface_node_loc(node), "interface receiver storage representation mismatch:", g->name);
         return iface_call_recovery(cg, g->signature);
     }
+    if (!iface_source_check_slot(cg, node, g->signature)) return iface_call_recovery(cg, g->signature);
+    /* Snapshot once before arguments. These guards require readable, defined
+     * descriptor words; nonnull values do not prove membership or lifetime. */
     LLVMValueRef fat = LLVMBuildLoad2(cg->builder, r->fat_ptr_type, object->value, "fat");
     LLVMValueRef obj = LLVMBuildExtractValue(cg->builder, fat, 0, "iface_obj");
     LLVMValueRef table = LLVMBuildExtractValue(cg->builder, fat, 1, "iface_vt");
+    LLVMValueRef null_object = LLVMBuildICmp(cg->builder, LLVMIntEQ, obj, LLVMConstNull(ptr), "iface.null.object");
+    LLVMValueRef null_table = LLVMBuildICmp(cg->builder, LLVMIntEQ, table, LLVMConstNull(ptr), "iface.null.table");
+    scalar_trap_if(cg, LLVMBuildOr(cg->builder, null_object, null_table, "iface.empty"), 7);
     usize_t slot = (usize_t)(g - r->groups);
     LLVMValueRef index = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), slot, 0);
     LLVMValueRef address = LLVMBuildGEP2(cg->builder, ptr, table, &index, 1, "fn_slot");
     LLVMValueRef fn = LLVMBuildLoad2(cg->builder, ptr, address, "fn_ptr");
+    scalar_trap_if(cg, LLVMBuildICmp(cg->builder, LLVMIntEQ, fn, LLVMConstNull(ptr), "iface.null.slot"), 7);
     return iface_emit_call(cg, node, g->signature, fn, obj);
 }
 /* The inference seam consults canonical slot metadata before any bare-name

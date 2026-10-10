@@ -327,3 +327,36 @@ Genuine retained ABI10 archives remain accepted under their existing contracts,
 but old and fresh archived Holder projections still receive no new source proof.
 Source imports, reversed emission order, dead uses, cleanup exclusions, raw native
 return values and copy-out behavior have distinct qualification controls.
+
+## Descriptor defaults and null dispatch (ABI11)
+
+```sh
+python3 tests/interfaces/descriptor_defaults_run.py \
+  --compiler bin/stasha-descriptor-dev4 --artifacts /tmp/descriptor-defaults
+```
+
+This maintained entrypoint is restricted to the reviewed Linux x86-64 target and
+trusted builds of the exact reviewed production sources. It captures the supplied
+binary identity per invocation. Fixed production-source, fixture, panic-hook and
+emitted-IR identities gate the newly defined empty-descriptor runtime controls;
+compile success alone never grants execution. This is a qualification boundary,
+not an attestation mechanism for arbitrary supplied binaries.
+
+The stage includes strict compile/runtime categories, actual-driver imported
+source diagnostics, exact reason-7/side-effect/exit controls and isolated compiler
+units. Historical uninitialized, partial-word, forged and dangling descriptors
+never execute. Potentially invalid excluded transfers remain compile-only, even
+when accepted; they are not counted as safety rejections. Fully defined sentinel
+buffers test descriptor-only stores without reading uninitialized sibling fields.
+
+The initializer and dynamic-call guard guarantees are separate. Readable live
+descriptor storage and defined pointer words are prerequisites; a selected table
+slot must also be readable and yield a defined pointer for its null-slot check.
+No null comparison proves table membership, object pairing, lifetime or CFI.
+See [the exact default/null-dispatch contract](../../wiki/Interfaces.md#default-descriptors-and-null-dispatch-semantic-abi11).
+
+Genuine ABI10 providers retain older unguarded bodies. Local archive migration
+qualification checks their early refusal and rebuilt ABI11 provider/consumer
+execution; hosted CI does not claim historical compiler/archive coverage. All
+source-backed providers and consumers must be rebuilt. Earlier sections retain
+the marker numbers of their historical snapshots.

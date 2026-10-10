@@ -1,6 +1,45 @@
 # Kernel-readiness status
 
-## Source-local leaf factory result checkpoint (10 October 2026)
+## Descriptor defaults and null-dispatch checkpoint (10 October 2026)
+
+Supported ordinary local interface leaves now receive targeted empty descriptor
+stores through exact struct/fixed-array layouts, preserving unrelated siblings.
+Existing dynamic calls reject null object/table before table access and a null
+selected function pointer before invocation. Readable live descriptor storage and
+defined pointer words, plus a readable selected table slot yielding a defined
+pointer, remain prerequisites. This adds no table-membership, CFI, object-pairing,
+lifetime, ownership or concurrency proof. Supported contextual bare nil-to-I
+transfers now receive precise source-owned diagnostics. See
+[the complete contract and exclusions](Interfaces.md#default-descriptors-and-null-dispatch-semantic-abi11).
+
+**Rebuild all source-backed providers and consumers for semantic ABI11.** Genuine
+ABI10 retained bodies lack these guarantees; old archives reject before import,
+code generation or linking. Descriptor layout, slot order and native signatures
+are unchanged. Never relabel sidecars as a substitute for rebuilding.
+
+Frozen compiler SHA-256:
+`495d1dfdb60176ef7e5ac24d465e0966d53b265c59d3db57b5753119c3d0edfe`.
+The complete hosted pipeline including the new descriptor gate, all36 rebuilt
+standard libraries and qualified memory regressions pass. Focused evidence has
+116 strict rows (28 conventional valid executions),14 imported diagnostic rows,
+68 independently gated canonical-empty executions, and393 compiler-unit checks
+across28 complete compilations. A trusted relocated same-source build with a
+distinct binary identity passes the portable reviewed source/IR/hook gate.
+
+Local genuine archive qualification separately covers40 old-provider refusals,
+four rebuilt-provider inspections, eight valid source/archive executions and
+precise nil source spans. Historical invalid bodies never execute. Hosted CI does
+not claim the historical archive matrix. Earlier failed/canceled attempts and
+known historical B1 cleanup failure remain attributed in the
+[checkpoint receipt](../tests/qualification/checkpoint-interface-descriptor-defaults-2026-10-10.json).
+
+Malformed explicit transfers (including wrapped nil/capture paths), excluded
+carriers/effects, general helper history, generated spread/foreach/copy/append/raw
+memory and full native/kernel readiness remain open. The new targeted default
+loops have separate bounded evidence; K0 interface restrictions are unchanged.
+No fresh non-Linux/kernel boot/hardware qualification is claimed.
+
+## Historical source-local leaf factory result checkpoint (10 October 2026)
 
 Selected factory-to-local-copy-to-field-projection paths can now feed the existing
 identifier-valued interface use when their exact source-local producers and

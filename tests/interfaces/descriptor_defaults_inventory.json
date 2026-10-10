@@ -1,0 +1,1560 @@
+{
+  "valid-later-assignment": {
+    "category": "valid",
+    "source_sha256": "6e49f2f4776b14092b817bae7bbd118aa17625a4c37c8be4a5b2a7a2b8488a22",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "valid-loop-reentry": {
+    "category": "valid",
+    "source_sha256": "f047e3749079b66fd551cab19ac04a05b4e7b502d3d0bbcac0392705f9384a10",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "valid-self-member": {
+    "category": "valid",
+    "source_sha256": "2122c19af12169200f719af3dd9a09f4e474b66e585f779867344b125cf45357",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "valid-argument-order": {
+    "category": "valid",
+    "source_sha256": "b149510e3d4f3e42608c40b558e9210a092b34a5426444ba90f7b762e1e9f923",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "valid-nullable-controls": {
+    "category": "valid",
+    "source_sha256": "a6d388c2ea83d79b9ad9d86644daa41e0cd19af36b5e5f5273fc3d42eae200ea",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'failure'"
+          ]
+        ],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'failure'"
+          ]
+        ],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'failure'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'failure'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "empty-direct": {
+    "category": "empty-pending-review",
+    "source_sha256": "fbc2139b5d4d8c929c31f5b887f9b368bc47edba562919c6e76cfb4b8d889575",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "empty-alias": {
+    "category": "empty-pending-review",
+    "source_sha256": "608edf78c0d31e2ae6082d2f99d29c706a57d0282864b1dd8e170897dc8dbcdf",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "empty-field": {
+    "category": "empty-pending-review",
+    "source_sha256": "974e43ebf748bb9688d9778fc92a59ffe2cc219d85713b2e22decc66b1e17b17",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "empty-self": {
+    "category": "empty-pending-review",
+    "source_sha256": "68524d5928aa4bddc6b92859d78830409041c0b7dfdd8107ee31ec802c2e2452",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "empty-array": {
+    "category": "empty-pending-review",
+    "source_sha256": "a7f0d113ebcd7ad9ea41eaee188acd5bc13815244dc761cfc54c39417be27717",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "layout-multirank": {
+    "category": "compile-only",
+    "source_sha256": "9ac26d23beed242b08e3f7af4ca868c92a5a3de4630836161dab3cdcb4818f03",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "layout-large": {
+    "category": "compile-only",
+    "source_sha256": "797ec2a4f1d2b44ba5197f84af20761c3087052a167de80ebb1b5ffcaec49f9c",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'boxes'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'boxes'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-zero": {
+    "category": "compile-only",
+    "source_sha256": "56471c79eec8d4cc58448887ced9922324cdbf92fb2c9f45bb066be11d38c7c4",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'values'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'values'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-packed": {
+    "category": "compile-only",
+    "source_sha256": "ab5dc71bdf68f975af58b6a3d9762ee923c56677a8beec7c0392c87a9c9802fc",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "layout-generic": {
+    "category": "compile-only",
+    "source_sha256": "2971e672af7e7280ec7f35f6a0b6a0715c301c86e54744c8cf9b347c52c820b2",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "layout-comptime": {
+    "category": "compile-only",
+    "source_sha256": "d7673477ec00d715b5dad9ae25b8d03dd6e326a1ed581349c15084833acf023e",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-union-first": {
+    "category": "compile-only",
+    "source_sha256": "8beea5d2271c522d34a1e8c47fef185eb1b01a9eacde4bd9b3ed859ef615dd89",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-union-last": {
+    "category": "compile-only",
+    "source_sha256": "866d1ef3767a1ecbbf1903094ae79ef7af7a25da8e206f6e850fed6d4074af03",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "excluded-root-atomic": {
+    "category": "compile-only",
+    "source_sha256": "5939cca4aa0bab6f4266ffe17efa3b27d1cc93f6bec5b2f4983db6652efe3627",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "excluded-field-atomic": {
+    "category": "source-unavailable",
+    "source_sha256": "ec84629e9a37b4b4b184ecee7249395b961bad349081f011499e006198bfae78",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected a field type or method declaration in struct"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected a field type or method declaration in struct"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "excluded-root-volatile": {
+    "category": "compile-only",
+    "source_sha256": "c4b1615b2e77579d9de60f529494df357f1828cef709ecd63a69d62ee35157fc",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "excluded-field-volatile": {
+    "category": "source-unavailable",
+    "source_sha256": "95a124f6f614ae8a4bfd75be59af514a1385a5163bf26b84749644170ffa4519",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected a field type or method declaration in struct"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected a field type or method declaration in struct"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "excluded-root-tls": {
+    "category": "compile-only",
+    "source_sha256": "05805b64fcb43f3009880d34123f779df34b4afed3506e4028e0d293aa5c9f4a",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "excluded-field-tls": {
+    "category": "source-unavailable",
+    "source_sha256": "09e84018e7deeebe79ed64915c3987f338a7ee9b26568dd73413e7c463790980",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected a field type or method declaration in struct"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected a field type or method declaration in struct"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-local": {
+    "category": "reject",
+    "source_sha256": "6510e7f2d16c7bbec39935878ca100896db1e9db4cf79f3b73155349405d1f74",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'value'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'value'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-alias": {
+    "category": "reject",
+    "source_sha256": "ee5418643d337df018c5797e76ff16d1f02cfbb964113fdf308736a95be45e0f",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'value'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'value'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-assignment": {
+    "category": "reject",
+    "source_sha256": "93fb1024eb3b302090505da84e7cf51a01d7c13bb84bdc41657f7759693d06e3",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-member": {
+    "category": "reject",
+    "source_sha256": "abcf5758e723a17f653a36dc03c6e86b0576db27505346685aadc071c8a5b365",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-self": {
+    "category": "reject",
+    "source_sha256": "a44856dc074d019b55e0dc0d7aa6150c00a3ccf21f55762078039ab6b4d997dd",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-index": {
+    "category": "reject",
+    "source_sha256": "a678527785c7d0a7d1867ab7a1432964b1f4b4e97968a70993ae1841e925c3a4",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-deref": {
+    "category": "reject",
+    "source_sha256": "8f1962c1e7297904502de43c76bdc080f18aa6cb68f3bcb2c15b9a428456342c",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-field-init": {
+    "category": "reject",
+    "source_sha256": "4ddb5c05e6433818e0672358b0ffee93d78205c4091062bcd8fe4b6f3494b2e6",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'box'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'box'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-array-init": {
+    "category": "reject",
+    "source_sha256": "723737756a2b86861e95afcb1618311124f8ced84d229cde55b26ea4652bb42f",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'values'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "warning",
+            "unused variable 'values'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-return": {
+    "category": "reject",
+    "source_sha256": "537019860d2c1074f84bd9cdd55a7bef291a82dfcf612f8765337598782e6536",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-return-multi": {
+    "category": "reject",
+    "source_sha256": "a1a32506238bf946eadc0ec1c7c463a048a56abc6500abb5806feb7f1388610f",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-multiassign": {
+    "category": "reject",
+    "source_sha256": "57724ccf44aa3b005ae980f4fdaee87eefb90f66f10b60e2ff42659cba9d64c2",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 4 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 4 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "nil-unsafe": {
+    "category": "reject",
+    "source_sha256": "c5ea14dea210e57e1ba1c7f95d1ca18d9e7e61d961ef634f7326e74022bd166b",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "deferred-array-root-nil": {
+    "category": "compile-only-deferred",
+    "source_sha256": "4715764d632b94df58302a6cc97c3f7b82c075ad43fc277c2915b52177adabe5",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    },
+    "scope": "Accepted compile-only transfer exclusion; never execute."
+  },
+  "deferred-partial-rank-nil": {
+    "category": "compile-only-deferred",
+    "source_sha256": "94e0930ae04500b19a6c30debfc81ac1eeee185c589ea15f0f38ab44dd23376f",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    },
+    "scope": "Accepted compile-only transfer exclusion; never execute."
+  },
+  "deferred-cast-nil": {
+    "category": "compile-only-deferred",
+    "source_sha256": "30798a63495f903c21935e6a0c877a7377c85d430be88055fd77b18b05c0294b",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected ';', found 'nil'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "expected ';', found 'nil'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors"
+          ]
+        ],
+        "artifact": false
+      }
+    },
+    "scope": "Existing cast spelling parse rejection; not evidence of contextual nil rejection."
+  },
+  "deferred-field-rank-nil": {
+    "category": "compile-only-deferred",
+    "source_sha256": "06ddd8342d5fc3f75e51e5b4071bef945c7fcb6c1205c861cfee1d28497610e5",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'h'"
+          ]
+        ],
+        "artifact": true
+      }
+    },
+    "scope": "Accepted compile-only transfer exclusion; never execute."
+  },
+  "layout-deep-unrelated": {
+    "category": "compile-only",
+    "source_sha256": "d17751209356740764c45403f77213a3358fa998b93162c37607b8176190b2d1",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-wide-unrelated": {
+    "category": "compile-only",
+    "source_sha256": "a8ddb0ddbd05a438951be1e93d5837a55d6a4cbe6532a008cb4969b7ad470859",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-dag-budget": {
+    "category": "layout-budget-reject",
+    "source_sha256": "8920f6ad516c356062fccf32ca94f4631fb63ef51f5f45f89c6784b2110d2e7e",
+    "optimizations": {
+      "0": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "cannot establish interface default layout: expanded emission budget exhausted"
+          ],
+          [
+            "warning",
+            "unused variable 'value'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      },
+      "3": {
+        "returncode": 1,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "error",
+            "cannot establish interface default layout: expanded emission budget exhausted"
+          ],
+          [
+            "warning",
+            "unused variable 'value'"
+          ],
+          [
+            "error",
+            "aborting due to 3 previous errors; 1 warning emitted"
+          ]
+        ],
+        "artifact": false
+      }
+    }
+  },
+  "valid-receiver-snapshot": {
+    "category": "valid",
+    "source_sha256": "e22e52c55928f9d0c13b7cadc2d3a2f1364faac2693955a543b758ed11a44cd3",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "valid-two-argument-order": {
+    "category": "valid",
+    "source_sha256": "71dedafd06dc9467fdb1600a5a857e372ec365caf105c9d430cae4834e5faae6",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "1": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "2": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [],
+        "artifact": true
+      }
+    }
+  },
+  "layout-tagged-exclusion": {
+    "category": "compile-only",
+    "source_sha256": "dc9c1c0f98837870902237bfe552e78c7c0f6697dcf1d539e1263bc8574c9acb",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-pointer-pair-shape": {
+    "category": "compile-only",
+    "source_sha256": "b71622252553cba81cb3ab7929ba90b18ab27a438375da6bf126c468d93ade9c",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-any-exclusion": {
+    "category": "compile-only",
+    "source_sha256": "9caf4ea86430151f3fc42acdc884a5d06edb48d900f56d011717dbfadf55db7a",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-wide-distinct-unrelated": {
+    "category": "compile-only",
+    "source_sha256": "2900e0dd20eb15e5d79ecddd15d0a808fe5e9be16b57fbd9aef45a3d765cc628",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  },
+  "layout-wide-distinct-with-leaf": {
+    "category": "compile-only",
+    "source_sha256": "72c85b2517a4220e399f08fb98c234dcbeaeeed8a3932767fd5eb226df15de16",
+    "optimizations": {
+      "0": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      },
+      "3": {
+        "returncode": 0,
+        "stdout": "",
+        "diagnostics": [
+          [
+            "warning",
+            "unused variable 'value'"
+          ]
+        ],
+        "artifact": true
+      }
+    }
+  }
+}

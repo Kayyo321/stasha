@@ -219,12 +219,12 @@ assertion, not physical backing or ownership evidence.
 Invalid index/range/shape checks call nonreturning
 `void __stasha_panic(u32 reason)` with reason **6**. The hosted weak default traps
 without I/O. Freestanding final images must supply the hook. Scalar reasons 1–5
-are unchanged; 7 (null) remains reserved; B1 uses 8 for retained allocation failure. Returning from the
+are unchanged; supported interface dynamic dispatch uses 7 for null object/table/slot; B1 uses 8 for retained allocation failure. Returning from the
 hook violates its ABI; there is no unwinding or defer-on-panic guarantee.
 
 B1 introduced archive marker **ABI 5** for these source-compatibility changes.
-The current I0 compiler requires **ABI 6** for its interface slot-order change;
-[rebuild all Stasha archives and consumers](Interfaces.md#archive-migration-abi-6).
+The I0 checkpoint required **ABI 6** for its interface slot-order change. The
+current requirement is **ABI11**; [rebuild all Stasha archives and consumers](Interfaces.md#default-descriptors-and-null-dispatch-semantic-abi11).
 The three-field slice descriptor and native C ABI shape remain unchanged.
 
 A1 excludes initialization-produced writes/ranges/spreads, `foreach`-generated
@@ -343,3 +343,15 @@ checks are emitted at runtime unless optimization proves them redundant.
 one extent guard, not all checks; no speedup follows without measurement of the
 actual optimized program. General raw-pointer operations are outside A1's
 bounds guarantee and are not a substitute for establishing access validity.
+
+
+### Ordinary interface defaults and reason 7
+
+Supported compiler-owned ordinary local interface leaves receive targeted empty
+descriptor stores, preserving unrelated sibling fields. Dynamic calls check null
+object/table before table access; given a readable selected slot yielding a
+defined pointer, null slot fails before invocation. Descriptor
+storage must already be readable and live, with defined pointer words; these
+checks establish neither table authenticity nor object pairing or lifetime.
+Unsafe does not disable them. Semantic ABI11 requires source-backed provider and
+consumer rebuilds. See [the exact scope, exclusions and migration](Interfaces.md#default-descriptors-and-null-dispatch-semantic-abi11).

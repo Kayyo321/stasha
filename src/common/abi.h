@@ -1,6 +1,11 @@
 #ifndef STASHA_ABI_H
 #define STASHA_ABI_H
-/* ABI 10 requires rebuilding source-backed archives after bounded immediate
+/* ABI 11 requires rebuilding source-backed archives after ordinary local
+ * descriptor-leaf empty defaults and dynamic null object/table/slot guards.
+ * Earlier retained bodies bypass these semantics. Physical layout is unchanged;
+ * explicit transfer validity, table authenticity, object pairing, lifetime and
+ * concurrency are not certified by this semantic marker.
+ * ABI 10 requires rebuilding source-backed archives after bounded immediate
  * nominal mismatch rejection at ordinary named-direct arguments and explicit
  * single-result returns to ordinary concrete interface implementers. Native
  * layout is unchanged. Matching annotations, prior stores, helper histories,
@@ -29,6 +34,6 @@
  * ABI 3 adds classified C aggregate calls and explicit static/instance receivers.
  * ABI 2 corrected C, union and tagged-payload layout and scalar semantics.
  * Source-backed archives produced by older compilers must be rebuilt. */
-#define STASHA_ABI_VERSION 10
+#define STASHA_ABI_VERSION 11
 #define STASHA_ABI_MAGIC "STASHA_ABI"
 #endif

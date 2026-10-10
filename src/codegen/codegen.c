@@ -644,6 +644,7 @@ static void iface_factory_call_result(cg_t *, node_t *, LLVMValueRef);
 static void iface_factory_return_begin(cg_t *, node_t *);
 static void iface_factory_return_end(cg_t *, node_t *, LLVMValueRef, LLVMValueRef);
 static void iface_factory_cleanup_scope(cg_t *);
+static void scalar_trap_if(cg_t *, LLVMValueRef, unsigned);
 
 #include "cg_symtab.c"
 #include "cg_safety.c"
@@ -678,6 +679,7 @@ static int iface_immediate_original(cg_t *cg,node_t *node,node_t **owner) {
     return 1;
 }
 #include "cg_global_const.c"
+#include "cg_iface_defaults.c"
 #include "cg_stmt.c"
 #include "cg_generics.c"
 #include "cg_debug.c"

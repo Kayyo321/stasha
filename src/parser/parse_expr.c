@@ -516,9 +516,11 @@ static node_t *parse_primary(parser_t *p) {
 
     /* nil — null pointer literal */
     if (check(p, TokNil)) {
-        usize_t line = p->current.line;
+        token_t token = p->current;
         advance_parser(p);
-        return make_node(NodeNilExpr, line);
+        node_t *node = make_node(NodeNilExpr, token.line);
+        ast_set_loc(node, token);
+        return node;
     }
 
     /* error.('fmt', args...) — create an error value with a formatted message */

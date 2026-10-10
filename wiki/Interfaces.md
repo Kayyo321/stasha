@@ -1,6 +1,6 @@
 # Interfaces
 
-Interfaces declare a set of methods. Concrete calls can resolve statically; interface-typed calls use a fat pointer and an indirect vtable call. The current compiler does not yet verify the complete source signature and implementation contract. See the bounded I0 status below.
+Interfaces declare a set of methods. Concrete calls can resolve statically; interface-typed calls use a fat pointer and an indirect vtable call. The current compiler verifies supported declared signatures and selected source contracts; unsupported transfers and lifetime guarantees remain separate. The current archive requirement is semantic ABI11. See [default descriptors, null dispatch and migration](#default-descriptors-and-null-dispatch-semantic-abi11); earlier checkpoint sections retain their historical scope and marker numbers.
 
 ---
 
@@ -641,3 +641,76 @@ claim can substitute for a source body and its physical evidence. Existing
 same-annotation history gaps, default descriptors, unsupported adapters and
 formal-dependent helpers remain separate work. This is not full helper closure,
 descriptor authenticity, lifetime, ownership, concurrency or CFI qualification.
+
+
+## Default descriptors and null dispatch (semantic ABI11)
+
+An ordinary local interface value declared without an initializer now starts as
+an empty two-word descriptor. The compiler also initializes interface leaves in
+ordinary by-value struct fields and fixed arrays, using the actual field layout,
+array rank and extent. These are targeted stores: unrelated sibling fields,
+padding and pointer pointees keep their previous initialization state. Zero-sized
+arrays contain no elements to initialize. Initialization happens when the source
+declaration executes, including each loop iteration, before subsequent uses.
+
+An empty descriptor is a storable and copyable sentinel, not a callable object.
+Existing `.{}` empty aggregate semantics, omitted compound-initializer fields,
+static defaults and already-supported typed-zero returns are preserved. This does
+not prove that supplied fields, later stores or returned objects have valid
+contents. For an intentional empty value, write `stack I value = .{};`, then
+assign an existing valid I value before calling it. The exact bare `nil`
+expression cannot supply a by-value interface descriptor: supported contextual
+local/field/element/assignment/return routes reject it with a source diagnostic.
+These include supported member/self-field/index/dereference destinations and
+typed multivalue stores when their exact physical destination is available.
+Nullable pointers, slices and error values retain their existing nil behavior.
+This adds no nullable-interface type or general conversion rule.
+
+### Conditional null-check guarantee
+
+Existing dynamic interface calls snapshot the receiver descriptor once. With
+**readable live descriptor storage and defined pointer words**, a null object or
+table invokes nonreturning `__stasha_panic(7)` before any table address calculation
+or slot load. If the selected table slot is readable and yields a defined pointer, a null
+selected function pointer invokes the same hook before the indirect call. Actual arguments are evaluated only after those checks, once in
+existing order; a later argument changing the original descriptor does not change
+the saved receiver/slot snapshot. Ordinary qualified concrete calls retain their
+existing behavior.
+
+The descriptor load itself still requires valid storage. Nonnull values are not
+proof of authentic table membership, correct object/table pairing, valid targets,
+backing-object initialization, lifetime, ownership or race freedom. These guards
+are not CFI and cannot repair arbitrary bytes, invalid pointers or dangling
+objects. Runtime checks and ordinary default initialization remain active inside
+`unsafe`; index-specific `[unchecked: index]` never disables them. The hosted
+weak panic hook traps without I/O; freestanding final links must provide the
+existing hook. K0 interface restrictions remain unchanged. Panic promises neither unwinding nor destructor/defer execution.
+
+### Boundaries and compatibility
+
+The new default traversal stops at union/payload-enum/erased carriers, pointer
+pointees, slice backing storage, closure/future/stream storage and nonordinary
+atomic/volatile/TLS-qualified paths. A separate ordinary I sibling can still be
+initialized. Raw allocations, foreign storage, explicit malformed stores,
+cast-wrapped nil, by-reference capture assignment and other unsupported transfer
+routes remain outside the guarantee. Bare-nil diagnostics use the actual physical
+destination; a whole or partial-rank array is not misclassified as its I element.
+Potentially invalid test cases of these excluded routes remain compile-only
+characterization, not safety passes; otherwise-valid uses remain available.
+
+Compiler-generated mixed-array initialization uses bounded typed traversal and
+counted loops whose zero-extent, stride, alignment and termination properties
+are qualified separately from user-written indexing; this does not add runtime
+stride or alignment checks. Unsupported or inconsistent selected layouts produce
+an actionable source diagnostic rather than silently receiving an initialization
+proof. Descriptor-free types retain their prior behavior and do not inherit the
+selected descriptor-plan limits.
+
+**Rebuild every source-backed Stasha provider and consumer for semantic ABI11.**
+Genuine ABI10 providers can retain uninitialized defaults and unchecked dispatch
+inside their own compiled bodies; new consumer code cannot retrofit those checks.
+Earlier archive markers reject before import/code generation/link. Do not relabel
+sidecars. Descriptor size, slot order and native call/data layout are unchanged.
+The marker is a bounded compatibility requirement, not attestation of arbitrary
+foreign objects or a claim of complete memory safety. Earlier sections record the
+markers used by their historical checkpoints; ABI11 is the current requirement.

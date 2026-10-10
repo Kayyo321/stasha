@@ -254,7 +254,7 @@ static void store_array_value_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef el
     LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &idx_val, 1, "init.idx");
     LLVMTypeRef saved_hint = cg->hint_ret_type;
     cg->hint_ret_type = elem_ty;
-    LLVMValueRef val = gen_scalar_as(cg, value_node, cg->scalar_aggregate_element);
+    LLVMValueRef val = gen_scalar_as_storage(cg, value_node, cg->scalar_aggregate_element, elem_ty);
     cg->hint_ret_type = saved_hint;
     if (LLVMTypeOf(val) != elem_ty)
         val = coerce_int(cg, val, elem_ty);
@@ -498,12 +498,13 @@ static boolean_t store_struct_field(cg_t *cg, LLVMValueRef tmp, struct_reg_t *sr
         if (strcmp(sr->fields[i].name, field_name) != 0) continue;
         LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type, tmp,
                                                (unsigned)sr->fields[i].index, field_name);
-        LLVMTypeRef field_ty = get_llvm_type(cg, sr->fields[i].type);
-        if (sr->fields[i].array_size > 0)
+        LLVMTypeRef field_ty = sr->fields[i].llvm_type
+            ? sr->fields[i].llvm_type : get_llvm_type(cg, sr->fields[i].type);
+        if (!sr->fields[i].llvm_type && sr->fields[i].array_size > 0)
             field_ty = LLVMArrayType2(field_ty, (unsigned long long)sr->fields[i].array_size);
         LLVMTypeRef saved_hint = cg->hint_ret_type;
         cg->hint_ret_type = field_ty;
-        LLVMValueRef val = gen_scalar_as(cg, value_node, sr->fields[i].type);
+        LLVMValueRef val = gen_scalar_as_storage(cg, value_node, sr->fields[i].type, sr->fields[i].llvm_type);
         cg->hint_ret_type = saved_hint;
         if (LLVMTypeOf(val) != field_ty)
             val = coerce_int(cg, val, field_ty);
@@ -4008,7 +4009,7 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         else
             sym->flags &= ~SymNil;
 
-        LLVMValueRef rhs = gen_scalar_as(cg, node->as.assign.value, sym->stype);
+        LLVMValueRef rhs = gen_scalar_as_storage(cg, node->as.assign.value, sym->stype, sym->type);
         if (sym->flags & SymHeapVar) {
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
@@ -4020,8 +4021,8 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         return rhs;
     }
 
-    LLVMValueRef rhs = gen_scalar_as(cg, node->as.assign.value,
-                                           scalar_expr_type(cg, target, NO_TYPE));
+    LLVMValueRef rhs = gen_scalar_as_storage(cg, node->as.assign.value,
+        scalar_expr_type(cg, target, NO_TYPE), access_storage_type(cg, target));
 
     if (target->kind == NodeIndexExpr || target->kind == NodeFlaggedIndex) {
         LLVMTypeRef element = Null;

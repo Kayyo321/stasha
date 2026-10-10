@@ -101,8 +101,8 @@ contract.
 | 4 | invalid shift count |
 | 5 | floating-to-integer range/NaN |
 | 6 | invalid explicit array/slice index, view range, or slice descriptor shape (A1) |
-| 7 | reserved: null |
-| 8 | reserved: allocation |
+| 7 | null object/table/selected slot in supported dynamic interface dispatch |
+| 8 | retained allocation failure (B1) |
 
 Hosted mode lazily emits a weak, cold, noinline, noreturn implementation that
 executes `llvm.trap`, with no implicit I/O. A strong object definition can replace
@@ -117,7 +117,7 @@ reason plus a fixed exit code; a signal alone does not qualify reason selection.
 
 A1 uses the same reason-6 hook for explicit indexed reads, stores, compound
 updates, and address formation, plus view-range/descriptor-shape checks. Reasons
-1–5 remain stable, and 7 (null) remains reserved; B1 uses 8 for retained allocation failure. These calls
+1–5 remain stable; interface dynamic dispatch uses 7 for null object/table/slot, and B1 uses 8 for retained allocation failure. These calls
 have no implicit I/O or unwinding/defer-on-panic guarantee.
 
 Index and range expressions retain their full source integer width and
@@ -199,3 +199,13 @@ complex aggregates, byte/array helpers, inferred external calls) must retain
 individual regression results and are not automatically certified by these tests.
 No broad memory-safety, layout, ABI, ownership or freestanding claim follows from
 passing the scalar matrix.
+
+
+### Interface null-dispatch integration
+
+Reason 7 is checked after loading a descriptor from readable live storage with
+defined pointer words. Object/table null checks precede table address calculation
+and slot load; given a readable selected slot yielding a defined pointer, a null
+selected slot fails before the indirect call. This does not
+validate descriptor storage pointers, nonnull table membership, object pairing or
+lifetime. See [the ABI11 contract](../wiki/Interfaces.md#default-descriptors-and-null-dispatch-semantic-abi11).

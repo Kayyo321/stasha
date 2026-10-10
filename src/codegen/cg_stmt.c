@@ -276,7 +276,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 cg->hint_var_flags  = node->as.var_decl.flags;
             }
             cg->hint_ret_type = type;
-            init = gen_scalar_as(cg, node->as.var_decl.init, ti);
+            init = gen_scalar_as_storage(cg, node->as.var_decl.init, ti, type);
             cg->hint_ret_type   = Null;
             cg->hint_slice_elem = saved_slice_elem;
             cg->hint_storage    = saved_storage;
@@ -286,6 +286,9 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         }
         LLVMBuildStore(cg->builder, init, alloca_val);
     }
+
+    if (!node->as.var_decl.init)
+        iface_default_local(cg, node, type, alloca_val);
 
     {
         int sym_flags = 0;
@@ -671,7 +674,7 @@ static void gen_ret(cg_t *cg, node_t *node) {
         if (value_count) {
             type_info_t rt = cg->current_fn_is_async_task && cg->current_return_count
                 ? cg->current_return_types[0] : llvm_type_to_ti(cg->cur_coro.item_type);
-            rv = gen_scalar_as(cg, node->as.ret_stmt.values.items[0], rt);
+            rv = gen_scalar_as_storage(cg, node->as.ret_stmt.values.items[0], rt, cg->cur_coro.item_type);
         }
         emit_cleanup_to_depth(cg, 0, moved, moved_count);
         if (cg->current_fn && cg->current_fn_is_async_task) {
@@ -709,7 +712,7 @@ static void gen_ret(cg_t *cg, node_t *node) {
             cg->hint_ret_type = ret_type;
             type_info_t rt = cg->current_return_count ? cg->current_return_types[0] : llvm_type_to_ti(ret_type);
             if (cg->current_fn_is_entry_main) rt = scalar_type(TypeI32);
-            result = gen_scalar_as(cg, node->as.ret_stmt.values.items[0], rt);
+            result = gen_scalar_as_storage(cg, node->as.ret_stmt.values.items[0], rt, ret_type);
             cg->hint_ret_type = Null;
             result = coerce_int(cg, result, ret_type);
         }
@@ -724,7 +727,7 @@ static void gen_ret(cg_t *cg, node_t *node) {
             } else {
                 cg->hint_ret_type = field_type;
                 type_info_t rt = i < cg->current_return_count ? cg->current_return_types[i] : llvm_type_to_ti(field_type);
-                val = gen_scalar_as(cg, node->as.ret_stmt.values.items[i], rt);
+                val = gen_scalar_as_storage(cg, node->as.ret_stmt.values.items[i], rt, field_type);
                 cg->hint_ret_type = Null;
                 val = coerce_int(cg, val, field_type);
             }
@@ -1325,7 +1328,8 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         usize_t count = targets->count < values->count ? targets->count : values->count;
         for (usize_t i = 0; i < count; i++) {
             symbol_t *sym = cg_lookup(cg, targets->items[i]->as.var_decl.name);
-            LLVMValueRef val = gen_scalar_as(cg, values->items[i], sym ? sym->stype : (type_info_t)NO_TYPE);
+            LLVMValueRef val = gen_scalar_as_storage(cg, values->items[i], sym ? sym->stype : (type_info_t)NO_TYPE,
+                                                   sym ? sym->type : Null);
             if (sym) {
                 val = coerce_int(cg, val, sym->type);
                 LLVMBuildStore(cg->builder, val, sym->value);

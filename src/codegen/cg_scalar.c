@@ -737,6 +737,24 @@ static LLVMValueRef gen_scalar_as(cg_t *cg, node_t *n, type_info_t to) {
     if (to.base == TypeVoid && !to.is_pointer) return v;
     return scalar_coerce(cg, v, from, to, n, False);
 }
+/* Explicit physical destination, independent of aggregate/source-base hints.
+ * Null means unknown, never permission to infer I from an array's base type.
+ * Callers obtain this type without evaluating a target or changing ordering.
+ * Recovery is typed only after an owned source error prevents publication. */
+static LLVMValueRef gen_scalar_as_storage(cg_t *cg, node_t *n, type_info_t to,
+                                          LLVMTypeRef destination) {
+    if (n->kind == NodeNilExpr && destination) {
+        for (usize_t i = 0; i < cg->iface_count; ++i) {
+            if (destination != cg->interfaces[i].fat_ptr_type) continue;
+            const char *saved_file = diag_get_file();
+            if (n->source_file) diag_set_file(n->source_file);
+            scalar_error(n, "nil cannot initialize an interface descriptor; use .{} for an empty descriptor or assign an existing interface value");
+            diag_set_file(saved_file);
+            return LLVMConstNull(destination);
+        }
+    }
+    return gen_scalar_as(cg, n, to);
+}
 static LLVMValueRef scalar_integer_op(cg_t *cg, token_kind_t op, LLVMValueRef a,
                                       LLVMValueRef b, type_info_t t) {
     LLVMTypeRef ty = LLVMTypeOf(a); unsigned w = LLVMGetIntTypeWidth(ty);
