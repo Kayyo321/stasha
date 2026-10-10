@@ -39,14 +39,23 @@ static boolean_t iface_source_error(node_t *n, const char *why) {
     ast_source_loc_t loc=iface_node_loc(n); if(!loc.col)loc.col=1;if(!loc.len)loc.len=1;
     iface_error(loc,"interface source argument:",why); return False;
 }
+static LLVMValueRef iface_source_context(cg_t *cg) {
+    return cg->iface_query_frame?cg->iface_query_frame->context:cg->current_fn;
+}
+static const char *iface_source_module(cg_t *cg) {
+    return cg->iface_query_frame?cg->iface_query_frame->module:cg->current_module_prefix;
+}
+static const char *iface_source_owner(cg_t *cg) {
+    return cg->iface_query_frame?cg->iface_query_frame->struct_name:cg->current_struct_name;
+}
 /* cg_lookup marks symbols used. This equivalent lookup is intentionally pure. */
 static symbol_t *iface_source_lookup(cg_t *cg, const char *name) {
     if(!name)return Null;
     boolean_t planned=False;
     symbol_t *s=iface_local_lookup(cg,name,&planned);
     if(!planned)s=symtab_lookup(&cg->locals,name); char qualified[1024];
-    if(!s && cg->current_module_prefix[0]) {
-        int z=snprintf(qualified,sizeof(qualified),"%s__%s",cg->current_module_prefix,name);
+    if(!s && iface_source_module(cg)[0]) {
+        int z=snprintf(qualified,sizeof(qualified),"%s__%s",iface_source_module(cg),name);
         if(z>=0 && (size_t)z<sizeof(qualified))s=symtab_lookup(&cg->globals,qualified);
     }
     return s?s:symtab_lookup(&cg->globals,name);
@@ -63,7 +72,7 @@ static boolean_t iface_source_primitive(iface_source_fact_t f) {
         !f.dimensions && (f.access&PtrRead) && !f.contract.nominal && scalar_numeric(f.contract.type);
 }
 static iface_source_fact_t iface_source_from_type(cg_t *cg,type_info_t raw,storage_t domain,node_t *evidence) {
-    iface_source_fact_t f={.status=IfaceSourceKnown,.evidence=evidence,.context=cg->current_fn,.access=PtrRead};
+    iface_source_fact_t f={.status=IfaceSourceKnown,.evidence=evidence,.context=iface_source_context(cg),.access=PtrRead};
     f.origin=iface_type_origin(cg,raw);
     if(f.origin){f.status=IfaceSourceExcluded;f.contract.type=raw;f.reason="generic/dependent source identity is unsupported";return f;}
     /* Slices are storage carriers, not admissible scalar actuals. Their element
@@ -88,7 +97,7 @@ static iface_source_fact_t iface_source_declaration(cg_t *cg,node_t *d) {
     f.access=(d->as.var_decl.flags&(VdeclConst|VdeclFinal))?PtrRead:PtrReadWrite;
     /* A pointer declaration's domain describes its pointee; its ordinary local
      * slot remains stack. Global slots have static/unknown storage domain. */
-    f.slot_domain=cg->current_fn?StorageStack:StorageDefault;
+    f.slot_domain=iface_source_context(cg)?StorageStack:StorageDefault;
     if(!f.contract.type.is_pointer && d->as.var_decl.storage==StorageHeap)f.slot_domain=StorageHeap;
     return f;
 }
@@ -127,7 +136,7 @@ static symbol_t *iface_source_named_method(cg_t *cg,const char *owner,const char
     if(!owner||!method)return Null;
     char name[1024];struct_reg_t *sr=find_struct(cg,owner);symbol_t *s=Null;
     const char *prefix=sr&&sr->mod_prefix&&sr->mod_prefix[0]?sr->mod_prefix:
-        fallback_module&&cg->current_module_prefix[0]?cg->current_module_prefix:Null;
+        fallback_module&&iface_source_module(cg)[0]?iface_source_module(cg):Null;
     if(prefix){snprintf(name,sizeof(name),"%s__%s__%s",prefix,owner,method);s=symtab_lookup(&cg->globals,name);}
     if(!s){snprintf(name,sizeof(name),"%s.%s",owner,method);s=symtab_lookup(&cg->globals,name);}
     return s;
@@ -141,7 +150,7 @@ static symbol_t *iface_source_selected(cg_t *cg,node_t *n,usize_t depth) {
         const char *callee=n->kind==NodeCallExpr?n->as.call.callee:n->kind==NodeErrPropCall?n->as.err_prop_call.callee:
             n->kind==NodeThreadCall?n->as.thread_call.callee:n->as.async_call.callee;
         symbol_t *s=iface_source_lookup(cg,callee);
-        return s?s:iface_source_named_method(cg,cg->current_struct_name,callee,True);
+        return s?s:iface_source_named_method(cg,iface_source_owner(cg),callee,True);
     }
     if(n->kind==NodeColonCall){lib_entry_t *l=find_lib_entry(cg,n->as.colon_call.module_name);if(!l||!l->mod_prefix)return Null;
         if(n->as.colon_call.type_name)snprintf(name,sizeof(name),"%s__%s__%s",l->mod_prefix,n->as.colon_call.type_name,n->as.colon_call.method_name);
@@ -150,13 +159,13 @@ static symbol_t *iface_source_selected(cg_t *cg,node_t *n,usize_t depth) {
     }
     if(n->kind==NodeConstructorCall){owner=n->as.ctor_call.type_name;method="new";
         struct_reg_t *sr=find_struct(cg,owner); const char *pfx=sr&&sr->mod_prefix&&sr->mod_prefix[0]?sr->mod_prefix:
-            cg->current_module_prefix[0]?cg->current_module_prefix:Null;
+            iface_source_module(cg)[0]?iface_source_module(cg):Null;
         symbol_t *s=Null;
         if(pfx){snprintf(name,sizeof(name),"%s__%s__new",pfx,owner);s=symtab_lookup(&cg->globals,name);}
         if(!s){snprintf(name,sizeof(name),"%s__new",owner);s=symtab_lookup(&cg->globals,name);}
         if(!s){snprintf(name,sizeof(name),"%s.new",owner);s=symtab_lookup(&cg->globals,name);}return s;
     }
-    if(n->kind==NodeSelfMethodCall){owner=n->as.self_method_call.type_name?n->as.self_method_call.type_name:cg->current_struct_name;method=n->as.self_method_call.method;}
+    if(n->kind==NodeSelfMethodCall){owner=n->as.self_method_call.type_name?n->as.self_method_call.type_name:iface_source_owner(cg);method=n->as.self_method_call.method;}
     if(n->kind==NodeMethodCall){node_t *o=n->as.method_call.object;method=n->as.method_call.method;
         if(o->kind==NodeIdentExpr){lib_entry_t *l=find_lib_entry(cg,o->as.ident.name);
             if(l){if(l->mod_prefix&&l->mod_prefix[0])snprintf(name,sizeof(name),"%s__%s",l->mod_prefix,method);else snprintf(name,sizeof(name),"%s",method);
@@ -195,7 +204,7 @@ static iface_source_fact_t iface_source_result(cg_t *cg,node_t *n,usize_t depth)
 }
 static iface_source_fact_t iface_source_field(cg_t *cg,node_t *n,usize_t depth) {
     iface_source_fact_t base;const char *field;
-    if(n->kind==NodeSelfMemberExpr){const char *owner=n->as.self_member.type_name?n->as.self_member.type_name:cg->current_struct_name;
+    if(n->kind==NodeSelfMemberExpr){const char *owner=n->as.self_member.type_name?n->as.self_member.type_name:iface_source_owner(cg);
         base=iface_source_from_type(cg,(type_info_t){.base=TypeUser,.user_name=(char*)owner},StorageDefault,n);
         base.addressable=True;base.fresh_address=False;base.access=PtrReadWrite;field=n->as.self_member.field;
     } else {node_t *o=n->as.member_expr.object;field=n->as.member_expr.field;

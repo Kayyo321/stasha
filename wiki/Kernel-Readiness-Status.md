@@ -1,6 +1,39 @@
 # Kernel-readiness status
 
-## I1b.3a immediate nominal boundary checkpoint (10 October 2026)
+## Source-local leaf factory result checkpoint (10 October 2026)
+
+Selected factory-to-local-copy-to-field-projection paths can now feed the existing
+identifier-valued interface use when their exact source-local producers and
+emitted call/return evidence are verified. The first subset is an internal,
+primitive-input leaf factory with one final initialized-local return and a
+complete cleanup-free body classification. Branches, nominal helper chains,
+retained bodies and unsupported storage remain outside new admission. See
+[the factory contract](Interfaces.md#source-local-leaf-factory-results).
+
+ABI10 is retained. No accepted old archived result receives a stronger guarantee:
+both old and fresh archived Holder projections still stop at the declared-body
+boundary. Source compiled in the same translation unit can qualify through its
+own exact internal named-call route. No metadata relabeling substitutes for that
+body. Dead source uses and unused calls do not activate new rejection.
+
+Frozen compiler SHA-256:
+`60858af10b17937a4181551a0698f7fc91bcc2789db4305c419052542f93ec2e`.
+The full hosted gate, all 36 rebuilt standard libraries and qualified memory
+regressions pass. The maintained corpus contains 59 sources and 332 Gate B checks:
+96 valid executions, 96 separate valid IR checks, and 140 compile-only rejection
+or deferred outcomes. Thirty strict runner sentinels pass. Independent review
+also preserves exact Gate A compatibility and lifecycle evidence, source imports,
+real native copy-out and genuine ABI10 archive boundaries. See the
+[factory checkpoint receipt](../tests/qualification/checkpoint-leaf-factory-2026-10-10.json).
+
+This adds no general helper-history, descriptor initialization/authenticity,
+formal-dependent projection, lifetime, ownership, concurrency or CFI theorem.
+Existing matching-annotation histories and unsupported routes remain explicit
+boundaries. Earlier generated-access/growth and complete native/kernel readiness
+work remains open.
+
+
+## Historical I1b.3a immediate nominal boundary checkpoint (10 October 2026)
 
 Ordinary named-direct arguments and explicit single-result returns now reject
 provable immediate nominal mismatches when the destination is an ordinary

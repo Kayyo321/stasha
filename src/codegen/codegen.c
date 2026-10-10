@@ -43,6 +43,15 @@ typedef struct iface_binding iface_binding_t;
 typedef struct iface_native iface_native_t;
 typedef struct iface_source_record iface_source_record_t;
 typedef struct iface_local_plan iface_local_plan_t;
+typedef struct iface_factory_state iface_factory_state_t;
+/* Explicit source-only frame. It never changes emission context or owns LLVM. */
+typedef struct {
+    iface_local_plan_t *plan;
+    node_t *owner, *body;
+    LLVMValueRef context;
+    char module[512];
+    const char *struct_name;
+} iface_source_frame_t;
 typedef struct {
     char *name;
     node_t **origins;            /* distinct declarations, including conflicts */
@@ -450,6 +459,9 @@ typedef struct {
     iface_native_t *iface_natives;
     iface_source_record_t *iface_sources;
     iface_local_plan_t *iface_local_plan; /* exact body-owned immutable local-transfer plan */
+    iface_source_frame_t *iface_query_frame;
+    iface_factory_state_t *iface_factories;
+    boolean_t iface_factory_exhausted;
 
     /* vtable for one (struct, interface) pair */
     struct {
@@ -627,6 +639,11 @@ static boolean_t iface_local_extracted(cg_t *, node_t *, node_t *, usize_t, LLVM
 static boolean_t iface_local_expression(cg_t *, node_t *);
 static LLVMValueRef iface_local_result(cg_t *, node_t *, LLVMValueRef);
 static boolean_t iface_local_constructor(cg_t *, node_t *, node_t *, LLVMTypeRef);
+static void iface_factory_call_selected(cg_t *, node_t *, symbol_t *, boolean_t);
+static void iface_factory_call_result(cg_t *, node_t *, LLVMValueRef);
+static void iface_factory_return_begin(cg_t *, node_t *);
+static void iface_factory_return_end(cg_t *, node_t *, LLVMValueRef, LLVMValueRef);
+static void iface_factory_cleanup_scope(cg_t *);
 
 #include "cg_symtab.c"
 #include "cg_safety.c"
@@ -1590,6 +1607,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     /* early abort: declaration errors make body generation unreliable */
     if (get_error_count() > errors_before) goto cg_cleanup;
 
+    iface_factory_prepare(&cg);
+
     /* pass 2: generate function bodies */
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
@@ -1796,7 +1815,6 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         iface_local_plan_t *previous_local_plan = iface_local_begin(&cg, decl, decl->as.fn_decl.body);
         gen_block(&cg, decl->as.fn_decl.body);
-        iface_local_end(&cg, previous_local_plan);
 
         /* Leak check: warn on any future.[T] local never passed to
            await / future.* / a combinator / defer. */
@@ -1804,6 +1822,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg.builder);
         if (is_stream_coro || is_task_coro) {
+            iface_local_end(&cg, previous_local_plan);
             sts_finish_coro_body_if_open(&cg, &cg.cur_coro);
             cg.cur_coro = prev_coro;
             cg.current_fn_is_async_task = prev_is_task;
@@ -1833,6 +1852,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 else LLVMBuildRet(cg.builder, LLVMConstNull(get_llvm_type(&cg, rti)));
             }
         }
+
+        iface_factory_finalize_body(&cg, decl);
+        iface_local_end(&cg, previous_local_plan);
 
         /* Restore scope to compile unit after leaving the function. */
         if (cg.debug_mode)
@@ -2219,6 +2241,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     /* ── LLVM verification and emission (skipped when earlier passes had errors) ── */
     if (get_error_count() > errors_before) goto cg_cleanup;
 
+    if (!iface_factory_seal(&cg)) goto cg_cleanup;
+
     if (getenv("STS_DUMP_IR_PRE")) {
         /* Dump IR before the coroutine pass pipeline runs. Useful when
          * triaging an "Instruction does not dominate all uses" verifier
@@ -2312,6 +2336,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
 
 cg_cleanup:
+    iface_factory_dispose(&cg);
     /* Failed compilation must never leave an object that looks current. */
     if (emit_result != Ok || get_error_count() > errors_before) remove(obj_output);
     LLVMDisposeTargetMachine(machine);

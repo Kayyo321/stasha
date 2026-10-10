@@ -53,6 +53,9 @@ class QualificationShellTests(unittest.TestCase):
     def test_nominal_boundary_failure_blocks_receipt(self):
         result,receipt=self.invoke(81,stale=True,fail_match='tests/interfaces/i1b3a_run.py')
         self.assertEqual(result.returncode,81,result.stderr); self.assertIsNone(receipt)
+    def test_factory_result_failure_blocks_receipt(self):
+        result,receipt=self.invoke(82,stale=True,fail_match='tests/interfaces/factory_result_run.py')
+        self.assertEqual(result.returncode,82,result.stderr); self.assertIsNone(receipt)
     def test_all_mock_stages_reach_explicit_bounded_receipt(self):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)

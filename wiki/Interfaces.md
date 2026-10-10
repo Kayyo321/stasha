@@ -584,3 +584,60 @@ source-backed archives reject before import/code generation/linking. Do not
 relabel sidecars. This is a bounded source-contract compatibility change, with
 no physical descriptor, slot-order, data-layout or signature change. It does not
 attest arbitrary foreign objects or universal behavioral correctness.
+
+## Source-local leaf factory results
+
+An existing identifier-valued interface use can now consume a selected field from
+a verified source-local leaf factory result. This restores ordinary
+factory-to-local-copy-to-field-projection code without treating a return annotation
+as proof of its stored contents.
+
+The initial factory subset is deliberately small:
+
+- An ordinary top-level internal `int fn`, with exact noninterposable native
+  identity and a source body compiled in the current translation unit
+- Primitive value parameters only; no incoming nominal object-history obligation
+- One final explicit return naming a real initialized local
+- Selected ordinary non-array value-field paths, with closed local constructors,
+  copies and every relevant writer checked
+- No source branches or nested blocks, nominal helper-result chains, cleanup,
+  generic/unknown storage or stored interface-descriptor siblings
+
+For example, an internal factory may initialize an S local from a scalar input,
+copy it into Holder.value and return the Holder local. The caller can copy that
+result into its own Holder, project value into an S local and pass that identifier
+to the already-supported interface boxing route. The aggregate is returned and
+copied by value; this does not establish independence or lifetime of pointer-field
+pointees.
+
+The compiler keeps the source-local proof separate from actual call, storage and
+return evidence. The exact emitted interface use activates the new proof; an
+unused factory call or dead source use cannot introduce new errors. Both factory
+before caller and caller before factory are supported. All consumed obligations
+must match their emitted native call and original aggregate return before IR,
+object or archive output is produced. Matching annotations, similarly spelled
+types or optimizer removal of a synthetic return cannot establish the proof.
+
+Cleanup eligibility covers the whole original factory, including unrelated locals,
+all by-value fields and discarded expression temporaries. Defer, heap/destructor
+work, generic locals even without a destructor, array/enum/callback storage, and
+target-elided or nested source blocks are excluded from this new admission.
+Unknown or excluded forms are not treated as cleanup-free. A logically complete if/else
+factory, destructor-bearing result or public/default factory remains outside
+this first subset, even when ordinary code using it still compiles.
+
+### ABI10 retained; archived results carry no new proof
+
+This stage only adds selected source-local admissions and retains ABI10. It does
+not strengthen claims about already accepted provider bodies. Old and newly
+built archived Holder results remain declaration boundaries for new projection
+proof, because their retained bodies are not analyzed in the consumer. A source
+module compiled in the same translation unit can qualify through its own exact
+internal named-call route; a module-dot factory call is not silently converted
+into that route.
+
+Recompile source that needs the new admission. No sidecar relabeling or marker
+claim can substitute for a source body and its physical evidence. Existing
+same-annotation history gaps, default descriptors, unsupported adapters and
+formal-dependent helpers remain separate work. This is not full helper closure,
+descriptor authenticity, lifetime, ownership, concurrency or CFI qualification.

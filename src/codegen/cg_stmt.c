@@ -652,6 +652,7 @@ static void gen_ret(cg_t *cg, node_t *node) {
         return;
     }
 
+    iface_factory_return_begin(cg,node);
     usize_t value_count = node->as.ret_stmt.values.count;
     if (!iface_immediate_return(cg,node)) {
         /* The rejected expression is still a syntactic read. Keep this usage
@@ -731,14 +732,17 @@ static void gen_ret(cg_t *cg, node_t *node) {
         }
     }
 
+    iface_factory_cleanup_scope(cg);
     /* Every expression (including aggregate loads and calls) is evaluated
        before any cleanup. Do not reload locals after their destructor runs. */
     emit_cleanup_to_depth(cg, 0, moved, moved_count);
     if (moved_heap.pointer) deallocate(moved_heap);
     if (return_abi)
         cg_abi_return(cg, return_abi, result);
-    else if (result)
-        LLVMBuildRet(cg->builder, result);
+    else if (result) {
+        LLVMValueRef native_ret=LLVMBuildRet(cg->builder, result);
+        iface_factory_return_end(cg,node,result,native_ret);
+    }
     else
         LLVMBuildRetVoid(cg->builder);
 }
@@ -2160,6 +2164,7 @@ static void gen_block(cg_t *cg, node_t *node) {
     }
     /* Cleanup may be a local's only use. Emit it before unused warnings so
        declaration-point defer lookup can mark the original symbol used. */
+    iface_factory_cleanup_scope(cg);
     pop_dtor_scope(cg);
     /* emit unused variable warnings for locals added in this block */
     for (usize_t i = old_count; i < cg->locals.count; i++) {

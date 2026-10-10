@@ -11,6 +11,9 @@ typedef struct iface_local_binding iface_local_binding_t;
 typedef struct iface_local_node iface_local_node_t;
 typedef struct iface_local_proof iface_local_proof_t;
 typedef struct iface_local_edge iface_local_edge_t;
+typedef struct iface_factory_request iface_factory_request_t;
+typedef struct iface_factory_summary iface_factory_summary_t;
+typedef struct iface_local_check iface_local_check_t;
 typedef struct {
     iface_local_binding_t *root;
     node_t *steps[IfaceLocalMaxPath]; /* exact field; NULL = uniform array step */
@@ -25,7 +28,7 @@ struct iface_local_binding {
     iface_source_fact_t fact;
     uint64_t extent;
     unsigned ordinal;
-    boolean_t local, exposed, deferred, no_new_proof, demanded, duplicate_multi_target;
+    boolean_t local, exposed, deferred, no_new_proof, demanded, duplicate_multi_target, legacy_demanded, storage_seen;
     const char *boundary;
     iface_local_node_t *frontier;
     unsigned frontier_count;
@@ -43,7 +46,12 @@ struct iface_local_node {
     iface_source_fact_t constructor_target;
     uint64_t constructor_extent;
     node_t *rhs;
-    iface_local_proof_t *proof;
+    iface_local_proof_t *proof, *upgrade;
+    boolean_t legacy_required, constructor_seen, expression_seen, result_seen, consumed;
+    const char *physical_failure;
+    LLVMValueRef selected_function;
+    node_t *selected_decl;
+    boolean_t named_direct;
 };
 struct iface_local_edge {
     iface_local_edge_t *next;
@@ -60,30 +68,88 @@ struct iface_local_proof {
     iface_local_state_t intrinsic, state, seed;
     node_t *evidence;
     const char *reason;
-    unsigned seed_visit;
-    boolean_t built;
+    unsigned seed_visit, seal_visit;
+    boolean_t built, upgrade, projected, result_boundary;
+    iface_local_check_t *checks;
+    iface_factory_request_t *requests;
+};
+enum { FactoryCheckConstructor=1, FactoryCheckExpression=2, FactoryCheckResult=4 };
+struct iface_local_check {
+    iface_local_check_t *next;
+    iface_local_node_t *node;
+    unsigned kind;
 };
 struct iface_local_plan {
-    iface_local_plan_t *previous;
+    iface_local_plan_t *previous, *retained_next;
     cg_t *cg;
     LLVMValueRef context;
     node_t *owner, *body;
     iface_local_binding_t *bindings, *environment;
     iface_local_node_t *nodes, **buckets;
     iface_local_proof_t *proofs;
-    usize_t node_count, binding_count, proof_count, edge_count;
+    usize_t node_count, binding_count, proof_count, edge_count, legacy_proof_count;
     node_t *block, *statement, *parent;
     unsigned ordinal, loops, control, deferred, inline_carrier;
     boolean_t building, frozen, incomplete, rejected;
     node_t *failure;
     const char *reason;
+    iface_source_frame_t frame;
+    boolean_t retained, emitting, overlay_building, overlay_incomplete, factory_building;
+    boolean_t participating, factory, finalized, factory_classified, factory_eligible;
+    usize_t check_count;
+    node_t *overlay_failure, *return_node, *return_operand, *return_in_progress;
+    const char *overlay_reason, *factory_failure;
+    LLVMValueRef raw_return, native_return, returned_value, return_storage;
+    unsigned returns_started, returns_seen, raw_returns_seen;
 };
+/* New proof budgets bound temporary inventories as well as retained state. */
+enum { FactoryMaxVisits=1048576, FactoryMaxTransientNodes=524288,
+       FactoryMaxPlans=256, FactoryMaxBodies=64, FactoryMaxPaths=256,
+       FactoryMaxRequests=1024, FactoryMaxRetainedNodes=262144,
+       FactoryMaxChecks=16384 };
+/* Independent source/lifetime/correspondence review must release this gate. */
+#define IFACE_FACTORY_RESULT_PROMOTION 1
+typedef enum { FactoryClean, FactoryCleanupPresent, FactoryUnknown } iface_factory_clean_t;
+struct iface_factory_summary {
+    iface_factory_summary_t *next;
+    iface_local_plan_t *plan;
+    iface_local_path_t path;
+    iface_local_proof_t *root_proof, *proof;
+    iface_local_state_t state;
+    const char *reason;
+    node_t *evidence;
+};
+struct iface_factory_request {
+    iface_factory_request_t *next, *proof_next;
+    iface_local_plan_t *consumer;
+    iface_factory_summary_t *summary;
+    iface_local_proof_t *proof;
+    node_t *call, *decl;
+    LLVMValueRef function, emitted;
+    LLVMTypeRef result;
+    iface_source_fact_t source;
+    const char *failure;
+    unsigned selected_count, emitted_count;
+    boolean_t consumed;
+};
+struct iface_factory_state {
+    iface_local_plan_t *plans;
+    iface_factory_summary_t *summaries;
+    iface_factory_request_t *requests;
+    usize_t visits, transient_nodes, retained_nodes, plans_count, bodies, paths, request_count;
+    boolean_t discovering, exhausted;
+};
+static boolean_t iface_factory_value(iface_local_plan_t *,iface_local_proof_t *,node_t *,iface_source_fact_t,node_t **,unsigned);
+static int iface_factory_consume(cg_t *,iface_local_plan_t *,iface_local_node_t *,symbol_t *);
+static void iface_factory_raw_result(cg_t *,node_t *,LLVMValueRef);
+static iface_local_plan_t *iface_factory_current(cg_t *);
 
 static boolean_t iface_local_error(node_t *n,const char *why) {
     ast_source_loc_t loc=iface_node_loc(n);if(!loc.col)loc.col=1;if(!loc.len)loc.len=1;
     iface_error(loc,"interface local transfer:",why);return False;
 }
 static void iface_local_fail(iface_local_plan_t *p,node_t *n,const char *why) {
+    if(p->overlay_building){p->overlay_incomplete=True;if(!p->overlay_reason){p->overlay_reason=why;p->overlay_failure=n;}return;}
     p->incomplete=True;if(!p->reason){p->reason=why;p->failure=n;}
 }
 typedef union { heap_t heap; long double alignment; } iface_local_allocation_t;
@@ -107,6 +173,11 @@ static iface_local_node_t *iface_local_node(iface_local_plan_t *p,node_t *n,bool
     usize_t h=((uintptr_t)n>>4)&(IfaceLocalBuckets-1);
     for(iface_local_node_t *r=p->buckets[h];r;r=r->hash_next)if(r->ast==n)return r;
     if(!create)return Null;
+    iface_factory_state_t *fs=p->cg->iface_factories;
+    if(fs&&fs->discovering){
+        if(fs->visits>=FactoryMaxVisits||fs->transient_nodes>=FactoryMaxTransientNodes){fs->exhausted=True;return Null;}
+        ++fs->visits;++fs->transient_nodes;
+    }
     if(p->node_count>=IfaceLocalMaxNodes){iface_local_fail(p,n,"body exceeds bounded local node inventory");return Null;}
     iface_local_node_t *r=iface_local_alloc(p,sizeof(*r));if(!r)return Null;
     r->ast=n;r->parent=p->parent;r->block=p->block;r->statement=p->statement;r->ordinal=p->ordinal;
@@ -126,14 +197,14 @@ static boolean_t iface_local_error_at(iface_local_plan_t *p,node_t *original,con
     return iface_local_error(&located,why);
 }
 static symbol_t *iface_local_lookup(cg_t *cg,const char *name,boolean_t *active) {
-    iface_local_plan_t *p=iface_local_current(cg);*active=p&&p->building;
+    iface_local_plan_t *p=cg->iface_query_frame?cg->iface_query_frame->plan:iface_local_current(cg);*active=p&&p->building;
     if(!*active)return Null;
     for(iface_local_binding_t *b=p->environment;b;b=b->outer)
         if(b->symbol.name&&!strcmp(b->symbol.name,name))return &b->symbol;
     return Null;
 }
 static boolean_t iface_local_fact(cg_t *cg,node_t *n,iface_source_fact_t *out) {
-    iface_local_plan_t *p=iface_local_current(cg);
+    iface_local_plan_t *p=cg->iface_query_frame?cg->iface_query_frame->plan:iface_local_current(cg);
     /* The ordinary source query remains unchanged outside preflight. */
     if(!p||!p->building)return False;
     iface_local_node_t *r=iface_local_node(p,n,False);
@@ -313,6 +384,9 @@ static void iface_local_va(iface_local_plan_t *p,node_t *n,unsigned depth) {
 static void iface_local_call(iface_local_plan_t *p,iface_local_node_t *r) {
     node_t *n=r->ast;node_list_t args=iface_source_args(n);symbol_t *selected=iface_source_selected(p->cg,n,0);
     iface_native_t *native=iface_source_native(p->cg,selected);
+    r->selected_function=selected?selected->value:Null;r->selected_decl=native?native->decl:Null;
+    r->named_direct=n->kind==NodeCallExpr&&!n->generic_use&&selected&&!selected->c_abi&&
+        selected->stype.base!=TypeFnPtr&&selected->stype.base!=TypeClosure&&!selected->requires_receiver;
     boolean_t ordinary=native&&native->decl&&native->decl->kind==NodeFnDecl&&!native->c_abi&&
         !native->decl->as.fn_decl.is_variadic&&!native->decl->as.fn_decl.is_async&&
         (n->kind==NodeCallExpr||n->kind==NodeMethodCall||n->kind==NodeSelfMethodCall||n->kind==NodeColonCall||n->kind==NodeConstructorCall);
@@ -622,6 +696,12 @@ static void iface_local_edge(iface_local_plan_t *p,iface_local_proof_t *q,iface_
 }
 /* Each constructor keeps an original-AST expected destination mapping. The
  * lowering hook checks the actual LLVM storage and synthetic named wrappers. */
+static void iface_local_check(iface_local_plan_t *p,iface_local_proof_t *q,iface_local_node_t *r,unsigned kind) {
+    if(!q->upgrade||!r)return;
+    for(iface_local_check_t *c=q->checks;c;c=c->next)if(c->node==r){c->kind|=kind;return;}
+    if(p->check_count>=FactoryMaxChecks){iface_local_fail(p,r->ast,"factory correspondence check budget exhausted");return;}
+    iface_local_check_t *c=iface_local_alloc(p,sizeof(*c));c->node=r;c->kind=kind;c->next=q->checks;q->checks=c;++p->check_count;
+}
 static void iface_local_ctor_plan(iface_local_plan_t *p,iface_local_proof_t *q,node_t *n,
                                     iface_source_fact_t target,uint64_t extent) {
     iface_local_node_t *r=iface_local_node(p,n,False);
@@ -629,6 +709,7 @@ static void iface_local_ctor_plan(iface_local_plan_t *p,iface_local_proof_t *q,n
     if(r->constructor_needed&&(r->constructor_target.contract.nominal!=target.contract.nominal||
         r->constructor_target.dimensions!=target.dimensions||r->constructor_extent!=extent)){
         iface_local_raise(q,LocalUnsupported,n,"constructor has conflicting planned destination identities");return;}
+    iface_local_check(p,q,r,FactoryCheckConstructor);
     r->constructor_needed=True;r->constructor_target=target;r->constructor_extent=extent;
     if(!iface_local_layout(p->cg,target,extent,Null))iface_local_raise(q,LocalUnsupported,n,"constructor source owner lacks completed exact layout correspondence");
 }
@@ -731,6 +812,7 @@ static void iface_local_value(iface_local_plan_t *p,iface_local_proof_t *q,node_
     if(copy!=IfaceLocalCopyExact){iface_local_raise(q,LocalUnsupported,n,"concrete local transfer lacks an independent source contract");return;}
     iface_local_node_t *r=iface_local_node(p,n,False);
     if(r){
+        iface_local_check(p,q,r,FactoryCheckExpression|FactoryCheckResult);
         if(r->transfer_needed&&r->transfer_target.contract.nominal!=target.contract.nominal)
             iface_local_raise(q,LocalUnsupported,n,"physical source read has conflicting planned destination contracts");
         r->transfer_needed=True;r->transfer_target=target;
@@ -741,14 +823,17 @@ static void iface_local_value(iface_local_plan_t *p,iface_local_proof_t *q,node_
         iface_local_proof_t *dependency=iface_local_demand(p,path,depth+1);
         iface_local_edge(p,q,dependency,n,initializer);return;
     }
+    if(n->kind==NodeCallExpr){q->result_boundary=True;
+        if(p->overlay_building&&!p->factory_building&&iface_factory_value(p,q,n,storage,steps,count))return;
+    }
     iface_local_raise(q,LocalDeclared,n,"ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer");
 }
 static iface_local_proof_t *iface_local_demand(iface_local_plan_t *p,iface_local_path_t path,unsigned depth) {
     if(!path.root||!path.valid)return Null;
-    for(iface_local_proof_t *q=p->proofs;q;q=q->next)if(iface_local_same_path(q->path,path))return q;
+    for(iface_local_proof_t *q=p->proofs;q;q=q->next)if(q->upgrade==p->overlay_building&&iface_local_same_path(q->path,path))return q;
     if(depth>IfaceMaxMetadataDepth||p->proof_count>=IfaceLocalMaxProofs){iface_local_fail(p,path.root->decl,"selected local proof graph exceeds its bounded depth/count");return Null;}
     iface_local_proof_t *q=iface_local_alloc(p,sizeof(*q));if(!q)return Null;
-    q->path=path;q->next=p->proofs;p->proofs=q;++p->proof_count;q->built=True;
+    q->path=path;q->upgrade=p->overlay_building;q->projected=path.count&&!path.arrays;q->next=p->proofs;p->proofs=q;++p->proof_count;q->built=True;
     iface_local_binding_t *b=path.root;b->demanded=True;uint64_t selected_extent=0;
     if(b->duplicate_multi_target)iface_local_fail(p,b->decl,"duplicate multi-target bindings have no admitted concrete store correspondence");
     q->target=iface_local_path_type(p,path,path.count,&selected_extent);
@@ -762,7 +847,7 @@ static iface_local_proof_t *iface_local_demand(iface_local_plan_t *p,iface_local
     for(iface_local_node_t *w=p->nodes;w;w=w->next){
         if(!w->write||!w->path.valid||w->path.root!=b||!iface_local_prefix(w->path,path))continue;
         uint64_t extent=0;iface_source_fact_t storage=iface_local_path_type(p,w->path,w->path.count,&extent);
-        w->checked_write=True;
+        w->checked_write=True;iface_local_check(p,q,w,FactoryCheckExpression);
         if(w->extracted_write){
             if(w->extracted_source.status==IfaceSourceUnknown)
                 iface_local_fail(p,w->rhs,"affected multi-result component lacks complete selected callable/source correspondence");
@@ -795,14 +880,17 @@ static void iface_local_solve(iface_local_plan_t *p) {
             ((parent->kind==NodeLenExpr||parent->kind==NodeCapExpr)&&parent->as.len_expr.operand==a));
         if(!internal&&a->kind!=NodeVarDecl)iface_local_expose(r,"array-valued occurrence exposes containing storage outside an internal element/extent access");
     }
-    for(iface_local_node_t *r=p->nodes;r;r=r->next)if(r->sink&&r->path.root&&r->path.valid&&iface_local_struct(r->path.root->fact))
+    for(iface_local_node_t *r=p->nodes;r;r=r->next)if(!p->overlay_building&&r->sink&&r->path.root&&r->path.valid&&iface_local_struct(r->path.root->fact))
         r->proof=iface_local_demand(p,r->path,0);
+    for(iface_local_proof_t *q=p->proofs;q;q=q->next)q->seed_visit=0;
     for(iface_local_proof_t *q=p->proofs;q;q=q->next)q->state=iface_local_seed(q,0);
     /* Monotone propagation admits reassignment SCCs only with independently
      * initialized members. No code-generation visit can improve an outcome. */
     boolean_t changed=True;usize_t rounds=0;
     while(changed&&rounds++<=p->proof_count){changed=False;
         for(iface_local_proof_t *q=p->proofs;q;q=q->next)for(iface_local_edge_t *e=q->edges;e;e=e->next){
+            if(e->source->projected&&!q->projected){q->projected=True;changed=True;}
+            if(e->source->result_boundary&&!q->result_boundary){q->result_boundary=True;changed=True;}
             iface_local_state_t s=e->source->state;if(e->gate>s)s=e->gate;
             if(s>q->state){q->state=s;changed=True;if(e->source->state==s){q->evidence=e->source->evidence;q->reason=e->source->reason;}}
         }
@@ -812,42 +900,69 @@ static void iface_local_solve(iface_local_plan_t *p) {
 /* Internal Gate A: inventory/mismatches/correspondence first. Gate B is enabled
  * only after the immutable inventory and exact-transfer tests are frozen. */
 #define IFACE_LOCAL_PROJECTION_GATE 1
-static iface_local_plan_t *iface_local_begin(cg_t *cg,node_t *owner,node_t *body) {
-    iface_local_plan_t *previous=cg->iface_local_plan;cg->iface_local_plan=Null;
-    if(!cg->iface_count||!body||(owner->kind==NodeFnDecl&&owner->as.fn_decl.is_async)||cg->generic_n)return previous;
-    iface_local_plan_t *p=iface_local_zero(sizeof(*p));
-    if(!p){iface_local_error(owner,"cannot allocate bounded local inventory");return previous;}
-    p->previous=previous;p->cg=cg;p->context=cg->current_fn;p->owner=owner;p->body=body;p->building=True;
-    p->buckets=iface_local_zero(IfaceLocalBuckets*sizeof(*p->buckets));
-    cg->iface_local_plan=p;
-    if(!p->buckets)iface_local_fail(p,owner,"cannot allocate local AST identity index");
-    /* Parameters/implicit this are boundary bindings. Their stable original
-     * source records survive symtab growth; copied native symbols are query-only. */
-    for(usize_t i=0;i<cg->locals.count;i++){
-        symbol_t *s=&cg->locals.entries[i];iface_source_fact_t f=iface_source_symbol(cg,s);
-        iface_local_binding_t *b=iface_local_bind(p,s->iface_source?s->iface_source->decl:owner,s->name,f,False);
-        if(b)b->symbol=*s;
-    }
-    iface_local_visit(p,body,0);iface_local_solve(p);p->building=False;p->frozen=True;
-    if(p->incomplete&&p->proof_count){iface_local_error_at(p,p->failure?p->failure:owner,p->reason?p->reason:"incomplete local proof inventory");p->rejected=True;}
-    for(iface_local_proof_t *q=p->proofs;q;q=q->next)if(q->state==LocalMismatch){
+static void iface_local_diagnose(iface_local_plan_t *p) {
+    if(p->incomplete&&p->legacy_proof_count){iface_local_error_at(p,p->failure?p->failure:p->owner,p->reason?p->reason:"incomplete local proof inventory");p->rejected=True;}
+    for(iface_local_proof_t *q=p->proofs;q;q=q->next)if(!q->upgrade&&q->state==LocalMismatch){
         boolean_t duplicate=False;
         for(iface_local_proof_t *before=p->proofs;before!=q;before=before->next)
-            if(before->state==LocalMismatch&&before->evidence==q->evidence)duplicate=True;
+            if(!before->upgrade&&before->state==LocalMismatch&&before->evidence==q->evidence)duplicate=True;
         if(!duplicate)iface_local_error_at(p,q->evidence?q->evidence:q->path.root->decl,q->reason?q->reason:"concrete local source identity mismatch");
         p->rejected=True;
     }
-    return previous;
+}
+static iface_local_plan_t *iface_local_create(cg_t *cg,node_t *owner,node_t *body,LLVMValueRef context,boolean_t original_formals) {
+    iface_local_plan_t *p=iface_local_zero(sizeof(*p));if(!p)return Null;
+    p->cg=cg;p->context=context;p->owner=owner;p->body=body;p->building=True;
+    p->frame=(iface_source_frame_t){.plan=p,.owner=owner,.body=body,.context=context,
+        .struct_name=owner->kind==NodeFnDecl&&owner->as.fn_decl.is_method?owner->as.fn_decl.struct_name:Null};
+    mangle_module_prefix(owner->module_name?owner->module_name:"",p->frame.module,sizeof(p->frame.module));
+    if(!original_formals){
+        snprintf(p->frame.module,sizeof(p->frame.module),"%s",cg->current_module_prefix);
+        p->frame.struct_name=cg->current_struct_name;
+    }
+    p->buckets=iface_local_zero(IfaceLocalBuckets*sizeof(*p->buckets));
+    iface_source_frame_t *saved=cg->iface_query_frame;cg->iface_query_frame=&p->frame;
+    if(!p->buckets)iface_local_fail(p,owner,"cannot allocate local AST identity index");
+    if(original_formals){
+        for(usize_t i=0;i<owner->as.fn_decl.params.count;i++){
+            node_t *d=owner->as.fn_decl.params.items[i];
+            iface_local_bind(p,d,d->as.var_decl.name,iface_source_declaration(cg,d),False);
+        }
+    }else for(usize_t i=0;i<cg->locals.count;i++){
+        symbol_t *s=&cg->locals.entries[i];iface_source_fact_t f=iface_source_symbol(cg,s);
+        iface_local_binding_t *b=iface_local_bind(p,s->iface_source?s->iface_source->decl:owner,s->name,f,False);
+        if(b){b->symbol=*s;b->symbol.iface_source=&b->source;}
+    }
+    iface_local_visit(p,body,0);iface_local_solve(p);p->legacy_proof_count=p->proof_count;p->building=False;p->frozen=True;
+    cg->iface_query_frame=saved;
+    for(iface_local_node_t *r=p->nodes;r;r=r->next)
+        r->legacy_required=r->constructor_needed||r->transfer_needed||r->checked_write||r->sink;
+    for(iface_local_binding_t *b=p->bindings;b;b=b->next)b->legacy_demanded=b->demanded;
+    return p;
+}
+static iface_local_plan_t *iface_local_begin(cg_t *cg,node_t *owner,node_t *body) {
+    iface_local_plan_t *previous=cg->iface_local_plan;cg->iface_local_plan=Null;
+    if(!cg->iface_count||!body||(owner->kind==NodeFnDecl&&owner->as.fn_decl.is_async)||cg->generic_n)return previous;
+    iface_local_plan_t *p=Null;
+    for(iface_local_plan_t *r=cg->iface_factories?cg->iface_factories->plans:Null;r;r=r->retained_next)
+        if(r->owner==owner&&r->body==body&&r->context==cg->current_fn){p=r;break;}
+    if(!p)p=iface_local_create(cg,owner,body,cg->current_fn,False);
+    if(!p){iface_local_error(owner,"cannot allocate bounded local inventory");return previous;}
+    p->previous=previous;p->emitting=True;cg->iface_local_plan=p;iface_local_diagnose(p);return previous;
+}
+static void iface_local_destroy(iface_local_plan_t *p) {
+    if(!p)return;
+    while(p->proofs){iface_local_proof_t *q=p->proofs;p->proofs=q->next;
+        while(q->edges){iface_local_edge_t *e=q->edges;q->edges=e->next;iface_local_release(e);}
+        while(q->checks){iface_local_check_t *c=q->checks;q->checks=c->next;iface_local_release(c);}
+        iface_local_release(q);}
+    while(p->nodes){iface_local_node_t *r=p->nodes;p->nodes=r->next;iface_local_release(r);}
+    while(p->bindings){iface_local_binding_t *b=p->bindings;p->bindings=b->next;iface_local_release(b);}
+    iface_local_release(p->buckets);iface_local_release(p);
 }
 static void iface_local_end(cg_t *cg,iface_local_plan_t *previous) {
     iface_local_plan_t *p=cg->iface_local_plan;
-    if(p&&p!=previous){
-        while(p->proofs){iface_local_proof_t *q=p->proofs;p->proofs=q->next;
-            while(q->edges){iface_local_edge_t *e=q->edges;q->edges=e->next;iface_local_release(e);}iface_local_release(q);}
-        while(p->nodes){iface_local_node_t *r=p->nodes;p->nodes=r->next;iface_local_release(r);}
-        while(p->bindings){iface_local_binding_t *b=p->bindings;p->bindings=b->next;iface_local_release(b);}
-        iface_local_release(p->buckets);iface_local_release(p);
-    }
+    if(p&&p!=previous){p->emitting=False;p->previous=Null;if(!p->retained)iface_local_destroy(p);}
     cg->iface_local_plan=previous;
 }
 static boolean_t iface_local_lowering(cg_t *cg,node_t *n) {
@@ -873,6 +988,13 @@ static int iface_local_eligibility(cg_t *cg,node_t *use,symbol_t *symbol) {
         iface_local_error(use,"emitted local binding differs from the original planned declaration");return -1;}
     if(p->incomplete||!r->proof){iface_local_error(use,"affected local use lacks a complete inventoried path proof");return -1;}
     if(r->proof->state==LocalMismatch){iface_local_error(use,r->proof->reason);return -1;}
+    if(IFACE_FACTORY_RESULT_PROMOTION&&cg->iface_factory_exhausted&&r->proof->state!=LocalClosed&&
+        r->proof->projected&&r->proof->result_boundary&&(symbol->iface_excluded_origin&IfaceOriginUnresolved)){
+        iface_local_error_at(p,use,"factory result preparation budget exhausted");return -1;
+    }
+    if(r->proof->state!=LocalClosed&&r->upgrade){
+        int admission=iface_factory_consume(cg,p,r,symbol);if(admission)return admission;
+    }
     if(r->proof->state!=LocalClosed||iface_local_frontier(b,r)!=LocalClosed){
         if(symbol->iface_excluded_origin&IfaceOriginUnresolved){
             iface_local_error(use,r->proof->reason?r->proof->reason:"projected local source is outside its exact closed-use frontier");return -1;}
@@ -882,25 +1004,31 @@ static int iface_local_eligibility(cg_t *cg,node_t *use,symbol_t *symbol) {
         iface_local_error(use,"emitted concrete value differs from the exact source/layout plan");return -1;}
     return IFACE_LOCAL_PROJECTION_GATE?1:0;
 }
+static boolean_t iface_local_receipt_error(iface_local_plan_t *p,node_t *n,const char *why,boolean_t legacy) {
+    iface_local_node_t *r=iface_local_node(p,n,False);if(r&&iface_factory_current(p->cg)==p&&!r->physical_failure)r->physical_failure=why;
+    return legacy?iface_local_error_at(p,n,why):True;
+}
 static boolean_t iface_local_constructor(cg_t *cg,node_t *original,node_t *lowered,LLVMTypeRef actual) {
     iface_local_plan_t *p=iface_local_current(cg);if(!p)return True;
     if(!iface_local_lowering(cg,original))return False;
     iface_local_node_t *r=iface_local_node(p,original,False);
     if(!r||!r->constructor_needed)return True;
+    boolean_t active=iface_factory_current(cg)==p;
+    if(p->retained&&!r->legacy_required&&!active)return True;
     if(!iface_local_layout(cg,r->constructor_target,r->constructor_extent,actual))
-        return iface_local_error_at(p,original,"constructor lowering differs from original owner or exact array extent");
+        return iface_local_receipt_error(p,original,"constructor lowering differs from original owner or exact array extent",r->legacy_required);
     if(original!=lowered){
         if(original->kind!=NodeDesigInit||lowered->kind!=NodeCompoundInit||
             original->as.desig_init.values.count!=lowered->as.compound_init.items.count)
-            return iface_local_error_at(p,original,"synthetic constructor lacks original child correspondence");
+            return iface_local_receipt_error(p,original,"synthetic constructor lacks original child correspondence",r->legacy_required);
         for(usize_t i=0;i<original->as.desig_init.values.count;i++){
             node_t *item=lowered->as.compound_init.items.items[i],*label=original->as.desig_init.fields.items[i];
             if(!item||item->kind!=NodeInitField||item->as.init_field.value!=original->as.desig_init.values.items[i]||
                 !label||label->kind!=NodeIdentExpr||strcmp(label->as.ident.name,item->as.init_field.name))
-                return iface_local_error_at(p,original,"synthetic constructor child mapping differs from preflight");
+                return iface_local_receipt_error(p,original,"synthetic constructor child mapping differs from preflight",r->legacy_required);
         }
-    }else if(original->kind!=NodeCompoundInit)return iface_local_error_at(p,original,"constructor lost its original AST lowering identity");
-    return True;
+    }else if(original->kind!=NodeCompoundInit)return iface_local_receipt_error(p,original,"constructor lost its original AST lowering identity",r->legacy_required);
+    if(active)r->constructor_seen=True;return True;
 }
 /* Cross-check physical local storage against the immutable original binding and
  * each original owner/field/layout step. No scalar fallback or lazy instantiation. */
@@ -934,28 +1062,43 @@ static LLVMTypeRef iface_local_storage(iface_local_plan_t *p,iface_local_path_t 
 static boolean_t iface_local_declaration_storage(cg_t *cg,node_t *n,LLVMTypeRef actual) {
     iface_local_plan_t *p=iface_local_current(cg);if(!p)return True;
     iface_local_node_t *r=iface_local_node(p,n,False);iface_local_binding_t *b=r?r->path.root:Null;
-    if(!b||!b->demanded)return True;
+    if(!b)return True;
+    boolean_t active=iface_factory_current(cg)==p;
+    if(p->retained&&!b->legacy_demanded&&!active)return True;
+    if(p->factory&&!b->demanded&&active){
+        if(!actual||(iface_source_primitive(b->fact)?actual!=get_llvm_type(cg,b->fact.contract.type):
+            !iface_local_layout(cg,b->fact,b->extent,actual)))
+            return iface_local_receipt_error(p,n,"factory local storage has no exact source classification",False);
+        if(active)b->storage_seen=True;return True;
+    }
+    if(!b->demanded)return True;
     if(!actual||!iface_local_layout(cg,b->fact,b->extent,actual))
-        return iface_local_error(n,"local declaration lowering differs from its planned original storage identity/extent");
-    return True;
+        return iface_local_receipt_error(p,n,"local declaration lowering differs from its planned original storage identity/extent",b->legacy_demanded);
+    if(active)b->storage_seen=True;return True;
 }
 static boolean_t iface_local_expression(cg_t *cg,node_t *n) {
     iface_local_plan_t *p=iface_local_current(cg);if(!p||!n)return True;
     if(!iface_local_lowering(cg,n))return False;
     iface_local_node_t *r=iface_local_node(p,n,False);if(!r)return True;
+    boolean_t active=iface_factory_current(cg)==p;
+    if(p->retained&&!r->legacy_required&&!active)return True;
     if((r->transfer_needed||r->checked_write||r->sink)&&r->path.valid&&r->path.root&&r->path.root->local){
         LLVMTypeRef storage=iface_local_storage(p,r->path);
-        if(!storage)return iface_local_error(n,"emitted transfer storage differs from its original lexical binding or selected field path");
+        if(!storage)return iface_local_receipt_error(p,n,"emitted transfer storage differs from its original lexical binding or selected field path",r->legacy_required);
         if(r->transfer_needed&&!iface_local_layout(cg,r->transfer_target,0,storage))
-            return iface_local_error(n,"emitted source storage differs from its exact planned concrete copy");
+            return iface_local_receipt_error(p,n,"emitted source storage differs from its exact planned concrete copy",r->legacy_required);
     }
-    return True;
+    if(active)r->expression_seen=True;return True;
 }
 static LLVMValueRef iface_local_result(cg_t *cg,node_t *n,LLVMValueRef value) {
+    iface_factory_raw_result(cg,n,value);
     iface_local_plan_t *p=iface_local_current(cg);if(!p||!n)return value;
     iface_local_node_t *r=iface_local_node(p,n,False);if(!r||!r->transfer_needed)return value;
+    boolean_t active=iface_factory_current(cg)==p;
+    if(p->retained&&!r->legacy_required&&!active)return value;
     if(!value||!iface_local_layout(cg,r->transfer_target,0,LLVMTypeOf(value)))
-        iface_local_error(n,"emitted concrete copy value differs from the independently planned source identity");
+        iface_local_receipt_error(p,n,"emitted concrete copy value differs from the independently planned source identity",r->legacy_required);
+    else if(active)r->result_seen=True;
     return value;
 }
 
@@ -981,4 +1124,420 @@ static boolean_t iface_local_extracted(cg_t *cg,node_t *multi,node_t *target,usi
         !iface_local_layout(cg,r->extracted_source,0,LLVMTypeOf(value)))
         return iface_local_error_at(p,target,"multi-result lowering differs from the planned selected result identity");
     return True;
+}
+
+/* Locally seeded leaf results: owned source plans, path-specific obligations,
+ * and emitted receipts are distinct. Nothing below changes source origin bits. */
+static boolean_t iface_factory_ordinary(iface_native_t *n) {
+    return iface_immediate_ordinary(n)&&!n->decl->as.fn_decl.is_method&&
+        !n->decl->from_lib&&n->decl->as.fn_decl.body&&
+        !n->decl->as.fn_decl.attr_flags&&!n->decl->headers;
+}
+static iface_native_t *iface_factory_identity(cg_t *cg,iface_local_plan_t *p) {
+    boolean_t ambiguous=False;iface_native_t *n=iface_immediate_native(cg,p->context,&ambiguous);
+    if(ambiguous||!iface_factory_ordinary(n)||n->decl!=p->owner||
+        n->decl->as.fn_decl.body!=p->body||p->frame.owner!=p->owner||p->frame.body!=p->body||
+        p->frame.context!=p->context)return Null;
+    char module[512];mangle_module_prefix(p->owner->module_name?p->owner->module_name:"",module,sizeof(module));
+    return !strcmp(module,p->frame.module)?n:Null;
+}
+static boolean_t iface_factory_signature(cg_t *cg,iface_native_t *n,boolean_t aggregate) {
+    if(!iface_factory_ordinary(n)||!iface_immediate_native_arity(n)||n->decl->as.fn_decl.return_count!=1)return False;
+    if(LLVMGetAttributeCountAtIndex(n->function,LLVMAttributeReturnIndex))return False;
+    node_list_t args=n->decl->as.fn_decl.params;
+    for(usize_t i=0;i<args.count;i++){
+        node_t *d=args.items[i];iface_source_fact_t f=iface_source_declaration(cg,d);
+        if(!d||d->kind!=NodeVarDecl||d->headers||d->as.var_decl.attr_flags||
+           (d->as.var_decl.flags&~(VdeclConst|VdeclFinal))||d->as.var_decl.storage==StorageHeap||
+           !iface_source_primitive(f)||LLVMGetAttributeCountAtIndex(n->function,(LLVMAttributeIndex)i+1)||
+           LLVMTypeOf(LLVMGetParam(n->function,(unsigned)i))!=get_llvm_type(cg,f.contract.type))return False;
+    }
+    iface_source_fact_t result=iface_source_from_type(cg,n->decl->as.fn_decl.return_types[0],StorageDefault,n->decl);
+    LLVMTypeRef type=LLVMGetReturnType(LLVMGlobalGetValueType(n->function));
+    if(aggregate)return iface_local_layout(cg,result,0,type)&&LLVMGetLinkage(n->function)==LLVMInternalLinkage&&
+        n->decl->as.fn_decl.linkage==LinkageInternal;
+    return iface_source_primitive(result)&&type==get_llvm_type(cg,result.contract.type);
+}
+static boolean_t iface_factory_visit(cg_t *cg) {
+    iface_factory_state_t *fs=cg->iface_factories;
+    if(!fs)return False;
+    if(fs->visits>=FactoryMaxVisits){fs->exhausted=True;return False;}
+    ++fs->visits;return True;
+}
+static iface_factory_clean_t iface_factory_clean_type(cg_t *cg,iface_source_fact_t f,boolean_t pointer_field,unsigned depth) {
+    if(!iface_factory_visit(cg)||depth>=IfaceMaxMetadataDepth||f.dimensions||f.status==IfaceSourceExcluded||f.origin||
+       (f.status!=IfaceSourceKnown&&f.status!=IfaceSourceLiteral))return FactoryUnknown;
+    if(f.contract.domain==StorageHeap)return FactoryCleanupPresent;
+    if(f.contract.type.is_pointer)
+        return pointer_field&&f.contract.type.base!=TypeFnPtr&&f.contract.type.base!=TypeClosure&&
+            !f.contract.type.fn_ptr_desc&&!f.contract.type.elem_type?FactoryClean:FactoryUnknown;
+    if(iface_source_primitive(f))return FactoryClean;
+    if(!iface_local_struct(f))return FactoryUnknown;
+    struct_reg_t *s=find_struct(cg,f.contract.nominal->as.type_decl.name);
+    if(!s||s->layout_decl!=f.contract.nominal||s->layout_state!=2||s->is_union||s->is_interface||
+       f.contract.nominal->as.type_decl.attr_flags)return FactoryUnknown;
+    if(s->destructor)return FactoryCleanupPresent;
+    iface_factory_clean_t answer=FactoryClean;
+    node_list_t fields=f.contract.nominal->as.type_decl.fields;
+    for(usize_t i=0;i<fields.count;i++){
+        node_t *d=fields.items[i];if(!d||d->kind!=NodeVarDecl)return FactoryUnknown;
+        if(d->as.var_decl.flags&VdeclComptimeField)continue;
+        if(d->headers||d->as.var_decl.attr_flags||d->as.var_decl.bitfield_width||
+            (d->as.var_decl.flags&~(VdeclConst|VdeclFinal)))return FactoryUnknown;
+        iface_factory_clean_t child=iface_factory_clean_type(cg,iface_source_declaration(cg,d),True,depth+1);
+        if(child>answer)answer=child;
+    }
+    return answer;
+}
+static iface_factory_clean_t iface_factory_clean_expr(iface_local_plan_t *p,node_t *n,iface_source_fact_t expected,unsigned depth) {
+    if(!iface_factory_visit(p->cg)||!n||depth>=IfaceMaxMetadataDepth)return FactoryUnknown;
+    iface_local_node_t *r=iface_local_node(p,n,False);if(!r)return FactoryUnknown;
+    iface_source_fact_t f=r->fact;
+    if(n->kind==NodeCompoundInit)f=expected;
+    if(n->kind==NodeNilExpr&&expected.contract.type.is_pointer)return FactoryClean;
+    iface_factory_clean_t answer=iface_factory_clean_type(p->cg,f,True,depth+1);
+    if(answer!=FactoryClean&&n->kind!=NodeAssignExpr&&n->kind!=NodeCompoundAssign)return answer;
+#define FC(x,t) do { iface_factory_clean_t c=iface_factory_clean_expr(p,(x),(t),depth+1); if(c>answer)answer=c; } while(0)
+    switch(n->kind){
+    case NodeIntLitExpr:case NodeFloatLitExpr:case NodeBoolLitExpr:case NodeCharLitExpr:case NodeIdentExpr:break;
+    case NodeMemberExpr:FC(n->as.member_expr.object,iface_local_query(p,n->as.member_expr.object));break;
+    case NodeBinaryExpr:FC(n->as.binary.left,iface_local_query(p,n->as.binary.left));FC(n->as.binary.right,iface_local_query(p,n->as.binary.right));break;
+    case NodeUnaryPrefixExpr:case NodeUnaryPostfixExpr:
+        if(!iface_source_primitive(f))return FactoryUnknown;
+        FC(n->as.unary.operand,iface_local_query(p,n->as.unary.operand));break;
+    case NodeCastExpr:FC(n->as.cast_expr.expr,iface_local_query(p,n->as.cast_expr.expr));break;
+    case NodeAssignExpr:case NodeCompoundAssign:{
+        node_t *target=n->kind==NodeAssignExpr?n->as.assign.target:n->as.compound_assign.target;
+        node_t *value=n->kind==NodeAssignExpr?n->as.assign.value:n->as.compound_assign.value;
+        iface_source_fact_t t=iface_local_query(p,target);
+        answer=iface_factory_clean_type(p->cg,t,False,depth+1);FC(target,t);FC(value,t);break;}
+    case NodeCallExpr:{
+        boolean_t ambiguous=False;iface_native_t *native=iface_immediate_native(p->cg,r->selected_function,&ambiguous);
+        if(!r->named_direct||ambiguous||!native||native->decl!=r->selected_decl||
+            !iface_factory_signature(p->cg,native,False)||n->as.call.args.count!=native->decl->as.fn_decl.params.count)return FactoryUnknown;
+        for(usize_t i=0;i<n->as.call.args.count;i++){
+            iface_source_fact_t arg=iface_local_query(p,n->as.call.args.items[i]);
+            if(!iface_source_primitive(arg))return FactoryUnknown;
+            FC(n->as.call.args.items[i],arg);
+        }break;}
+    case NodeCompoundInit:case NodeDesigInit:{
+        if(!iface_local_struct(f)||f.dimensions)return FactoryUnknown;
+        node_list_t fields=f.contract.nominal->as.type_decl.fields;
+        node_list_t items=n->kind==NodeCompoundInit?n->as.compound_init.items:n->as.desig_init.values;
+        usize_t cursor=0;
+        if(n->kind==NodeDesigInit&&items.count!=n->as.desig_init.fields.count)return FactoryUnknown;
+        for(usize_t i=0;i<items.count;i++){
+            node_t *value=items.items[i],*field=Null;const char *name=Null;
+            if(n->kind==NodeDesigInit){node_t *label=n->as.desig_init.fields.items[i];if(!label||label->kind!=NodeIdentExpr)return FactoryUnknown;name=label->as.ident.name;}
+            else if(value->kind==NodeInitField){name=value->as.init_field.name;value=value->as.init_field.value;}
+            else if(value->kind==NodeSpreadExpr||value->kind==NodeInitIndex||value->kind==NodeRangeExpr)return FactoryUnknown;
+            if(name){for(usize_t j=0;j<fields.count;j++)if(!strcmp(fields.items[j]->as.var_decl.name,name))field=fields.items[j];}
+            else {while(cursor<fields.count&&(fields.items[cursor]->as.var_decl.flags&VdeclComptimeField))++cursor;if(cursor<fields.count)field=fields.items[cursor++];}
+            if(!field||(field->as.var_decl.flags&VdeclComptimeField))return FactoryUnknown;
+            FC(value,iface_source_declaration(p->cg,field));
+        }break;}
+    default:return FactoryUnknown;
+    }
+#undef FC
+    return answer;
+}
+static iface_factory_clean_t iface_factory_clean_body(iface_local_plan_t *p) {
+    if(!p->body||p->body->kind!=NodeBlock||!p->body->as.block.stmts.count)return FactoryUnknown;
+    node_list_t stmts=p->body->as.block.stmts;
+    iface_factory_clean_t answer=FactoryClean;
+    for(usize_t i=0;i<stmts.count;i++){
+        node_t *n=stmts.items[i];iface_factory_clean_t c=FactoryUnknown;
+        if(n->kind==NodeVarDecl){
+            iface_local_node_t *r=iface_local_node(p,n,False);iface_local_binding_t *b=r?r->path.root:Null;
+            if(!b||!n->as.var_decl.init||n->headers||n->as.var_decl.attr_flags||n->as.var_decl.storage==StorageHeap||
+                (n->as.var_decl.flags&~(VdeclConst|VdeclFinal|VdeclLet)))return FactoryUnknown;
+            c=iface_factory_clean_type(p->cg,b->fact,False,0);
+            iface_factory_clean_t init=iface_factory_clean_expr(p,n->as.var_decl.init,b->fact,0);if(init>c)c=init;
+        }else if(n->kind==NodeExprStmt)c=iface_factory_clean_expr(p,n->as.expr_stmt.expr,iface_local_query(p,n->as.expr_stmt.expr),0);
+        else if(n->kind==NodeRetStmt&&i+1==stmts.count&&n->as.ret_stmt.values.count==1&&
+            n->as.ret_stmt.values.items[0]->kind==NodeIdentExpr)c=iface_factory_clean_expr(p,n->as.ret_stmt.values.items[0],iface_local_query(p,n->as.ret_stmt.values.items[0]),0);
+        /* No target-elided branch or nested block is silently classified clean. */
+        if(c>answer)answer=c;
+    }
+    return answer;
+}
+static iface_factory_summary_t *iface_factory_summary(iface_local_plan_t *p,node_t **steps,unsigned count) {
+    cg_t *cg=p->cg;iface_factory_state_t *fs=cg->iface_factories;
+    node_t *ret=p->body->kind==NodeBlock&&p->body->as.block.stmts.count?
+        p->body->as.block.stmts.items[p->body->as.block.stmts.count-1]:Null;
+    node_t *operand=ret&&ret->kind==NodeRetStmt&&ret->as.ret_stmt.values.count==1?ret->as.ret_stmt.values.items[0]:Null;
+    iface_local_node_t *read=operand&&operand->kind==NodeIdentExpr?iface_local_node(p,operand,False):Null;
+    iface_local_path_t path=read?read->path:(iface_local_path_t){0};
+    for(unsigned i=0;i<count;i++)if(!steps[i]||!iface_local_append(p,&path,steps[i],operand))path.valid=False;
+    for(iface_factory_summary_t *s=fs->summaries;s;s=s->next)
+        if(s->plan==p&&iface_local_same_path(s->path,path))return s;
+    if(fs->paths>=FactoryMaxPaths||(!p->factory&&fs->bodies>=FactoryMaxBodies)){fs->exhausted=True;return Null;}
+    iface_factory_summary_t *s=iface_local_zero(sizeof(*s));s->plan=p;s->path=path;s->state=LocalUnsupported;
+    s->reason="factory has no complete single initialized local-value result";s->evidence=ret?ret:p->owner;
+    s->next=fs->summaries;fs->summaries=s;++fs->paths;
+    if(!p->factory){p->factory=True;++fs->bodies;}p->participating=True;
+    iface_native_t *native=iface_factory_identity(cg,p);
+    if(!p->factory_classified){
+        p->factory_classified=True;
+        p->factory_eligible=native&&iface_factory_signature(cg,native,True)&&iface_factory_clean_body(p)==FactoryClean;
+    }
+    boolean_t eligible=p->factory_eligible;
+    iface_local_binding_t *binding=read?read->path.root:Null;
+    if(!binding||!binding->local||!binding->decl||binding->decl->kind!=NodeVarDecl||
+        !binding->decl->as.var_decl.init||binding->block!=p->body||!path.valid||path.arrays||read->path.count)return s;
+    p->return_node=ret;p->return_operand=operand;
+    iface_source_frame_t *saved=cg->iface_query_frame;cg->iface_query_frame=&p->frame;
+    boolean_t building=p->building,overlay=p->overlay_building,factory=p->factory_building;
+    p->building=True;p->overlay_building=True;p->factory_building=True;
+    iface_local_path_t root=read->path;
+    s->root_proof=iface_local_demand(p,root,0);s->proof=iface_local_demand(p,path,0);
+    iface_local_check(p,s->proof,read,FactoryCheckExpression|FactoryCheckResult);
+    read->transfer_needed=True;read->transfer_target=binding->fact;
+    iface_local_solve(p);p->building=building;p->overlay_building=overlay;p->factory_building=factory;cg->iface_query_frame=saved;
+    iface_source_fact_t result=native&&native->decl->as.fn_decl.return_count==1?
+        iface_source_from_type(cg,native->decl->as.fn_decl.return_types[0],StorageDefault,native->decl):iface_source_unknown("missing factory result");
+    iface_local_copy_t root_match=iface_source_local_copy(binding->fact,result);
+    if(s->proof&&s->root_proof){
+        s->state=s->proof->state>s->root_proof->state?s->proof->state:s->root_proof->state;
+        iface_local_proof_t *bad=s->proof->state>=s->root_proof->state?s->proof:s->root_proof;
+        if(bad->reason){s->reason=bad->reason;s->evidence=bad->evidence;}
+        if(root_match==IfaceLocalCopyMismatch){s->state=LocalMismatch;s->reason="factory returned local has a different original nominal root";s->evidence=operand;}
+        else if(root_match!=IfaceLocalCopyExact||!eligible||p->incomplete||p->overlay_incomplete){
+            if(s->state<LocalUnsupported)s->state=LocalUnsupported;
+            if(bad->state!=LocalMismatch)s->reason="factory result requires a cleanup-free ordinary leaf with one final explicit local return";
+        }
+        for(iface_local_proof_t *q=p->proofs;q;q=q->next)if(q->upgrade&&q->path.root->frontier_count){
+            if(s->state<LocalUnsupported)s->state=LocalUnsupported;
+            if(s->state!=LocalMismatch)s->reason="factory result proof has a receiver frontier";
+        }
+    }
+    return s;
+}
+static boolean_t iface_factory_value(iface_local_plan_t *p,iface_local_proof_t *q,node_t *n,
+                                      iface_source_fact_t storage,node_t **steps,unsigned count) {
+    iface_factory_state_t *fs=p->cg->iface_factories;if(!fs)return False;
+    iface_local_node_t *r=iface_local_node(p,n,False);if(!r||!r->named_direct)return False;
+    if(fs->request_count>=FactoryMaxRequests){fs->exhausted=True;iface_local_raise(q,LocalUnsupported,n,"factory result request budget exhausted");return True;}
+    iface_factory_request_t *request=iface_local_zero(sizeof(*request));request->consumer=p;request->proof=q;
+    request->call=n;request->function=r->selected_function;request->decl=r->selected_decl;request->source=storage;
+    request->result=iface_immediate_storage(p->cg,storage.contract.nominal);
+    request->next=fs->requests;fs->requests=request;request->proof_next=q->requests;q->requests=request;++fs->request_count;
+    p->participating=True;
+    iface_local_plan_t *factory=Null;
+    for(iface_local_plan_t *other=fs->plans;other;other=other->retained_next)
+        if(other->owner==r->selected_decl&&other->context==r->selected_function){factory=other;break;}
+    if(factory)request->summary=iface_factory_summary(factory,steps,count);
+    if(!request->summary){iface_local_raise(q,LocalDeclared,n,"selected result is not an eligible source-visible leaf factory");return True;}
+    iface_factory_summary_t *s=request->summary;
+    if(s->state!=LocalClosed)iface_local_raise(q,s->state,s->evidence,s->reason);
+    return True;
+}
+static void iface_factory_dispose(cg_t *cg) {
+    iface_factory_state_t *fs=cg->iface_factories;if(!fs)return;
+    cg->iface_query_frame=Null;
+    while(fs->requests){iface_factory_request_t *r=fs->requests;fs->requests=r->next;iface_local_release(r);}
+    while(fs->summaries){iface_factory_summary_t *s=fs->summaries;fs->summaries=s->next;iface_local_release(s);}
+    while(fs->plans){iface_local_plan_t *p=fs->plans;fs->plans=p->retained_next;
+        if(cg->iface_local_plan==p)cg->iface_local_plan=Null;iface_local_destroy(p);}
+    iface_local_release(fs);cg->iface_factories=Null;
+}
+static void iface_factory_prepare(cg_t *cg) {
+    if(!cg->iface_count||!cg->ast||cg->ast->kind!=NodeModule)return;
+    iface_factory_state_t *fs=iface_local_zero(sizeof(*fs));cg->iface_factories=fs;fs->discovering=True;
+    for(usize_t i=0;i<cg->ast->as.module.decls.count&&!fs->exhausted;i++){
+        node_t *d=cg->ast->as.module.decls.items[i];if(d->kind!=NodeFnDecl)continue;
+        iface_native_t *native=iface_native(cg,d,Null);if(!iface_factory_ordinary(native))continue;
+        if(cg->test_mode&&!d->module_name&&!strcmp(d->as.fn_decl.name,"main"))continue;
+        boolean_t ambiguous=False;if(iface_immediate_native(cg,native->function,&ambiguous)!=native||ambiguous)continue;
+        if(fs->plans_count>=FactoryMaxPlans){fs->exhausted=True;break;}
+        iface_local_plan_t *p=iface_local_create(cg,d,d->as.fn_decl.body,native->function,True);
+        p->retained_next=fs->plans;fs->plans=p;++fs->plans_count;
+    }
+    fs->discovering=False;
+    if(!fs->exhausted)for(iface_local_plan_t *p=fs->plans;p;p=p->retained_next){
+        iface_source_frame_t *saved=cg->iface_query_frame;cg->iface_query_frame=&p->frame;
+        p->building=True;p->overlay_building=True;
+        for(iface_local_node_t *r=p->nodes;r;r=r->next)if(r->sink&&r->proof&&r->proof->projected&&
+            r->proof->result_boundary&&r->proof->state!=LocalClosed&&!r->path.arrays){
+            r->upgrade=iface_local_demand(p,r->path,0);
+        }
+        iface_local_solve(p);p->building=False;p->overlay_building=False;cg->iface_query_frame=saved;
+    }
+    for(iface_local_plan_t *p=fs->plans;p;p=p->retained_next)if(p->participating)fs->retained_nodes+=p->node_count;
+    if(fs->retained_nodes>FactoryMaxRetainedNodes)fs->exhausted=True;
+    /* Exhaustion never narrows ordinary source acceptance. All partial proof
+     * objects are discarded; the old per-body path remains authoritative. */
+    if(fs->exhausted){iface_factory_dispose(cg);cg->iface_factory_exhausted=True;return;}
+    iface_local_plan_t **at=&fs->plans;
+    while(*at){iface_local_plan_t *p=*at;if(!p->participating){*at=p->retained_next;iface_local_destroy(p);}
+        else{p->retained=True;at=&p->retained_next;}}
+}
+static iface_local_plan_t *iface_factory_current(cg_t *cg) {
+    iface_local_plan_t *p=iface_local_current(cg);
+    if(!p||!p->retained||!p->emitting||!p->frozen||p->building||cg->iface_query_frame||cg->generic_n||
+        cg->cur_coro.active||cg->current_return_types!=p->owner->as.fn_decl.return_types||
+        cg->current_return_count!=p->owner->as.fn_decl.return_count||strcmp(cg->current_module_prefix,p->frame.module)||
+        !iface_factory_identity(cg,p))return Null;
+    LLVMBasicBlockRef block=LLVMGetInsertBlock(cg->builder);
+    return block&&LLVMGetBasicBlockParent(block)==p->context?p:Null;
+}
+static void iface_factory_call_selected(cg_t *cg,node_t *call,symbol_t *selected,boolean_t sibling) {
+    iface_local_plan_t *p=iface_factory_current(cg);if(!p)return;
+    iface_factory_state_t *fs=cg->iface_factories;
+    for(iface_factory_request_t *r=fs->requests;r;r=r->next)if(r->consumer==p&&r->call==call){
+        ++r->selected_count;boolean_t ambiguous=False;
+        iface_native_t *native=selected?iface_immediate_native(cg,selected->value,&ambiguous):Null;
+        if(sibling||!selected||selected->value!=r->function||ambiguous||!native||native->decl!=r->decl||
+            !iface_factory_signature(cg,native,True)||selected->c_abi||selected->requires_receiver||
+            selected->stype.base==TypeFnPtr||selected->stype.base==TypeClosure||call->kind!=NodeCallExpr||call->generic_use||
+            call->as.call.args.count!=native->decl->as.fn_decl.params.count||!selected->scalar_signature||
+            selected->scalar_signature->param_count!=native->decl->as.fn_decl.params.count||
+            iface_immediate_type(cg,selected->scalar_signature->ret_type).decl!=r->source.contract.nominal)
+            r->failure="selected named call differs from the planned factory native/source mapping";
+        if(!r->failure)for(usize_t i=0;i<native->decl->as.fn_decl.params.count;i++){
+            iface_source_fact_t formal=iface_source_declaration(cg,native->decl->as.fn_decl.params.items[i]);
+            iface_source_fact_t signature=iface_source_from_type(cg,selected->scalar_signature->params[i].type,StorageDefault,call);
+            if(!iface_source_primitive(signature)||signature.contract.type.base!=formal.contract.type.base)
+                r->failure="selected factory primitive formal ordinal differs from original source";
+        }
+    }
+}
+static boolean_t iface_factory_call_agrees(cg_t *cg,iface_factory_request_t *r) {
+    LLVMValueRef value=r->emitted;
+    boolean_t ambiguous=False;iface_native_t *native=iface_immediate_native(cg,r->function,&ambiguous);
+    if(ambiguous||!native||native->decl!=r->decl||!iface_factory_signature(cg,native,True)||
+        !value||!LLVMIsACallInst(value)||!LLVMGetInstructionParent(value)||
+        LLVMGetBasicBlockParent(LLVMGetInstructionParent(value))!=r->consumer->context||
+        LLVMGetCalledValue(value)!=r->function||LLVMGetCalledFunctionType(value)!=LLVMGlobalGetValueType(r->function)||
+        LLVMGetInstructionCallConv(value)!=LLVMCCallConv||LLVMTypeOf(value)!=r->result||
+        LLVMGetNumArgOperands(value)!=r->call->as.call.args.count||
+        LLVMGetCallSiteAttributeCount(value,LLVMAttributeReturnIndex))return False;
+    for(unsigned i=0;i<LLVMGetNumArgOperands(value);i++)if(
+        LLVMTypeOf(LLVMGetOperand(value,i))!=LLVMTypeOf(LLVMGetParam(r->function,i))||
+        LLVMGetCallSiteAttributeCount(value,(LLVMAttributeIndex)i+1))return False;
+    return True;
+}
+static void iface_factory_call_result(cg_t *cg,node_t *call,LLVMValueRef value) {
+    iface_local_plan_t *p=iface_factory_current(cg);if(!p)return;
+    for(iface_factory_request_t *r=cg->iface_factories->requests;r;r=r->next)if(r->consumer==p&&r->call==call){
+        ++r->emitted_count;r->emitted=value;
+        if(!iface_factory_call_agrees(cg,r))r->failure="emitted aggregate call differs from the exact planned factory result";
+    }
+}
+static void iface_factory_return_begin(cg_t *cg,node_t *ret) {
+    iface_local_plan_t *p=iface_factory_current(cg);if(!p||!p->factory)return;
+    ++p->returns_started;p->return_in_progress=ret;
+    if(ret!=p->return_node||ret->as.ret_stmt.values.count!=1||ret->as.ret_stmt.values.items[0]!=p->return_operand){
+        p->factory_failure="factory return is not the one original explicit local return";return;
+    }
+    iface_local_node_t *r=iface_local_node(p,p->return_operand,False);iface_local_binding_t *b=r?r->path.root:Null;
+    symbol_t *symbol=b?iface_source_lookup(cg,b->symbol.name):Null;
+    if(!symbol||!symbol->iface_source||symbol->iface_source->decl!=b->decl||symbol->iface_source->context!=p->context||
+        !iface_local_layout(cg,b->fact,0,symbol->type))p->factory_failure="factory return local lost its original root/storage identity";
+    else p->return_storage=symbol->value;
+}
+static void iface_factory_raw_result(cg_t *cg,node_t *operand,LLVMValueRef raw) {
+    iface_local_plan_t *p=iface_factory_current(cg);
+    if(!p||!p->factory||!p->return_in_progress||operand!=p->return_operand)return;
+    ++p->raw_returns_seen;p->raw_return=raw;
+    iface_source_fact_t result=iface_source_from_type(cg,p->owner->as.fn_decl.return_types[0],StorageDefault,p->owner);
+    if(!raw||!LLVMIsALoadInst(raw)||!iface_local_layout(cg,result,0,LLVMTypeOf(raw))||
+        LLVMGetOperand(raw,0)!=p->return_storage)p->factory_failure="factory raw return is not the original local aggregate load";
+}
+static void iface_factory_return_end(cg_t *cg,node_t *ret,LLVMValueRef value,LLVMValueRef native_ret) {
+    iface_local_plan_t *p=iface_factory_current(cg);if(!p||!p->factory)return;
+    ++p->returns_seen;p->returned_value=value;p->native_return=native_ret;
+    if(ret!=p->return_node||p->return_in_progress!=ret||value!=p->raw_return||!native_ret||
+        !LLVMIsAReturnInst(native_ret)||LLVMGetNumOperands(native_ret)!=1||LLVMGetOperand(native_ret,0)!=p->raw_return)
+        p->factory_failure="factory native return replaced the original raw result SSA value";
+    p->return_in_progress=Null;
+}
+static void iface_factory_cleanup_scope(cg_t *cg) {
+    iface_local_plan_t *p=iface_factory_current(cg);if(!p||!p->factory)return;
+    for(usize_t i=0;i<cg->dtor_depth;i++)if(cg->dtor_stack[i].count||cg->dtor_stack[i].deferred_count)
+        p->factory_failure="factory body registered an unclassified cleanup route";
+}
+static boolean_t iface_factory_return_sealed(cg_t *cg,iface_local_plan_t *p) {
+    iface_native_t *native=iface_factory_identity(cg,p);
+    if(!p->finalized||p->factory_failure||!native||!iface_factory_signature(cg,native,True)||
+        !p->return_node||p->returns_started!=1||p->returns_seen!=1||p->raw_returns_seen!=1||
+        !p->raw_return||p->raw_return!=p->returned_value||!p->native_return)return False;
+    unsigned returns=0;
+    for(LLVMBasicBlockRef b=LLVMGetFirstBasicBlock(p->context);b;b=LLVMGetNextBasicBlock(b)){
+        LLVMValueRef t=LLVMGetBasicBlockTerminator(b);if(t&&LLVMIsAReturnInst(t)){
+            ++returns;if(t!=p->native_return||LLVMGetNumOperands(t)!=1||LLVMGetOperand(t,0)!=p->raw_return)return False;
+        }
+    }
+    for(iface_local_binding_t *b=p->bindings;b;b=b->next)if(b->local){
+        iface_local_node_t *r=iface_local_node(p,b->decl,False);
+        if(!b->storage_seen||!r||r->physical_failure)return False;
+    }
+    return returns==1;
+}
+static void iface_factory_finalize_body(cg_t *cg,node_t *decl) {
+    iface_local_plan_t *p=iface_factory_current(cg);if(!p||p->owner!=decl)return;
+    p->finalized=True;
+    if(p->factory&&!iface_factory_return_sealed(cg,p)&&!p->factory_failure)
+        p->factory_failure="factory finalization lacks one exact original raw-value native return";
+}
+static void iface_factory_reset_visits(cg_t *cg) {
+    for(iface_local_plan_t *p=cg->iface_factories?cg->iface_factories->plans:Null;p;p=p->retained_next)
+        for(iface_local_proof_t *q=p->proofs;q;q=q->next)q->seal_visit=0;
+}
+/* Source SCCs have already been closed using independently initialized local
+ * producers. This walk records consumption/checks correspondence, never solves. */
+static boolean_t iface_factory_proof_receipts(iface_local_plan_t *p,iface_local_proof_t *q,
+                                               boolean_t final,boolean_t consume,unsigned depth,const char **why) {
+    if(!q||depth>IfaceMaxMetadataDepth){*why="factory result receipt graph is incomplete";return False;}
+    if(q->seal_visit)return True;q->seal_visit=1;
+    if(q->state!=LocalClosed||p->incomplete||p->overlay_incomplete){*why=q->reason?q->reason:"factory result source plan is incomplete";return False;}
+    iface_local_binding_t *b=q->path.root;iface_local_node_t *decl=iface_local_node(p,b->decl,False);
+    if(!b->storage_seen||!decl||decl->physical_failure){*why="factory result local storage receipt is missing or failed";return False;}
+    for(iface_local_check_t *c=q->checks;c;c=c->next){iface_local_node_t *r=c->node;
+        if(r->physical_failure||((c->kind&FactoryCheckConstructor)&&!r->constructor_seen)||
+            ((c->kind&FactoryCheckExpression)&&!r->expression_seen)||((c->kind&FactoryCheckResult)&&!r->result_seen)){
+            *why=r->physical_failure?r->physical_failure:"factory result original transfer receipt is missing";return False;}
+    }
+    for(iface_factory_request_t *r=q->requests;r;r=r->proof_next){
+        if(consume)r->consumed=True;
+        if(r->failure||r->selected_count!=1||r->emitted_count!=1||!r->emitted||!r->summary||!iface_factory_call_agrees(p->cg,r)){
+            *why=r->failure?r->failure:"factory result call receipt is missing or duplicated";return False;}
+        iface_local_plan_t *factory=r->summary->plan;
+        if(final){
+            if(!iface_factory_return_sealed(p->cg,factory)){*why=factory->factory_failure?factory->factory_failure:"consumed factory result has an unsealed native return";return False;}
+            if(!iface_factory_proof_receipts(factory,r->summary->root_proof,True,consume,depth+1,why)||
+                !iface_factory_proof_receipts(factory,r->summary->proof,True,consume,depth+1,why))return False;
+        }
+    }
+    for(iface_local_edge_t *e=q->edges;e;e=e->next)
+        if(!iface_factory_proof_receipts(p,e->source,final,consume,depth+1,why))return False;
+    return True;
+}
+static int iface_factory_require(cg_t *cg,iface_local_plan_t *p,iface_local_node_t *r,symbol_t *symbol) {
+    if(!r||!r->upgrade||!r->sink||iface_factory_current(cg)!=p)return 0;
+    /* Generic origin is never repaired, including a nominally ordinary slot. */
+    if(symbol->iface_excluded_origin&IfaceOriginGeneric)return 0;
+    r->consumed=True;
+    if(r->upgrade->state!=LocalClosed){iface_local_error_at(p,r->upgrade->evidence?r->upgrade->evidence:r->ast,
+        r->upgrade->reason?r->upgrade->reason:"factory result has no complete independent local producer");return -1;}
+    if(iface_local_frontier(r->path.root,r)!=LocalClosed||!iface_local_layout(cg,r->upgrade->target,0,symbol->type)){
+        iface_local_error_at(p,r->ast,"factory result sink differs from its exact original local use");return -1;}
+    const char *why=Null;iface_factory_reset_visits(cg);
+    if(!iface_factory_proof_receipts(p,r->upgrade,False,True,0,&why)){
+        iface_local_error_at(p,r->ast,why);return -1;}
+    return 1; /* Producer may still be pending; final artifact seal is mandatory. */
+}
+static int iface_factory_consume(cg_t *cg,iface_local_plan_t *p,iface_local_node_t *r,symbol_t *symbol) {
+    return IFACE_FACTORY_RESULT_PROMOTION?iface_factory_require(cg,p,r,symbol):0;
+}
+static boolean_t iface_factory_seal(cg_t *cg) {
+    iface_factory_state_t *fs=cg->iface_factories;if(!fs)return True;
+    boolean_t okay=True;
+    for(iface_local_plan_t *p=fs->plans;p;p=p->retained_next)for(iface_local_node_t *r=p->nodes;r;r=r->next)if(r->consumed){
+        const char *why=Null;iface_factory_reset_visits(cg);
+        if(!p->finalized||!iface_factory_identity(cg,p)||!iface_factory_proof_receipts(p,r->upgrade,True,False,0,&why)){
+            iface_local_error_at(p,r->ast,why?why:"consumed factory result lost its original consumer/native identity");okay=False;
+        }
+    }
+    return okay;
 }

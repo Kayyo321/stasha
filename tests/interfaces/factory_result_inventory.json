@@ -1,0 +1,1193 @@
+[
+  {
+    "name": "holder-copy-17",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "08a2977ea503a14f9330707c6b71f15ae4c5619767bae4315b6b79c852b08346",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "holder-copy-41",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "c686dac711b827fcc0b4af40cd8ec1a5fdeed106295e68ebd86e2294d621da14",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "caller-before-factory",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      9,
+      66
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "1f2f8b55e75166c509a4cdee10879b8b27257f72b0af327d5bfb9af7884c8fc0",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "zero-argument",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      46
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "cb2e80ac78a7ab7602ebdcdbde620835163ae7a935a1b43e5ff21169842b0a81",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "named-construction",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4058bd2fe66e5322447d954c330262bf76cb2684b0b7a4b2ad9aee85821439df",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "aliases",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      79
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "58934d7ae2db5c56ef95ba18b0f52014dedac3e52f03963d564f7510b011c41e",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "nested-path",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      88
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "2bd911b3606197feaf837ae7722ac498a4ed6c2f64d5983b1edd9f4bb6ecb81d",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "factory-local-writer",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "d45b5f39bcf874fe8336a00b3ccee416c98040a1adf3dec0af9f10fbf339a1ce",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "factory-field-writer",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "dbb152a83de8f4fd2a754320ceb2a22835da69ed95324f082f36272bc1c0eddd",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "factory-root-writer",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "dd5182ed80a579daabb325a70ade94cb67b2473c711b481e4dde901b1d933c5e",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "caller-field-writer",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      97
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "19223e6694e9062ea3f670055242f4233303cc470592e61e16f78b6185821184",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "empty-result-path",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      10,
+      66
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "211b366666dd54a089c31229bed114f7466041d14f1e35d733874e748785d6c4",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "independent-boxed-copy",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      9
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "1e447107ca8f34cc3180a2790038a23ec7b33263f703cb8dec730662fe224305",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "repeated-call-copy",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4e944a64639716592ea27db3891c4e4a6cef72e38b1ded8f702bade822dea608",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "argument-order-once",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      17,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "3b46024470e49d3b566b3dac86b2923cba32b7758193d3b9befe73f4cb7cc46e",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "primitive-float-bool",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      55
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4f512dd9043274c6f162281664d7a42a54d4b886df6a7ae41a7d891e5b5a6433",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "primitive-trap-blocks",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "dda8f3474f5a73fa0260837c7ce17e205c6ebea52a49977a93cc6db6664a2fa8",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "scalar-helper",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "083195434029e24ca27c428f3a238c447da3572c73434666b8c6e3aa50b70860",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "multiple-paths",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      12,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "e2309b4f6f949a7a82cc4256af7c3f8bce6babc1d7b6d606011cbc91a365c266",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "two-factories",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      20,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "49a72b7dd2fa37bcc4be4bcbb66d293e2a26ef71528deb42af97f1f983e94dbf",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "caller-shadow",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      60
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "3c5616b1ba30a7ea5364e02730774aaeb69398c801e77e7cf6bc565b3174574f",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "unrelated-generic-callback",
+    "category": "valid",
+    "boundary": "selected leaf result",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      8
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "28e8b592e0f44e45b0ee2cd1855f4fb223633a1d0c4c4cd0f2092391995c3fa2",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "two-consumers",
+    "category": "valid",
+    "boundary": "two original consumers",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      13,
+      67
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4b3ded2d1cbfa605c93b2deba33c896c6866d66c90571cfe85de578e47295e9a",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "source-import-owned-wrapper",
+    "category": "valid",
+    "boundary": "source-imported internal factory behind scalar wrapper",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      13,
+      71
+    ],
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {
+      "factorymod.sts": "ae25d3df90134e1f63b719729c55666763d7398a48ef7c98fa7e552310cfdffd"
+    },
+    "diagnostic_file": "factorymod.sts",
+    "expected_exit": 0,
+    "expected_stdout": "",
+    "expected_stderr": "",
+    "source_sha256": "4e17310b77a141959438fb2034fa28550320fceac642ec7f24febc39b13f73d6",
+    "execute_gate_a": false,
+    "execute_gate_b": true
+  },
+  {
+    "name": "wrong-initializer",
+    "category": "reject",
+    "boundary": "known factory-local nominal mismatch",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'concrete source identity does not match the original local destination'",
+    "span_b": [
+      9,
+      33
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "fd8bd1fff178d3672be678377260f5b695a90f406cb31206273e784f03784298",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "wrong-local-writer",
+    "category": "reject",
+    "boundary": "known factory-local nominal mismatch",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'concrete source identity does not match the original local destination'",
+    "span_b": [
+      9,
+      44
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "e50a294052b6f881fc593c62ee827a64e4b8efcd901bf780566c4478f4a74224",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "mismatch-over-unsupported",
+    "category": "reject",
+    "boundary": "known mismatch dominates unsupported sibling storage",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'concrete source identity does not match the original local destination'",
+    "span_b": [
+      9,
+      33
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "19bed863674afeb76e32e65ef9f1e8e99a876e0328cb42948b9336dd4a47d341",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "mismatch-over-frontier",
+    "category": "reject",
+    "boundary": "known mismatch dominates receiver frontier",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'concrete source identity does not match the original local destination'",
+    "span_b": [
+      9,
+      33
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "ac8ce4d206d7fce9a31ce986dfeefae7db4287dc885de1cb0c30f62af307cc5f",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "generic-stored-history",
+    "category": "reject",
+    "boundary": "same-annotation generic stored history is not a seed",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'concrete source identity does not match the original local destination'",
+    "span_b": [
+      10,
+      39
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "076d3369ab905985a872c71a1caea7fa00c573f09f2bde09c63c24b1924cec41",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-generic-local",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "cb3bc71f74e9cb76a9f6c652b987134e92a44408054ff3586a1f2bd68eba3fc1",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-generic-local",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "a07aee7ff47a3801cbad2e3280a1cbe3d37afee1c825f8c20c212d67c5b9bd92",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-generic-destructor",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "2579a7b20d9b1a48dcf3dd518f91dc3cbf554c4b341bba72178fcbb64980fdde",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-generic-destructor",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "26868a623614204579fac9e930ea0ea0c0a8aa92417aa7d675c8a8d10f003b3e",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-ordinary-destructor",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "31d695d33b09bc76b4cefd238dba0e0d2d9a3af8e65bfa5fa8d7f361206a61ab",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-ordinary-destructor",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "65cbdcf2ea052d66d92c442566f082ae9a886c110d10d50b57c1445160fc0a4f",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-nested-destructor",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "771b371b78eb1a3d5253eddf5c6bf2d8446057876afe5038209d903506cb773d",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-nested-destructor",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "bca0416514ea65fc6e59b7f1a5d8bcd79ebc173e34c4ac707ca971e2bb57d0ac",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-enum-local",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "b5654366aa68967d15348033d6555647ab7a4883279a292b462933f91541ab4b",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-enum-local",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4edab6972413fa5cd6bc1f9fe3639dbd559a953765b5cbe457079ebb99ccf395",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-array-local",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      12,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "88bc99b63da831d5b7d86f3aa368cd4192506a79e447297f829b5f1ddb640867",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-array-local",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "c0a2059e21a0ffd9066c69c90300dcc1bfe56bdb572dea8fdc6e5cb304ca3b37",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-callback-local",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f1e7ad91e0058f070680f535cf32c9e5f367418d7682e6af056d662d27a61b3e",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-callback-local",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "97458cce3a2374c86e910130b92d778c12dc2b36d2224c50a3f6c15acb82d681",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-discarded-aggregate-call",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "e7c4f432dad451cb285f1ae8c7204844292ee58cb03baf0004ae2d9abd97f5b7",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-discarded-aggregate-call",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "6af9a73c96554374869d45b02b2b3fd25a0175639b3221b6725e599961f25c66",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-nested-block-cleanup",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "d056db356997c97600a9331bf1d60d205c16a1a6c7067eb4bf2bc9c0f1c278bb",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-nested-block-cleanup",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f82cc43c9ff86e84aef9c92d19b7095cccd0657defa4e930a80fa4cbf845d147",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-target-elided-cleanup",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      16,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      13,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4ef8842d9983e8fd40f084a7236eb15283f1811635a5f1c72b55e8fd9c8bb8b8",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-target-elided-cleanup",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "9e5eef5f9b96d2fff2eee29716ed1a0e932a7411ec4876226aaabdb400df30dc",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-defer-body",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      12,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "4fc75f684c10189d49a9497519ef2d1898a92b6a9ae7a9edad708d0825bd8d87",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-defer-body",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "e024ab0647e167bfd96c9d8963ad8ef86c2396cd6f1928cdcdf1904946324852",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "unsupported-relevant-address",
+    "category": "reject",
+    "boundary": "unclassified or cleanup-bearing whole factory body",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      10,
+      13
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "1bcadc042cc1fd333e1b1e5ecd34e702b50a642e120a3d4b38f244494e74bd05",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-relevant-address",
+    "category": "deferred",
+    "boundary": "unconsumed cleanup/unsupported request stays silent",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "b409a79a04e7a9242615ee3578b5a9f2784cdbf225b236525387b45b32187ed6",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "public-factory",
+    "category": "reject",
+    "boundary": "public/interposable source result is not admitted",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      14,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      11,
+      1
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "90ab3d04c7bd51a17c920db848c65c53821aeaf3b66b56bd1f9302815d0c9add",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "child-factory",
+    "category": "reject",
+    "boundary": "no nominal child-factory proof chains",
+    "diagnostic_a": "interface declaration: interface local transfer: 'ordinary parameter/result/global or extracted value is a declared boundary, not a closed local producer'",
+    "span_a": [
+      15,
+      48
+    ],
+    "diagnostic_b": "interface declaration: interface local transfer: 'factory result requires a cleanup-free ordinary leaf with one final explicit local return'",
+    "span_b": [
+      10,
+      15
+    ],
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "f9d899b016337c902332ff111586758237a3cb34742b30704bd678344cf69089",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-projected-sink",
+    "category": "deferred",
+    "boundary": "unemitted source sink never consumes new proof",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "cfc73627d2f340bda1a736d72d283f02ba748b24fb6464b873daa2b273c0084c",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "dead-mismatch-sink",
+    "category": "deferred",
+    "boundary": "unemitted source sink never consumes new proof",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "9161427012f4187a0d035e1ae20d0736c8e62c897f4d7d5db05588508fef9225",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "call-after-return",
+    "category": "deferred",
+    "boundary": "unemitted source sink never consumes new proof",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "8286fe0b45d4d68af277442363459810674198ac9e05ed73cb93e4f75cfa5af2",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  },
+  {
+    "name": "legacy-direct-s-history",
+    "category": "deferred",
+    "boundary": "same-annotation direct-S history remains an unclosed legacy boundary",
+    "diagnostic_a": null,
+    "span_a": null,
+    "diagnostic_b": null,
+    "span_b": null,
+    "files": {},
+    "diagnostic_file": "input.sts",
+    "expected_exit": null,
+    "expected_stdout": null,
+    "expected_stderr": null,
+    "source_sha256": "ea3715ed79a26817fe9d294f663586311074332936ed259a09bc690e85b2e6e5",
+    "execute_gate_a": false,
+    "execute_gate_b": false
+  }
+]

@@ -299,3 +299,31 @@ characterization; they never execute. Current archive migration checks require
 early refusal of those exact artifacts and genuine corrected provider/consumer
 execution at O0–O3. The archive marker does not transport a helper summary or
 prove arbitrary foreign object correctness.
+
+## Source-local leaf factory results
+
+```sh
+python3 tests/interfaces/factory_result_run.py \
+  --compiler bin/stasha-factory-gateb-dev1 --phase gate-b --artifacts /tmp/factory-results
+python3 tests/interfaces/factory_result_test_runner.py
+python3 tests/interfaces/factory_result_test_units.py \
+  --phase gate-b --llvm-build build/llvm --artifacts /tmp/factory-units
+```
+
+The frozen corpus has 59 sources: 24 valid, 19 expected rejections and 16 deferred
+boundaries, each at O0–O3. Gate B records 332 checks: 96 valid runtime invocations,
+96 separate valid IR checks and 140 compile-only rejection/deferred outcomes.
+The promotion-disabled Gate A corpus has 236 compile-only checks. Counts do not
+turn deferred acceptance into a safety pass. No rejected/deferred fixture executes.
+
+The runner fails before any compiler request on schema/inventory/source drift.
+Expected rejection requires normal exit, no artifact and exact reason, coordinates
+and full diagnostic source path; a matching basename in a foreign directory is
+not accepted. Thirty mocked runner controls exercise this separation.
+
+The source/lifetime/correspondence gate precedes enabling admission. Independent
+plain functional assertions and writer sanitizer assertions are separate evidence.
+Genuine retained ABI10 archives remain accepted under their existing contracts,
+but old and fresh archived Holder projections still receive no new source proof.
+Source imports, reversed emission order, dead uses, cleanup exclusions, raw native
+return values and copy-out behavior have distinct qualification controls.

@@ -108,10 +108,10 @@ NEGATIVE_DIAGNOSTICS = {'ancestor-wrong-child': "interface declaration: interfac
                       "original local destination'",
  'field-wrong': "interface declaration: interface local transfer: 'concrete source identity does not match the "
                 "original local destination'",
- 'helper-child-boundary': "interface declaration: interface local transfer: 'ordinary parameter/result/global or "
-                          "extracted value is a declared boundary, not a closed local producer'",
- 'helper-holder-boundary': "interface declaration: interface local transfer: 'ordinary parameter/result/global or "
-                           "extracted value is a declared boundary, not a closed local producer'",
+ 'helper-child-boundary': "interface declaration: interface local transfer: 'factory result requires a cleanup-free "
+                          "ordinary leaf with one final explicit local return'",
+ 'helper-holder-boundary': "interface declaration: interface local transfer: 'factory result requires a cleanup-free "
+                           "ordinary leaf with one final explicit local return'",
  'loop-terminal': "interface declaration: interface local transfer: 'qualified receiver has no direct same-block "
                   "terminal frontier'",
  'loop-wrong': "interface declaration: interface local transfer: 'concrete source identity does not match the original "

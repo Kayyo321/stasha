@@ -30,6 +30,7 @@ python3 tests/interfaces/run_i1a.py --compiler "$compiler" --artifacts "$artifac
 python3 tests/interfaces/run_i1b.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i1b1"
 python3 tests/interfaces/i1b2_run.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i1b2"
 python3 tests/interfaces/i1b3a_run.py --compiler "$compiler" --artifacts "$artifacts/interfaces-i1b3a"
+python3 tests/interfaces/factory_result_run.py --compiler "$compiler" --phase gate-b --artifacts "$artifacts/interfaces-factory-results"
 python3 tests/layout/run_layout_tests.py --compiler "$compiler" --cc "${CC:-clang}"
 python3 tests/abi/run_sysv_aggregates.py "$compiler" --cc "${CC:-clang}" --out "$artifacts/abi"
 python3 tests/abi/run_c_callbacks.py "$compiler" --cc "${CC:-clang}" --out "$artifacts/callbacks"

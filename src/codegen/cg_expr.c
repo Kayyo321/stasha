@@ -1805,6 +1805,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
     }
     symbol_t selected_call_symbol = *sym; /* preparation may grow globals */
     sym = &selected_call_symbol;
+    iface_factory_call_selected(cg,node,sym,is_sibling_call);
     if (!iface_immediate_arguments(cg,node,sym,is_sibling_call)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     /* Argument contextualization follows the immediate source-contract check. */
     infer_call_lambda_args(cg, node->as.call.callee, node->as.call.args);
@@ -2019,6 +2020,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
 
     LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_val,
                                        args, (unsigned)argc, "");
+    iface_factory_call_result(cg,node,ret);
     if (argc > 0) deallocate(args_heap);
     return ret;
 }
