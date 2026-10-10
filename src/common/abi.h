@@ -1,6 +1,10 @@
 #ifndef STASHA_ABI_H
 #define STASHA_ABI_H
-/* ABI 7 requires rebuilding source-backed archives after canonical ordinary
+/* ABI 8 requires rebuilding source-backed archives after bounded interface
+ * source-call argument checks. Earlier retained bodies bypass those checks.
+ * Descriptor bytes and slot order are unchanged. Prior stores, ordinary helper
+ * transfers, return bodies, initialization, lifetime and CFI are not certified.
+ * ABI 7 requires rebuilding source-backed archives after canonical ordinary
  * interface declaration/binding checks and native table/call ABI guards. It is
  * a semantic boundary; descriptor layout is unchanged. Source-flow, generic,
  * initialization, ownership/lifetime and runtime CFI remain separate work.
@@ -15,6 +19,6 @@
  * ABI 3 adds classified C aggregate calls and explicit static/instance receivers.
  * ABI 2 corrected C, union and tagged-payload layout and scalar semantics.
  * Source-backed archives produced by older compilers must be rebuilt. */
-#define STASHA_ABI_VERSION 7
+#define STASHA_ABI_VERSION 8
 #define STASHA_ABI_MAGIC "STASHA_ABI"
 #endif

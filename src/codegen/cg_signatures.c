@@ -7,6 +7,7 @@ typedef struct {
     node_t *nominal;              /* declaration identity, never layout identity */
     storage_t domain, raw_domain;
     int raw_flags;
+    const char *source_failure;   /* quiet query failure, reported only at admission */
 } iface_type_t;
 struct iface_signature {
     iface_signature_t *next;
@@ -112,55 +113,71 @@ static boolean_t iface_type_fail(type_info_t t, const char *why) {
     iface_error(t.source_loc, why, t.user_name ? t.user_name : "type");
     return False;
 }
+/* The source query is also used conservatively on ordinary calls. Unsupported
+ * metadata must stay silent there; only an affected interface admission reports
+ * the copied reason. Signature construction retains its existing diagnostics. */
+static boolean_t iface_resolve_type_fail(type_info_t t, const char *why,
+                                         boolean_t source, iface_type_t *out) {
+    if (source) { out->source_failure = why; return False; }
+    return iface_type_fail(t, why);
+}
 /* Nominal leaves stop recursion. Alias expansion checks each syntax layer
  * before combining it, so an inner nullable/domain annotation cannot disappear. */
-static boolean_t iface_canonical_type(cg_t *cg, type_info_t t, boolean_t result,
-                                      boolean_t alias_layer, node_t **seen,
+static boolean_t iface_resolve_type(cg_t *cg, type_info_t t, boolean_t result,
+                                      boolean_t source, boolean_t alias_layer, node_t **seen,
                                       usize_t depth, iface_type_t *out) {
+    memset(out, 0, sizeof(*out));
     if (depth > IfaceMaxMetadataDepth)
-        return iface_type_fail(t, "metadata nesting exceeds maximum of 256 at");
-    if (result && t.written_storage != StorageDefault)
-        return iface_type_fail(t, "storage-qualified interface returns are unsupported:");
-    if (alias_layer && t.written_storage != StorageDefault)
-        return iface_type_fail(t, "storage-qualified aliases in interface signatures are unsupported:");
-    if (t.generic_use) return iface_type_fail(t, "generic signature types are unsupported:");
+        return iface_resolve_type_fail(t, "metadata nesting exceeds maximum of 256 at", source, out);
+    if (!source && result && t.written_storage != StorageDefault)
+        return iface_resolve_type_fail(t, "storage-qualified interface returns are unsupported:", source, out);
+    if (!source && alias_layer && t.written_storage != StorageDefault)
+        return iface_resolve_type_fail(t, "storage-qualified aliases in interface signatures are unsupported:", source, out);
+    if (t.generic_use) return iface_resolve_type_fail(t, "generic signature types are unsupported:", source, out);
     if (t.fn_ptr_desc || t.base == TypeFnPtr || t.base == TypeClosure)
-        return iface_type_fail(t, "callback/closure interface signatures are unsupported:");
+        return iface_resolve_type_fail(t, "callback/closure interface signatures are unsupported:", source, out);
     if (t.elem_type || t.base == TypeSlice)
-        return iface_type_fail(t, "slice interface signatures are unsupported:");
+        return iface_resolve_type_fail(t, "slice interface signatures are unsupported:", source, out);
     if (t.base == TypeError || t.base == TypeFuture || t.base == TypeStream ||
         t.base == TypeVa || t.base == TypeZone || t.base == TypeInfer)
-        return iface_type_fail(t, "error/handle/inferred interface signatures are unsupported:");
+        return iface_resolve_type_fail(t, "error/handle/inferred interface signatures are unsupported:", source, out);
     int n = t.is_pointer ? (t.ptr_depth ? t.ptr_depth : 1) : 0;
     if (t.ptr_depth < 0 || t.ptr_depth > 8 || (!t.is_pointer && t.ptr_depth))
-        return iface_type_fail(t, "invalid pointer depth in interface signature:");
+        return iface_resolve_type_fail(t, "invalid pointer depth in interface signature:", source, out);
     if (n && !t.ptr_depth) t.ptr_perms[0] = t.ptr_perm;
     for (int i = 0; i < n; ++i)
         if (t.ptr_perms[i] & ~(PtrRead | PtrWrite | PtrArith))
-            return iface_type_fail(t, "invalid pointer permission bits in interface signature:");
+            return iface_resolve_type_fail(t, "invalid pointer permission bits in interface signature:", source, out);
     if (n && t.ptr_perm != t.ptr_perms[0])
-        return iface_type_fail(t, "conflicting outer pointer permissions in interface signature:");
+        return iface_resolve_type_fail(t, "conflicting outer pointer permissions in interface signature:", source, out);
     t.ptr_depth = n;
     t.nullable = t.nullable || t.written_nullable;
-    memset(out, 0, sizeof(*out));
     out->type = t;
     if (t.base == TypeUser) {
-        node_t *d = iface_named_type(cg, t.user_name, t.source_loc);
-        if (!d) return False;
+        node_t *d = source ? iface_quiet_type(cg, t.user_name) : iface_named_type(cg, t.user_name, t.source_loc);
+        if (!d) {
+            if (source) out->source_failure = "unresolved or ambiguous raw nominal declaration";
+            return False;
+        }
         if (d->as.type_decl.type_param_count)
-            return iface_type_fail(t, "generic nominal interface signatures are unsupported:");
+            return iface_resolve_type_fail(t, "generic nominal interface signatures are unsupported:", source, out);
         if (d->as.type_decl.decl_kind == TypeDeclAlias) {
             for (usize_t i = 0; i < depth; ++i)
-                if (seen[i] == d) return iface_type_fail(t, "alias cycle in interface signature:");
+                if (seen[i] == d) return iface_resolve_type_fail(t, "alias cycle in interface signature:", source, out);
             if (depth == IfaceMaxMetadataDepth)
-                return iface_type_fail(t, "metadata nesting exceeds maximum of 256 at");
+                return iface_resolve_type_fail(t, "metadata nesting exceeds maximum of 256 at", source, out);
             seen[depth] = d;
             iface_type_t inner;
-            if (!iface_canonical_type(cg, d->as.type_decl.alias_type, result, True, seen, depth + 1, &inner)) return False;
+            if (!iface_resolve_type(cg, d->as.type_decl.alias_type, result, source, True, seen, depth + 1, &inner)) {
+                out->source_failure = inner.source_failure;
+                return False;
+            }
+            if (source && n && inner.type.written_storage != StorageDefault)
+                return iface_resolve_type_fail(t, "inner-domain alias composition is unsupported:", source, out);
             if (n && inner.type.nullable)
-                return iface_type_fail(t, "inner-nullable alias composition is unsupported:");
+                return iface_resolve_type_fail(t, "inner-nullable alias composition is unsupported:", source, out);
             if (n + inner.type.ptr_depth > 8)
-                return iface_type_fail(t, "composed pointer depth exceeds maximum of 8:");
+                return iface_resolve_type_fail(t, "composed pointer depth exceeds maximum of 8:", source, out);
             *out = inner;
             type_info_t *r = &out->type;
             for (int i = r->ptr_depth - 1; i >= 0; --i) r->ptr_perms[i + n] = r->ptr_perms[i];
@@ -170,36 +187,43 @@ static boolean_t iface_canonical_type(cg_t *cg, type_info_t t, boolean_t result,
             r->ptr_perm = r->is_pointer ? r->ptr_perms[0] : PtrNone;
             r->nullable = t.nullable || r->nullable;
             r->written_nullable = r->nullable;
-            r->written_storage = t.written_storage;
+            r->written_storage = source && t.written_storage == StorageDefault ? r->written_storage : t.written_storage;
             r->source_loc = t.source_loc;
         } else {
             out->nominal = d;
-            if (!alias_layer && !n && d->as.type_decl.decl_kind != TypeDeclEnum &&
+            if (!source && !alias_layer && !n && d->as.type_decl.decl_kind != TypeDeclEnum &&
                       d->as.type_decl.decl_kind != TypeDeclInterface)
-                return iface_type_fail(t, "by-value struct/union interface signatures are unsupported:");
+                return iface_resolve_type_fail(t, "by-value struct/union interface signatures are unsupported:", source, out);
             if (!alias_layer && !n && d->as.type_decl.decl_kind == TypeDeclEnum) {
                 for (usize_t i = 0; i < d->as.type_decl.variants.count; ++i)
                     if (d->as.type_decl.variants.items[i]->as.enum_variant.has_payload)
-                        return iface_type_fail(t, "payload-enum interface signatures are unsupported:");
+                        return iface_resolve_type_fail(t, "payload-enum interface signatures are unsupported:", source, out);
             }
         }
     } else if (t.base < TypeVoid || t.base > TypeF64) {
-        return iface_type_fail(t, "unsupported interface signature type:");
+        return iface_resolve_type_fail(t, "unsupported interface signature type:", source, out);
     }
     if (!alias_layer && !out->type.is_pointer) {
-        if (out->type.nullable) return iface_type_fail(t, "nullable nonpointer interface signature is unsupported:");
-        if (!result && out->type.base == TypeVoid) return iface_type_fail(t, "void value parameter in interface signature:");
+        if (out->type.nullable) return iface_resolve_type_fail(t, "nullable nonpointer interface signature is unsupported:", source, out);
+        if (!result && out->type.base == TypeVoid) return iface_resolve_type_fail(t, "void value parameter in interface signature:", source, out);
         if (out->nominal) {
             int kind = out->nominal->as.type_decl.decl_kind;
-            if (kind != TypeDeclEnum && kind != TypeDeclInterface)
-                return iface_type_fail(t, "by-value struct/union interface signatures are unsupported:");
+            if (!source && kind != TypeDeclEnum && kind != TypeDeclInterface)
+                return iface_resolve_type_fail(t, "by-value struct/union interface signatures are unsupported:", source, out);
             if (kind == TypeDeclEnum)
                 for (usize_t i = 0; i < out->nominal->as.type_decl.variants.count; ++i)
                     if (out->nominal->as.type_decl.variants.items[i]->as.enum_variant.has_payload)
-                        return iface_type_fail(t, "payload-enum interface signatures are unsupported:");
+                        return iface_resolve_type_fail(t, "payload-enum interface signatures are unsupported:", source, out);
         }
     }
     return True;
+}
+/* Signature admissibility remains unchanged; source facts may identify concrete
+ * values without admitting aggregates into an interface method signature. */
+static boolean_t iface_canonical_type(cg_t *cg, type_info_t t, boolean_t result,
+                                      boolean_t alias_layer, node_t **seen,
+                                      usize_t depth, iface_type_t *out) {
+    return iface_resolve_type(cg,t,result,False,alias_layer,seen,depth,out);
 }
 static boolean_t iface_headers_supported(node_t *n) {
     if (!n->headers) return True;

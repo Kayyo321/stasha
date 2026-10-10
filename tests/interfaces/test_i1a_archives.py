@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Genuine semantic ABI7 rebuild boundary and valid cross-archive dispatch.
+"""Genuine semantic ABI8 rebuild boundary and valid cross-archive dispatch.
 
 Never execute the historical invalid provider or any unexpectedly accepted
 negative. Historical archive/source/sidecar bytes are hash checked, never relabeled.
@@ -22,7 +22,7 @@ def run(compiler,history,artifacts):
     for mode in ['ir','build']:
         out=old/f'forbidden-{mode}';result=r.process([r.compiler,mode,old/'consumer.sts','-o',out],old/f'reject-{mode}')
         issues=negative_issues(result,out,'incompatible ABI metadata','consumer.sts')
-        if 'required ABI 7 for target' not in result['stderr']:issues.append('missing current ABI7 requirement')
+        if 'required ABI 8 for target' not in result['stderr']:issues.append('missing current ABI8 requirement')
         if re.search(r'(?m)^\[[^\]]+\] (?:importing|generating code|linking|archiving)',result['stderr']):issues.append('old archive reached import/codegen/link')
         record(r,'genuine-ABI6-reject-'+mode,issues)
     out=old/'provider-invalid.ll';result=r.process([r.compiler,'ir',old/'provider.sts','-o',out],old/'source-reject')
@@ -30,7 +30,7 @@ def run(compiler,history,artifacts):
     for level in range(4):
         d=work/f'native-O{level}';d.mkdir();provider,caller=sources();(d/'provider.sts').write_text(provider);(d/'caller.sts').write_text(caller);opt=f'-o={level}'
         archive=d/'provider.a';issues=good(r,[r.compiler,'lib',d/'provider.sts','-o',archive,opt],d/'provider-build',archive)
-        if not Path(str(archive)+'.stasha-abi').is_file() or Path(str(archive)+'.stasha-abi').read_text()!='STASHA_ABI 7\nTARGET x86_64-unknown-linux-gnu\n':issues.append('provider is not genuine ABI7')
+        if not Path(str(archive)+'.stasha-abi').is_file() or Path(str(archive)+'.stasha-abi').read_text()!='STASHA_ABI 8\nTARGET x86_64-unknown-linux-gnu\n':issues.append('provider is not genuine ABI8')
         ir=d/'provider.ll'
         if not issues:issues+=good(r,[r.compiler,'ir',d/'provider.sts','-o',ir,opt],d/'provider-ir',ir)
         if not issues:
@@ -41,7 +41,7 @@ def run(compiler,history,artifacts):
         if not issues:
             ran=r.process([out],d/'execute')
             if ran['category']!='exit' or ran['returncode'] or ran['stdout'] or ran['stderr']:issues.append('native cross-archive value oracle failed')
-        record(r,f'genuine-ABI7-native-O{level}',issues)
+        record(r,f'genuine-ABI8-native-O{level}',issues)
     # Imported internal methods may back provider-owned tables. Only a request
     # to manufacture a new local table needs their local addressability.
     d=work/'internal-provider';d.mkdir()

@@ -303,6 +303,9 @@ This checkpoint provides no general interface memory-safety guarantee.
 
 ## I1a declared signatures and table binding
 
+These binding rules remain active. I1b.1 below adds source-call checks and
+supersedes the ABI7 build requirement.
+
 I1a checks declared interface contracts before emitting native declarations or
 tables. Same-name inherited requirements can share a slot only when their full
 supported source signatures agree. Signedness, nominal enum/struct/interface
@@ -370,3 +373,82 @@ or partial descriptor initialization remain pending. Runtime table membership,
 indirect-call CFI, object/table pairing, lifetime, ownership and concurrency are
 separate requirements. An exact native call type does not prove that a descriptor
 contains a live or authentic object and table.
+
+## I1b.1 source contracts at interface calls
+
+Dynamic and qualified interface-slot calls check every actual expression's
+supported source type against its declared parameter. Supported native call
+adapters check their interface-valued formals; unrelated native formals keep
+the existing language checks. Admission precedes argument evaluation. Equal LLVM types or
+pointer sizes alone do not establish source agreement. Source queries preserve
+nominal declarations, aliases, pointer layers, nullability and relevant storage
+requirements; unsupported or unresolved contracts diagnose instead of falling
+back to native representation. The selected source callable must agree with the
+native callable that will actually be emitted.
+
+The native adapters cover existing general/function-pointer, sibling, instance,
+self/self-member, module/static/colon and constructor calls with retained source
+contracts. This does not add new concrete boxing on those adapters. Direct
+interface descriptor carriers on unsupported lambda/closure/thread/async, C-ABI
+or variadic routes diagnose rather than relying on their physical layout.
+
+The bounded conversion rules are:
+
+- Primitive arguments retain the established checked scalar conversions. Enum
+  arguments require the same enum declaration, including aliases; their integer
+  representation does not grant implicit conversion to a different enum.
+- Data pointers require the same pointee declaration/type and depth. Inner
+  permission layers remain invariant. Outer read/write/arithmetic capabilities
+  may be removed, never added by an ordinary pointer conversion. A nonnullable
+  pointer may pass to a nullable formal; the reverse is rejected.
+- Direct addresses of supported ordinary object/array/field storage retain the
+  established fresh-address capabilities, including arithmetic permission.
+  Readonly storage cannot supply write permission. Pointer-derived addresses
+  cannot add capabilities absent from their source pointer. This does not prove an extent or
+  lifetime beyond the existing access rules.
+- An explicitly required stack/heap pointee domain needs supported evidence
+  about the selected object/pointee. The location of a pointer variable is not
+  evidence of where it points. Unsupported inner-domain alias compositions
+  diagnose rather than silently attaching the domain to the wrong layer.
+- Literal nil has a dedicated conversion only to a nullable data-pointer formal
+  without a stack/heap pointee-domain requirement. It cannot supply a nonnullable
+  pointer or an interface descriptor. Known-domain nil remains unsupported.
+- A readable value of exactly interface I may be copied into a default/stack I
+  formal, including a declared I call result. This copies a descriptor and does
+  not infer the domain, ownership or lifetime of its backing object. Interface
+  J does not become I merely because both descriptors contain two pointers.
+
+Existing readable identifier-valued concrete boxing remains bounded by I1a's
+eligibility rules. No new implicit pointer boxing or general expression boxing
+is introduced. Field/index-derived concrete initialization and other unresolved
+initialization origins still cannot acquire eligibility through a typed local.
+Checked local transfer and projection restoration is the next separate stage.
+
+### Scope of source evidence
+
+Ordinary parameter and result declarations are source-contract boundaries.
+Checking a loaded variable or a declared call result does not prove that every
+previous assignment, helper argument or return body respected that declaration.
+Source-call checking is therefore not complete descriptor/provenance checking.
+Stores, returns and broader descriptor flow through casts, conditional merges
+and aggregate members outside the directly checked actual expressions still
+need separate gates. So do default/partial initialization, generic cache
+correctness and unsupported carriers. Ordinary named aggregates containing
+interface fields remain available but unqualified for this transfer guarantee,
+including on special call routes. Their contents are not certified merely
+because no direct descriptor formal is detected. Unsafe does not disable the checked call contract, but this
+change does not redefine every other unsafe operation.
+
+### Archive migration: ABI 8
+
+Rebuild all Stasha archives and consumers for ABI 8. This is a semantic marker;
+I0's slot ordering and the two-word descriptor layout are unchanged. A genuine
+ABI7 archive can retain a mismatched source call inside its compiled body even
+when newly checked declarations are imported successfully. ABI8 rejects source-backed Stasha
+archives carrying incompatible metadata before importing/lowering/linking them.
+This marker does not attest arbitrary foreign object files. Editing sidecar metadata
+cannot make an old body satisfy the new contract; rebuild its source instead.
+
+Runtime table membership, indirect-call CFI, object/table consistency, liveness,
+ownership and concurrency remain independent requirements. This checkpoint does
+not establish general memory safety or kernel readiness.

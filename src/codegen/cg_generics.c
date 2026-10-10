@@ -152,6 +152,7 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     symtab_add(&cg->globals,
                ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
     scalar_register_signature(cg, &cg->globals.entries[cg->globals.count - 1], method_decl);
+    iface_register_native(cg, method_decl, Null, fn, is_instance, Null);
     cg->globals.entries[cg->globals.count - 1].requires_receiver = is_instance;
     if (total_params > 0) deallocate(ptypes_heap);
 
@@ -210,6 +211,7 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
                        alloca_val);
         symtab_add(&cg->locals, param->as.var_decl.name,
                    alloca_val, ptype, pti, False);
+        cg->locals.entries[cg->locals.count-1].iface_source = iface_source_record_var(cg, param);
         cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_type_origin(cg,param->as.var_decl.type);
     }
 
@@ -515,6 +517,7 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
     type_info_t dummy; memset(&dummy, 0, sizeof(dummy));
     symtab_add(&cg->globals, inst_name_intern, fn, Null, dummy, False);
     scalar_register_signature(cg, &cg->globals.entries[cg->globals.count - 1], tmpl);
+    iface_register_native(cg, tmpl, Null, fn, False, Null);
     if (pc > 0) deallocate(ptypes_heap);
 
     /* ── generate body ── */
@@ -547,7 +550,8 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
             LLVMBuildStore(cg->builder, LLVMGetParam(fn, (unsigned)j), alloca_val);
             symtab_add(&cg->locals, param->as.var_decl.name,
                        alloca_val, ptype, pti, False);
-            cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_type_origin(cg,param->as.var_decl.type);
+            cg->locals.entries[cg->locals.count-1].iface_source = iface_source_record_var(cg, param);
+        cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_type_origin(cg,param->as.var_decl.type);
         }
 
         /* Generic coroutine: wrap body with coro prologue/epilogue after

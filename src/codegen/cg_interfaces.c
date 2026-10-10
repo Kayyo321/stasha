@@ -455,6 +455,8 @@ static LLVMValueRef construct_fat_ptr(cg_t *cg, iface_table_result_t table, LLVM
 static type_info_t scalar_expr_type(cg_t *, node_t *, type_info_t);
 static boolean_t scalar_numeric(type_info_t);
 static LLVMValueRef gen_scalar_as(cg_t *, node_t *, type_info_t);
+static boolean_t iface_source_check_slot(cg_t *, node_t *, iface_signature_t *);
+static LLVMValueRef iface_source_emit_slot_arg(cg_t *, node_t *, iface_type_t);
 static LLVMValueRef iface_call_recovery(cg_t *cg, iface_signature_t *s) {
     LLVMTypeRef t = s && s->valid ? get_llvm_type(cg, s->result.type) : LLVMInt32TypeInContext(cg->ctx);
     return LLVMGetTypeKind(t) == LLVMVoidTypeKind ? LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0) : LLVMGetUndef(t);
@@ -464,6 +466,7 @@ static LLVMValueRef iface_call_recovery(cg_t *cg, iface_signature_t *s) {
 static LLVMValueRef iface_emit_call(cg_t *cg, node_t *node, iface_signature_t *s,
                                     LLVMValueRef fn, LLVMValueRef object) {
     if (!s || !s->valid || !s->native_type || !fn || !object) return iface_call_recovery(cg, s);
+    if (!iface_source_check_slot(cg, node, s)) return iface_call_recovery(cg, s);
     if (node->as.method_call.args.count != s->count) {
         iface_error(iface_node_loc(node), "interface call argument count does not match declaration:", node->as.method_call.method);
         return iface_call_recovery(cg, s);
@@ -476,8 +479,7 @@ static LLVMValueRef iface_emit_call(cg_t *cg, node_t *node, iface_signature_t *s
     usize_t before = get_error_count();
     for (usize_t i = 0; i < s->count; ++i) {
         node_t *arg = node->as.method_call.args.items[i]; type_info_t formal = s->params[i].type;
-        type_info_t actual = scalar_expr_type(cg, arg, formal);
-        args[i + 1] = scalar_numeric(actual) && scalar_numeric(formal) ? gen_scalar_as(cg, arg, formal) : gen_expr(cg, arg);
+        args[i + 1] = iface_source_emit_slot_arg(cg, arg, s->params[i]);
         if (!args[i + 1] || LLVMTypeOf(args[i + 1]) != get_llvm_type(cg, formal))
         {
             ast_source_loc_t loc = iface_node_loc(arg);

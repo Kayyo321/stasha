@@ -1,7 +1,8 @@
-# Interface qualification: current I1a checkpoint
+# Interface qualification: I1b.1 source-call contracts
 
-I1a qualifies bounded declaration, implementation-binding, table-publication and
-native-call contracts. It does **not** establish complete source-flow safety,
+I1b.1 adds bounded source-actual admission to the retained I1a declaration,
+implementation-binding, table-publication and native-call contracts. It does
+**not** establish complete source-flow safety,
 object lifetime, memory safety, runtime CFI, or kernel readiness. The maintained
 I0 graph tests now use the current I1a oracles described below.
 
@@ -29,8 +30,8 @@ I0 graph tests now use the current I1a oracles described below.
 - Existing ordinary readable-identifier value boxing requires a ready declared
   relation. Dynamic/qualified calls check arity, receiver and emitted-value
   representation against the formal ABI. Pointer-to-interface descriptor
-  receivers reject before the legacy descriptor load. These checks do not
-  replace complete source-actual typing.
+  receivers reject before the legacy descriptor load. I1b.1 now checks the
+  admitted source-actual contracts below before lowering actual expressions.
 - I0 ordering is retained: source-order parents first; the same originating
   declaration occurs once across a diamond. Graph readiness alone is still not
   signature readiness. Reachability visits each interface identity at most once.
@@ -41,6 +42,49 @@ I0 graph tests now use the current I1a oracles described below.
 - Owned source diagnostics, bounded parser recovery and repeated compilation
   contexts are tested. Unsupported interface parameter flags must exit normally
   rather than leave parser recovery unable to advance.
+
+## I1b.1 source-actual admission
+
+- Dynamic interface slots and concrete qualified-interface calls compare raw
+  source contracts before side effects or native coercion. Primitive conversions
+  reuse the established scalar policy only after source admission. Enum values
+  require exact nominal identity; native integer layout is never identity proof.
+- Pointer checks retain nominal pointee, depth, invariant inner permission
+  layers, outer permission/arithmetic attenuation, nonnull-to-nullable widening
+  and the required outer pointee domain. An ordinary pointer value cannot gain
+  arithmetic from its variable slot. Fresh object/field/fixed-array addresses
+  use the addressed storage's access and domain. `&*p` preserves the existing
+  pointer capability. Nil requires a nullable, default-domain pointer formal.
+- Plain readable exact-interface descriptor copies may cross default/stack
+  by-value formal storage. The same rule permits exact enum/descriptor
+  conditional arms with different value-storage domains. Pointer joins do not
+  discard domain/capability differences. Each evaluated operand must be readable;
+  forming an address is distinct from reading the addressed value.
+- Direct interface-valued native formals are checked on ordinary calls, module
+  and colon calls, instance/static/self/sibling/member methods, constructors,
+  declared function pointers and independently declared interfaces in generic
+  functions. Selected callable declaration/native identity must agree; a
+  generated-name collision cannot stand in for original declaration evidence.
+- Direct/aliased interface descriptors and structural callback/slice carriers on
+  unsupported C, variadic, closure, literal-lambda, thread, async or error routes
+  reject. Unknown/dependent interface-bearing signatures cannot escape through
+  a native interface representation. Named aggregate fields containing interface
+  descriptors remain explicitly unqualified transfer work, including special
+  carriers; there is no blanket recursive aggregate ban.
+- Facts are owned per compilation and retain raw declarations across symbol-table
+  growth and shadowing. Pure queries do not emit code, mark symbols used,
+  instantiate callees or emit diagnostics for unrelated unsupported types.
+  Preparation/selection and emission are separate; selected native metadata is
+  copied before operations that may grow the symbol table. Valid actuals execute
+  once in original order.
+
+Source expressions include declared locals/parameters/globals, plain enum
+members, raw ordinary fields, fixed-array/slice elements, readable dereferences,
+fresh addresses, supported primitive operations/casts, same-type conditionals,
+declared call results and narrowly checked plain-identifier assignments. An
+unsupported expression at a checked boundary diagnoses rather than borrowing the
+expected type as source evidence. Complex assignment, pointer joins with
+conflicting evidence and inner-domain alias composition remain unsupported.
 
 ## Concrete-origin eligibility restriction
 
@@ -60,23 +104,34 @@ origins conservatively reject when consumed at these interface seams, including
 explicitly typed local copies. Use a directly declared ordinary value or a call
 with a declared ordinary result. Diagnostics provide that guidance. A directly
 known ordinary call result remains supported even when its function body reads
-a field. This interim restriction is prioritized for I1b refinement.
+a field. This interim restriction remains for later I1b refinement; argument checking
+does not introduce new boxing/projection syntax.
 
-The retained exclusion reason is **not** proof that arbitrary later assignments
-are safe. General call/store/cast/return/merge/projection/container flows, generic
-specialization lifecycle, initialization/default/null/fabricated descriptors,
-exact-descriptor transfer validity, object/table pairing, ownership, borrowing,
-lifetime, nullable flow and concurrency remain I1b/later work. Contextual compound
-initialization does not establish field/container member-transfer safety.
+The retained exclusion reason is **not** proof that arbitrary earlier writes or
+return bodies are safe. Ordinary declared parameters and results remain trust
+boundaries. General store/return/merge/projection/container flows, generic cache
+lifecycle, initialization/default/null/fabricated descriptors, object/table
+pairing, ownership, borrowing, lifetime, nullable flow and concurrency remain
+later work. By-value descriptor admission certifies the source declaration at
+this call, not the descriptor's backing object or complete transfer history.
+Contextual compound initialization does not establish field/container
+member-transfer safety. Seven production compile-only gap characterizations
+record these exclusions and never execute accepted deferred programs.
 
 ## Archive compatibility and history
 
-The current semantic ABI marker is **7**. Rebuild source-backed archives with the
+The current semantic ABI marker is **8**. Rebuild source-backed archives with the
 current compiler. Descriptor bytes remain `{ptr, ptr}`; the marker records the
-stronger declaration/binding guarantees, not a new physical descriptor layout.
+stronger source-call guarantees, not a new physical descriptor layout.
 The genuine ABI6 provider fixture is rejected before body import, codegen or
 link. Its original source independently fails the new declared-relation check.
-Never relabel an old/current sidecar to simulate this boundary.
+A genuine ABI7 provider compiled with frozen I1a r9 retains a wrong-enum call
+body that the current source rejects. An unchanged-marker intermediate compiler
+still compiled/linked that old body; neither invalid program was executed. This
+evidence established the mandatory ABI8 rebuild boundary. Current consumers
+reject old ABI7 metadata before body import/codegen/link; corrected ABI8 native
+provider/consumer calls execute at O0–O3. Never relabel a sidecar to simulate
+this boundary.
 
 Historical I0 used ABI6 and validated retained metadata/declaration graphs. At
 that stage distinct origins remained pending and table consumption rejected even
@@ -88,7 +143,7 @@ A separate genuine ABI5-to-current graph archive control preserves B1 history.
 The pinned B1 provider build returns 1 after creating its archive because of two
 known registry cleanup leaks (25,344 and 256 bytes). Its receipt records that
 provider cleanup as **FAIL**, with an exact degraded-fixture profile. It is not a
-clean build. The ABI5 consumer is compile-only and must reject; the rebuilt ABI7
+clean build. The ABI5 consumer is compile-only and must reject; the rebuilt ABI8
 consumer performs real inherited dispatch.
 
 ## Reproduction
@@ -98,25 +153,42 @@ archive fixture available:
 
 ```sh
 source ../env.sh
+python3 tests/interfaces/run_i1b.py \
+  --compiler bin/stasha-interface-i1b1-dev7 --artifacts /tmp/i1b-current
+python3 tests/interfaces/test_i1b_archives.py \
+  --compiler bin/stasha-interface-i1b1-dev7 \
+  --historical-archive-dir ../hardening-checkpoint/i1b1/genuine-abi7 \
+  --artifacts /tmp/i1b-archives
+python3 tests/interfaces/test_i1b_runner.py
+python3 tests/interfaces/test_i1b_units.py \
+  --llvm-build build/llvm --artifacts /tmp/i1b-units
 python3 tests/interfaces/run_i1a.py \
-  --compiler bin/stasha-interface-i1a-r9 --artifacts /tmp/i1a-current
+  --compiler bin/stasha-interface-i1b1-dev7 --artifacts /tmp/i1a-current
 python3 tests/interfaces/test_i1a_archives.py \
-  --compiler bin/stasha-interface-i1a-r9 \
+  --compiler bin/stasha-interface-i1b1-dev7 \
   --historical-archive-dir ../hardening-checkpoint/i1-archive-baseline \
   --artifacts /tmp/i1a-archives
 python3 tests/interfaces/test_i1a_units.py \
   --llvm-build build/llvm --artifacts /tmp/i1a-units
 python3 tests/interfaces/run_i0.py \
-  --compiler bin/stasha-interface-i1a-r9 --artifacts /tmp/i0-current
+  --compiler bin/stasha-interface-i1b1-dev7 --artifacts /tmp/i0-current
 python3 tests/interfaces/test_i0_runner.py
 python3 tests/interfaces/test_i0_units.py \
   --llvm-build build/llvm --artifacts /tmp/i0-units
 python3 tests/interfaces/test_i0_archives.py \
-  --compiler bin/stasha-interface-i1a-r9 \
+  --compiler bin/stasha-interface-i1b1-dev7 \
   --b1-compiler bin/stasha-make-b1-r5 --artifacts /tmp/i0-archives
 ```
 
-`i1a_inventory.json` enumerates **274 mandatory controls**, including 37
+`i1b_inventory.json` enumerates **142 programs** at O0–O3, yielding **568
+mandatory checks**: 79 valid runtime programs and 63 compile-only negatives at
+each optimization level. It also enumerates seven compile-only deferred gaps.
+The separate I1b archive gate has eight controls; the source-fact sanitizer probe
+checks pure queries, raw identity, shape/access and stable records through growth
+in four compilation contexts. Paired ordinary callback/error/slice field calls
+with and without an unused interface protect unrelated-call compatibility.
+
+`i1a_inventory.json` retains **274 mandatory controls**, including 37
 compile-only initial-origin controls and valid native dispatch at O0–O3. The
 separate I1a archive gate has 9 controls, including genuine old-archive rejection,
 rebuilt provider/consumer calls with 16 retained indirect calls per optimization
@@ -125,8 +197,8 @@ The maintained I0 inventory has 82 controls; supplying its optional B1 compiler
 adds the strict historical archive family as an 83rd top-level check.
 
 Missing, extra, duplicate or empty inventory entries fail. `--write-inventory`
-is an explicit maintenance operation, never a CI option. The I1a runner records
-the absolute compiler path and asserts identical before/after hashes. Never
+is an explicit maintenance operation, never a CI option. The I1a and I1b runners record
+the absolute compiler path and assert identical before/after hashes. Never
 replace a tested versioned binary; a production change needs a new freeze.
 
 The historical B1 publication is `e8a1d04fe3cf64aed321139571c461c5977163c9`, tree

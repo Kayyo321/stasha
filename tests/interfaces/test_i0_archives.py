@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Genuine ABI5 rejection and ABI7 cross-archive inherited-slot control.
+"""Genuine ABI5 rejection and ABI8 cross-archive inherited-slot control.
 
 The pinned legacy compiler creates its archive then fails cleanup with two known
 registry leaks. That provider failure is recorded as FAIL, never called a clean
@@ -15,7 +15,7 @@ from run_i0 import ROOT,Runner,diamond_source,positive_issues,negative_issues
 B1_SHA='c1fb7d98ae03a1d4b783f7b8c0a03b6df22346ac471f46f7190947049ab832dc'
 LEGACY_LEAK=re.compile(r'^\(!!\) \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] Memory leak detected: (25344|256) bytes at 0x[0-9a-f]+$')
 def provider_issues(result,output,abi):
-    if abi==7:return positive_issues(result,output)
+    if abi==8:return positive_issues(result,output)
     issues=[];lines=result['stderr'].splitlines();leaks=[m.group(1) for line in lines if (m:=LEGACY_LEAK.fullmatch(line))]
     if result['category']!='exit' or result['returncode']!=1:issues.append('legacy cleanup requires exact exit1')
     if leaks!=['25344','256'] or lines.count('2 warnings emitted')!=1:issues.append('legacy cleanup profile differs')
@@ -27,8 +27,8 @@ def archive_rejection_issues(result,output):
     issues=negative_issues(result,output,'incompatible ABI metadata','caller.sts')
     if re.search(r'(?m)^\[[^\]]+\] (?:importing|generating code|linking|archiving)(?:\s|$)',result['stderr']):
         issues.append('ABI5 mismatch reached import/codegen/link stage')
-    if 'required ABI 7 for target x86_64-unknown-linux-gnu' not in result['stderr']:
-        issues.append('current ABI7 requirement not diagnosed')
+    if 'required ABI 8 for target x86_64-unknown-linux-gnu' not in result['stderr']:
+        issues.append('current ABI8 requirement not diagnosed')
     return issues
 
 def run(compiler,b1,artifacts):
@@ -39,7 +39,7 @@ def run(compiler,b1,artifacts):
     source=source[:source.index('fn main(')]
     source+='ext fn run(void): i32 { stack S s = .{ .x = 1 }; ret call(s); }'
     reports=[]
-    for abi,cc in [(5,str(baseline)),(7,r.compiler)]:
+    for abi,cc in [(5,str(baseline)),(8,r.compiler)]:
         case=work/f'abi{abi}';case.mkdir();provider=case/'provider.sts';provider.write_text(source);archive=case/'provider.a'
         built=r.process([cc,'lib',provider,'-o',archive,'-o=0'],case/'provider-build')
         issues=provider_issues(built,archive,abi)
@@ -79,7 +79,7 @@ def run(compiler,b1,artifacts):
                     if ran['category']!='exit' or ran['returncode'] or ran['stdout'] or ran['stderr']:
                         issues.append('cross-archive inherited dispatch exact oracle failed')
         reports.append({'abi':abi,'provider_build_status':'FAIL: known cleanup-only failure' if abi==5 else ('PASS' if not issues else 'FAIL'),
-                        'control':'genuine ABI5 rejection' if abi==5 else 'ABI7 cross-archive inherited dispatch',
+                        'control':'genuine ABI5 rejection' if abi==5 else 'ABI8 cross-archive inherited dispatch',
                         'issues':issues,'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest() if archive.is_file() else None})
     (work/'summary.json').write_text(json.dumps({'compiler_sha256':hashlib.sha256(Path(r.compiler).read_bytes()).hexdigest(),
         'b1_sha256':B1_SHA,'results':reports},indent=2)+'\n')

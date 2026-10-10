@@ -57,8 +57,10 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             if (node->as.var_decl.init && node->as.var_decl.init->kind == NodeNewInZone)
                 sym_flags |= SymZoneAlloc;
             check_shadow(cg, node->as.var_decl.name, node->line, node->col, node->len);
+            iface_source_record_t *iface_source = iface_source_record_var(cg, node);
             unsigned iface_origin = iface_type_origin(cg,node->as.var_decl.type) | iface_initializer_origin(cg,node->as.var_decl.init);
             symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, inferred, ti, sym_flags);
+            cg->locals.entries[cg->locals.count-1].iface_source = iface_source;
             cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_origin;
         }
         symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
@@ -288,9 +290,11 @@ static void gen_local_var(cg_t *cg, node_t *node) {
         /* va_list buffer: mark so rem.() and other pointer ops can be rejected */
         if (ti.base == TypeVa) sym_flags |= SymVa;
         check_shadow(cg, node->as.var_decl.name, node->line, node->col, node->len);
-        unsigned iface_origin = iface_type_origin(cg,node->as.var_decl.type) | iface_initializer_origin(cg,node->as.var_decl.init);
+        iface_source_record_t *iface_source = iface_source_record_var(cg, node);
+            unsigned iface_origin = iface_type_origin(cg,node->as.var_decl.type) | iface_initializer_origin(cg,node->as.var_decl.init);
         symtab_add(&cg->locals, node->as.var_decl.name, alloca_val, type, ti, sym_flags);
-        cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_origin;
+        cg->locals.entries[cg->locals.count-1].iface_source = iface_source;
+            cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_origin;
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
     {

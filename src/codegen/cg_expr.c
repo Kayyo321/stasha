@@ -19,6 +19,7 @@ static LLVMTypeRef slice_struct_type(cg_t *cg);
 static LLVMTypeRef elem_type_from_sym(cg_t *cg, symbol_t *sym);
 static LLVMValueRef scalar_member_address(cg_t *, node_t *, LLVMTypeRef *, symbol_t **, ptr_perm_t);
 #include "cg_access.c"
+#include "cg_iface_sources.c"
 
 /* Type-tag helpers for ...typed variadic ABI (forward-declared; defined near gen_va_op) */
 static int va_type_tag_for_ti(type_info_t ti);
@@ -1225,47 +1226,9 @@ static LLVMValueRef gen_unary_postfix(cg_t *cg, node_t *node) {
  * original declaration, so merely calling a generic factory does not taint an
  * explicitly ordinary result. No mangled-name substring establishes origin. */
 static node_t *iface_origin_call_decl(cg_t *cg, node_t *n) {
-    symbol_t *symbol = Null; char name[512]; const char *owner = Null, *method = Null;
-    if (n->kind == NodeCallExpr) {
-        symbol = cg_lookup(cg, n->as.call.callee);
-        if (n->generic_use) {
-            node_t *found = Null;
-            for (usize_t i = 0; i < cg->ast->as.module.decls.count; ++i) {
-                node_t *d = cg->ast->as.module.decls.items[i];
-                if (d->kind != NodeFnDecl || !d->as.fn_decl.type_param_count ||
-                    strcmp(d->as.fn_decl.name, n->generic_use->base_name) || !iface_active(cg,d)) continue;
-                if (found) return Null;
-                found = d;
-            }
-            if (found) return found;
-        }
-    } else if (n->kind == NodeConstructorCall) {
-        owner = n->as.ctor_call.type_name; method = "new";
-    } else if (n->kind == NodeMethodCall && n->as.method_call.object->kind == NodeIdentExpr) {
-        const char *obj = n->as.method_call.object->as.ident.name; method = n->as.method_call.method;
-        lib_entry_t *lib = find_lib_entry(cg, obj);
-        if (lib && lib->mod_prefix) { snprintf(name,sizeof(name),"%s__%s",lib->mod_prefix,method); symbol=cg_lookup_symbol(cg,name); }
-        else { symbol_t *s = cg_lookup(cg,obj); owner = s ? s->stype.user_name : obj; }
-    } else if (n->kind == NodeSelfMethodCall) {
-        owner = n->as.self_method_call.type_name ? n->as.self_method_call.type_name : cg->current_struct_name;
-        method = n->as.self_method_call.method;
-    } else if (n->kind == NodeColonCall) {
-        lib_entry_t *lib = find_lib_entry(cg,n->as.colon_call.module_name);
-        if (lib && lib->mod_prefix) {
-            if (n->as.colon_call.type_name) snprintf(name,sizeof(name),"%s__%s__%s",lib->mod_prefix,n->as.colon_call.type_name,n->as.colon_call.method_name);
-            else snprintf(name,sizeof(name),"%s__%s",lib->mod_prefix,n->as.colon_call.method_name);
-            symbol=cg_lookup_symbol(cg,name);
-        }
-    }
-    if (owner && method) {
-        struct_reg_t *sr=find_struct(cg,owner);
-        if (sr && sr->mod_prefix && sr->mod_prefix[0]) snprintf(name,sizeof(name),"%s__%s__%s",sr->mod_prefix,owner,method);
-        else snprintf(name,sizeof(name),"%s.%s",owner,method);
-        symbol=cg_lookup_symbol(cg,name);
-    }
-    for (iface_native_t *d=cg->iface_natives; symbol && d; d=d->next)
-        if (d->function==symbol->value) return d->decl;
-    return Null;
+    symbol_t *symbol=iface_source_selected(cg,n,0);
+    iface_native_t *native=iface_source_native(cg,symbol);
+    return iface_source_callable_agrees(n,native) && native->decl->kind==NodeFnDecl ? native->decl : Null;
 }
 static unsigned iface_initializer_origin_at(cg_t *cg, node_t *n, usize_t depth) {
     if (!n) return IfaceOriginOrdinary;
@@ -1338,7 +1301,10 @@ static iface_arg_status_t try_coerce_arg_to_iface(cg_t *cg, LLVMValueRef value,
     struct_reg_t *target = find_struct_by_llvm_type(cg, formal);
     if (!target || !target->is_interface) return IfaceArgNotApplicable;
     if (!value) return IfaceArgError;
-    if (LLVMTypeOf(value) == formal) return IfaceArgReady; /* existing descriptor; full source transfers are I1b */
+    iface_source_fact_t target_fact=iface_source_from_type(cg,(type_info_t){.base=TypeUser,.user_name=target->name},StorageDefault,arg);
+    iface_source_fact_t source_fact=iface_source_expr_at(cg,arg,NO_TYPE,0);
+    if(target_fact.status!=IfaceSourceKnown || iface_source_transfer(cg,arg,source_fact,target_fact.contract,True)==IfaceTransferReject) return IfaceArgError;
+    if (LLVMTypeOf(value) == formal) return IfaceArgReady; /* already source-admitted exact descriptor copy */
     symbol_t *sym = arg && arg->kind == NodeIdentExpr ? cg_lookup(cg, arg->as.ident.name) : Null;
     if (!sym || sym->stype.is_pointer || sym->stype.base != TypeUser || !sym->stype.user_name) {
         iface_error(iface_node_loc(arg ? arg : cg->ast), "interface boxing requires a readable concrete value identifier:", target->name);
@@ -1572,6 +1538,7 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     type_info_t dummy = NO_TYPE;
     symtab_add(&cg->globals, ast_strdup(mangled, strlen(mangled)),
                fn, Null, dummy, False);
+    iface_register_native(cg,node,Null,fn,False,Null);
 
     /* ── save outer codegen state ── */
     LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
@@ -1665,6 +1632,7 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
                                                    p->as.var_decl.name);
         LLVMBuildStore(cg->builder, LLVMGetParam(fn, (unsigned)i), alloca_val);
         symtab_add(&cg->locals, p->as.var_decl.name, alloca_val, ptype, pti, 0);
+        cg->locals.entries[cg->locals.count-1].iface_source = iface_source_record_var(cg,p);
     }
 
     /* generate the body */
@@ -1833,6 +1801,9 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         }
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
+    symbol_t selected_call_symbol = *sym; /* preparation may grow globals */
+    sym = &selected_call_symbol;
+    if (!iface_source_preflight_selected(cg,node,sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     usize_t user_argc = node->as.call.args.count;
     if (sym->c_abi)
         return cg_abi_call(cg, sym->c_abi, sym->value, node->as.call.args, node);
@@ -1875,7 +1846,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         heap_t clo_args_heap = allocate(clo_argc, sizeof(LLVMValueRef));
         LLVMValueRef *clo_args = clo_args_heap.pointer;
         for (usize_t i = 0; i < user_argc; i++)
-            clo_args[i] = gen_scalar_as(cg, node->as.call.args.items[i], scalar_param_type(cg, node, i));
+            clo_args[i] = iface_source_gen_arg(cg, node, node->as.call.args.items[i], i, scalar_param_type(cg, node, i));
         clo_args[user_argc] = env_ptr;
 
         LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_val,
@@ -1951,7 +1922,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
             offset = 1;
         }
         for (usize_t i = 0; i < user_argc; i++)
-            args[offset + i] = gen_scalar_as(cg, node->as.call.args.items[i], scalar_param_type(cg, node, i));
+            args[offset + i] = iface_source_gen_arg(cg, node, node->as.call.args.items[i], i, scalar_param_type(cg, node, i));
     }
 
     /* coerce arguments to the declared parameter types (e.g. i32 literal → f32).
@@ -2096,6 +2067,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                          lib_ent->mod_prefix, method);
                 symbol_t *fn_sym = cg_lookup_symbol(cg, mangled_sym);
                 if (fn_sym) {
+                    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+                    fn_sym = &selected_call_symbol;
+                    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
                     if (fn_sym->c_abi)
                         return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
                     usize_t user_argc = node->as.method_call.args.count;
@@ -2108,7 +2082,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                         args_heap = allocate(argc, sizeof(LLVMValueRef));
                         args = args_heap.pointer;
                         for (usize_t i = 0; i < user_argc; i++)
-                            args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
+                            args[i] = iface_source_gen_arg(cg, node, node->as.method_call.args.items[i], i, scalar_param_type(cg, node, i));
                     }
                     /* coerce args to declared param types */
                     if (argc > 0 && n_params > 0) {
@@ -2138,7 +2112,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     args_heap = allocate(argc, sizeof(LLVMValueRef));
                     args = args_heap.pointer;
                     for (usize_t i = 0; i < argc; i++)
-                        args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
+                        args[i] = iface_source_gen_arg(cg, node, node->as.method_call.args.items[i], i, scalar_param_type(cg, node, i));
                 }
 
                 symbol_t *fn_sym = cg_lookup_symbol(cg, method);
@@ -2280,6 +2254,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         }
         symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
         if (fn_sym) {
+                    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+                    fn_sym = &selected_call_symbol;
+                    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
             usize_t user_argc = node->as.method_call.args.count;
             LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
             unsigned n_params = LLVMCountParamTypes(fn_type);
@@ -2303,7 +2280,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 args_heap = allocate(argc, sizeof(LLVMValueRef));
                 args = args_heap.pointer;
                 for (usize_t i = 0; i < user_argc; i++)
-                    args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
+                    args[i] = iface_source_gen_arg(cg, node, node->as.method_call.args.items[i], i, scalar_param_type(cg, node, i));
             }
             /* coerce args */
             if (argc > 0 && n_params > 0) {
@@ -2429,6 +2406,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
             }
             symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
             if (fn_sym) {
+                    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+                    fn_sym = &selected_call_symbol;
+                    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
                 if (fn_sym->c_abi)
                     return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
                 usize_t offset = fn_sym->requires_receiver ? 1 : 0;
@@ -2456,7 +2436,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     args[0] = obj_sym->value; /* alloca = pointer to struct */
                 }
                 for (usize_t i = 0; i < node->as.method_call.args.count; i++)
-                    args[i + offset] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
+                    args[i + offset] = iface_source_gen_arg(cg, node, node->as.method_call.args.items[i], i, scalar_param_type(cg, node, i));
                 /* coerce args to declared param types (including interface fat-ptr coercion) */
                 unsigned n_params_mc = LLVMCountParamTypes(fn_type);
                 if (argc > 0 && n_params_mc > 0) {
@@ -2525,6 +2505,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                                 }
                                 symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
                                 if (fn_sym) {
+                    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+                    fn_sym = &selected_call_symbol;
+                    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
                                     if (fn_sym->c_abi)
                                         return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
                                     usize_t offset = fn_sym->requires_receiver ? 1 : 0;
@@ -2548,7 +2531,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                                     for (usize_t i = 0; i < node->as.method_call.args.count; i++) {
                                         type_info_t expected = fn_sym->scalar_signature && i < fn_sym->scalar_signature->param_count
                                             ? fn_sym->scalar_signature->params[i].type : NO_TYPE;
-                                        args[i + offset] = gen_scalar_as(cg, node->as.method_call.args.items[i], expected);
+                                        args[i + offset] = iface_source_gen_arg(cg, node, node->as.method_call.args.items[i], i, expected);
                                     }
                                     LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type,
                                         fn_sym->value, args, (unsigned)argc, "");
@@ -4220,6 +4203,9 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
+    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+    fn_sym = &selected_call_symbol;
+    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     symbol_t *this_sym = cg_lookup(cg, "this");
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
     usize_t user_argc = node->as.self_method_call.args.count;
@@ -4253,7 +4239,7 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
             offset = 1;
         }
         for (usize_t i = 0; i < user_argc; i++)
-            args[offset + i] = gen_scalar_as(cg, node->as.self_method_call.args.items[i], scalar_param_type(cg, node, i));
+            args[offset + i] = iface_source_gen_arg(cg, node, node->as.self_method_call.args.items[i], i, scalar_param_type(cg, node, i));
     }
 
     /* coerce args to declared parameter types */
@@ -5410,6 +5396,9 @@ static LLVMValueRef gen_constructor_call(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
+    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+    fn_sym = &selected_call_symbol;
+    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
     usize_t user_argc = node->as.ctor_call.args.count;
     if (fn_sym->requires_receiver) {
@@ -5432,7 +5421,7 @@ static LLVMValueRef gen_constructor_call(cg_t *cg, node_t *node) {
         args_heap = allocate(argc, sizeof(LLVMValueRef));
         args = args_heap.pointer;
         for (usize_t i = 0; i < argc; i++)
-            args[i] = gen_scalar_as(cg, node->as.ctor_call.args.items[i], scalar_param_type(cg, node, i));
+            args[i] = iface_source_gen_arg(cg, node, node->as.ctor_call.args.items[i], i, scalar_param_type(cg, node, i));
     }
     /* coerce to param types */
     if (argc > 0 && n_params > 0) {
@@ -6400,6 +6389,9 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
+    symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
+    fn_sym = &selected_call_symbol;
+    if (!iface_source_preflight_selected(cg,node,fn_sym)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
     unsigned n_params   = LLVMCountParamTypes(fn_type);
 
@@ -6422,7 +6414,7 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
         args_heap = allocate(total_args, sizeof(LLVMValueRef));
         args = args_heap.pointer;
         for (usize_t i = 0; i < argc; i++)
-            args[i] = gen_scalar_as(cg, node->as.colon_call.args.items[i], scalar_param_type(cg, node, i));
+            args[i] = iface_source_gen_arg(cg, node, node->as.colon_call.args.items[i], i, scalar_param_type(cg, node, i));
     }
     if (total_args > 0 && n_params > 0) {
         heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
@@ -6439,6 +6431,7 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
+    if (!iface_source_preflight_call(cg,node)) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     switch (node->kind) {
         case NodeIntLitExpr:       return gen_int_lit(cg, node);
         case NodeFloatLitExpr:     return gen_float_lit(cg, node);

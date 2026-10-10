@@ -41,6 +41,7 @@ typedef enum { IfaceUnvisited, IfaceVisiting, IfaceGraphReady, IfaceInvalid } if
 typedef struct iface_signature iface_signature_t;
 typedef struct iface_binding iface_binding_t;
 typedef struct iface_native iface_native_t;
+typedef struct iface_source_record iface_source_record_t;
 typedef struct {
     char *name;
     node_t **origins;            /* distinct declarations, including conflicts */
@@ -133,6 +134,7 @@ typedef struct {
     LLVMValueRef value;
     LLVMTypeRef type;
     type_info_t stype;
+    iface_source_record_t *iface_source; /* stable raw declaration/fact, owned by cg */
     unsigned iface_excluded_origin; /* known unsupported initialization origin; NOT assignment safety */
     fn_ptr_desc_t *scalar_signature; /* resolved source call types, independent of LLVM */
     boolean_t requires_receiver; /* only methods declared inside a type have hidden this */
@@ -445,6 +447,7 @@ typedef struct {
     iface_signature_t *iface_signatures;
     iface_binding_t *iface_bindings;
     iface_native_t *iface_natives;
+    iface_source_record_t *iface_sources;
 
     /* vtable for one (struct, interface) pair */
     struct {
@@ -1168,6 +1171,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                would point to the same address (containing only the last name). */
             symtab_add(&cg.globals, ast_strdup(var_llvm_name, strlen(var_llvm_name)),
                        global, type, ti, sym_flags);
+            cg.globals.entries[cg.globals.count-1].iface_source = iface_source_record_var(&cg, decl);
             cg.globals.entries[cg.globals.count-1].iface_excluded_origin = iface_type_origin(&cg,decl->as.var_decl.type) | iface_initializer_origin(&cg,decl->as.var_decl.init);
             symtab_set_last_storage(&cg.globals, decl->as.var_decl.storage, False);
             symtab_set_last_extra(&cg.globals, decl->as.var_decl.flags & VdeclConst,
@@ -1701,6 +1705,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 if (pti.base == TypeZone) param_flags |= SymZone;
                 symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
                            pti, param_flags);
+                cg.locals.entries[cg.locals.count-1].iface_source = iface_source_record_var(&cg, param);
                 cg.locals.entries[cg.locals.count-1].iface_excluded_origin = iface_type_origin(&cg,param->as.var_decl.type);
             }
 
@@ -1937,7 +1942,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                     if (pti.base == TypeZone) param_flags |= SymZone;
                     symtab_add(&cg.locals, param->as.var_decl.name, alloca_val, ptype,
                                pti, param_flags);
-                    cg.locals.entries[cg.locals.count-1].iface_excluded_origin = iface_type_origin(&cg,param->as.var_decl.type);
+                    cg.locals.entries[cg.locals.count-1].iface_source = iface_source_record_var(&cg, param);
+                cg.locals.entries[cg.locals.count-1].iface_excluded_origin = iface_type_origin(&cg,param->as.var_decl.type);
                 }
 
                 /* DI: parameter */
@@ -2280,6 +2286,7 @@ cg_cleanup:
 
     /* Context-owned graph/table arrays never survive a codegen invocation.
      * AST metadata remains arena-owned until the caller frees the AST. */
+    iface_source_free(&cg);
     iface_free_contracts(&cg);
     free_interface_registry(&cg);
     if (cg.vtables_heap.pointer) deallocate(cg.vtables_heap);

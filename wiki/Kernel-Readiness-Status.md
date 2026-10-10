@@ -1,6 +1,43 @@
 # Kernel-readiness status
 
-## I1a declared interface binding checkpoint (10 October 2026)
+## I1b.1 interface source-call checkpoint (10 October 2026)
+
+Supported interface-slot calls now compare every actual's source contract before
+lowering. Supported native adapters check interface-valued formals, including
+same-native-type paths that formerly bypassed boxing checks. Raw nominal identity,
+alias layers, permissions, nullability, domain evidence and selected callable
+identity remain distinct from LLVM representation. Unsupported source queries
+return quiet reasons; unrelated calls do not acquire diagnostics simply because
+an interface declaration is present. See [the checked call contract](Interfaces.md#i1b1-source-contracts-at-interface-calls).
+
+Rebuild **all source-backed Stasha archives and consumers for ABI 8**. The marker
+is semantic: descriptor layout and slot ordering are unchanged. Genuine ABI 7
+bodies with unchecked enum arguments are rejected before import/codegen/link;
+corrected ABI 8 provider/consumer calls execute through retained indirect slots at
+O0–O3. Old invalid programs are never executed, and sidecars are never relabeled.
+
+Frozen compiler SHA-256:
+`de76a5f27892e1889f0e8413433a8fce46230f83ab4efa414bb15dc0b50efa1c`.
+The final hosted gate, all 36 rebuilt standard libraries and qualified memory
+regressions pass. Maintained suites pass 568 source-call, 274 binding and 82 graph
+checks. Source-fact sanitizer checks pass 176; retained graph/metadata/diagnostic
+units pass 241, binding units 110, and frontend checks 1,541. Independent review
+passes 336 valid runtimes, 1,236 source rejections, 8 genuine archive gates,
+12 internal-binding diagnostics,140 + 84 source/native sanitizer checks and 32
+compiler-only sanitizer controls. See the
+[I1b.1 receipt](../tests/qualification/checkpoint-interface-i1b1-2026-10-10.json).
+
+Eight accepted deferred gaps are characterized compile-only and are not passing
+safety rejections. Prior stores, helper parameters/results, default descriptors,
+and named aggregate carriers can still carry unchecked values. Ordinary named
+aggregates containing interfaces remain usable but unqualified, including
+variadic/thread routes. This milestone does not close general descriptor flow,
+object pairing, CFI, lifetime, ownership or concurrency. Concrete projection and
+assignment usability restoration requires a separate checked-write stage.
+Existing A1/B1 generated-access, initialization and growth gaps remain open.
+No fresh kernel boot/hardware or native non-Linux release claim is made.
+
+## Historical I1a declared interface binding checkpoint (10 October 2026)
 
 I1a verifies supported declared signatures, complete method binding and native
 entry-point agreement before publishing interface tables. Conflicting inherited

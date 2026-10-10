@@ -112,7 +112,7 @@ def cases(r):
     r.case('empty-unused','mod empty; type I: interface {}; type S: struct.[I] {};')
     r.case('undeclared-boxing','mod undeclared; type I: interface { m(void): i32; }; type S: struct { ext fn m(void): i32 { ret 1; } }; fn f(stack I x): i32 { ret x.m(); } fn main(void): i32 { stack S s = .{}; ret f(s); }',pattern='no declared/transitive')
     r.case('pointer-receiver','mod ptrrecv; type I: interface { m(void): i32; }; fn f(stack I *rw p): i32 { ret p.m(); }',pattern='pointer-to-interface descriptor receiver')
-    for name,args,pattern in [('too-few','','argument count'),('too-many','1,2','argument count'),('wrong-representation','"text"','argument representation')]:
+    for name,args,pattern in [('too-few','','argument count'),('too-many','1,2','argument count'),('wrong-representation','"text"','interface source argument.*pointer-versus-value source category mismatch')]:
         r.case('dynamic-'+name,'mod calls; type I: interface { m(stack i32 x): i32; }; fn f(stack I p): i32 { ret p.m('+args+'); }',pattern=pattern)
     r.case('equal-origins','mod origins; type A: interface { m(stack i32 v): u8; }; type U: u8; type B: interface { m(stack i32 v): U; }; type C: interface.[A,B] {}; type S: struct.[C] { ext fn m(stack i32 v): u8 { ret 240; } };')
     r.case('conflicting-origins','mod origins; type A: interface { m(stack i32 v): u8; }; type B: interface { m(stack u32 v): u8; }; type C: interface.[A,B] {};',pattern='distinct-origin interface signature conflict')
