@@ -39,7 +39,7 @@ executable SHA-256 hashes, pre/post IR when available, exact commands, environme
 overrides, elapsed times, compiler and target return codes, separate stdout/stderr,
 and a machine-readable `summary.json`. A `RUNNING` summary is not a passing result.
 
-The default corpus has 576 cases: 32 success, 208 runtime traps, and 336 diagnostic
+The default corpus has 577 cases: 33 success, 208 runtime traps, and 336 diagnostic
 rejections. At four optimization levels this is 2,304 independent compiler runs.
 All positive numeric observations print a u64 bit pattern with 16 hex digits;
 Python supplies the entire expected output, including a unique completion marker.
@@ -185,3 +185,16 @@ These 14 cases (56 executions) exercise f32/f64 signed and unsigned conversion,
 truncation, integer boundary conversion, NaN truth/inequality/conditional behavior,
 and exact reason-5 NaN/infinity/range traps. This is conversion coverage, not a
 complete floating arithmetic or cross-platform ABI qualification.
+
+## Imported module scope regression
+
+```sh
+python3 tests/scalars/test_module_scope.py --compiler ./bin/stasha \
+  --artifacts /tmp/stasha-module-scope
+```
+
+This O0–O3 object/C execution test separates source-name lookup from exact emitted
+symbol lookup. Imported globals/functions intentionally collide with root names;
+the test checks reads, assignment, compound/index assignment, address-of and
+export-name overrides. The K0 component harness separately tests the unchanged
+component built through static-library mode.

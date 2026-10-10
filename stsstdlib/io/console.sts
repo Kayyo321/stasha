@@ -63,3 +63,42 @@ ext fn write_stream(stdstream_t stdstream, i8 *r buf, u32 cnt): [i64, error] {
 
     ret write_fd(desc, buf, cnt);
 }
+
+
+test 'console empty standard stream writes succeed' {
+    let [nout, eout] = write_stream(stdstream_t.Stdout, "", 0);
+    expect_eq.(nout, 0);
+    expect.(eout == nil);
+    let [nerr, eerr] = write_stream(stdstream_t.Stderr, "", 0);
+    expect_eq.(nerr, 0);
+    expect.(eerr == nil);
+}
+
+@[[if: os != "windows"]]
+test 'console write_fd reports invalid descriptors' {
+    let [n, e] = write_fd(-1, "x", 1);
+    expect_eq.(n, -1);
+    expect.(e != nil);
+}
+
+@[[if: os != "windows"]]
+test 'console write_fd preserves bytes and count' {
+    i32 fds[2] = .{-1, -1};
+    expect_eq.(cunistd.pipe(fds), 0);
+    let [n, e] = write_fd(fds[1], "console", 7);
+    expect_eq.(n, 7);
+    expect.(e == nil);
+    i8 data[8] = .{};
+    final i64 got = cunistd.read(fds[0], data, 7);
+    expect_eq.(got, 7);
+    expect_eq.(data[0], `c`);
+    expect_eq.(data[1], `o`);
+    expect_eq.(data[2], `n`);
+    expect_eq.(data[3], `s`);
+    expect_eq.(data[4], `o`);
+    expect_eq.(data[5], `l`);
+    expect_eq.(data[6], `e`);
+    expect_eq.(data[7], 0);
+    expect_eq.(cunistd.close(fds[0]), 0);
+    expect_eq.(cunistd.close(fds[1]), 0);
+}

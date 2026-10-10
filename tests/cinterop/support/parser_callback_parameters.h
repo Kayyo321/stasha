@@ -1,0 +1,13 @@
+typedef int row[3];
+typedef row alias;
+typedef int (*fixed_fn)(int values[3]);
+typedef int (*open_fn)(int values[]);
+typedef int (*alias_fn)(alias values);
+typedef int (*multi_fn)(int values[2][3]);
+typedef int (*function_fn)(int callback(int));
+int direct_array(alias values);
+int direct_function(int callback(int));
+void direct_const(const int values[3]);
+void alias_const(const alias values);
+typedef const alias const_alias;
+void nested_const(const_alias values);

@@ -1,6 +1,10 @@
 # Safety System
 
-Stasha enforces memory and pointer safety at compile time. These checks catch entire classes of bugs before your code runs — without a garbage collector or runtime overhead.
+This page describes Stasha’s safety contracts. The current development compiler
+has qualified subsets, not a complete memory-safety proof: nullable flow, alias
+lifetimes, receiver effects, and allocation-failure behavior are still being
+repaired and tested. See [implementation status](Kernel-Readiness-Status.md).
+Slice bounds are runtime checks unless proved redundant or explicitly suppressed.
 
 ---
 
@@ -35,6 +39,23 @@ heap i32 *r  q = p;       // OK: narrowing rw → r
 ```
 
 This means once you hand a read-only pointer to a function, that function cannot acquire write access.
+
+Explicit pointer-to-pointer casts also check read/write permissions outside
+`unsafe`. Nested read/write qualifiers can narrow only through a read-only
+pointer path: a writable pointer slot must retain the same nested read/write
+qualifiers, because a replacement value would also be visible through the
+original alias. For example, `i32 *rw *rw` can become `i32 *r *r`, but cannot
+become `i32 *r *rw`. This is a bounded qualifier check, not a proof covering
+integer-pointer round trips, arbitrary type reinterpretation, or lifetimes.
+Arithmetic qualifier consistency remains a separate implementation issue.
+
+A read-only pointer to a container protects its fields, including a slice's
+descriptor. It does not freeze a slice's separately referenced backing buffer:
+`&container.view[i]` can still provide a writable element address when the
+descriptor can be read. Taking a writable address of the descriptor itself
+remains disallowed. The same shallow distinction applies to `const` and `final`
+slice descriptors.
+
 
 ### Const and Final
 
@@ -121,6 +142,14 @@ s[5] = 99;   // RUNTIME ERROR: index 5 >= len 5 → llvm.trap (abort)
 ```
 
 Compile-time constant indices that are provably in-bounds are optimized out automatically.
+
+Slice reads, stores, compound updates, and indexed address derivation use the
+same logical-length check. Forming a view from a known fixed array or slice
+requires `0 <= lo <= hi <= capacity`; expansion beyond the old length but within
+capacity is permitted. The new view has length `hi-lo` and capacity `old_cap-lo`.
+Bounds retain source signedness before validation, so a negative or very large
+index cannot become valid by integer truncation. Raw-pointer view construction
+has no proven capacity and is outside this bounds qualification.
 
 ### Skip Bounds Check
 

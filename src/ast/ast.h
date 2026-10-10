@@ -87,6 +87,8 @@ struct fn_ptr_desc {
     fn_ptr_param_t *params;
     usize_t param_count;
     type_info_t ret_type;
+    boolean_t is_c_abi; /* explicit C signature provenance, never guessed from LLVM */
+    boolean_t is_variadic;
 };
 
 #define NO_TYPE ((type_info_t){.base=TypeVoid, .user_name=Null, .is_pointer=False, .ptr_perm=PtrNone, .fn_ptr_desc=Null, .ptr_depth=0, .elem_type=Null})

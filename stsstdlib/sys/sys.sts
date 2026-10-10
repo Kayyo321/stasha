@@ -90,7 +90,7 @@ ext fn sys_temp_path(stack i8 *r name): heap i8 *rw {
     heap i8 *rw out = new.(dn + 1 + nn + 1);
     stack u32 i = 0;
     while (i < dn) { out[i] = dir[i]; i = i + 1; }
-    out[dn] = '/';
+    out[dn] = `/`;
     stack u32 j = 0;
     while (j < nn) { out[dn + 1 + j] = name[j]; j = j + 1; }
     out[dn + 1 + nn] = 0;
@@ -101,7 +101,7 @@ ext fn sys_temp_path(stack i8 *r name): heap i8 *rw {
     stack i8 buf[260];
     stack u32 dn = GetTempPathA(260, buf);
     // Strip trailing backslash if present.
-    if (dn > 0 && buf[dn - 1] == '\\') {
+    if (dn > 0 && buf[dn - 1] == `\\`) {
         dn = dn - 1;
     }
     stack u32 nn = 0;
@@ -109,7 +109,7 @@ ext fn sys_temp_path(stack i8 *r name): heap i8 *rw {
     heap i8 *rw out = new.(dn + 1 + nn + 1);
     stack u32 i = 0;
     while (i < dn) { out[i] = buf[i]; i = i + 1; }
-    out[dn] = '\\';
+    out[dn] = `\\`;
     stack u32 j = 0;
     while (j < nn) { out[dn + 1 + j] = name[j]; j = j + 1; }
     out[dn + 1 + nn] = 0;
@@ -142,5 +142,16 @@ test 'sys_temp_path joins correctly' {
     heap i8 *rw p = sys_temp_path("foo.txt");
     expect.(p != nil);
     expect.(p[0] != 0);
+    u32 n = 0;
+    while (p[n] != 0) { n += 1; }
+    expect.(n >= 8);
+    expect_eq.(p[n - 7], `f`);
+    expect_eq.(p[n - 6], `o`);
+    expect_eq.(p[n - 5], `o`);
+    expect_eq.(p[n - 4], `.`);
+    expect_eq.(p[n - 3], `t`);
+    expect_eq.(p[n - 2], `x`);
+    expect_eq.(p[n - 1], `t`);
+    expect.(p[n - 8] == `/` || p[n - 8] == `\\`);
     rem.(p);
 }

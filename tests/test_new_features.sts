@@ -12,11 +12,11 @@ mod test_new_features;
 
 /* ── helpers for closure tests ─────────────────────────────────────────── */
 
-ext fn apply_i32_closure(stack i32 x, closure.(stack i32): i32 f): i32 {
+ext fn apply_i32_closure(stack i32 x, closure.[stack i32]: i32 f): i32 {
     ret f(x);
 }
 
-ext fn run_void_closure(closure.(void): i32 f): i32 {
+ext fn run_void_closure(closure.[void]: i32 f): i32 {
     ret f();
 }
 
@@ -41,6 +41,8 @@ async fn first_n_then_final(stack i32 n): stream.[i32] {
 type ByValEvt: struct {
     i32 code;
 }
+
+type Point: struct { ext i32 x, y, z; }
 
 type ByRefEvt: struct {
     i32 code;
@@ -70,7 +72,7 @@ type Align4: struct {
 
 test 'lambda capture by value: outer change does not affect closure' {
     stack i32 base = 10;
-    closure.(stack i32): i32 f = lam.(stack i32 x): i32 { .|base| ret x + base; };
+    closure.[stack i32]: i32 f = lam.(stack i32 x): i32 { .|base| ret x + base; };
     expect_eq.(f(5), 15);
     base = 99;           /* by-value — copy taken at lambda creation */
     expect_eq.(f(5), 15);
@@ -78,7 +80,7 @@ test 'lambda capture by value: outer change does not affect closure' {
 
 test 'lambda capture by ref: closure mutates outer variable' {
     stack i32 total = 0;
-    closure.(stack i32): void acc = lam.(stack i32 x): void { .|&total| total = total + x; };
+    closure.[stack i32]: void acc = lam.(stack i32 x): void { .|&total| total = total + x; };
     acc(3);
     acc(7);
     expect_eq.(total, 10);
@@ -87,7 +89,7 @@ test 'lambda capture by ref: closure mutates outer variable' {
 test 'lambda capture multiple by-value vars' {
     stack i32 a = 4;
     stack i32 b = 5;
-    closure.(void): i32 product = lam.(void): i32 { .|a, b| ret a * b; };
+    closure.[void]: i32 product = lam.(void): i32 { .|a, b| ret a * b; };
     expect_eq.(run_void_closure(product), 20);
     b = 99;
     expect_eq.(run_void_closure(product), 20);  /* still sees original b=5 */
@@ -96,7 +98,7 @@ test 'lambda capture multiple by-value vars' {
 test 'lambda capture mixed value and ref' {
     stack i32 offset = 10;
     stack i32 accum  = 0;
-    closure.(stack i32): i32 f = lam.(stack i32 x): i32 {
+    closure.[stack i32]: i32 f = lam.(stack i32 x): i32 {
         .|offset, &accum|
         accum = accum + x;
         ret x + offset;
@@ -108,14 +110,14 @@ test 'lambda capture mixed value and ref' {
 
 test 'closure passed to higher-order function' {
     stack i32 bias = 100;
-    closure.(stack i32): i32 f = lam.(stack i32 x): i32 { .|bias| ret x + bias; };
+    closure.[stack i32]: i32 f = lam.(stack i32 x): i32 { .|bias| ret x + bias; };
     expect_eq.(apply_i32_closure(7, f), 107);
     expect_eq.(apply_i32_closure(0, f), 100);
 }
 
 test 'nested capture: inner lambda captures from outer lambda body var' {
     stack i32 outer_val = 42;
-    closure.(stack i32): i32 outer = lam.(stack i32 x): i32 {
+    closure.[stack i32]: i32 outer = lam.(stack i32 x): i32 {
         .|outer_val|
         ret x + outer_val;
     };
@@ -263,7 +265,6 @@ test 'spread: inclusive range' {
 }
 
 test 'spread: struct merge preserves all fields' {
-    type Point: struct { ext i32 x, y, z; }
     stack Point p = .{ .x = 1, .y = 2, .z = 3 };
     stack Point q = .{ ..p, .z = 99 };
     expect_eq.(q.x, 1);
@@ -273,9 +274,9 @@ test 'spread: struct merge preserves all fields' {
 
 test 'spread: string spread concatenation' {
     stack i8 s[] = .{.."foo", .."-", .."bar"};
-    expect_eq.(s[0], 'f');
-    expect_eq.(s[3], '-');
-    expect_eq.(s[4], 'b');
+    expect_eq.(s[0], `f`);
+    expect_eq.(s[3], `-`);
+    expect_eq.(s[4], `b`);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

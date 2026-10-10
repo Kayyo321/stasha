@@ -9,7 +9,7 @@
       "status": "available",
       "owner": "compiler",
       "gate": "P0/P1/P10",
-      "qualification": "parser-only: 1529 checks, 256 deterministic mutations; not codegen"
+      "qualification": "Current restored ASan+UBSan frontend/common checks; see checkpoint-restored-2026-10-10.json. Parser-only, not codegen."
     },
     {
       "id": "harness-selftests",
@@ -47,7 +47,7 @@
         "diag",
         "--list"
       ],
-      "execution": "pending exact compiler build",
+      "execution": "Current restored frozen compiler run recorded in checkpoint-restored-2026-10-10.json",
       "evidence": "tests/harness/README.md"
     },
     {
@@ -66,7 +66,7 @@
         "cinterop",
         "--list"
       ],
-      "execution": "pending exact compiler build",
+      "execution": "Current restored frozen compiler run recorded in checkpoint-restored-2026-10-10.json",
       "evidence": "tests/harness/README.md"
     },
     {
@@ -118,20 +118,21 @@
         "signals",
         "--list"
       ],
-      "execution": "pending exact compiler build",
+      "execution": "Current restored frozen compiler run recorded in checkpoint-restored-2026-10-10.json",
       "evidence": "tests/harness/README.md"
     },
     {
       "id": "core-language",
       "scope": "hosted",
-      "status": "needs-case-inventory",
+      "status": "runner-available",
       "owner": "compiler",
       "gate": "P0",
       "sources": [
         "tests/test_features.sts",
         "tests/test_new_features.sts",
         "tests/test_sugar.sts"
-      ]
+      ],
+      "qualification": "Run all three sources with tests/harness/run_language_tests.py; test_new_features main watch checks require separate build/execution."
     },
     {
       "id": "fileheaders",
@@ -152,9 +153,10 @@
     {
       "id": "scalars",
       "scope": "hosted/freestanding",
-      "status": "runner-in-progress",
+      "status": "runner-available",
       "owner": "compiler",
-      "gate": "P1"
+      "gate": "P1",
+      "evidence": "checkpoint-restored-2026-10-10.json"
     },
     {
       "id": "cleanup-memory",
@@ -188,16 +190,18 @@
     {
       "id": "kernel-component",
       "scope": "freestanding",
-      "status": "in-progress",
+      "status": "bounded-host-object-image-evidence",
       "owner": "compiler",
-      "gate": "P5/P8"
+      "gate": "P5/P8",
+      "evidence": "checkpoint-restored-2026-10-10.json"
     },
     {
       "id": "kernel-boot",
       "scope": "freestanding",
-      "status": "not-implemented",
+      "status": "runner-available-current-boot-not-run",
       "owner": "compiler",
-      "gate": "P6/P8"
+      "gate": "P6/P8",
+      "evidence": "tests/kernel/k0/README.md; historical boot receipts do not qualify the restored snapshot"
     },
     {
       "id": "kernel-interrupts",

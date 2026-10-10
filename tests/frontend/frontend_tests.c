@@ -309,6 +309,12 @@ int main(void) {
     test_comments();
     test_discarded_lexer_errors();
     test_resource_limits();
+    expect_accepted("typed variadic dispatch dotted syntax",
+                    "mod t; fn f(...typed): void { stack va args; "
+                    "va.foreach.(args) { |v| match v { i32 x => {} _ => {} } }; }");
+    expect_accepted("variadic typed iteration bracket syntax",
+                    "mod t; fn f(stack i32 n, ...): void { stack va args; "
+                    "va.foreach.[i32](n, args) { |v| print.('{}', v); }; }");
     expect_rejected("stray top-level brace makes progress", "mod t; }",
                     "expected a type");
     expect_rejected("recovery after semicolon makes progress", "mod t; ; }",

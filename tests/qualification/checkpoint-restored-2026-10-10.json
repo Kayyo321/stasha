@@ -1,0 +1,472 @@
+{
+  "schema": 1,
+  "kind": "restored integrated development checkpoint; not release or OS readiness",
+  "date_utc": "2026-10-10T15:02:50.656598+00:00",
+  "local_base_commit": "24fdf438f045303ea633c09e0d640a7657b9a17a",
+  "local_base_tree": "57b2cd14b25128305ad8e35c072a35cc9eba0512",
+  "published_equivalent_base": "df11428e28c383eec715193e0d319abad347cdda",
+  "source_is_uncommitted_overlay": true,
+  "source_identity_policy": "The compiler source hashes below identify the actual tested source, not the unchanged base commit. Final source-tree/archive identity is recorded in the integration candidate receipt outside this file to avoid self-reference.",
+  "compiler": {
+    "file": "bin/stasha-integrated-clang-r2",
+    "sha256": "cd018ff1675dac6c4be7c961b6f500682029b403c8034d16d851802ef1fd1d70",
+    "version": "stasha 0.2.0-dev (ABI 3)",
+    "build": "Fresh compiler objects built with pinned Clang/Clang++; final main.c incrementally rebuilt after reviewed alias-bound correction. Existing C runtime archives bootstrapped with GCC14.2."
+  },
+  "llvm": {
+    "schema": 1,
+    "llvm_revision": "348061d58dfe5e59027a0d6d51f916197cdd8d68",
+    "llvm_version": "23.0.0git",
+    "source_root": "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/extlib/llvm/llvm",
+    "build_root": "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/build/llvm",
+    "targets": [
+      "X86",
+      "AArch64"
+    ],
+    "projects": [
+      "clang",
+      "lld"
+    ],
+    "assertions": "OFF",
+    "rtti": "NO",
+    "host_target": "x86_64-unknown-linux-gnu",
+    "llvm_config_sha256": "5bb8e3eee75d548905d662e15277bc90256e61fa96fa08132fce1c509e31943e",
+    "cmake_cache_sha256": "a9fecc045cd969c38450cb1926633d73b5674516a26b5dd375be71b57204b0e2",
+    "lld_archives": {
+      "liblldCOFF.a": 2882926,
+      "liblldCommon.a": 400950,
+      "liblldELF.a": 8081044,
+      "liblldMachO.a": 2936054,
+      "liblldMinGW.a": 92938,
+      "liblldWasm.a": 1418256
+    },
+    "scope": "source/build identity receipt; not a reproducible-build or semantic-test claim"
+  },
+  "compiler_source_sha256": {
+    "src/analysis/coroutines.c": "411200df3b5efa6880115f1b89c004aca1bb118f29511d35059b981b36276090",
+    "src/analysis/coroutines.h": "d1b890639bba8a1f7784a6b15808fe256c1caa33aa5217fb0d117006ced9cf29",
+    "src/analysis/kernel.c": "5f78b8056cc48431c2f8d6796e2affda114016a13fdd166aa067d3b547b5100e",
+    "src/analysis/kernel.h": "6f1057d8cc4b804de95ebe668af2c671c39f79b0d20c3f7d8942252f79dafb84",
+    "src/ast/ast.c": "2d02822fd66d4abd7b979910958f663cd6f92c87a5d8c30ab1bc99c765cd6197",
+    "src/ast/ast.h": "c2b2a5e986f6d01d38e751f6fc423bcb6a4837e32553fd26982081875f7e91d7",
+    "src/cinterop/cheader.c": "289d9de3891d3db0150c3ca0859a0aeb20e54fe8088f2a33f410f76b5e64988b",
+    "src/cinterop/cheader.h": "a82f94bff74856f573bc1c22a1e0a7ae7b51b37773071bd0e003fa789afe3870",
+    "src/codegen/cg_abi.c": "7ccf38e0838f99a12610f4b640708a2a265c797e8855ea2d46cf169f31f6b5e7",
+    "src/codegen/cg_access.c": "dca85ddf6edddbc9ed0e7a606bae9fe5911a7384e39bd3db208461f7b3e13269",
+    "src/codegen/cg_coro.c": "53c8c47f2a9877d8fa280adae3829b526dda118ec5a48f462c1404440dbb2181",
+    "src/codegen/cg_debug.c": "78e8fed7120bfe315ad0381f61ba92885b5a86e190a18179f9b862d77b04dbc1",
+    "src/codegen/cg_dtors.c": "bad1fc4402ceb4fd503a9fa209cadc3d1b2920636d0b80920ce7221d350493b9",
+    "src/codegen/cg_expr.c": "a5cbbc549655d35e0ac70517f1cc75cefbf383627f64e1a5611d8145770db314",
+    "src/codegen/cg_fileheaders.c": "1f0d1b1fd1dedaee659108277655846c2882dbc8a4e0da555db9d9aaf25a0da7",
+    "src/codegen/cg_generics.c": "d00cdb7fcf14ee23a19cf65e9fa0a17e9cff8b1dd91565de59dca61bba08c52a",
+    "src/codegen/cg_global_const.c": "9d14d17e8764c2f9bae204b618c3bd706b03d96d801e767726686df657f818bf",
+    "src/codegen/cg_interfaces.c": "6a4ab8a261706d7b753b56739a9dd8a13eac35d2dcba7f847874eb52b817f1ad",
+    "src/codegen/cg_layout.c": "27ff5d350d1d63e310da2e3a27937dc46fb3451a5657a8f77e721ce284e8e515",
+    "src/codegen/cg_layout_storage.c": "1c0c9ca527de1c457ae9e2e9f7cc632466d04ecefbf1f4734d029b2ba521320d",
+    "src/codegen/cg_llvm_constants.h": "648d9d0f84b095b0b180af11fe69305b5847478fda42dbbd11784138afc1d143",
+    "src/codegen/cg_lookup.c": "b18812ae9e45a3919966304c7724c8d7ca15a154510a6442a8c324fb26e21a38",
+    "src/codegen/cg_registry.c": "bb5a55139c7cb4681edb9e7164680f3ddcd6b97aa263fa546ba6b453a594d935",
+    "src/codegen/cg_safety.c": "8a4aa8ec3fca80d843751ea57473e599fe48cbd39add38e9ad85e0261e37a7f7",
+    "src/codegen/cg_scalar.c": "dcba1f05f3f07777a25942d0a1938f5f3c3cf1ba355f8ef95001960bf0b69cd8",
+    "src/codegen/cg_scalar_const.c": "2c34eaf213c5dd41ea3808631a082b9f474ec5404e42e4234db929a710e1480f",
+    "src/codegen/cg_signals.c": "44f406e06247a837b86a7834671509de9383a632a224d4f52e9552418b32d987",
+    "src/codegen/cg_stmt.c": "8cfab4bb33213076a98904d7fa09810dc058219fbf007c76562e6e086cda3d7a",
+    "src/codegen/cg_symtab.c": "fe4b47a7ea9130975e8d14890c881423494cc25e4c542ddbf31b669a20fda173",
+    "src/codegen/cg_types.c": "0212074082d575e0b21f9bb1c2f808eba913de208164920ae431ecd72493937b",
+    "src/codegen/codegen.c": "b8af234afc0bbc020fcbc42a5edb09936cb90b50792cc157f44ea903b7ac7ae4",
+    "src/codegen/codegen.h": "40deffdb5785f915a0691649350c66445da28d0b3456acfb12ae9c3a61b81afb",
+    "src/codegen/name_mangle.c": "2633e0195e73c23ecab69edd0d46abadc75e9c531ebefc79b51541822c3d041c",
+    "src/codegen/name_mangle.h": "aa5dbfb3b2a04c9d44dcfb685146472d182a76cda6a2724420d98ce5f52da7f0",
+    "src/codegen/scalar_integer_semantics.h": "032bf7d51173bbc66369d09c19e16e48681e348e08001c5b93250fcf1dfc85f4",
+    "src/common/abi.h": "f3601cb1e304272215df3e73366d2c59efb3e500a1e74ef4ea485b43cda7f997",
+    "src/common/common.c": "b17490c9c1569c5d26033d04025f7e5b7dbfb46fc78271ccf6e1e6abfc5bb811",
+    "src/common/common.h": "80b68d389ad421ebdde123e374abbfff9b4c13b09430d52435501c968d285d9f",
+    "src/common/diagnostic.c": "8a42a74240e4331d12683ec5debd3c81aac1052664aa54006b250acac4e23b84",
+    "src/common/diagnostic.h": "321e93b6e64e9d1ab643430f05c8009ac89a1ee4d5440bd44d0148fea2d0c872",
+    "src/common/heap.c": "44f88d1f9e004c707eb977f47d283457fb4256b00bab3029a4b63b23e35a4519",
+    "src/common/logger.c": "c95cd4dd0216909db65ccc7fa7cea2acd3894692b212bd37b1dc4bc47caa2ce6",
+    "src/common/output_transaction.h": "df7e4544f2c44e022ba12ee364972b996df5371ffc0f88bce4cad84170e95a3b",
+    "src/lexer/lexer.c": "5d1da9f6a70b1f3a123f62b040f673694ffaae1ceab239a279cad405d88f00d1",
+    "src/lexer/lexer.h": "3b71d25ab423d3743a8c0974ee19e424ed51e58b9ee4f9697f75b4761fea9c75",
+    "src/linker/linker.cpp": "ebdf6e8943319e2a331dc91e0c83fb7f557f5e77c8ec1ecd0bda0f869d5b9c7c",
+    "src/linker/linker.h": "36ae261f7957dad19cb6f88ca3ee3011f9d6259345cd1984a66ea501978726a1",
+    "src/main.c": "ba3c2bcec604d3856261838b1a61da57fdc301c3cbaa3258a04759653e0a3f21",
+    "src/parser/parse_decls.c": "daec20ac193ce0104c37de7bfc3fe3cf3d2b116e412690c1ace0c828316153ac",
+    "src/parser/parse_expr.c": "da9f195f28873951bde97c6ad71cb90dcb0a8d4ba8616c18038648cccc036511",
+    "src/parser/parse_stmt.c": "cb7b534b28d134e0ff7116a7ee6a473e6a0f8732c62afeee434918880be56ca4",
+    "src/parser/parser.c": "9104334347d0f73c2fdfe521bd2c02b777721dc2c1e54c4d4e571e52733000f3",
+    "src/parser/parser.h": "1530bc15a4229651b6a50a6cf955e268b644a394064005012e51e95d1f9b7df9",
+    "src/preprocessor/preprocessor.c": "79bb84fae760a0907af101424f4cd89a146bf5f3e5c0f1b48cecc568fb7d8817",
+    "src/preprocessor/preprocessor.h": "99c27097604b1c9f8f8d912beafab98b84b0a80276a0f12276bdd75e7bdfdcfb",
+    "src/runtime/coro_runtime.c": "0ec78fea253ed5d1647b9dba02846a4b7188252ffe10ae1f64ca9ffb26034b8a",
+    "src/runtime/coro_runtime.h": "ce8006a8bf880afb51c07ba5211fa41ae4620a3bf8bb847296a5404e541ac4dd",
+    "src/runtime/crash_runtime.c": "b417c14d24b5c4b762190f1fa6bd3bdf66d167bfc63da9251927a3d27261c793",
+    "src/runtime/crash_runtime.h": "b47e64c583bf975550083507a0d674fe15a6f3c0ac7f9d030cf9032f8b2b372b",
+    "src/runtime/executor.c": "bdcfe08a15fbc2852def39eb8e229e3b92bb89014c15cc87abcc453268eaa5aa",
+    "src/runtime/executor.h": "65af8a2395ae1e24fa3afcd8c637d80d089c15f6dc0e0200dd4c910c09c6249f",
+    "src/runtime/thread_runtime.c": "f8b3f1c8d9f3e660b730e56462321c9f0fbbd41edc444e3e2f43f5d925cb775d",
+    "src/runtime/thread_runtime.h": "a9484d296a2bb72f085e66e1c375eb604972387c7c700ec1a2e8e7e717c71cbd",
+    "src/runtime/zone_runtime.c": "92b3f742b5eec2432dbdd413caa71604f94dd1c3d1e1f6f768cb4ca17d175332",
+    "src/runtime/zone_runtime.h": "92ac95c2b65aa7e17911c0f767874ad801eb99bf0a5d710bb26ee516aab9e131",
+    "src/target/target.h": "bc0c644db2dabe13beb5a70f18de1370013352c77f3ef271e803b88e08ab5b35",
+    "src/tooling/editor.c": "9904b2ac6c773513e9eb028e580bd422967062bb84ffe4542b52942cb70f70f7",
+    "src/tooling/editor.h": "6a8fc0ae37bb41d101fc80956d0e0db6092be953eb8ab989f962430b11cf8724"
+  },
+  "runtime_archive_sha256": {
+    "crash_runtime.a": "a23e207ee01dee570f4bab384e161d56f035b1df9be902e2886aa066168b9a3b",
+    "thread_runtime.a": "297d8cf9bf97094801a0e243377e900130f4ed619bd0fd6e6b470d63c829d93f",
+    "coro_runtime.a": "e6d90d3990f522083691bfe10820abc5a8dd06d8c00592464106c33bca8d2221",
+    "zone_runtime.a": "8e62af7f49e7a5f27892d6281c2d5aa9a3c81eb4b3b568bc646935b2deed5af5"
+  },
+  "dependencies": [
+    {
+      "path": "extlib/cjson",
+      "commit": "b2890c8d76bbb64e710585ebc0a917196b9c67e7",
+      "matches_gitlink": true,
+      "fsck_exit": 0
+    },
+    {
+      "path": "extlib/mongoose",
+      "commit": "06f525713f1048a0211bc0d57ae27a86d6183b88",
+      "matches_gitlink": true,
+      "fsck_exit": 0
+    },
+    {
+      "path": "extlib/openssl",
+      "commit": "d3951537462175218d1e8a553e93fffb7cc1facb",
+      "matches_gitlink": true,
+      "fsck_exit": 0
+    }
+  ],
+  "results": {
+    "bounded_linux": "PASS: full scripts/qualify_linux.sh on the exact frozen binary",
+    "diagnostics": "32/32",
+    "signals": "7/7",
+    "cinterop": "37/37 including LLVM API smoke; C support archive built with GCC14.2, final ABI C oracles use pinned Clang",
+    "scalars": "2308/2308 O0-O3, exact trap reasons",
+    "floating_conversions": "56/56 O0-O3",
+    "cleanup": "108/108 O0-O3 with zone probe",
+    "driver": "31/31 plus18 independent contract cases",
+    "global_initializers": "183/183 O0/O2/O3",
+    "layout": "72 field pairs and nested/generic/tagged/packed runtime cases at O0/O2;14 explicit rejections",
+    "aggregate_abi": "79 layout+bidirectional/callback/indirect cases and7 register-pressure cases per O0/O2;7 explicit ABI boundary rejections",
+    "c_callbacks": "O0/O2 typed callbacks, inline parameters and factories passed",
+    "c_callback_parameters": "O0-O3 valid matrices and9 declarator rejections passed",
+    "member_abi": "72/72; negative-warning allowance disclosed below",
+    "module_scope": "4/4 O0-O3",
+    "slice_views": "295/295",
+    "access_contracts": "77/77",
+    "pointer_qualifiers": "74/74",
+    "pointer_arithmetic": "96/96",
+    "c_pointee_qualifiers": "11/11 including130-deep alias control;4 gate unit tests",
+    "memory_runner_units": "18/18",
+    "harness_units": "55/55",
+    "core_fixtures": "test_features63/63;test_new_features63/63;test_sugar8/8;separate test_new_features main watch output at O0-O3",
+    "lifecycle": "16/16 exact O0-O3 traces",
+    "frontend_sanitizers": "1541 frontend assertions plus common diagnostic/logger checks; ASan+UBSan, no recovery, LSan disabled",
+    "cheader_sanitizers": "223/223 ASan+UBSan, LSan disabled",
+    "stdlib": "36/36 modules compiled and executed, no skips; PCG constructor unchanged and reseed consistency repaired,1245 assertions in complex_rng module",
+    "threads": "7/7 assertions in ex_threads, compiled and executed",
+    "k0": "6/6 O0/O2/O3 debug/nondebug host+object+archive+low/high image variants;26 prelink negatives;6 required missing-helper link failures;8 runner units",
+    "k0_boot": "NOT_RUN on this restored binary",
+    "hardware_K1_K2": "NOT_RUN"
+  },
+  "commands": [
+    {
+      "name": "bounded-linux",
+      "command": "source ../env.sh; CC=\"$LLVM_BUILD/bin/clang\" CXX=\"$LLVM_BUILD/bin/clang++\" bash scripts/qualify_linux.sh bin/stasha-integrated-clang-r2 ../integrated-checkpoint/final",
+      "exit": 0,
+      "log": "final-qualification.log"
+    },
+    {
+      "name": "fp",
+      "command": [
+        "python3",
+        "tests/scalars/test_fp_conversions.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--opt",
+        "0,1,2,3",
+        "--build-trap-hook",
+        "--require-trap-reasons",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/fp"
+      ],
+      "returncode": 0,
+      "seconds": 2.877441883087158
+    },
+    {
+      "name": "cleanup-all",
+      "command": [
+        "python3",
+        "tests/cleanup/run.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--opt",
+        "0,1,2,3",
+        "--zone-probe",
+        "--cc",
+        "gcc",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/cleanup-all"
+      ],
+      "returncode": 0,
+      "seconds": 5.496813058853149
+    },
+    {
+      "name": "module",
+      "command": [
+        "python3",
+        "tests/scalars/test_module_scope.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--cc",
+        "gcc",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/module"
+      ],
+      "returncode": 0,
+      "seconds": 0.4652740955352783
+    },
+    {
+      "name": "access",
+      "command": [
+        "python3",
+        "tests/memory/run_access_contracts.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--scope",
+        "access",
+        "--opt",
+        "0,1,2,3",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/access"
+      ],
+      "returncode": 0,
+      "seconds": 3.0751585960388184
+    },
+    {
+      "name": "slices",
+      "command": [
+        "python3",
+        "tests/memory/run_slice_views.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--opt",
+        "0,1,2,3",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/slices"
+      ],
+      "returncode": 0,
+      "seconds": 13.233183145523071
+    },
+    {
+      "name": "qualifiers",
+      "command": [
+        "python3",
+        "tests/memory/run_pointer_qualifiers.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--opt",
+        "0,1,2,3",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/qualifiers"
+      ],
+      "returncode": 0,
+      "seconds": 2.628089189529419
+    },
+    {
+      "name": "arithmetic",
+      "command": [
+        "python3",
+        "tests/memory/run_pointer_arithmetic.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--opt",
+        "0,1,2,3",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/arithmetic"
+      ],
+      "returncode": 0,
+      "seconds": 3.730811595916748
+    },
+    {
+      "name": "memory-units",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/memory",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "returncode": 0,
+      "seconds": 0.5652408599853516
+    },
+    {
+      "name": "driver-contracts",
+      "command": [
+        "python3",
+        "tests/driver/review_driver_contracts.py",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/driver-contracts"
+      ],
+      "returncode": 0,
+      "seconds": 0.7156312465667725
+    },
+    {
+      "name": "lifecycle",
+      "command": [
+        "python3",
+        "tests/driver/review_lifecycle_traces.py",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/lifecycle"
+      ],
+      "returncode": 0,
+      "seconds": 0.8664557933807373
+    },
+    {
+      "name": "core-features",
+      "command": [
+        "python3",
+        "tests/harness/run_language_tests.py",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "tests/test_features.sts",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/core"
+      ],
+      "returncode": 0,
+      "seconds": 0.4653134346008301
+    },
+    {
+      "name": "core-new",
+      "command": [
+        "python3",
+        "tests/harness/run_language_tests.py",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "tests/test_new_features.sts",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/core"
+      ],
+      "returncode": 0,
+      "seconds": 0.41524553298950195
+    },
+    {
+      "name": "core-sugar",
+      "command": [
+        "python3",
+        "tests/harness/run_language_tests.py",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "tests/test_sugar.sts",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/core"
+      ],
+      "returncode": 0,
+      "seconds": 0.21437549591064453
+    },
+    {
+      "name": "k0",
+      "command": [
+        "python3",
+        "tests/kernel/k0/run.py",
+        "--compiler",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/bin/stasha-integrated-clang-r2",
+        "--llvm-bin",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/source/build/llvm/bin",
+        "--artifacts",
+        "/workspace/scratch/bbc57aabb09b/stasha-restoration/integrated-checkpoint/final-extras/k0"
+      ],
+      "returncode": 0,
+      "seconds": 7.923022031784058
+    },
+    {
+      "name": "stdlib-and-threads",
+      "command": "source ../env.sh; make -j1 -o bin/stasha-integrated-clang-r2 CC=\"$LLVM_BUILD/bin/clang\" CXX=\"$LLVM_BUILD/bin/clang++\" TARGET=bin/stasha-integrated-clang-r2 stdlib-test test-threads",
+      "exit": 0,
+      "log": "final-stdlib-verified.log"
+    }
+  ],
+  "evidence_root": "stasha-restoration/integrated-checkpoint (retained local evidence; raw logs are not claimed published here)",
+  "limitations": [
+    "Development-only bounded x86-64 Linux evidence; no full language, release, kernel, memory-safe or security guarantee.",
+    "QEMU boot is NOT_RUN for this binary; older240-boot evidence is historical only.",
+    "K1 interrupts, K2 SMP, hardware, native macOS/Windows/AArch64 and reproducible release are unqualified.",
+    "Fixed-array/raw-pointer complete bounds, allocation overflow/OOM, interface dispatch hardening, alias-aware ownership/lifetime, nullable/initialization/concurrency remain open.",
+    "Current unsafe behavior preserved; planned contract changes not implemented.",
+    "Member ABI negative runner permits unused-local warnings; exact exit1/source-located errors/no artifacts independently verified for68 negatives. Invalid programs never executed.",
+    "Core fixture retains five unused-capture warnings.",
+    "Stasha pointer alias-chain declaration resolution limitation reproduced before and after arithmetic repair.",
+    "Compiler build has existing warnings; sanitizer runs cover frontend/C-header components, not all generated programs.",
+    "C imports preserve existing unsupported nested-pointer declarator boundary."
+  ],
+  "independent_reviews": [
+    "slice fixed-array member stride",
+    "pointer read/write qualifier invariance and slice descriptor distinction",
+    "immediate-pointee arithmetic stride",
+    "C pointee const and typedef-depth correction"
+  ],
+  "publication": "No commit/push/branch deletion by the integration worker; parent review required.",
+  "stdlib_source_sha256": {
+    "stsstdlib/collections/array.sts": "564362e3cdbb78a8abf0a6226dc032d1814abf666be88dfe55179703d947c28d",
+    "stsstdlib/collections/buffer.sts": "743032b7afcbf0323d0604bfb417b68d386917fa2a9f954491d45c0fb3f099ae",
+    "stsstdlib/collections/list.sts": "48fa998df37773044f5b9874640ac6480cad280a3e23de0d788535864541fa26",
+    "stsstdlib/collections/opt.sts": "d5b26c78ff3d4bb2be52176a32fff997e32231699bd34a055357e154d341b921",
+    "stsstdlib/collections/set.sts": "20b1f36c31d077b67a420b41b4ffb472317c26672befd169ba61479cf05d1a7a",
+    "stsstdlib/config/config.sts": "61b5dedbabe4361ee6a8dd987d94eb5d02793123e1c86ca82fd82df6dc1b169a",
+    "stsstdlib/crypto/crypto.sts": "bf69d6bee6140479b2a97300890c20749e8b537ada493fe80fcff2ec6c3a92a8",
+    "stsstdlib/error/error_helpers.sts": "effb394e76fb2096e2ddea9288be95d238968c6a2538bbc1b18c54b18dc638f9",
+    "stsstdlib/fs/filesystem.sts": "b411ecdedb23c739eda423df5d916317b5efe69d331eb96d2c7616335fec729d",
+    "stsstdlib/io/console.sts": "a4b27770b9de587e25ec53e3c594c0f2551d726f1ce002244746bca053e210dc",
+    "stsstdlib/io/file_stream.sts": "679cf84709d50196b717d351b6f74b0ddb6fc194d90fad22e1ff30e56d7a7682",
+    "stsstdlib/io/logging.sts": "c887e702942a6b3b59906c6a5d209664ada0844967c8b3d7be2d21665a6d864d",
+    "stsstdlib/map/map.sts": "fa88c463fddbfe4c395f63169eec631809aee8023722ed8b7b2cd29c29bfc63e",
+    "stsstdlib/math/extra.sts": "f6ce8c8fa48fda141b22e067b98dc81741fec83a23d2e6f98eba062961290dc0",
+    "stsstdlib/math/math.sts": "67890d0f64ae5f9bab5b28ef778489be202e22c5b04eb98e5a7eed156ba551ee",
+    "stsstdlib/math/vector.sts": "c84d454585b2cf90e1b24849a09d58fa67fed43c5bd4cfff4e9a358461378171",
+    "stsstdlib/memory/memory.sts": "0f5cad212950856a34db3dca7b36be4bf732d3ae6dac2f78e927c753c344a746",
+    "stsstdlib/net/http.sts": "f44a473ca3d74866931ce72ffaae4b04e219cb548507e0c5d3c3dca7ef03c341",
+    "stsstdlib/net/network.sts": "69b2ede5537c8c47551974e0cd76c309fe470c3daccccf03199bea18496dda0a",
+    "stsstdlib/proc/process.sts": "b1386bc58990f6ea0e0c88976f6513d619a0edee8e827076dc5112dd6f1de924",
+    "stsstdlib/random/complex_rng.sts": "cda942fc35af63c33735454c0fabfba04e2d6054eea331e77c53266b8dddf7f3",
+    "stsstdlib/random/simple_rng.sts": "9d4090046c50af0a031dc3277c67e7d28eb1583aaf7bf71606b57f9bc1f4d0c2",
+    "stsstdlib/regex/regex.sts": "e7e77a4d75b41df5f8a5d00dca2a17f25991f70a5c6218457bbdd3130f904857",
+    "stsstdlib/resource/resource.sts": "10a51cac3340551603aa047d6cb1562d57368df2a618f3e5a01a19602ffc7986",
+    "stsstdlib/serial/json.sts": "5b68ac28fea7c8b15b1a069ff8a949106b77796fb7a68ae83b53d92fe2b88369",
+    "stsstdlib/str/dstring.sts": "11d4b287ffbb16258d1ce3db9aa7ebd0cf5c2a3cf7787c6596a0f0b5cda57d1e",
+    "stsstdlib/str/str_conv.sts": "8ad96bffc1c36055dc7971122a415cadd5dbee8048a3942d2acf29a7d0c65c5f",
+    "stsstdlib/str/str_view.sts": "091c2668c847e0d355f03da7e1c629c96865fff45fe2c1dd09af15efe32b0a40",
+    "stsstdlib/str/string.sts": "00787298043a0a5f1b8cab55e1f39bc7f249b2b17e429f44516209ff088f4901",
+    "stsstdlib/str/unicode.sts": "a39e0e4eb6c053e7bec0c7c28a2a06ab7b8abed58719c201e9fb124d5b85853f",
+    "stsstdlib/sys/cl_args.sts": "6922abb8caf6b7d3c65317cab093d6fcc5f2454c8eae501bd16e33e3d3594fde",
+    "stsstdlib/sys/sys.sts": "ea1c8ad8958a21fd8e74cd9d8d8c9359afe5a2306ee6c18fcb42c88573c90a78",
+    "stsstdlib/threading/mutex.sts": "fd92af0042bf773427f6015cf7fc35996ce4c009558943616d17ddc54f56be78",
+    "stsstdlib/time/clock.sts": "d36acfc1ebb0a30c6f15e62287d68696663303ac746f2a1d22b55420a7959f72",
+    "stsstdlib/time/extra.sts": "094fc53bc8ac5f24e2ecb3a0123c29e67a6634b697d292a40bc9469294d7d393",
+    "stsstdlib/variadic/variadic.sts": "cf424af81cc2b164db7eba0aa594ec4c83b7035ddda9e3975621389ab148b56f"
+  },
+  "reviewed_stdlib_repair": "PCG reseed restarts exact unchanged constructor sequence. Six known-seed vectors independently checked in Python, including0 and max-u64; no cryptographic API change or cryptographic assurance claim.",
+  "file_mode_integrity": {
+    "policy": "All existing tracked executable bits and symlink types preserved from baseline;12 executable-bit losses from restoration corrected before final candidate. New scripts use documented bash/python invocation and mode100644.",
+    "restored_entrypoints": [
+      "install.sh",
+      "scripts/bump-version.sh",
+      "scripts/test_cheader.sh",
+      "scripts/test_frontend.sh",
+      "scripts/test_frontend_fuzz.sh",
+      "scripts/test_harness_selftest.sh",
+      "tests/cinterop/run_cinterop_tests.sh",
+      "tests/diag/run_diag_tests.sh",
+      "tests/layout/run_layout_tests.py",
+      "tests/layout/run_oracle.sh",
+      "tests/signals/run_tests.sh",
+      "uninstall.sh"
+    ],
+    "syntax_shebang_executable_checks": "PASS for all12",
+    "direct_entrypoint_runs": "frontend and C-header UBSan plus harness selftest rerun directly; results in mode receipt"
+  }
+}

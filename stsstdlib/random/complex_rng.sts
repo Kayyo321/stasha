@@ -63,16 +63,11 @@ ext type pcg32_t: struct {
         ret (r & 1) != 0;
     }
 
-    // Re-seed the generator in place.
+    // Re-seed in place, restarting the same sequence as pcg32_t.new(seed).
     ext fn reseed(u64 seed): void {
         final u64 new_inc = (seed << 1) | 1;
         this.inc   = new_inc;
-        this.state = new_inc;
-        // advance once
-        this.state = this.state * 6364136223846793005 + this.inc;
-        this.state = this.state + seed;
-        // advance again
-        this.state = this.state * 6364136223846793005 + this.inc;
+        this.state = (new_inc + seed) * 6364136223846793005 + new_inc;
     }
 
     ext fn print(void): void {
@@ -278,6 +273,47 @@ test 'pcg32_t reseed produces same output as new with same seed' {
     b.reseed(77);
     u32 v2 = b.next_u32();
     expect_eq.(v1, v2);
+}
+
+test 'pcg32_t constructor preserves deterministic sequences' {
+    u64 seeds[] = .{0, 1, 42, 77, 9223372036854775808, 18446744073709551615};
+    // Four consecutive outputs per seed, including both ends of the u64 range.
+    u32 expected[] = .{
+        3837872008, 932996374, 1548399547, 1612522464,
+        3380776849, 361947764, 3223725655, 2781001427,
+        1085446021, 176895750, 789123591, 1684778745,
+        609532355, 34173300, 4179652351, 3914071167,
+        1191765185, 1695953820, 3015401034, 601908253,
+        645251143, 2004461623, 2705697299, 1600907046
+    };
+    for (u32 s = 0; s < 6; s++) {
+        pcg32_t rng = pcg32_t.new(seeds[s]);
+        for (u32 i = 0; i < 4; i++) {
+            u32 value = rng.next_u32();
+            expect_eq.(value, expected[s * 4 + i]);
+        }
+    }
+}
+
+test 'pcg32_t repeated reseed restarts sequences across seed boundaries' {
+    u64 seeds[] = .{0, 1, 42, 77, 9223372036854775808, 18446744073709551615};
+    pcg32_t reused = pcg32_t.new(12345);
+    for (u32 i = 0; i < 7; i++) { reused.next_u32(); }
+    for (u32 s = 0; s < 6; s++) {
+        for (u32 repeat = 0; repeat < 3; repeat++) {
+            pcg32_t fresh = pcg32_t.new(seeds[s]);
+            reused.reseed(seeds[s]);
+            expect_eq.(reused.state, fresh.state);
+            expect_eq.(reused.inc, fresh.inc);
+            expect.((reused.inc & 1) == 1);
+            for (u32 i = 0; i < 32; i++) {
+                u32 actual = reused.next_u32();
+                u32 expected = fresh.next_u32();
+                expect_eq.(actual, expected);
+                expect_eq.(reused.state, fresh.state);
+            }
+        }
+    }
 }
 
 test 'pcg32_t generates multiple distinct values' {

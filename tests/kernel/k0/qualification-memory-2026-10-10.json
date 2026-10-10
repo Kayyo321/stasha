@@ -1,0 +1,392 @@
+{
+  "scope": "Bounded K0 lowered-memory-helper extension plus prelink metadata and machine-audit hardening",
+  "status": "PASS",
+  "finished_utc": "2026-10-10T05:59:55.382654+00:00",
+  "compiler_snapshot": "bin/stasha-parameters-20261010T0531",
+  "compiler_sha256": "a19c57fcb4f92d1c45518aeccef3c01266982a39da9d0fcbf9d9c1f63c5fcdbc",
+  "evidence_summary": "build/k0-results/run-stms_tcy/summary.json",
+  "evidence_summary_sha256": "3ff75951d064f681e0dcb6f9b9c107f1015e45b1ebbf2649482000c47cb78496",
+  "prior_component_evidence": "tests/kernel/k0/qualification-2026-10-10.json",
+  "source_git_head": "24fdf438f045303ea633c09e0d640a7657b9a17a",
+  "source_git_diff_sha256": "dcce459d74c803ab0a7c566c50181a8c016de52db0aba53ac641b379520cbc5c",
+  "harness_source_sha256": {
+    "README.md": "51853ff0e6d5ba54fe59794af77794cb7ef4dacb6211cf9f7d1f78940a8dde59",
+    "abi_probe.S": "7816cf4b4ff388ab2c1befe184ca57e7f7b4b4d7e8ccfa151662129186cc9368",
+    "baseline.c": "3fd72bfa69dedcfe31eb45802395710e94d5f397e3d8b9945efa80e95b1db3a3",
+    "boot.c": "56d2caec21b1c110cf22849a0d4e5c2bee5a6c69692efecc0b76911f30e08cca",
+    "boot32.S": "043e438871e6feae83c55647d37e253a02d7c0f1b73b012f316c3e25abf33e4a",
+    "boot32.ld": "10e438a19fe15ce86aaec131047c50810d0b6b681b1b82d463833525394b7d57",
+    "component.h": "35679791f419385e0e36d6c3229753d10323617795fedc27015e521b20e521e9",
+    "component.sts": "eab151859c54a86e822107d4de98c86e59f3349ec37509d4e84a6291bbd76578",
+    "entry64.S": "793162ed0e5e5048f7a8caa821a505a656b678754d4a1f14fdd7d4e59d8f1932",
+    "host.c": "019960e79d8ca505c1f45928966e7cb5087e6c7cb469472a9d0fcb78962bb7e8",
+    "memory_expectation.py": "dbd9526d3680a27af95480a49127eb95b379c18656ddf4239722f824fe593cf6",
+    "memory_helpers.c": "26b0529559eabc47a27129d8682db70a37e43990eab55bab8fdec9688f104349",
+    "payload.ld.in": "391c26a8fd8a5d06635ea552ad6fa45cc78541ccf0d8c193154549cec04e7033",
+    "policy.json": "971fd21c27f2c57054177f86bc95e3ac8b8069965c1b44839928059b14eee705",
+    "qualification-2026-10-10.json": "a4b7dc6a1f25eb040b11c62afa5aa523f80f5f6994867e05725a91974f34edae",
+    "reference.c": "4c9efe6164ff5de6253f1009b79b6cde117e52b90a044dfeaeb0c5b89dddd6eb",
+    "run.py": "9b6204a209dfd5b9899ca6bed6e2b11bcafcf1ce6b5285d02406889919d223f5",
+    "test_runner.py": "c3153a06c45ccc5524cbedbf77b1ac03e59ffa266d7e705636d2c3148023d75f"
+  },
+  "llvm_toolchain_receipt": {
+    "schema": 1,
+    "llvm_revision": "348061d58dfe5e59027a0d6d51f916197cdd8d68",
+    "llvm_version": "23.0.0git",
+    "source_root": "/workspace/shared/stasha-implementation/extlib/llvm/llvm",
+    "build_root": "/workspace/shared/stasha-toolchain/llvm-build",
+    "targets": [
+      "X86",
+      "AArch64"
+    ],
+    "projects": [
+      "clang",
+      "lld"
+    ],
+    "assertions": "OFF",
+    "rtti": "NO",
+    "host_target": "x86_64-unknown-linux-gnu",
+    "llvm_config_sha256": "2855d642a367192b4329f8a9fe090f5a4239ec27ebd58205a896d44e0eb1f5ce",
+    "cmake_cache_sha256": "9bbf9f714a555490d64025630c85d41aaae261f0fa25fdca917b749a5e297755",
+    "lld_archives": {
+      "liblldCOFF.a": 2848906,
+      "liblldCommon.a": 383454,
+      "liblldELF.a": 7909990,
+      "liblldMachO.a": 2870586,
+      "liblldMinGW.a": 101954,
+      "liblldWasm.a": 1397204
+    },
+    "scope": "source/build identity receipt; not a reproducible-build or semantic-test claim"
+  },
+  "llvm_verifier_sha256": "c22d5d29a859aa452aebac1969b2d3ea6423a130ef66238f39814c297b54e46b",
+  "successful_qemu_runs": 240,
+  "successful_host_runs": 90,
+  "observations_per_normal_run": 155689,
+  "expected_checksum": "5710ad21404bb36e",
+  "variant_memory_evidence": {
+    "O0-nodebug": {
+      "actual_imports": [],
+      "lowering": "scalarized",
+      "runtime_counters_host": "PASS",
+      "runtime_counters_boot": "PASS",
+      "missing_helper_links": {},
+      "missing_helper_link_scope": "not applicable: scalarized",
+      "shim_leaf_audit": "PASS"
+    },
+    "O0-debug": {
+      "actual_imports": [],
+      "lowering": "scalarized",
+      "runtime_counters_host": "PASS",
+      "runtime_counters_boot": "PASS",
+      "missing_helper_links": {},
+      "missing_helper_link_scope": "not applicable: scalarized",
+      "shim_leaf_audit": "PASS"
+    },
+    "O2-nodebug": {
+      "actual_imports": [
+        "memcpy",
+        "memmove",
+        "memset"
+      ],
+      "lowering": "libcalls",
+      "runtime_counters_host": "PASS",
+      "runtime_counters_boot": "PASS",
+      "missing_helper_links": {
+        "memcpy": "PASS",
+        "memmove": "PASS",
+        "memset": "PASS"
+      },
+      "missing_helper_link_scope": "required",
+      "shim_leaf_audit": "PASS"
+    },
+    "O2-debug": {
+      "actual_imports": [],
+      "lowering": "scalarized",
+      "runtime_counters_host": "PASS",
+      "runtime_counters_boot": "PASS",
+      "missing_helper_links": {},
+      "missing_helper_link_scope": "not applicable: scalarized",
+      "shim_leaf_audit": "PASS"
+    },
+    "O3-nodebug": {
+      "actual_imports": [
+        "memcpy",
+        "memmove",
+        "memset"
+      ],
+      "lowering": "libcalls",
+      "runtime_counters_host": "PASS",
+      "runtime_counters_boot": "PASS",
+      "missing_helper_links": {
+        "memcpy": "PASS",
+        "memmove": "PASS",
+        "memset": "PASS"
+      },
+      "missing_helper_link_scope": "required",
+      "shim_leaf_audit": "PASS"
+    },
+    "O3-debug": {
+      "actual_imports": [],
+      "lowering": "scalarized",
+      "runtime_counters_host": "PASS",
+      "runtime_counters_boot": "PASS",
+      "missing_helper_links": {},
+      "missing_helper_link_scope": "not applicable: scalarized",
+      "shim_leaf_audit": "PASS"
+    }
+  },
+  "memory_cases": {
+    "block_bytes": 1025,
+    "aggregate_alignment": 1,
+    "memmove_calls_per_lowered_success": 64,
+    "memset_calls_per_lowered_success": 8,
+    "memcpy_calls_per_lowered_success": 16,
+    "copy_offsets": [
+      [
+        16,
+        16
+      ],
+      [
+        17,
+        16
+      ],
+      [
+        16,
+        17
+      ],
+      [
+        33,
+        16
+      ],
+      [
+        16,
+        33
+      ],
+      [
+        1040,
+        16
+      ],
+      [
+        16,
+        1040
+      ],
+      [
+        1041,
+        16
+      ]
+    ],
+    "copy_oracle": "Independent C temporary byte snapshot plus independently modeled Python checksum",
+    "guard_scope": "Entire 2082-byte backing buffer checked after every pointer-copy and zero case"
+  },
+  "prelink_negative_fixtures": {
+    "status": "PASS",
+    "rejected": [
+      {
+        "case": "ctors",
+        "bits": 32,
+        "rejected": "forbidden prelink section .ctors"
+      },
+      {
+        "case": "dtors",
+        "bits": 32,
+        "rejected": "forbidden prelink section .dtors"
+      },
+      {
+        "case": "init_array",
+        "bits": 32,
+        "rejected": "forbidden prelink section .init_array"
+      },
+      {
+        "case": "fini_array",
+        "bits": 32,
+        "rejected": "forbidden prelink section .fini_array"
+      },
+      {
+        "case": "preinit_array",
+        "bits": 32,
+        "rejected": "forbidden prelink section .preinit_array"
+      },
+      {
+        "case": "eh_frame",
+        "bits": 32,
+        "rejected": "forbidden prelink section .eh_frame"
+      },
+      {
+        "case": "hidden_unwind",
+        "bits": 32,
+        "rejected": "runtime section type before link: .innocent (1879048193)"
+      },
+      {
+        "case": "gcc_except_table",
+        "bits": 32,
+        "rejected": "forbidden prelink section .gcc_except_table"
+      },
+      {
+        "case": "tdata",
+        "bits": 32,
+        "rejected": "forbidden prelink section .tdata"
+      },
+      {
+        "case": "tbss",
+        "bits": 32,
+        "rejected": "forbidden prelink section .tbss"
+      },
+      {
+        "case": "hidden_tls",
+        "bits": 32,
+        "rejected": "TLS section flag before link: .innocent"
+      },
+      {
+        "case": "hidden_init",
+        "bits": 32,
+        "rejected": "runtime section type before link: .innocent (14)"
+      },
+      {
+        "case": "hidden_tls_symbol",
+        "bits": 32,
+        "rejected": "TLS symbol type before link"
+      },
+      {
+        "case": "ctors",
+        "bits": 64,
+        "rejected": "forbidden prelink section .ctors"
+      },
+      {
+        "case": "dtors",
+        "bits": 64,
+        "rejected": "forbidden prelink section .dtors"
+      },
+      {
+        "case": "init_array",
+        "bits": 64,
+        "rejected": "forbidden prelink section .init_array"
+      },
+      {
+        "case": "fini_array",
+        "bits": 64,
+        "rejected": "forbidden prelink section .fini_array"
+      },
+      {
+        "case": "preinit_array",
+        "bits": 64,
+        "rejected": "forbidden prelink section .preinit_array"
+      },
+      {
+        "case": "eh_frame",
+        "bits": 64,
+        "rejected": "forbidden prelink section .eh_frame"
+      },
+      {
+        "case": "hidden_unwind",
+        "bits": 64,
+        "rejected": "runtime section type before link: .innocent (1879048193)"
+      },
+      {
+        "case": "gcc_except_table",
+        "bits": 64,
+        "rejected": "forbidden prelink section .gcc_except_table"
+      },
+      {
+        "case": "tdata",
+        "bits": 64,
+        "rejected": "forbidden prelink section .tdata"
+      },
+      {
+        "case": "tbss",
+        "bits": 64,
+        "rejected": "forbidden prelink section .tbss"
+      },
+      {
+        "case": "hidden_tls",
+        "bits": 64,
+        "rejected": "TLS section flag before link: .innocent"
+      },
+      {
+        "case": "hidden_init",
+        "bits": 64,
+        "rejected": "runtime section type before link: .innocent (14)"
+      },
+      {
+        "case": "hidden_tls_symbol",
+        "bits": 64,
+        "rejected": "TLS symbol type before link"
+      }
+    ],
+    "demonstrated_eh_discard": [
+      32,
+      64
+    ]
+  },
+  "maximum_payload_resident_span_bytes": 182368,
+  "payload_limit_bytes": 524288,
+  "payload_stack_bytes": 65536,
+  "tool_versions": {
+    "cc": {
+      "path": "/usr/bin/gcc",
+      "sha256": "a23ecab8ff08f09ad8c80602c2c5df7f49e09c25905cb8975902e101bf72635f",
+      "version": "gcc (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    },
+    "objcopy": {
+      "path": "/usr/bin/objcopy",
+      "sha256": "403f90bbd5d26c8ab9a2ad51f56255b812e8858a83aa8740ee71791071ddb580",
+      "version": "GNU objcopy (GNU Binutils for Debian) 2.44\nCopyright (C) 2025 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty.\n"
+    },
+    "ld.lld": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/ld.lld",
+      "sha256": "baee19b05603eeee6460914ad76ec974facf9236811881b1faa6fa00c43c2f03",
+      "version": "LLD 23.0.0 (https://github.com/llvm/llvm-project.git 348061d58dfe5e59027a0d6d51f916197cdd8d68) (compatible with GNU linkers)\n"
+    },
+    "llvm-nm": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-nm",
+      "sha256": "374445eccf884c46d5e210f0360e3a0420fdedf2eb3aed1c89ce778a34a09c71",
+      "version": "llvm-nm, compatible with GNU nm\nLLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n"
+    },
+    "llvm-objdump": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-objdump",
+      "sha256": "07d3a970680c726a4bfd1542f9bd0b168344b8545d7d6e388ee5475405330d36",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n\n\n  Registered Targets:\n    aarch64    - AArch64 (little endian)\n    aarch64_32 - AArch64 (little endian ILP32)\n    aarch64_be - AArch64 (big endian)\n    arm64      - ARM64 (little endian)\n    arm64_32   - ARM64 (little endian ILP32)\n    x86        - 32-bit X86: Pentium-Pro and above\n    x86-64     - 64-bit X86: EM64T and AMD64\n"
+    },
+    "llvm-readobj": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-readobj",
+      "sha256": "6572a4582279b5ceb9a09b01a50e19fbedcfc3e67787d6f568823ec39cc012d3",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n"
+    },
+    "llvm-ar": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-ar",
+      "sha256": "8542bdcda4d1857883e45f64a382f6f3e882afebd0477e2ed2a87701870ca61b",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n"
+    },
+    "opt": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/opt",
+      "sha256": "2bc823d2ef34b4d0b94f85613872cdf6a1b52afea4c5a715f3d5caf226f05f7a",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n  Default target: x86_64-unknown-linux-gnu\n  Host CPU: znver4\n"
+    }
+  },
+  "qemu": {
+    "path": "/workspace/shared/stasha-toolchain/bootstrap/usr/bin/qemu-system-x86_64",
+    "sha256": "d3c1a558ad220e77a4412048c8d96b44f8c2b41c7ad2a4ecfe522a4b122fe067",
+    "version": "QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers\n",
+    "machine": "pc-i440fx-10.0",
+    "cpu": "qemu64",
+    "ram": "64M",
+    "smp": 1,
+    "accelerator": "tcg,thread=single",
+    "bios": "/workspace/shared/stasha-toolchain/bootstrap/usr/share/seabios/bios-256k.bin",
+    "bios_sha256": "fc6d2ea888862e6b26d53fb877ab712324726eb8f44eb6baf076c64a31f1c3fb",
+    "data": "/workspace/shared/stasha-toolchain/bootstrap/usr/share/qemu"
+  },
+  "independent_review": {
+    "status": "PASS_AFTER_FIXES",
+    "reviewed": "Memory shim, overlap oracle, counters, actual lowering, prelink metadata parser/fixtures, object/archive machine policy and receipt integration"
+  },
+  "full_k0_readiness": false,
+  "hardware": "NOT_RUN",
+  "limitations": [
+    "Only nondebug O2/O3 import and execute the three memory helpers; O0/debug scalarize these operations.",
+    "Only bounded 1025-byte copies and zero-valued memset are qualified; arbitrary lengths, nonzero fills, and arbitrary callers are not.",
+    "External test-only C/assembly startup and explicit LLD workflow; no native P6 final-image linker claim.",
+    "No OS feature, P3 lifetime proof, arbitrary aggregate/variadic ABI, atomic, volatile/MMIO, K1 interrupt, SMP or hardware claim.",
+    "ELF segment permissions are audited; permissive test page tables do not enforce page-level W^X.",
+    "Debug objects execute with DWARF sections; debugger stepping/backtraces are not qualified."
+  ]
+}

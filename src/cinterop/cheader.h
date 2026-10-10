@@ -28,9 +28,11 @@ typedef enum {
     CTypeEnumRef,
     CTypePointer,
     CTypeArray,
+    CTypeFunctionPtr,
 } c_type_kind_t;
 
 typedef struct c_type c_type_t;
+typedef struct c_param c_param_t;
 
 struct c_type {
     c_type_kind_t kind;
@@ -38,6 +40,11 @@ struct c_type {
     char *name;
     long array_len;
     c_type_t *elem;
+    c_param_t *fn_params;
+    usize_t fn_param_count;
+    boolean_t fn_variadic;
+    boolean_t fn_unsupported;
+    boolean_t unsupported_parameter; /* parameter adjustment cannot be represented */
 };
 
 typedef struct {
@@ -48,10 +55,10 @@ typedef struct {
     long bit_width;
 } c_field_t;
 
-typedef struct {
+struct c_param {
     char *name;
     c_type_t type;
-} c_param_t;
+};
 
 typedef struct {
     char *name;
@@ -68,6 +75,7 @@ typedef struct {
     c_field_t *fields;
     usize_t field_count;
     boolean_t is_union;
+    boolean_t unsupported_layout; /* invalid/unsupported by-value dependency */
     boolean_t from_user_header; /* true iff defined in the cheader path
                                    the user wrote, vs. transitively
                                    pulled in via #include */

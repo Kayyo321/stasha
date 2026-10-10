@@ -1004,9 +1004,9 @@ static node_t *parse_primary(parser_t *p) {
             consume(p, TokRParen, "')'");
 
         } else if (strcmp(op_name, "foreach") == 0) {
-            if (check(p, TokDot)) {
+            consume(p, TokDot, "'.'");
+            if (check(p, TokLBracket)) {
                 /* va.foreach.[T](n, args) { |v| body } — Tier 1 typed loop */
-                advance_parser(p); /* consume '.' */
                 consume(p, TokLBracket, "'['");
                 n->as.va_op.next_type = parse_type(p); /* the T */
                 consume(p, TokRBracket, "']'");
@@ -1018,7 +1018,6 @@ static node_t *parse_primary(parser_t *p) {
                 n->as.va_op.op = VaForeach;
             } else {
                 /* va.foreach.(args) { |v| body } — Tier 2 type-aware */
-                consume(p, TokDot, "'.'");
                 consume(p, TokLParen, "'('");
                 n->as.va_op.handle = parse_expr(p);
                 consume(p, TokRParen, "')'");
@@ -2356,7 +2355,7 @@ static node_t *parse_assignment(parser_t *p) {
 static node_t *parse_assignment_impl(parser_t *p) {
     node_t *expr = parse_pipeline(p);
 
-    if (expr->kind == NodeIdentExpr || expr->kind == NodeIndexExpr
+    if (expr->kind == NodeIdentExpr || expr->kind == NodeIndexExpr || expr->kind == NodeFlaggedIndex
         || expr->kind == NodeMemberExpr || expr->kind == NodeSelfMemberExpr
         || (expr->kind == NodeUnaryPrefixExpr && expr->as.unary.op == TokStar)) {
         if (check(p, TokEq)) {

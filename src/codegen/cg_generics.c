@@ -97,17 +97,15 @@ static node_t *find_generic_template_decl(cg_t *cg, const char *tmpl_name) {
  * already be set in cg before calling. */
 static void instantiate_method(cg_t *cg, node_t *method_decl,
                                 const char *inst_struct_name,
-                                const char *module_name) {
+                                const char *module_name, boolean_t is_instance) {
     const char *mname = method_decl->as.fn_decl.name;
     char fn_name[512];
     mangle_method(module_name, inst_struct_name, mname, fn_name, sizeof(fn_name));
 
     /* skip if already declared (idempotent) */
-    if (cg_lookup(cg, fn_name)) return;
+    if (cg_lookup_symbol(cg, fn_name)) return;
 
-    /* "new" is a static constructor — no implicit this */
-    boolean_t is_new      = strcmp(mname, "new") == 0;
-    boolean_t is_instance = !is_new;
+    /* The declaration's location defines receiver semantics, not its name. */
     usize_t   pc          = method_decl->as.fn_decl.params.count;
     usize_t   total_params = pc + (is_instance ? 1 : 0);
 
@@ -154,10 +152,11 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     symtab_add(&cg->globals,
                ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
     scalar_register_signature(cg, &cg->globals.entries[cg->globals.count - 1], method_decl);
+    cg->globals.entries[cg->globals.count - 1].requires_receiver = is_instance;
     if (total_params > 0) deallocate(ptypes_heap);
 
     /* register as destructor if rem */
-    if (strcmp(mname, "rem") == 0) {
+    if (is_instance && strcmp(mname, "rem") == 0) {
         struct_reg_t *sr2 = find_struct(cg, inst_struct_name);
         if (sr2) sr2->destructor = fn;
     }
@@ -178,7 +177,7 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     cg->current_return_count = method_decl->as.fn_decl.return_count;
     cg->current_fn                  = fn;
     cg->current_struct_name         = (char *)inst_struct_name;
-    cg->current_fn_is_inline_method = True; /* generic struct method — this allowed */
+    cg->current_fn_is_inline_method = is_instance;
     cg->current_fn_linkage          = LinkageInternal;
     cg->locals.count                = 0;
     cg->dtor_depth                  = 0;
@@ -332,7 +331,7 @@ static void try_instantiate_generic(cg_t *cg, const char *mangled_name) {
     /* ── instantiate inline methods (defined inside the struct body) ── */
     for (usize_t m = 0; m < tmpl->as.type_decl.methods.count; m++) {
         node_t *method = tmpl->as.type_decl.methods.items[m];
-        instantiate_method(cg, method, inst_name_intern, tmpl->module_name);
+        instantiate_method(cg, method, inst_name_intern, tmpl->module_name, True);
     }
 
     /* ── instantiate standalone methods (declared outside the struct) ──
@@ -348,7 +347,7 @@ static void try_instantiate_generic(cg_t *cg, const char *mangled_name) {
             if (!d->as.fn_decl.struct_name) continue;
             if (strcmp(d->as.fn_decl.struct_name, tmpl_name) != 0) continue;
             /* methods whose struct belongs to the template — instantiate */
-            instantiate_method(cg, d, inst_name_intern, d->module_name);
+            instantiate_method(cg, d, inst_name_intern, d->module_name, False);
         }
     }
 
@@ -391,7 +390,7 @@ restore:
  * returns the symbol so the caller can proceed with the call. */
 static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) {
     /* already generated? */
-    symbol_t *existing = cg_lookup(cg, mangled_name);
+    symbol_t *existing = cg_lookup_symbol(cg, mangled_name);
     if (existing) return existing;
 
     /* parse mangled name → template + arg strings */
@@ -591,7 +590,7 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
     }
 
     /* look up what we just generated */
-    symbol_t *result = cg_lookup(cg, inst_name_intern);
+    symbol_t *result = cg_lookup_symbol(cg, inst_name_intern);
 
     /* ── restore ── */
     cg->generic_n         = saved_n;

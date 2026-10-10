@@ -202,7 +202,7 @@ def short_circuit_case():
                 '@comptime assert.(true || ((1 / 0) == 0));',
                 '@comptime assert.(!(false && ((1 << 32) == 0)));',
                 '@comptime assert.(true || (((i8)127 +! (i8)1) == 0));']
-    p.body += ['    stack bool nonzero_local = 2;', "    stack bool nonzero_char = 'B';",
+    p.body += ['    stack bool nonzero_local = 2;', '    stack bool nonzero_char = `B`;',
                '    volatile bool no = false;', '    volatile bool yes = true;',
                '    volatile i32 zero = 0;']
     p.emit('nonzero_global && nonzero_local && nonzero_char && truthy_literal()', True, label='nonzero_boolean_contexts')
@@ -383,6 +383,37 @@ def scalar_access_paths_case():
     return p.finish(['member', 'array', 'deref', 'fnptr', 'let', 'ternary', 'generic'])
 
 
+
+def indexed_compound_case():
+    p = Program('indexed_compound_storage')
+    p.decls += [
+        'type ArrayField: @packed struct { ext u8 tag; ext u16 values[3]; };',
+        'type NestedArray: struct { ext ArrayField data; };',
+        'stack u32 index_calls = 0;',
+        'fn next_index(void): u32 { index_calls += 1; ret 1; }',
+    ]
+    p.body += [
+        '    ArrayField field = .{ .tag = 7, .values = .{65535, 32768, 1} };',
+        '    NestedArray nested = .{ .data = .{ .tag = 9, .values = .{1, 2, 32768} } };',
+        '    stack u16 matrix[2][2];',
+        '    matrix[1][1] = 65535;',
+        '    stack u16 pointee = 65535;',
+        '    stack u16 *rw pointer = &pointee;',
+        '    pointer[0] /= 255;',
+        '    field.values[0] >>= 1;',
+        '    field.values[1] /= 256;',
+        '    field.values[next_index()] += 2;',
+        '    nested.data.values[2] >>= 1;',
+        '    matrix[1][1] += 2;',
+    ]
+    for expr, value, typ in [('field.tag', 7, 'u8'), ('field.values[0]', 32767, 'u16'),
+                             ('field.values[1]', 130, 'u16'), ('field.values[2]', 1, 'u16'),
+                             ('nested.data.values[2]', 16384, 'u16'),
+                             ('matrix[1][1]', 1, 'u16'), ('pointee', 257, 'u16'), ('index_calls', 1, 'u32')]:
+        p.emit(expr, value, BY_NAME[typ], 'indexed_compound')
+    return p.finish(['member', 'array', 'compound', 'packed', 'unsigned', 'single_evaluation'])
+
+
 def global_dependency_case():
     p = Program('ordered_global_constants')
     p.decls += ['const u64 first = 18446744073709551614;', 'const u64 second = first + 1;']
@@ -407,7 +438,7 @@ def cases():
     result.extend([casts_case(), widening_case(), default_literals_case(), short_circuit_case()])
     result.extend(rejection_cases())
     result.extend(implicit_conversion_rejections())
-    result.extend([safe_unsigned_widening_case(), scalar_match_case(), scalar_access_paths_case()])
+    result.extend([safe_unsigned_widening_case(), scalar_match_case(), scalar_access_paths_case(), indexed_compound_case()])
     result.extend(scalar_match_rejections())
     result.append(global_dependency_case())
     result.extend(global_dependency_rejections())

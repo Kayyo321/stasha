@@ -158,12 +158,12 @@ static usize_t ensure_vtable(cg_t *cg, const char *struct_name, const char *ifac
         /* try iface-qualified name first: "struct.iface.method" */
         snprintf(mangled, sizeof(mangled), "%s.%s.%s",
                  struct_name, iface_name, method_names[i]);
-        symbol_t *fn_sym = cg_lookup(cg, mangled);
+        symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
 
         if (!fn_sym && sr && sr->mod_prefix && sr->mod_prefix[0]) {
             snprintf(mangled, sizeof(mangled), "%s__%s__%s__%s",
                      sr->mod_prefix, struct_name, iface_name, method_names[i]);
-            fn_sym = cg_lookup(cg, mangled);
+            fn_sym = cg_lookup_symbol(cg, mangled);
         }
         if (!fn_sym) {
             /* try plain struct.method */
@@ -174,7 +174,7 @@ static usize_t ensure_vtable(cg_t *cg, const char *struct_name, const char *ifac
                 snprintf(mangled, sizeof(mangled), "%s.%s",
                          struct_name, method_names[i]);
             }
-            fn_sym = cg_lookup(cg, mangled);
+            fn_sym = cg_lookup_symbol(cg, mangled);
         }
         fn_ptrs[i] = fn_sym ? fn_sym->value : LLVMConstNull(ptr_t);
     }

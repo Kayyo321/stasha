@@ -5,12 +5,27 @@
 typedef struct { uint64_t bits; type_info_t type; } scalar_constant_t;
 static boolean_t lookup_comptime_field(cg_t *, const char *, const char *, long *);
 
+/* Compare mathematical values using the source type's signedness. A negative
+ * signed bit pattern must never be mistaken for a small unsigned destination
+ * value after truncation, or a high unsigned value for a negative signed one. */
+static boolean_t scalar_const_value_fits(scalar_constant_t v, type_info_t to) {
+    if (!scalar_integer(v.type) || !scalar_integer(to)) return False;
+    if (to.base == TypeBool) return True;
+    unsigned sw = scalar_bits(v.type), tw = scalar_bits(to);
+    uint64_t bits = v.bits & scalar_mask(sw);
+    if (!scalar_unsigned(v.type) && (bits & (UINT64_C(1) << (sw - 1)))) {
+        if (scalar_unsigned(to)) return False;
+        uint64_t magnitude = (UINT64_C(0) - bits) & scalar_mask(sw);
+        return magnitude <= (UINT64_C(1) << (tw - 1));
+    }
+    return bits <= (scalar_unsigned(to) ? scalar_mask(tw) : (UINT64_C(1) << (tw - 1)) - 1);
+}
+
 static boolean_t scalar_const_convert(scalar_constant_t *v, type_info_t to,
                                       boolean_t explicit_cast) {
     if (!scalar_integer(v->type) || !scalar_integer(to)) return False;
     unsigned sw = scalar_bits(v->type), tw = scalar_bits(to);
-    if (!explicit_cast && to.base != TypeBool && (tw < sw ||
-        (scalar_unsigned(v->type) != scalar_unsigned(to) && !(scalar_unsigned(v->type) && tw > sw)))) return False;
+    if (!explicit_cast && !scalar_const_value_fits(*v, to)) return False;
     if (to.base == TypeBool) v->bits = v->bits != 0;
     else {
         if (!scalar_unsigned(v->type) && (v->bits & (UINT64_C(1) << (sw - 1))))
@@ -21,7 +36,7 @@ static boolean_t scalar_const_convert(scalar_constant_t *v, type_info_t to,
 }
 static boolean_t scalar_const_eval_inner(cg_t *cg, node_t *n, type_info_t expected,
                                           scalar_constant_t *out, unsigned depth,
-                                          unsigned *budget) {
+                                          unsigned *budget, boolean_t exact_bindings) {
     if (!n || depth > 256 || !*budget) return False;
     --*budget;
     type_info_t t = scalar_expr_type(cg, n, expected);
@@ -32,7 +47,7 @@ static boolean_t scalar_const_eval_inner(cg_t *cg, node_t *n, type_info_t expect
         out->type = t; return True;
     }
     scalar_constant_t a, b;
-#define SC_EVAL(N,T,O) scalar_const_eval_inner(cg, (N), (T), (O), depth + 1, budget)
+#define SC_EVAL(N,T,O) scalar_const_eval_inner(cg, (N), (T), (O), depth + 1, budget, exact_bindings)
     switch (n->kind) {
     case NodeBoolLitExpr: out->bits = n->as.bool_lit.value != 0; out->type = scalar_type(TypeBool); return True;
     case NodeCharLitExpr: {
@@ -59,6 +74,17 @@ static boolean_t scalar_const_eval_inner(cg_t *cg, node_t *n, type_info_t expect
     case NodeIdentExpr: {
         symbol_t *s = scalar_symbol(cg, n->as.ident.name);
         if (!s || !(s->flags & SymConst) || !LLVMIsAGlobalVariable(s->value)) return False;
+        /* A weak/linkonce definition may be replaced by a different value at
+         * link time. Its local initializer cannot prove a runtime load fits. */
+        LLVMLinkage linkage = LLVMGetLinkage(s->value);
+        if ((linkage != LLVMExternalLinkage && linkage != LLVMInternalLinkage &&
+             linkage != LLVMPrivateLinkage) || LLVMIsExternallyInitialized(s->value) ||
+            !LLVMIsGlobalConstant(s->value)) return False;
+        /* Even strong external definitions can be preempted in a shared
+         * library. A runtime narrowing proof must match the eventual load.
+         * Ordinary global/comptime evaluation emits a fixed value instead. */
+        if (exact_bindings && linkage != LLVMInternalLinkage && linkage != LLVMPrivateLinkage)
+            return False;
         LLVMValueRef v = LLVMGetInitializer(s->value);
         if (!v || !LLVMIsAConstantInt(v) || !scalar_integer(t)) return False;
         out->bits = LLVMConstIntGetZExtValue(v); out->type = t; return True;
@@ -109,7 +135,18 @@ static boolean_t scalar_const_eval_inner(cg_t *cg, node_t *n, type_info_t expect
 }
 static boolean_t scalar_const_eval(cg_t *cg, node_t *n, type_info_t expected, scalar_constant_t *out) {
     unsigned budget = 10000;
-    return scalar_const_eval_inner(cg, n, scalar_resolve(cg, expected), out, 0, &budget);
+    return scalar_const_eval_inner(cg, n, scalar_resolve(cg, expected), out, 0, &budget, False);
+}
+static boolean_t scalar_const_conversion_fits(cg_t *cg, node_t *n, type_info_t from, type_info_t to) {
+    scalar_constant_t value;
+    unsigned budget = 10000;
+    /* Use the emitted expression's source context, never the narrower target.
+     * Do not accept runtime locals merely because LLVM optimized a load away.
+     * Matching the proven source type also excludes non-source AST nodes used
+     * by callers only to locate a diagnostic (for example multi-assignment). */
+    return scalar_const_eval_inner(cg, n, from, &value, 0, &budget, True) && scalar_integer(value.type) &&
+        scalar_bits(value.type) == scalar_bits(from) &&
+        scalar_unsigned(value.type) == scalar_unsigned(from) && scalar_const_value_fits(value, to);
 }
 static LLVMValueRef scalar_global_initializer(cg_t *cg, node_t *n, type_info_t target) {
     target = scalar_resolve(cg, target);

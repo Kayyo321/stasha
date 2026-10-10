@@ -1,0 +1,102 @@
+mod k0_component;
+
+// This bounded component has no allocator. The bitmap models 64 resource slots;
+// callers own the bitmap/buffer and supply valid, aligned pointers and lengths.
+stack u64 k0_data_cookie = 0x13579bdf2468ace0;
+stack u64 k0_bss_cookie = 0;
+
+ext fn k0_checksum(stack u8 *r bytes, stack u64 length): u64 {
+    stack u64 digest = 0xcbf29ce484222325;
+    stack u64 i = 0;
+    unsafe {
+        while (i < length) {
+            digest = (digest ^ (u64)bytes[i]) *% 0x100000001b3;
+            i = i +! 1;
+        }
+    }
+    ret digest;
+}
+
+ext fn k0_take(stack u64 *rw bitmap): u32 {
+    unsafe {
+        stack u64 used = bitmap[0];
+        stack u32 index = 0;
+        while (index < 64) {
+            stack u64 mask = (u64)1 << index;
+            if ((used & mask) == 0) {
+                bitmap[0] = used | mask;
+                ret index;
+            }
+            index = index +! 1;
+        }
+    }
+    ret 64;
+}
+
+ext fn k0_release(stack u64 *rw bitmap, stack u32 index): u32 {
+    if (index >= 64) { ret 0; }
+    unsafe {
+        stack u64 mask = (u64)1 << index;
+        stack u64 old = bitmap[0];
+        if ((old & mask) == 0) { ret 0; }
+        bitmap[0] = old & ~mask;
+    }
+    ret 1;
+}
+
+ext fn k0_checked_bytes(stack u64 count): u64 { ret count *! 8; }
+ext fn k0_divide(stack u64 a, stack u64 b): u64 { ret a / b; }
+ext fn k0_signed_divide(stack i64 a, stack i64 b): i64 { ret a / b; }
+ext fn k0_shift(stack u64 a, stack u64 b): u64 { ret a << b; }
+ext fn k0_high_half(void): u64 { ret 0xffffffff80200000; }
+ext fn k0_echo_pointer(stack void *rw p): void *rw { ret p; }
+ext fn k0_u8(stack u8 x): u8 { ret x; }
+ext fn k0_i8(stack i8 x): i8 { ret x; }
+ext fn k0_u16(stack u16 x): u16 { ret x; }
+ext fn k0_i16(stack i16 x): i16 { ret x; }
+ext fn k0_u32(stack u32 x): u32 { ret x; }
+ext fn k0_i32(stack i32 x): i32 { ret x; }
+ext fn k0_u64(stack u64 x): u64 { ret x; }
+ext fn k0_i64(stack i64 x): i64 { ret x; }
+ext fn k0_eight(stack u64 a, stack u64 b, stack u64 c, stack u64 d,
+                stack u64 e, stack u64 f, stack u64 g, stack u64 h): u64 {
+    ret a ^ (b << 1) ^ (c << 2) ^ (d << 3) ^ (e << 4) ^ (f << 5) ^ (g << 6) ^ (h << 7);
+}
+ext fn k0_global_probe(void): u64 {
+    stack u64 result = k0_data_cookie ^ k0_bss_cookie;
+    k0_bss_cookie = 0x1122334455667788;
+    ret result;
+}
+
+// These 1,025-byte, alignment-one aggregates stay behind a pointer/scalar ABI.
+// On the pinned compiler O2/O3 actually import memmove/memset/memcpy; O0
+// scalarizes the same operations. Callers provide complete valid byte ranges.
+type K0MemoryBlock: struct { ext u8 bytes[1025]; };
+stack K0MemoryBlock k0_memory_source = .{};
+stack K0MemoryBlock k0_memory_target = .{};
+ext fn k0_copy_block(stack void *rw dst, stack void *r src): void {
+    unsafe {
+        stack K0MemoryBlock *rw d = (K0MemoryBlock *rw)dst;
+        stack K0MemoryBlock *r s = (K0MemoryBlock *r)src;
+        d[0] = s[0];
+    }
+}
+ext fn k0_zero_block(stack void *rw dst): void {
+    unsafe {
+        stack K0MemoryBlock *rw d = (K0MemoryBlock *rw)dst;
+        stack K0MemoryBlock zero = .{};
+        d[0] = zero;
+    }
+}
+ext fn k0_copy_owned(stack u64 seed): u64 {
+    stack u64 i = 0;
+    unsafe {
+        while (i < 1025) {
+            seed = seed *% 6364136223846793005 +% 1442695040888963407;
+            k0_memory_source.bytes[i] = (u8)(seed >> 32);
+            i = i +% 1;
+        }
+        k0_memory_target = k0_memory_source;
+        ret k0_checksum((u8 *r)&k0_memory_target, 1025);
+    }
+}

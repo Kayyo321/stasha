@@ -98,12 +98,16 @@ enum {
     SymVa        = (1 << 9), /* va_list buffer — TypeVa alloca              */
 };
 
+typedef struct cg_abi_fn cg_abi_fn_t;
+
 typedef struct {
     char *name;
     LLVMValueRef value;
     LLVMTypeRef type;
     type_info_t stype;
     fn_ptr_desc_t *scalar_signature; /* resolved source call types, independent of LLVM */
+    boolean_t requires_receiver; /* only methods declared inside a type have hidden this */
+    cg_abi_fn_t *c_abi; /* C call lowering, separate from object layout */
     int flags;              /* SymAtomic | SymHeapVar | SymConst | SymFinal | SymNil */
     storage_t storage;      /* storage domain of the variable */
     linkage_t linkage;
@@ -553,6 +557,8 @@ static void emit_struct_field_cleanup(cg_t *cg, struct_reg_t *sr, LLVMValueRef a
 
 /* ── forward declarations ── */
 
+static LLVMTypeRef cg_abi_fn_ptr_type(cg_t *cg, fn_ptr_desc_t *desc);
+static void cg_abi_check_fnptr_conversion(cg_t *cg, type_info_t from, type_info_t to, node_t *n);
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node);
 static void gen_stmt(cg_t *cg, node_t *node);
 static void gen_block(cg_t *cg, node_t *node);
@@ -1228,6 +1234,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             } else {
                 mangle_fn(fn_module, decl->as.fn_decl.name, fn_name, sizeof(fn_name));
             }
+            char source_fn_name[512];
+            memcpy(source_fn_name, fn_name, sizeof(source_fn_name));
             /* fileheader: @[[export_name: "..."]] / @[[abi: c]] override */
             {
                 char override_name[512];
@@ -1245,8 +1253,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             /* build param types */
             usize_t pc = decl->as.fn_decl.params.count;
-            boolean_t is_instance = decl->as.fn_decl.is_method
-                && strcmp(decl->as.fn_decl.name, "new") != 0;
+            boolean_t is_instance = False; /* top-level Type.method declarations are static */
             usize_t total_params = pc + (is_instance ? 1 : 0);
 
             LLVMTypeRef *ptypes = Null;
@@ -1303,7 +1310,25 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 ret_type = get_llvm_type(&cg, rti);
             }
 
-            LLVMTypeRef fn_type = LLVMFunctionType(ret_type, ptypes,
+            cg_abi_fn_t *c_abi = Null;
+            if (cg_abi_decl_is_c(decl)) {
+                if (is_instance || is_coro_decl || decl->as.fn_decl.return_count != 1) {
+                    cg_abi_error(decl, "C functions cannot use implicit this, coroutines or multiple returns");
+                } else {
+                    fn_ptr_desc_t *desc = alloc_fn_ptr_desc(pc);
+                    desc->ret_type = scalar_resolve(&cg, decl->as.fn_decl.return_types[0]);
+                    desc->is_c_abi = True;
+                    desc->is_variadic = decl->as.fn_decl.is_variadic;
+                    for (usize_t j = 0; j < pc; ++j) {
+                        node_t *parameter = decl->as.fn_decl.params.items[j];
+                        if (parameter->as.var_decl.flags & VdeclArray)
+                            cg_abi_error(parameter, "C function array parameters must be declared as pointers");
+                        desc->params[j].type = scalar_resolve(&cg, parameter->as.var_decl.type);
+                    }
+                    c_abi = cg_abi_plan(&cg, ret_type, ptypes, desc, decl);
+                }
+            }
+            LLVMTypeRef fn_type = c_abi ? c_abi->llvm_type : LLVMFunctionType(ret_type, ptypes,
                 (unsigned)total_params, decl->as.fn_decl.is_variadic ? 1 : 0);
             /* If this symbol was already pre-declared (e.g. `printf` from
                the C runtime hookup at codegen.c:700, or any earlier
@@ -1313,6 +1338,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                safe for C externs: signatures must match by ABI anyway. */
             LLVMValueRef fn = LLVMGetNamedFunction(cg.module, fn_name);
             if (!fn) fn = LLVMAddFunction(cg.module, fn_name, fn_type);
+            if (c_abi) cg_abi_attributes(&cg, fn, False, c_abi);
             if (decl->as.fn_decl.linkage == LinkageInternal)
                 LLVMSetLinkage(fn, LLVMInternalLinkage);
 
@@ -1330,7 +1356,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 node_t *param = decl->as.fn_decl.params.items[j];
                 if ((param->as.var_decl.flags & VdeclRestrict)
                     && param->as.var_decl.type.is_pointer) {
-                    unsigned pidx = (unsigned)(j + (is_instance ? 1 : 0));
+                    unsigned pidx = c_abi ? c_abi->params[j].first : (unsigned)(j + (is_instance ? 1 : 0));
                     LLVMValueRef pval = LLVMGetParam(fn, pidx);
                     unsigned attr_kind = LLVMGetEnumAttributeKindForName("noalias", 7);
                     LLVMAttributeRef attr = LLVMCreateEnumAttribute(cg.ctx, attr_kind, 0);
@@ -1341,16 +1367,21 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
+            cg.globals.entries[cg.globals.count - 1].c_abi = c_abi;
             scalar_register_signature(&cg, &cg.globals.entries[cg.globals.count - 1], decl);
+            /* C/export spelling changes the linker symbol, not Type.method source
+             * lookup. Both names refer to exactly one function and ABI plan. */
+            if (decl->as.fn_decl.is_method && strcmp(source_fn_name, fn_name) != 0) {
+                symbol_t alias = cg.globals.entries[cg.globals.count - 1];
+                char *alias_name = ast_strdup(source_fn_name, strlen(source_fn_name));
+                symtab_add(&cg.globals, alias_name, fn, Null, dummy, False);
+                alias.name = alias_name;
+                cg.globals.entries[cg.globals.count - 1] = alias;
+            }
 
             if (total_params > 0) deallocate(ptypes_heap);
 
-            /* register destructor */
-            if (decl->as.fn_decl.is_method && strcmp(decl->as.fn_decl.name, "rem") == 0
-                && decl->as.fn_decl.struct_name) {
-                struct_reg_t *sr = find_struct(&cg, decl->as.fn_decl.struct_name);
-                if (sr) sr->destructor = fn;
-            }
+            /* Static methods, including a static named rem, are not destructors. */
         }
     }
 
@@ -1437,6 +1468,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
             scalar_register_signature(&cg, &cg.globals.entries[cg.globals.count - 1], method);
+            cg.globals.entries[cg.globals.count - 1].requires_receiver = True;
             deallocate(ptypes_heap);
 
             if (strcmp(method->as.fn_decl.name, "rem") == 0) {
@@ -1532,7 +1564,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                              cg.current_module_prefix,
                              sizeof(cg.current_module_prefix));
 
-        symbol_t *sym = cg_lookup(&cg, fn_name);
+        symbol_t *sym = cg_lookup_symbol(&cg, fn_name);
         cg.current_fn = sym->value;
         cg.current_return_types = decl->as.fn_decl.return_types;
         cg.current_return_count = decl->as.fn_decl.return_count;
@@ -1548,8 +1580,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             LLVMAppendBasicBlockInContext(cg.ctx, cg.current_fn, "entry");
         LLVMPositionBuilderAtEnd(cg.builder, entry);
 
-        boolean_t is_instance = decl->as.fn_decl.is_method
-            && strcmp(decl->as.fn_decl.name, "new") != 0;
+        boolean_t is_instance = False; /* top-level methods cannot access this */
         usize_t param_offset = 0;
 
         /* ── DI: create DISubprogram for this function ── */
@@ -1625,8 +1656,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
             LLVMValueRef alloca_val = LLVMBuildAlloca(cg.builder, ptype,
                                                        param->as.var_decl.name);
-            LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + param_offset)),
-                           alloca_val);
+            if (sym->c_abi) cg_abi_bind_param(&cg, sym->c_abi, (unsigned)j, alloca_val);
+            else LLVMBuildStore(cg.builder, LLVMGetParam(cg.current_fn, (unsigned)(j + param_offset)),
+                                alloca_val);
             {
                 int param_flags = 0;
                 if (pti.base == TypeZone) param_flags |= SymZone;
@@ -1713,8 +1745,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                           "declared to return a non-void type");
                 diag_help("add explicit 'ret' statements on all code paths");
                 diag_finish();
-                LLVMBuildRet(cg.builder,
-                    LLVMConstNull(get_llvm_type(&cg, rti)));
+                cg_abi_fn_t *fallthrough_abi = cg_abi_current(&cg);
+                if (fallthrough_abi) cg_abi_return(&cg, fallthrough_abi, LLVMConstNull(get_llvm_type(&cg, rti)));
+                else LLVMBuildRet(cg.builder, LLVMConstNull(get_llvm_type(&cg, rti)));
             }
         }
 
@@ -1779,7 +1812,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                               method->as.fn_decl.name, fn_name, sizeof(fn_name));
             }
 
-            symbol_t *sym = cg_lookup(&cg, fn_name);
+            symbol_t *sym = cg_lookup_symbol(&cg, fn_name);
             if (!sym) continue;
             cg.current_fn = sym->value;
             cg.current_return_types = method->as.fn_decl.return_types;

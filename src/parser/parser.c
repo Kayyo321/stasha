@@ -114,7 +114,7 @@ static void advance_parser(parser_t *p) {
             if (pt->tok.kind == TokError) {
                 /* Lex error recorded during preprocessing. */
                 const char *f = pt->tok.file;
-                if (f && f != diag_get_file()) diag_set_file(f);
+                if (f && strcmp(f, diag_get_file()) != 0) diag_set_file(f);
                 diag_begin_error("%.*s",
                                  (int)pt->tok.length, pt->tok.start);
                 diag_span(SRC_LOC(pt->tok.line, pt->tok.col, 1), True, "here");
@@ -124,7 +124,7 @@ static void advance_parser(parser_t *p) {
             }
 
             /* Switch diagnostic context when crossing a file boundary. */
-            if (pt->tok.file && pt->tok.file != diag_get_file())
+            if (pt->tok.file && strcmp(pt->tok.file, diag_get_file()) != 0)
                 diag_set_file(pt->tok.file);
 
             p->current           = pt->tok;

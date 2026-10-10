@@ -255,7 +255,7 @@ def run_case(case, args, artifact_dir):
             reason = "in-tree llvm-config unavailable; run make llvm"
             result.update(status="FAIL" if args.require_prerequisites else "SKIP", problems=[reason])
             return result
-        config = capture([str(args.llvm_config), "--libfiles", "core", "analysis", "native", "lto",
+        config = capture([str(args.llvm_config), "--libfiles", "--system-libs", "core", "analysis", "native", "lto",
                           "passes", "option", "codegen", "bitwriter", "debuginfodwarf", "objcarcopts",
                           "textapi", "object"], ROOT, work / "llvm-config", args.compile_timeout)
         result["llvm_config"] = config
@@ -265,6 +265,21 @@ def run_case(case, args, artifact_dir):
         # llvm-config emits a shell-quoted library list on supported POSIX hosts.
         for library in shlex.split(config["stdout"]):
             link_args += ["-l", library]
+        # LLVM's static archive list does not include the compiler's C++ ABI
+        # runtime. Stasha links through LLD directly, not the C++ driver.
+        runtime = args.cxx_runtime
+        if not runtime and platform.system() == "Linux":
+            cxx = shlex.split(os.environ.get("CXX", "c++"))
+            query = capture([*cxx, "-print-file-name=libstdc++.so"], ROOT,
+                            work / "cxx-runtime", args.compile_timeout)
+            result["cxx_runtime_query"] = query
+            candidate = query["stdout"].strip()
+            if query["category"] == "success" and Path(candidate).is_file():
+                runtime = str(Path(candidate).resolve())
+        if not runtime:
+            result["problems"] = ["LLVM static smoke requires its matching C++ runtime; supply --cxx-runtime PATH or linker token"]
+            return result
+        link_args += ["-l", runtime]
     # This directory is new for every invocation AND case. Never consult the
     # checked-in tests/cinterop/build executables or reuse an earlier output.
     output = work / ("program.exe" if os.name == "nt" else "program")
@@ -363,6 +378,7 @@ def main():
     parser.add_argument("--require-prerequisites", action="store_true", help="fail instead of skipping unavailable LLVM smoke")
     parser.add_argument("--support-lib", type=Path, default=ROOT / "tests/cinterop/build/libcinterop_support.a")
     parser.add_argument("--llvm-config", type=Path, default=ROOT / "build/llvm/bin/llvm-config")
+    parser.add_argument("--cxx-runtime", help="C++ runtime matching the static LLVM build; Linux defaults to CXX libstdc++.so")
     args = parser.parse_args()
     try:
         selector = re.compile(args.filter)

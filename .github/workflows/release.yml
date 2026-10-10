@@ -25,7 +25,7 @@ jobs:
             archive_ext: tar.gz
 
           - target: macos-x86_64
-            runner: macos-13
+            runner: macos-15-intel
             os_name: macos
             arch: x86_64
             archive_ext: tar.gz
@@ -55,6 +55,14 @@ jobs:
             archive_ext: zip
 
     steps:
+      # Native qualification is pending. Fail visibly before packaging rather
+      # than treating unpinned host LLVM or unexecuted contracts as a release.
+      - name: Require qualified native target
+        if: matrix.target != 'linux-x86_64'
+        shell: bash
+        run: |
+          echo "Native qualification is pending for ${{ matrix.target }}; release blocked."
+          exit 1
       - name: Checkout (with submodules)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -90,6 +98,10 @@ jobs:
       - name: Build LLVM (non-Windows)
         if: runner.os != 'Windows' && steps.llvm-cache.outputs.cache-hit != 'true'
         run: make llvm
+
+      - name: Verify pinned LLVM build (non-Windows)
+        if: runner.os != 'Windows'
+        run: python3 scripts/verify_llvm_toolchain.py --llvm-build build/llvm --output build/qualification/toolchain.json
 
       # ── OpenSSL cache (non-Windows) ──────────────────────────────
       - name: Cache OpenSSL build
@@ -200,6 +212,10 @@ jobs:
         env:
           STASHA_NO_OPENSSL: "1"
         run: make test-llvm-smoke
+
+      - name: Require Linux compiler qualification before packaging
+        if: matrix.target == 'linux-x86_64'
+        run: bash scripts/qualify_linux.sh ./bin/stasha build/qualification
 
       # ── upload build dir on failure for debugging ────────────────
       - name: Upload build artifacts on failure

@@ -1,6 +1,9 @@
 /* ── expressions ── */
+static LLVMTypeRef access_storage_type(cg_t *, node_t *);
+static ptr_perm_t access_address_permissions(cg_t *, node_t *);
 #include "cg_scalar.c"
 #include "cg_scalar_const.c"
+#include "cg_abi.c"
 #include <math.h>
 
 /* forward declaration — defined in cg_generics.c */
@@ -14,6 +17,8 @@ static LLVMValueRef wrap_in_any(cg_t *cg, struct_reg_t *sr, LLVMValueRef val, us
 static LLVMTypeRef get_slice_elem_llvm_type(cg_t *cg, type_info_t elem_ti);
 static LLVMTypeRef slice_struct_type(cg_t *cg);
 static LLVMTypeRef elem_type_from_sym(cg_t *cg, symbol_t *sym);
+static LLVMValueRef scalar_member_address(cg_t *, node_t *, LLVMTypeRef *, symbol_t **, ptr_perm_t);
+#include "cg_access.c"
 
 /* Type-tag helpers for ...typed variadic ABI (forward-declared; defined near gen_va_op) */
 static int va_type_tag_for_ti(type_info_t ti);
@@ -943,14 +948,21 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
-    /* pointer arithmetic: ptr ± integer → GEP (i8 base = byte-level stride) */
+    /* Pointer arithmetic advances by the immediate source pointee type.
+     * Retain byte stride for void/unresolved legacy pointer expressions. */
     if ((node->as.binary.op == TokPlus || node->as.binary.op == TokMinus)
         && LLVMGetTypeKind(LLVMTypeOf(left)) == LLVMPointerTypeKind) {
-        LLVMTypeRef i8 = LLVMInt8TypeInContext(cg->ctx);
+        LLVMTypeRef element = LLVMInt8TypeInContext(cg->ctx);
+        type_info_t pointer = scalar_resolve(cg, lti);
+        if (pointer.is_pointer) {
+            type_info_t pointee = scalar_resolve(cg, ti_deref_one(pointer));
+            if (pointee.base != TypeVoid || pointee.is_pointer)
+                element = get_llvm_type(cg, pointee);
+        }
         right = scalar_coerce(cg, right, rti, scalar_type(TypeU64), node->as.binary.right, True);
         if (node->as.binary.op == TokMinus)
             right = LLVMBuildNeg(cg->builder, right, "neg");
-        return LLVMBuildGEP2(cg->builder, i8, left, &right, 1, "ptrarith");
+        return LLVMBuildGEP2(cg->builder, element, left, &right, 1, "ptrarith");
     }
 
     switch (node->as.binary.op) {
@@ -1116,32 +1128,11 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         LLVMValueRef operand = gen_scalar_as(cg, node->as.unary.operand, t);
         return LLVMBuildNot(cg->builder, operand, "bnot");
     }
-    /* pointer dereference: *ptr — load the value the pointer points to.
-     * For multi-level dereferences like **pp or ***ppp, walk the chain of
-     * unary-star nodes to the root identifier, count total depth, then apply
-     * ti_deref_one that many times to determine the correct pointee type. */
     if (node->as.unary.op == TokStar) {
-        LLVMValueRef ptr = gen_expr(cg, node->as.unary.operand);
-        LLVMTypeRef pointee_type = Null;
-
-        /* walk the * chain to find the root identifier and total deref count */
-        node_t *inner = node->as.unary.operand;
-        int deref_depth = 1; /* how many times WE dereference from here */
-        while (inner->kind == NodeUnaryPrefixExpr && inner->as.unary.op == TokStar) {
-            deref_depth++;
-            inner = inner->as.unary.operand;
-        }
-        if (inner->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
-            if (sym && sym->stype.is_pointer) {
-                type_info_t pt = sym->stype;
-                for (int i = 0; i < deref_depth && pt.is_pointer; i++)
-                    pt = ti_deref_one(pt);
-                pointee_type = get_llvm_type(cg, pt);
-            }
-        }
-        if (!pointee_type) pointee_type = LLVMInt8TypeInContext(cg->ctx);
-        return LLVMBuildLoad2(cg->builder, pointee_type, ptr, "deref");
+        LLVMTypeRef type = Null;
+        LLVMValueRef address = access_deref_address(cg, node, &type, PtrRead);
+        if (!address) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        return LLVMBuildLoad2(cg->builder, type, address, "deref");
     }
     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 }
@@ -1698,7 +1689,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         char mod_mangled[512];
         snprintf(mod_mangled, sizeof(mod_mangled), "%s__%s",
                  cg->current_module_prefix, node->as.call.callee);
-        sym = cg_lookup(cg, mod_mangled);
+        sym = cg_lookup_symbol(cg, mod_mangled);
     }
 
     /* sibling method call: inside a struct method, plain name resolves to
@@ -1714,7 +1705,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
             snprintf(mangled, sizeof(mangled), "%s.%s",
                      cg->current_struct_name, node->as.call.callee);
         }
-        sym = cg_lookup(cg, mangled);
+        sym = cg_lookup_symbol(cg, mangled);
         if (sym) is_sibling_call = True;
     }
     /* lazy instantiation for standalone @comptime[T] generic functions */
@@ -1741,6 +1732,12 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
     usize_t user_argc = node->as.call.args.count;
+    if (sym->c_abi)
+        return cg_abi_call(cg, sym->c_abi, sym->value, node->as.call.args, node);
+    if (sym->stype.base == TypeFnPtr && sym->stype.fn_ptr_desc && sym->stype.fn_ptr_desc->is_c_abi) {
+        LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, LLVMPointerTypeInContext(cg->ctx, 0), sym->value, "c.fnptr");
+        return cg_abi_call(cg, cg_abi_plan_desc(cg, sym->stype.fn_ptr_desc), ptr, node->as.call.args, node);
+    }
 
     LLVMTypeRef fn_type;
     LLVMValueRef fn_val;
@@ -1827,11 +1824,18 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
 
     /* for sibling calls, check if we need to prepend 'this' */
     unsigned n_params = LLVMCountParamTypes(fn_type);
-    boolean_t prepend_this = is_sibling_call
-        && ((usize_t)n_params == user_argc + 1)
+    boolean_t prepend_this = is_sibling_call && sym->requires_receiver
         && (cg_lookup(cg, "this") != Null);
-
+    if (is_sibling_call && sym->requires_receiver && !prepend_this) {
+        scalar_error(node, "instance method requires an object receiver");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
     usize_t argc = user_argc + (prepend_this ? 1 : 0);
+    if (is_sibling_call && ((!LLVMIsFunctionVarArg(fn_type) && argc != n_params) ||
+        (LLVMIsFunctionVarArg(fn_type) && argc < n_params))) {
+        scalar_error(node, "method argument count does not match its declaration");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
     LLVMValueRef *args = Null;
     heap_t args_heap = NullHeap;
     if (argc > 0) {
@@ -1983,8 +1987,10 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 char mangled_sym[512];
                 snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s",
                          lib_ent->mod_prefix, method);
-                symbol_t *fn_sym = cg_lookup(cg, mangled_sym);
+                symbol_t *fn_sym = cg_lookup_symbol(cg, mangled_sym);
                 if (fn_sym) {
+                    if (fn_sym->c_abi)
+                        return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
                     usize_t user_argc = node->as.method_call.args.count;
                     LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
                     unsigned n_params = LLVMCountParamTypes(fn_type);
@@ -2015,6 +2021,9 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 /* fall through to error at the bottom */
             } else {
                 /* ── C lib alias: auto-declare function with raw symbol name ─ */
+                symbol_t *declared_c_fn = cg_lookup_symbol(cg, method);
+                if (declared_c_fn && declared_c_fn->c_abi)
+                    return cg_abi_call(cg, declared_c_fn->c_abi, declared_c_fn->value, node->as.method_call.args, node);
                 usize_t argc = node->as.method_call.args.count;
                 heap_t args_heap = NullHeap;
                 LLVMValueRef *args = Null;
@@ -2025,7 +2034,10 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                         args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
                 }
 
-                symbol_t *fn_sym = cg_lookup(cg, method);
+                symbol_t *fn_sym = cg_lookup_symbol(cg, method);
+                for (usize_t i = 0; i < argc; ++i)
+                    if (cg_abi_is_aggregate(LLVMTypeOf(args[i])))
+                        cg_abi_error(node, "aggregate argument requires a declared C signature (cheader or @[[abi: c]])");
                 if (!fn_sym) {
                     LLVMTypeRef ret_type;
                     LLVMTypeRef *param_types = Null;
@@ -2077,12 +2089,14 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                         param_count = (unsigned)fixed_count;
                     }
 
+                    if (cg_abi_is_aggregate(ret_type))
+                        cg_abi_error(node, "aggregate return requires a declared C signature (cheader or @[[abi: c]])");
                     LLVMTypeRef ftype = LLVMFunctionType(ret_type, param_types,
                                                           param_count, is_varargs);
                     LLVMValueRef fn = LLVMAddFunction(cg->module, method, ftype);
                     type_info_t dummy = {.base=TypeI32, .is_pointer=False, .ptr_perm=PtrNone};
                     symtab_add(&cg->globals, method, fn, Null, dummy, False);
-                    fn_sym = cg_lookup(cg, method);
+                    fn_sym = cg_lookup_symbol(cg, method);
                     if (ptypes_heap.pointer) deallocate(ptypes_heap);
                 }
 
@@ -2157,34 +2171,39 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
         } else {
             snprintf(mangled, sizeof(mangled), "%s.%s", obj->as.ident.name, method);
         }
-        symbol_t *fn_sym = cg_lookup(cg, mangled);
+        symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
         if (fn_sym) {
             usize_t user_argc = node->as.method_call.args.count;
             LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
             unsigned n_params = LLVMCountParamTypes(fn_type);
-            /* if function is an instance method (this + user args), skip this */
-            boolean_t has_this = ((usize_t)n_params == user_argc + 1);
-            usize_t argc = has_this ? user_argc + 1 : user_argc;
+            /* A type name is not an instance. Never synthesize a null receiver,
+             * even when the number of supplied arguments happens to fit. */
+            if (fn_sym->requires_receiver) {
+                scalar_error(node, "instance method requires an object receiver; call value.method(...) instead of Type.method(...)");
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            }
+            if (fn_sym->c_abi)
+                return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
+            if ((!LLVMIsFunctionVarArg(fn_type) && user_argc != n_params) ||
+                (LLVMIsFunctionVarArg(fn_type) && user_argc < n_params)) {
+                scalar_error(node, "method argument count does not match its declaration");
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+            }
+            usize_t argc = user_argc;
             heap_t args_heap = NullHeap;
             LLVMValueRef *args = Null;
             if (argc > 0) {
                 args_heap = allocate(argc, sizeof(LLVMValueRef));
                 args = args_heap.pointer;
-                usize_t offset = 0;
-                if (has_this) {
-                    /* pass null/undef for unused this pointer */
-                    args[0] = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
-                    offset = 1;
-                }
                 for (usize_t i = 0; i < user_argc; i++)
-                    args[offset + i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
+                    args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
             }
             /* coerce args */
             if (argc > 0 && n_params > 0) {
                 heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
                 LLVMTypeRef *param_types = pt_heap.pointer;
                 LLVMGetParamTypes(fn_type, param_types);
-                for (usize_t i = has_this ? 1 : 0; i < argc && i < (usize_t)n_params; i++)
+                for (usize_t i = 0; i < argc && i < (usize_t)n_params; i++)
                     args[i] = coerce_int(cg, args[i], param_types[i]);
                 deallocate(pt_heap);
             }
@@ -2219,7 +2238,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                         snprintf(mangled, sizeof(mangled), "%s.%s.%s",
                                  outer_sym->stype.user_name, iface_qual, method);
                     }
-                    symbol_t *fn_sym = cg_lookup(cg, mangled);
+                    symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
                     if (fn_sym) {
                         usize_t argc = node->as.method_call.args.count + 1;
                         heap_t args_heap = allocate(argc, sizeof(LLVMValueRef));
@@ -2316,31 +2335,44 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 snprintf(mangled, sizeof(mangled), "%s.%s",
                          obj_sym->stype.user_name, method);
             }
-            symbol_t *fn_sym = cg_lookup(cg, mangled);
+            symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
             if (fn_sym) {
-                usize_t argc = node->as.method_call.args.count + 1;
+                if (fn_sym->c_abi)
+                    return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
+                usize_t offset = fn_sym->requires_receiver ? 1 : 0;
+                if (offset && obj_sym->stype.is_pointer && obj_sym->stype.ptr_depth > 1) {
+                    scalar_error(node, "method receiver with multiple pointer levels requires an explicit dereference");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
+                usize_t argc = node->as.method_call.args.count + offset;
+                LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                unsigned fixed_params = LLVMCountParamTypes(fn_type);
+                if ((!LLVMIsFunctionVarArg(fn_type) && argc != fixed_params) ||
+                    (LLVMIsFunctionVarArg(fn_type) && argc < fixed_params)) {
+                    scalar_error(node, "method argument count does not match its declaration");
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                }
                 heap_t args_heap = allocate(argc, sizeof(LLVMValueRef));
                 LLVMValueRef *args = args_heap.pointer;
                 /* For pointer-type variables (e.g. other: dstring_t *r), the alloca
                  * holds the pointer value — load it first to get the actual struct ptr. */
-                if (obj_sym->stype.is_pointer || (obj_sym->flags & SymHeapVar)) {
+                if (offset && (obj_sym->stype.is_pointer || (obj_sym->flags & SymHeapVar))) {
                     /* pointer var: alloca holds the ptr — load it */
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
                     args[0] = LLVMBuildLoad2(cg->builder, ptr_ty, obj_sym->value, "obj_ptr");
-                } else {
+                } else if (offset) {
                     args[0] = obj_sym->value; /* alloca = pointer to struct */
                 }
                 for (usize_t i = 0; i < node->as.method_call.args.count; i++)
-                    args[i + 1] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
-                LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                    args[i + offset] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
                 /* coerce args to declared param types (including interface fat-ptr coercion) */
                 unsigned n_params_mc = LLVMCountParamTypes(fn_type);
                 if (argc > 0 && n_params_mc > 0) {
                     heap_t pt_heap = allocate(n_params_mc, sizeof(LLVMTypeRef));
                     LLVMTypeRef *param_types = pt_heap.pointer;
                     LLVMGetParamTypes(fn_type, param_types);
-                    for (usize_t i = 1; i < argc && i < (usize_t)n_params_mc; i++) {
-                        node_t *arg_node = node->as.method_call.args.items[i - 1];
+                    for (usize_t i = offset; i < argc && i < (usize_t)n_params_mc; i++) {
+                        node_t *arg_node = node->as.method_call.args.items[i - offset];
                         args[i] = try_coerce_arg_to_iface(cg, args[i], param_types[i], arg_node);
                         args[i] = coerce_int(cg, args[i], param_types[i]);
                     }
@@ -2392,26 +2424,33 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                                     snprintf(mangled, sizeof(mangled), "%s.%s",
                                              fti.user_name, method);
                                 }
-                                symbol_t *fn_sym = cg_lookup(cg, mangled);
+                                symbol_t *fn_sym = cg_lookup_symbol(cg, mangled);
                                 if (fn_sym) {
-                                    usize_t argc = node->as.method_call.args.count + 1;
+                                    if (fn_sym->c_abi)
+                                        return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.method_call.args, node);
+                                    usize_t offset = fn_sym->requires_receiver ? 1 : 0;
+                                    if (offset && fti.is_pointer && fti.ptr_depth > 1) {
+                                        scalar_error(node, "method receiver with multiple pointer levels requires an explicit dereference");
+                                        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                                    }
+                                    usize_t argc = node->as.method_call.args.count + offset;
+                                    LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                                    if (argc != LLVMCountParamTypes(fn_type)) {
+                                        scalar_error(node, "method argument count does not match its declaration");
+                                        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+                                    }
                                     heap_t args_heap = allocate(argc, sizeof(LLVMValueRef));
                                     LLVMValueRef *args = args_heap.pointer;
-                                    LLVMValueRef field_val2 = gen_expr(cg, obj);
-                                    /* if pointer-typed field, it IS the pointer; just use it */
-                                    if (fti.is_pointer) {
-                                        args[0] = field_val2;
-                                    } else {
-                                        /* non-pointer field — &field */
-                                        LLVMValueRef tmp2 = alloc_in_entry(cg,
-                                            get_llvm_type(cg, fti), "field_tmp");
-                                        LLVMBuildStore(cg->builder, field_val2, tmp2);
-                                        args[0] = tmp2;
+                                    if (offset) {
+                                        LLVMTypeRef field_storage = Null;
+                                        args[0] = fti.is_pointer ? gen_expr(cg, obj)
+                                            : scalar_member_address(cg, obj, &field_storage, Null, PtrReadWrite);
                                     }
-                                    for (usize_t i = 0; i < node->as.method_call.args.count; i++)
-                                        args[i + 1] = gen_expr(cg,
-                                            node->as.method_call.args.items[i]);
-                                    LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                                    for (usize_t i = 0; i < node->as.method_call.args.count; i++) {
+                                        type_info_t expected = fn_sym->scalar_signature && i < fn_sym->scalar_signature->param_count
+                                            ? fn_sym->scalar_signature->params[i].type : NO_TYPE;
+                                        args[i + offset] = gen_scalar_as(cg, node->as.method_call.args.items[i], expected);
+                                    }
                                     LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type,
                                         fn_sym->value, args, (unsigned)argc, "");
                                     deallocate(args_heap);
@@ -2598,6 +2637,15 @@ static LLVMValueRef gen_dispatch_to_pool(cg_t *cg, node_t *diag_node,
         return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
 
+    if (sym->c_abi) {
+        boolean_t aggregate = cg_abi_is_aggregate(sym->c_abi->result.source);
+        for (unsigned i = 0; i < sym->c_abi->count; ++i)
+            aggregate |= cg_abi_is_aggregate(sym->c_abi->params[i].source);
+        if (aggregate) {
+            cg_abi_error(diag_node, "thread dispatch of C aggregate signatures is not yet supported; use a native wrapper");
+            return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+        }
+    }
     node_t *fn_decl = find_fn_decl(cg, callee);
     if (!fn_decl) {
         diag_begin_error("cannot find declaration of '%s' for thread dispatch", callee);
@@ -3612,20 +3660,41 @@ static LLVMValueRef gen_va_op(cg_t *cg, node_t *node) {
  * helper is deliberately conservative; unsupported bases diagnose at the caller.
  * Packed storage is normalized to alignment one by the target layout pass. */
 static LLVMValueRef scalar_member_address(cg_t *cg, node_t *node,
-                                          LLVMTypeRef *type, symbol_t **root) {
+                                          LLVMTypeRef *type, symbol_t **root, ptr_perm_t access) {
     if (node->kind == NodeIdentExpr) {
         symbol_t *sym = scalar_symbol(cg, node->as.ident.name);
         if (!sym || !sym->type || LLVMIsAFunction(sym->value)) return Null;
+        if ((access & PtrWrite) && (sym->flags & (SymConst | SymFinal)) && cg->in_unsafe == 0) {
+            scalar_error(node, "writable access to const or final storage is not permitted");
+            return Null;
+        }
         if (root) *root = sym;
         *type = sym->type;
         if (sym->flags & SymHeapVar)
             return LLVMBuildLoad2(cg->builder, LLVMPointerTypeInContext(cg->ctx, 0), sym->value, "member.heap");
         return sym->value;
     }
-    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar) {
-        type_info_t value = scalar_expr_type(cg, node, NO_TYPE);
-        *type = get_llvm_type(cg, value);
-        return gen_expr(cg, node->as.unary.operand);
+    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar)
+        return access_deref_address(cg, node, type, access);
+    if (node->kind == NodeIndexExpr || node->kind == NodeFlaggedIndex)
+        return access_index_address(cg, node, type, root, access);
+    if (node->kind == NodeSelfMemberExpr) {
+        symbol_t *self = scalar_symbol(cg, "this");
+        const char *name = node->as.self_member.type_name;
+        if (!name) name = cg->current_struct_name;
+        if (name && cg->generic_tmpl_name && cg->generic_inst_name &&
+            !strcmp(name, cg->generic_tmpl_name)) name = cg->generic_inst_name;
+        struct_reg_t *sr = name ? find_struct(cg, name) : Null;
+        if (!self || !sr) return Null;
+        for (usize_t i = 0; i < sr->field_count; ++i) {
+            field_info_t *field = &sr->fields[i];
+            if (strcmp(field->name, node->as.self_member.field)) continue;
+            if (field->bit_width) return Null;
+            LLVMValueRef base = LLVMBuildLoad2(cg->builder, LLVMPointerTypeInContext(cg->ctx, 0), self->value, "member.this");
+            *type = field->llvm_type ? field->llvm_type : get_llvm_type(cg, field->type);
+            return LLVMBuildStructGEP2(cg->builder, sr->llvm_type, base, (unsigned)field->index, "member.address");
+        }
+        return Null;
     }
     if (node->kind != NodeMemberExpr) return Null;
     node_t *object = node->as.member_expr.object;
@@ -3636,11 +3705,12 @@ static LLVMValueRef scalar_member_address(cg_t *cg, node_t *node,
     LLVMValueRef base;
     LLVMTypeRef unused;
     if (source.is_pointer) {
-        if (!(source.ptr_perm & PtrWrite)) {
-            scalar_error(node, "compound assignment requires a writable pointer"); return Null;
+        if (source.ptr_depth > 1) {
+            scalar_error(node, "member access through multiple pointer levels requires an explicit dereference"); return Null;
         }
+        if (!access_check_pointer(cg, object, node, source, access)) return Null;
         base = gen_expr(cg, object);
-    } else base = scalar_member_address(cg, object, &unused, root);
+    } else base = scalar_member_address(cg, object, &unused, root, access);
     if (!base) return Null;
     for (usize_t i = 0; i < sr->field_count; ++i) {
         field_info_t *field = &sr->fields[i];
@@ -3680,40 +3750,11 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
         }
         store_type = sym->type;
         atomic = (sym->flags & SymAtomic) != 0;
-    } else if (target->kind == NodeIndexExpr) {
-        /* arr[i] / slice[i] compound assign */
-        node_t *obj = target->as.index_expr.object;
-        node_t *idx = target->as.index_expr.index;
-        if (obj->kind == NodeIdentExpr) {
-            sym = cg_lookup(cg, obj->as.ident.name);
-            if (!sym) {
-                diag_begin_error("undefined variable '%s'", obj->as.ident.name);
-                diag_span(DIAG_NODE(obj), True, "not found in this scope");
-                diag_note("variables must be declared before use");
-                diag_finish();
-                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-            }
-            LLVMValueRef index_val = gen_expr(cg, idx);
-            if (sym->stype.base == TypeSlice) {
-                /* slice compound assign: load struct, GEP, use as store_ptr */
-                LLVMTypeRef sl_ty  = slice_struct_type(cg);
-                LLVMValueRef sl    = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
-                LLVMValueRef dptr  = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
-                LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
-                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                store_ptr  = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
-                store_type = elem_ty;
-            } else {
-                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-                LLVMValueRef indices[2] = { zero, index_val };
-                LLVMTypeRef elem_type = LLVMGetElementType(sym->type);
-                store_ptr = LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "idx");
-                store_type = elem_type;
-            }
-        }
+    } else if (target->kind == NodeIndexExpr || target->kind == NodeFlaggedIndex) {
+        store_ptr = scalar_member_address(cg, target, &store_type, &sym, PtrReadWrite);
+        atomic = sym && (sym->flags & SymAtomic);
     } else if (target->kind == NodeMemberExpr) {
-        store_ptr = scalar_member_address(cg, target, &store_type, &sym);
+        store_ptr = scalar_member_address(cg, target, &store_type, &sym, PtrReadWrite);
         if (!store_ptr) {
             scalar_error(target, "compound assignment target must be an addressable field");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
@@ -3745,24 +3786,7 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
     } else if (target->kind == NodeUnaryPrefixExpr && target->as.unary.op == TokStar) {
-        /* *.(expr) compound assign */
-        store_ptr = gen_expr(cg, target->as.unary.operand);
-        node_t *inner = target->as.unary.operand;
-        int dd = 1;
-        while (inner->kind == NodeUnaryPrefixExpr && inner->as.unary.op == TokStar) {
-            dd++;
-            inner = inner->as.unary.operand;
-        }
-        if (inner->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
-            if (sym && sym->stype.is_pointer) {
-                type_info_t pt = sym->stype;
-                for (int i = 0; i < dd && pt.is_pointer; i++)
-                    pt = ti_deref_one(pt);
-                store_type = get_llvm_type(cg, pt);
-            }
-        }
-        if (!store_type) store_type = LLVMInt8TypeInContext(cg->ctx);
+        store_ptr = access_deref_address(cg, target, &store_type, PtrReadWrite);
     } else {
         diag_begin_error("compound assignment target must be assignable");
         diag_span(DIAG_NODE(target), True, "");
@@ -3771,7 +3795,10 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
 
-    if (!store_ptr) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    if (!store_ptr) {
+        scalar_error(target, "compound assignment target must be addressable");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
 
     type_info_t target_ti = scalar_expr_type(cg, target, NO_TYPE);
     if (!scalar_numeric(target_ti) && llvm_is_int(store_type)) {
@@ -3833,39 +3860,6 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
     }
     LLVMBuildStore(cg->builder, result, store_ptr);
     return result;
-}
-
-/* Walk a chain of NodeIndexExpr to find the base array symbol and collect
- * all index values (outermost first).  Returns True iff the base symbol's
- * LLVM type is an array AND every intermediate element type is also an
- * array (pure N-D array access, e.g. i32 m[3][4]).
- * idx_vals[] receives one entry per dimension; *ndim is set to the count.
- * Indices are evaluated in outermost-to-innermost order. */
-static boolean_t mdim_collect(cg_t *cg, node_t *node,
-                               symbol_t **out_sym,
-                               LLVMValueRef *idx_vals, int *ndim) {
-    node_t *idx_nodes[8];
-    int n = 0;
-    node_t *cur = node;
-    while (cur->kind == NodeIndexExpr && n < 8) {
-        idx_nodes[n++] = cur->as.index_expr.index;
-        cur = cur->as.index_expr.object;
-    }
-    if (cur->kind != NodeIdentExpr || n == 0) return False;
-    symbol_t *sym = cg_lookup(cg, cur->as.ident.name);
-    if (!sym || LLVMGetTypeKind(sym->type) != LLVMArrayTypeKind) return False;
-    /* Every dimension must be backed by an LLVM array type. */
-    LLVMTypeRef t = sym->type;
-    for (int _i = 0; _i < n; _i++) {
-        if (LLVMGetTypeKind(t) != LLVMArrayTypeKind) return False;
-        t = LLVMGetElementType(t);
-    }
-    /* Evaluate indices outermost → innermost (idx_nodes is stored innermost first). */
-    for (int _i = n - 1; _i >= 0; _i--)
-        idx_vals[n - 1 - _i] = gen_expr(cg, idx_nodes[_i]);
-    *ndim    = n;
-    *out_sym = sym;
-    return True;
 }
 
 static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
@@ -3939,223 +3933,23 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     LLVMValueRef rhs = gen_scalar_as(cg, node->as.assign.value,
                                            scalar_expr_type(cg, target, NO_TYPE));
 
-    if (target->kind == NodeIndexExpr) {
-        node_t *obj      = target->as.index_expr.object;
-        node_t *idx_node = target->as.index_expr.index;
-
-        /* ── nested index: m[i][j] = val (multi-dimensional array store) ─── */
-        if (obj->kind == NodeIndexExpr) {
-            symbol_t *base_sym = Null;
-            LLVMValueRef idx_vals[8];
-            int ndim = 0;
-            if (mdim_collect(cg, target, &base_sym, idx_vals, &ndim)) {
-                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                LLVMValueRef gep_indices[9];
-                gep_indices[0] = zero;
-                for (int _d = 0; _d < ndim; _d++)
-                    gep_indices[_d + 1] = coerce_int(cg, idx_vals[_d],
-                                                      LLVMInt32TypeInContext(cg->ctx));
-                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, base_sym->type,
-                                                  base_sym->value, gep_indices, ndim + 1, "mdidx");
-                LLVMTypeRef inner_ty = base_sym->type;
-                for (int _d = 0; _d < ndim; _d++) inner_ty = LLVMGetElementType(inner_ty);
-                rhs = coerce_int(cg, rhs, inner_ty);
-                LLVMBuildStore(cg->builder, rhs, gep);
-            }
-            return rhs;
+    if (target->kind == NodeIndexExpr || target->kind == NodeFlaggedIndex) {
+        LLVMTypeRef element = Null;
+        LLVMValueRef address = scalar_member_address(cg, target, &element, Null, PtrWrite);
+        if (address) {
+            rhs = coerce_int(cg, rhs, element);
+            LLVMBuildStore(cg->builder, rhs, address);
         }
-
-        LLVMValueRef index_val = gen_expr(cg, idx_node);
-
-        if (obj->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-            if (!sym) {
-                diag_begin_error("undefined variable '%s'", obj->as.ident.name);
-                diag_span(DIAG_NODE(obj), True, "not found in this scope");
-                diag_note("variables must be declared before use");
-                diag_finish();
-                return rhs;
-            }
-            /* check if it's an array or pointer */
-            if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
-                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-                LLVMValueRef indices[2] = { zero, index_val };
-                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "idx");
-                LLVMTypeRef elem_type = LLVMGetElementType(sym->type);
-                rhs = coerce_int(cg, rhs, elem_type);
-                LLVMBuildStore(cg->builder, rhs, gep);
-            } else if (llvm_is_ptr(sym->type)) {
-                /* pointer indexing: load pointer, then GEP with element type */
-                LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-                type_info_t elem_ti = ti_deref_one(sym->stype);
-                LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
-                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
-                rhs = coerce_int(cg, rhs, elem_ty);
-                LLVMBuildStore(cg->builder, rhs, gep);
-            } else if (sym->stype.base == TypeSlice) {
-                /* slice[i] = rhs: load struct, GEP into data ptr, store */
-                LLVMTypeRef sl_ty  = slice_struct_type(cg);
-                LLVMValueRef sl    = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
-                LLVMValueRef dptr  = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
-                LLVMTypeRef elem_ty = elem_type_from_sym(cg, sym);
-                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                LLVMValueRef gep   = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
-                rhs = coerce_int(cg, rhs, elem_ty);
-                LLVMBuildStore(cg->builder, rhs, gep);
-            }
-            return rhs;
-        }
-
-        if (obj->kind == NodeMemberExpr) {
-            /* obj.field[idx] = rhs: e.g. b.data[i] = val
-               Also handles nested: obj.field1.field2[idx] = rhs */
-            node_t *mobj = obj->as.member_expr.object;
-            char   *mfield = obj->as.member_expr.field;
-
-            /* resolve the base alloca and struct for the member chain */
-            LLVMValueRef base_alloca = Null;
-            struct_reg_t *base_sr = Null;
-
-            if (mobj->kind == NodeIdentExpr) {
-                symbol_t *sym = cg_lookup(cg, mobj->as.ident.name);
-                if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-                    base_sr = find_struct(cg, sym->stype.user_name);
-                    base_alloca = sym->value;
-                }
-            } else if (mobj->kind == NodeMemberExpr) {
-                /* one extra level: obj.field1.field2[idx] */
-                node_t *outer_obj = mobj->as.member_expr.object;
-                char   *outer_field = mobj->as.member_expr.field;
-                if (outer_obj->kind == NodeIdentExpr) {
-                    symbol_t *sym = cg_lookup(cg, outer_obj->as.ident.name);
-                    if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-                        struct_reg_t *outer_sr = find_struct(cg, sym->stype.user_name);
-                        if (outer_sr) {
-                            for (usize_t fi = 0; fi < outer_sr->field_count; fi++) {
-                                if (strcmp(outer_sr->fields[fi].name, outer_field) != 0) continue;
-                                base_alloca = LLVMBuildStructGEP2(cg->builder, outer_sr->llvm_type,
-                                    sym->value, (unsigned)outer_sr->fields[fi].index, outer_field);
-                                if (outer_sr->fields[fi].type.base == TypeUser
-                                    && outer_sr->fields[fi].type.user_name) {
-                                    base_sr = find_struct(cg, outer_sr->fields[fi].type.user_name);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (base_alloca && base_sr) {
-                for (usize_t fi = 0; fi < base_sr->field_count; fi++) {
-                    if (strcmp(base_sr->fields[fi].name, mfield) != 0) continue;
-                    LLVMValueRef field_gep = LLVMBuildStructGEP2(
-                        cg->builder, base_sr->llvm_type, base_alloca,
-                        (unsigned)base_sr->fields[fi].index, mfield);
-                    if (base_sr->fields[fi].array_size > 0) {
-                        /* inline array field: 2-index GEP into the array */
-                        LLVMTypeRef elem_t = get_llvm_type(cg, base_sr->fields[fi].type);
-                        LLVMTypeRef arr_t = LLVMArrayType2(elem_t, (unsigned long long)base_sr->fields[fi].array_size);
-                        LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                        index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-                        LLVMValueRef indices[2] = { zero, index_val };
-                        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_t, field_gep, indices, 2, "aidx");
-                        rhs = coerce_int(cg, rhs, elem_t);
-                        LLVMBuildStore(cg->builder, rhs, gep);
-                        return rhs;
-                    }
-                    LLVMTypeRef ptr_type = get_llvm_type(cg, base_sr->fields[fi].type);
-                    LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
-                    type_info_t elem_ti = ti_deref_one(base_sr->fields[fi].type);
-                    LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
-                    index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "midx");
-                    rhs = coerce_int(cg, rhs, elem_type);
-                    LLVMBuildStore(cg->builder, rhs, gep);
-                    return rhs;
-                }
-            }
-        }
-
-        if (obj->kind == NodeSelfMemberExpr) {
-            /* Type.(field)[idx] / this.field[idx] = rhs — pointer field of current struct instance */
-            symbol_t *this_sym = cg_lookup(cg, "this");
-            if (this_sym) {
-                char *smtn = obj->as.self_member.type_name;
-                if (!smtn) smtn = cg->current_struct_name;
-                /* apply generic substitution */
-                if (smtn && cg->generic_tmpl_name && cg->generic_inst_name
-                        && strcmp(smtn, cg->generic_tmpl_name) == 0)
-                    smtn = cg->generic_inst_name;
-                struct_reg_t *sr = find_struct(cg, smtn);
-                if (sr) {
-                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-                    LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
-                    for (usize_t i = 0; i < sr->field_count; i++) {
-                        if (strcmp(sr->fields[i].name, obj->as.self_member.field) != 0) continue;
-                        LLVMValueRef field_gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type, this_ptr,
-                                                                      (unsigned)sr->fields[i].index, "sfgep");
-                        LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[i].type);
-                        LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "sfptr");
-                        type_info_t elem_ti = ti_deref_one(sr->fields[i].type);
-                        LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
-                        index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "sidx");
-                        rhs = coerce_int(cg, rhs, elem_type);
-                        LLVMBuildStore(cg->builder, rhs, gep);
-                        return rhs;
-                    }
-                }
-            }
-        }
+        return rhs;
     }
 
     if (target->kind == NodeMemberExpr) {
-        node_t *obj = target->as.member_expr.object;
-        char *field = target->as.member_expr.field;
-        if (obj->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-            if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-                struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
-                if (sr) {
-                    for (usize_t i = 0; i < sr->field_count; i++) {
-                        if (strcmp(sr->fields[i].name, field) == 0) {
-                            LLVMValueRef gep = LLVMBuildStructGEP2(
-                                cg->builder, sr->llvm_type, sym->value,
-                                (unsigned)sr->fields[i].index, field);
-                            LLVMTypeRef ft = get_llvm_type(cg, sr->fields[i].type);
-                            rhs = coerce_int(cg, rhs, ft);
-                            /* bitfield: read-modify-write */
-                            if (sr->fields[i].bit_width > 0) {
-                                int boff = sr->fields[i].bit_offset;
-                                int bw   = sr->fields[i].bit_width;
-                                unsigned long long mask_val = ((unsigned long long)1 << bw) - 1;
-                                /* mask the new value to bit_width bits */
-                                LLVMValueRef masked_new = LLVMBuildAnd(cg->builder, rhs,
-                                    LLVMConstInt(ft, mask_val, 0), "bf_new_mask");
-                                /* shift to position */
-                                LLVMValueRef shifted_new = masked_new;
-                                if (boff > 0)
-                                    shifted_new = LLVMBuildShl(cg->builder, masked_new,
-                                        LLVMConstInt(ft, (unsigned long long)boff, 0), "bf_shl");
-                                /* load old value, clear the target bits, OR in new */
-                                LLVMValueRef old_val = LLVMBuildLoad2(cg->builder, ft, gep, "bf_old");
-                                unsigned long long clear_mask = ~(mask_val << boff);
-                                LLVMValueRef cleared = LLVMBuildAnd(cg->builder, old_val,
-                                    LLVMConstInt(ft, clear_mask, 0), "bf_clear");
-                                LLVMValueRef result = LLVMBuildOr(cg->builder, cleared,
-                                    shifted_new, "bf_insert");
-                                LLVMBuildStore(cg->builder, result, gep);
-                                return rhs;
-                            }
-                            LLVMBuildStore(cg->builder, rhs, gep);
-                            return rhs;
-                        }
-                    }
-                }
-            }
+        LLVMTypeRef field_type = Null;
+        LLVMValueRef address = scalar_member_address(cg, target, &field_type, Null, PtrWrite);
+        if (address) {
+            rhs = coerce_int(cg, rhs, field_type);
+            LLVMBuildStore(cg->builder, rhs, address);
+            return rhs;
         }
     }
 
@@ -4189,28 +3983,12 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     }
 
     if (target->kind == NodeUnaryPrefixExpr && target->as.unary.op == TokStar) {
-        /* *.(expr) = rhs — store through pointer */
-        LLVMValueRef ptr = gen_expr(cg, target->as.unary.operand);
-        /* determine pointee type by walking the deref chain to its base ident */
-        LLVMTypeRef pointee_type = Null;
-        node_t *inner = target->as.unary.operand;
-        int deref_depth = 1;
-        while (inner->kind == NodeUnaryPrefixExpr && inner->as.unary.op == TokStar) {
-            deref_depth++;
-            inner = inner->as.unary.operand;
+        LLVMTypeRef element = Null;
+        LLVMValueRef address = access_deref_address(cg, target, &element, PtrWrite);
+        if (address) {
+            rhs = coerce_int(cg, rhs, element);
+            LLVMBuildStore(cg->builder, rhs, address);
         }
-        if (inner->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, inner->as.ident.name);
-            if (sym && sym->stype.is_pointer) {
-                type_info_t pt = sym->stype;
-                for (int i = 0; i < deref_depth && pt.is_pointer; i++)
-                    pt = ti_deref_one(pt);
-                pointee_type = get_llvm_type(cg, pt);
-            }
-        }
-        if (!pointee_type) pointee_type = LLVMInt8TypeInContext(cg->ctx);
-        rhs = coerce_int(cg, rhs, pointee_type);
-        LLVMBuildStore(cg->builder, rhs, ptr);
         return rhs;
     }
 
@@ -4222,265 +4000,11 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
-    node_t *obj = node->as.index_expr.object;
-
-    /* ── nested index expressions: m[i][j], m[i][j][k], table[i][j] ──────── */
-    if (obj->kind == NodeIndexExpr) {
-        /* Case 1: pure N-D array (every level is an LLVM array type). */
-        symbol_t *base_sym = Null;
-        LLVMValueRef idx_vals[8];
-        int ndim = 0;
-        if (mdim_collect(cg, node, &base_sym, idx_vals, &ndim)) {
-            LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-            LLVMValueRef gep_indices[9];
-            gep_indices[0] = zero;
-            for (int _d = 0; _d < ndim; _d++)
-                gep_indices[_d + 1] = coerce_int(cg, idx_vals[_d],
-                                                  LLVMInt32TypeInContext(cg->ctx));
-            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, base_sym->type,
-                                              base_sym->value, gep_indices, ndim + 1, "mdidx");
-            LLVMTypeRef inner_ty = base_sym->type;
-            for (int _d = 0; _d < ndim; _d++) inner_ty = LLVMGetElementType(inner_ty);
-            return LLVMBuildLoad2(cg->builder, inner_ty, gep, "mdelem");
-        }
-        /* Case 2: array-of-slices — 1-D array whose element type is a slice. */
-        node_t *inner_obj = obj->as.index_expr.object;
-        if (inner_obj->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, inner_obj->as.ident.name);
-            if (sym && LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind
-                    && sym->stype.base == TypeSlice) {
-                LLVMValueRef arr_idx = gen_expr(cg, obj->as.index_expr.index);
-                LLVMValueRef sl_idx  = gen_expr(cg, node->as.index_expr.index);
-                LLVMValueRef zero    = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                arr_idx = coerce_int(cg, arr_idx, LLVMInt32TypeInContext(cg->ctx));
-                LLVMValueRef arr_indices[2] = { zero, arr_idx };
-                LLVMTypeRef  sl_struct_ty   = slice_struct_type(cg);
-                LLVMValueRef sl_ptr = LLVMBuildGEP2(cg->builder, sym->type,
-                                                     sym->value, arr_indices, 2, "asl.ptr");
-                LLVMValueRef sl   = LLVMBuildLoad2(cg->builder, sl_struct_ty, sl_ptr, "asl");
-                LLVMValueRef dptr = LLVMBuildExtractValue(cg->builder, sl, 0, "asl.dptr");
-                LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
-                sl_idx = coerce_int(cg, sl_idx, LLVMInt64TypeInContext(cg->ctx));
-                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &sl_idx, 1, "asl.idx");
-                return LLVMBuildLoad2(cg->builder, elem_ty, gep, "asl.elem");
-            }
-        }
-    }
-
-    LLVMValueRef index_val = gen_expr(cg, node->as.index_expr.index);
-
-    /* null dereference check */
-    if (obj->kind == NodeIdentExpr)
-        check_null_deref(cg, obj->as.ident.name, node->line);
-
-    if (obj->kind == NodeIdentExpr) {
-        symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-        if (!sym) {
-            diag_begin_error("undefined variable '%s'", obj->as.ident.name);
-            diag_span(DIAG_NODE(obj), True, "not found in this scope");
-            diag_note("variables must be declared before use");
-            diag_finish();
-            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-        }
-        if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
-            LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-            index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-            LLVMValueRef indices[2] = { zero, index_val };
-            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "idx");
-            LLVMTypeRef elem_type = LLVMGetElementType(sym->type);
-            return LLVMBuildLoad2(cg->builder, elem_type, gep, "elem");
-        }
-        if (llvm_is_ptr(sym->type)) {
-            LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-            /* use the declared element type for correct stride */
-            type_info_t elem_ti = ti_deref_one(sym->stype);
-            LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
-            index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-            LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidx");
-            return LLVMBuildLoad2(cg->builder, elem_ty, gep, "pelem");
-        }
-        if (sym->stype.base == TypeSlice) {
-            /* slice[i]: load struct, extract ptr, GEP and load.
-             * Emit a runtime bounds check unless we are inside unsafe{} or
-             * the index is a compile-time constant within [0, known_len). */
-            LLVMTypeRef sl_ty    = slice_struct_type(cg);
-            LLVMValueRef sl      = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "sl");
-            LLVMValueRef dptr    = LLVMBuildExtractValue(cg->builder, sl, 0, "sl.ptr");
-            LLVMValueRef len_val = LLVMBuildExtractValue(cg->builder, sl, 1, "sl.len");
-            LLVMTypeRef  elem_ty = elem_type_from_sym(cg, sym);
-            LLVMTypeRef  i64_t   = LLVMInt64TypeInContext(cg->ctx);
-
-            /* bounds check: if in_unsafe == 0, emit check */
-            boolean_t skip_check = (cg->in_unsafe > 0);
-            /* static elimination: constant index within known-constant length */
-            if (!skip_check && node->as.index_expr.index->kind == NodeIntLitExpr) {
-                uint64_t ci = node->as.index_expr.index->as.int_lit.value;
-                /* If we have a compile-time known len from sym->array_size, use it.
-                 * For slices, sym->array_size stores the declared length if from make.() */
-                if (sym->array_size >= 0 && ci < (uint64_t)sym->array_size)
-                    skip_check = True;
-            }
-            if (!skip_check) {
-                /* bounds check: 0 <= i < len
-                 * len_val is i64 (from slice struct); coerce index to i64 too */
-                LLVMValueRef idx_i64 = coerce_int(cg, index_val, i64_t);
-                LLVMValueRef zero64  = LLVMConstInt(i64_t, 0, 0);
-                LLVMValueRef len64   = coerce_int(cg, len_val, i64_t);
-                LLVMValueRef in_range = LLVMBuildAnd(cg->builder,
-                    LLVMBuildICmp(cg->builder, LLVMIntSGE, idx_i64, zero64, "bc.lo"),
-                    LLVMBuildICmp(cg->builder, LLVMIntSLT, idx_i64, len64,  "bc.hi"),
-                    "bc.ok");
-                LLVMBasicBlockRef ok_bb   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "bc.ok");
-                LLVMBasicBlockRef oob_bb  = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "bc.oob");
-                LLVMBuildCondBr(cg->builder, in_range, ok_bb, oob_bb);
-
-                /* out-of-bounds path: print diagnostic and trap/abort */
-                LLVMPositionBuilderAtEnd(cg->builder, oob_bb);
-                {
-                    const char *msg = "slice index out of bounds\n";
-                    LLVMValueRef msg_str = LLVMBuildGlobalStringPtr(cg->builder, msg, "oob_msg");
-                    LLVMValueRef pfmt[1] = { msg_str };
-                    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, pfmt, 1, "");
-                    /* emit llvm.trap intrinsic (opaque-pointer safe: keep trap_ty) */
-                    LLVMTypeRef  trap_ty = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
-                    LLVMValueRef trap_fn = LLVMGetNamedFunction(cg->module, "llvm.trap");
-                    if (!trap_fn)
-                        trap_fn = LLVMAddFunction(cg->module, "llvm.trap", trap_ty);
-                    LLVMBuildCall2(cg->builder, trap_ty, trap_fn, Null, 0, "");
-                    LLVMBuildUnreachable(cg->builder);
-                }
-
-                LLVMPositionBuilderAtEnd(cg->builder, ok_bb);
-            }
-
-            index_val = coerce_int(cg, index_val, i64_t);
-            LLVMValueRef gep   = LLVMBuildGEP2(cg->builder, elem_ty, dptr, &index_val, 1, "sidx");
-            return LLVMBuildLoad2(cg->builder, elem_ty, gep, "selem");
-        }
-    }
-
-    /* member pointer indexing: obj.field[idx], e.g. b.data[i]
-       Also handles nested: obj.field1.field2[idx], e.g. c.inner.data[i] */
-    if (obj->kind == NodeMemberExpr) {
-        node_t *mobj = obj->as.member_expr.object;
-        char   *mfield = obj->as.member_expr.field;
-
-        LLVMValueRef base_alloca = Null;
-        struct_reg_t *base_sr = Null;
-
-        if (mobj->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, mobj->as.ident.name);
-            if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-                base_sr = find_struct(cg, sym->stype.user_name);
-                base_alloca = sym->value;
-            }
-        } else if (mobj->kind == NodeMemberExpr) {
-            node_t *outer_obj = mobj->as.member_expr.object;
-            char   *outer_field = mobj->as.member_expr.field;
-            if (outer_obj->kind == NodeIdentExpr) {
-                symbol_t *sym = cg_lookup(cg, outer_obj->as.ident.name);
-                if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-                    struct_reg_t *outer_sr = find_struct(cg, sym->stype.user_name);
-                    if (outer_sr) {
-                        for (usize_t fi = 0; fi < outer_sr->field_count; fi++) {
-                            if (strcmp(outer_sr->fields[fi].name, outer_field) != 0) continue;
-                            base_alloca = LLVMBuildStructGEP2(cg->builder, outer_sr->llvm_type,
-                                sym->value, (unsigned)outer_sr->fields[fi].index, outer_field);
-                            if (outer_sr->fields[fi].type.base == TypeUser
-                                && outer_sr->fields[fi].type.user_name) {
-                                base_sr = find_struct(cg, outer_sr->fields[fi].type.user_name);
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (base_alloca && base_sr) {
-            for (usize_t fi = 0; fi < base_sr->field_count; fi++) {
-                if (strcmp(base_sr->fields[fi].name, mfield) != 0) continue;
-                LLVMValueRef field_gep = LLVMBuildStructGEP2(
-                    cg->builder, base_sr->llvm_type, base_alloca,
-                    (unsigned)base_sr->fields[fi].index, mfield);
-                if (base_sr->fields[fi].array_size > 0) {
-                    /* inline array field: 2-index GEP into the array */
-                    LLVMTypeRef elem_t = get_llvm_type(cg, base_sr->fields[fi].type);
-                    LLVMTypeRef arr_t = LLVMArrayType2(elem_t, (unsigned long long)base_sr->fields[fi].array_size);
-                    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                    index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-                    LLVMValueRef indices[2] = { zero, index_val };
-                    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, arr_t, field_gep, indices, 2, "aidx");
-                    return LLVMBuildLoad2(cg->builder, elem_t, gep, "aelem");
-                }
-                LLVMTypeRef ptr_type = get_llvm_type(cg, base_sr->fields[fi].type);
-                LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, mfield);
-                type_info_t elem_ti = ti_deref_one(base_sr->fields[fi].type);
-                LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
-                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "midx");
-                return LLVMBuildLoad2(cg->builder, elem_type, gep, "melem");
-            }
-        }
-    }
-
-    /* self-member pointer indexing: this.field[idx] inside a method */
-    if (obj->kind == NodeSelfMemberExpr) {
-        symbol_t *this_sym = cg_lookup(cg, "this");
-        if (this_sym) {
-            char *type_name = obj->as.self_member.type_name;
-            if (!type_name) type_name = cg->current_struct_name;
-            /* apply generic substitution: template name → instantiated name */
-            if (type_name && cg->generic_tmpl_name && cg->generic_inst_name
-                    && strcmp(type_name, cg->generic_tmpl_name) == 0)
-                type_name = cg->generic_inst_name;
-            struct_reg_t *sr = type_name ? find_struct(cg, type_name) : Null;
-            if (sr) {
-                LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-                LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
-                const char *fname = obj->as.self_member.field;
-                for (usize_t fi = 0; fi < sr->field_count; fi++) {
-                    if (strcmp(sr->fields[fi].name, fname) != 0) continue;
-                    LLVMValueRef field_gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
-                        this_ptr, (unsigned)sr->fields[fi].index, fname);
-                    LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
-                    LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "smfptr");
-                    type_info_t elem_ti = ti_deref_one(sr->fields[fi].type);
-                    LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
-                    index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                    LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "smidx");
-                    return LLVMBuildLoad2(cg->builder, elem_type, gep, "smelem");
-                }
-            }
-        }
-    }
-
-    /* general pointer indexing — try to recover element type from a cast expression
-     * (e.g. ((K *r)(slot + 1))[0] in generic bodies), otherwise default to i8. */
-    LLVMValueRef obj_val = gen_expr(cg, obj);
-    if (llvm_is_ptr(LLVMTypeOf(obj_val))) {
-        LLVMTypeRef elem_ty = Null;
-        if (obj->kind == NodeCastExpr) {
-            type_info_t cti = subst_type_info(cg, obj->as.cast_expr.target);
-            if (cti.is_pointer) {
-                cti = ti_deref_one(cti);
-                elem_ty = get_llvm_type(cg, cti);
-                /* only use the type if it resolves to something useful (not opaque ptr) */
-                if (LLVMGetTypeKind(elem_ty) == LLVMPointerTypeKind)
-                    elem_ty = Null; /* unknown sub-type, fall back to i8 */
-            }
-        }
-        if (!elem_ty) elem_ty = LLVMInt8TypeInContext(cg->ctx);
-        index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-        LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, obj_val, &index_val, 1, "stridx");
-        return LLVMBuildLoad2(cg->builder, elem_ty, gep, "ch");
-    }
-
-    diag_begin_error("cannot index a non-array or non-pointer type");
-    diag_span(DIAG_NODE(node), True, "indexing applied here");
-    diag_note("only array types and pointer types support indexing with []");
-    diag_finish();
-    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMTypeRef element = Null;
+    LLVMValueRef address = scalar_member_address(cg, node, &element, Null, PtrRead);
+    if (!address) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    if (LLVMGetTypeKind(element) == LLVMArrayTypeKind) return address;
+    return LLVMBuildLoad2(cg->builder, element, address, "element");
 }
 
 static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
@@ -4489,78 +4013,14 @@ static LLVMValueRef gen_member(cg_t *cg, node_t *node) {
 
     if (obj->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-        if (sym && strcmp(field, "len") == 0 && sym->array_size >= 0) {
-            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
-                                (unsigned long long)sym->array_size, 0);
-        }
-        if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-            struct_reg_t *sr = find_struct(cg, sym->stype.user_name);
-            if (sr) {
-                for (usize_t i = 0; i < sr->field_count; i++) {
-                    if (strcmp(sr->fields[i].name, field) == 0) {
-                        LLVMValueRef gep = LLVMBuildStructGEP2(
-                            cg->builder, sr->llvm_type, sym->value,
-                            (unsigned)sr->fields[i].index, field);
-                        /* array field: return pointer to first element (array decay) */
-                        if (sr->fields[i].array_size > 0) {
-                            LLVMTypeRef elem_t = get_llvm_type(cg, sr->fields[i].type);
-                            LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                            LLVMTypeRef arr_t = LLVMArrayType2(elem_t, (unsigned long long)sr->fields[i].array_size);
-                            return LLVMBuildGEP2(cg->builder, arr_t, gep, &zero, 1, field);
-                        }
-                        LLVMTypeRef ft = get_llvm_type(cg, sr->fields[i].type);
-                        LLVMValueRef val = LLVMBuildLoad2(cg->builder, ft, gep, field);
-                        /* bitfield: extract bits via shift+mask */
-                        if (sr->fields[i].bit_width > 0) {
-                            int boff = sr->fields[i].bit_offset;
-                            int bw   = sr->fields[i].bit_width;
-                            if (boff > 0)
-                                val = LLVMBuildLShr(cg->builder, val,
-                                    LLVMConstInt(ft, (unsigned long long)boff, 0), "bf_shr");
-                            unsigned long long mask = ((unsigned long long)1 << bw) - 1;
-                            val = LLVMBuildAnd(cg->builder, val,
-                                LLVMConstInt(ft, mask, 0), "bf_mask");
-                        }
-                        return val;
-                    }
-                }
-            }
-        }
+        if (sym && strcmp(field, "len") == 0 && sym->array_size >= 0)
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), (unsigned long long)sym->array_size, 0);
     }
-
-    /* nested member: obj.field1.field2, e.g. c.inner.data */
-    if (obj->kind == NodeMemberExpr) {
-        node_t *outer_obj = obj->as.member_expr.object;
-        char   *outer_field = obj->as.member_expr.field;
-        if (outer_obj->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, outer_obj->as.ident.name);
-            if (sym && sym->stype.base == TypeUser && sym->stype.user_name) {
-                struct_reg_t *outer_sr = find_struct(cg, sym->stype.user_name);
-                if (outer_sr) {
-                    for (usize_t i = 0; i < outer_sr->field_count; i++) {
-                        if (strcmp(outer_sr->fields[i].name, outer_field) != 0) continue;
-                        LLVMValueRef outer_gep = LLVMBuildStructGEP2(
-                            cg->builder, outer_sr->llvm_type, sym->value,
-                            (unsigned)outer_sr->fields[i].index, outer_field);
-                        /* outer field must be an embedded struct (non-pointer) */
-                        if (outer_sr->fields[i].type.base != TypeUser
-                            || outer_sr->fields[i].type.is_pointer
-                            || !outer_sr->fields[i].type.user_name) break;
-                        struct_reg_t *inner_sr = find_struct(cg, outer_sr->fields[i].type.user_name);
-                        if (!inner_sr) break;
-                        for (usize_t j = 0; j < inner_sr->field_count; j++) {
-                            if (strcmp(inner_sr->fields[j].name, field) != 0) continue;
-                            LLVMValueRef inner_gep = LLVMBuildStructGEP2(
-                                cg->builder, inner_sr->llvm_type, outer_gep,
-                                (unsigned)inner_sr->fields[j].index, field);
-                            LLVMTypeRef ft = get_llvm_type(cg, inner_sr->fields[j].type);
-                            return LLVMBuildLoad2(cg->builder, ft, inner_gep, field);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+    LLVMTypeRef field_type = Null;
+    LLVMValueRef address = scalar_member_address(cg, node, &field_type, Null, PtrRead);
+    if (address) {
+        if (LLVMGetTypeKind(field_type) == LLVMArrayTypeKind) return address;
+        return LLVMBuildLoad2(cg->builder, field_type, address, field);
     }
 
     if (obj->kind == NodeIdentExpr) {
@@ -4646,12 +4106,12 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
                           : (cg->current_module_prefix[0] ? cg->current_module_prefix : Null);
         if (pfx) {
             snprintf(mangled, sizeof(mangled), "%s__%s__%s", pfx, type_name, method);
-            fn_sym = cg_lookup(cg, mangled);
+            fn_sym = cg_lookup_symbol(cg, mangled);
         }
     }
     if (!fn_sym) {
         snprintf(mangled, sizeof(mangled), "%s.%s", type_name, method);
-        fn_sym = cg_lookup(cg, mangled);
+        fn_sym = cg_lookup_symbol(cg, mangled);
     }
     if (!fn_sym) {
         diag_begin_error("undefined method '%s'", mangled);
@@ -4667,8 +4127,19 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
     unsigned n_params = LLVMCountParamTypes(fn_type);
 
     /* instance methods have an implicit this first param */
-    boolean_t is_instance = (this_sym != Null) && ((usize_t)n_params == user_argc + 1);
+    boolean_t is_instance = fn_sym->requires_receiver;
+    if (is_instance && !this_sym) {
+        scalar_error(node, "instance method requires an object receiver");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    if (fn_sym->c_abi)
+        return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.self_method_call.args, node);
     usize_t total_argc = user_argc + (is_instance ? 1 : 0);
+    if ((!LLVMIsFunctionVarArg(fn_type) && total_argc != n_params) ||
+        (LLVMIsFunctionVarArg(fn_type) && total_argc < n_params)) {
+        scalar_error(node, "method argument count does not match its declaration");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
 
     LLVMValueRef *args = Null;
     heap_t args_heap = NullHeap;
@@ -4757,7 +4228,11 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_ternary(cg_t *cg, node_t *node) {
-    type_info_t result_ti = scalar_expr_type(cg, node, scalar_expected(cg, node));
+    type_info_t context = scalar_expected(cg, node);
+    type_info_t result_ti = scalar_expr_type(cg, node, context);
+    /* Preserve pointer destination capabilities through both conditional arms,
+     * including address-of expressions whose inferred source type is incomplete. */
+    if (context.is_pointer) result_ti = context;
     type_info_t then_ti = scalar_expr_type(cg, node->as.ternary.then_expr, NO_TYPE);
     type_info_t else_ti = scalar_expr_type(cg, node->as.ternary.else_expr, NO_TYPE);
     if (scalar_integer(then_ti) && scalar_integer(else_ti) && !scalar_integer(result_ti)) {
@@ -4795,6 +4270,11 @@ static LLVMValueRef gen_cast(cg_t *cg, node_t *node) {
     LLVMValueRef val = gen_expr(cg, node->as.cast_expr.expr);
     LLVMTypeRef target = get_llvm_type(cg, node->as.cast_expr.target);
     LLVMTypeRef src = LLVMTypeOf(val);
+
+    /* Opaque LLVM pointer equality does not imply source qualifier equality. */
+    if (!scalar_check_pointer_permissions(cg,
+            scalar_expr_type(cg, node->as.cast_expr.expr, NO_TYPE),
+            node->as.cast_expr.target, node)) return LLVMConstNull(target);
 
     if (src == target) return val;
 
@@ -4926,16 +4406,7 @@ static LLVMValueRef gen_zone_move(cg_t *cg, node_t *node) {
 
 /* buf[unchecked: i] — identical to gen_index but never emits bounds check */
 static LLVMValueRef gen_flagged_index(cg_t *cg, node_t *node) {
-    /* Temporarily set in_unsafe to skip bounds checks in gen_index */
-    cg->in_unsafe++;
-    /* Reuse gen_index by temporarily changing the node kind */
-    node->kind = NodeIndexExpr;
-    node->as.index_expr.object = node->as.flagged_index.object;
-    node->as.index_expr.index  = node->as.flagged_index.index;
-    LLVMValueRef result = gen_index(cg, node);
-    node->kind = NodeFlaggedIndex;
-    cg->in_unsafe--;
-    return result;
+    return gen_index(cg, node);
 }
 
 /* ── universal hash ── */
@@ -5193,6 +4664,21 @@ static LLVMValueRef gen_mov(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
     node_t *operand = node->as.addr_of.operand;
+    type_info_t requested = scalar_expected(cg, node);
+    if (cg->in_unsafe == 0 && requested.is_pointer &&
+        (requested.ptr_perm & PtrWrite) && !(access_address_permissions(cg, operand) & PtrWrite)) {
+        scalar_error(node, "cannot derive a writable address from read-only, const or final storage");
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    }
+    if (operand->kind == NodeMemberExpr || operand->kind == NodeSelfMemberExpr ||
+        operand->kind == NodeIndexExpr || operand->kind == NodeFlaggedIndex ||
+        (operand->kind == NodeUnaryPrefixExpr && operand->as.unary.op == TokStar)) {
+        LLVMTypeRef storage = Null;
+        type_info_t expected = scalar_expected(cg, node);
+        ptr_perm_t access = expected.is_pointer ? (expected.ptr_perm & PtrReadWrite) : PtrNone;
+        LLVMValueRef address = scalar_member_address(cg, operand, &storage, Null, access);
+        if (address) return address;
+    }
     if (operand->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, operand->as.ident.name);
         if (!sym) {
@@ -5848,17 +5334,17 @@ static LLVMValueRef gen_constructor_call(cg_t *cg, node_t *node) {
                           : (cg->current_module_prefix[0] ? cg->current_module_prefix : Null);
         if (pfx) {
             snprintf(mangled, sizeof(mangled), "%s__%s__new", pfx, type_name);
-            fn_sym = cg_lookup(cg, mangled);
+            fn_sym = cg_lookup_symbol(cg, mangled);
         }
     }
     if (!fn_sym) {
         snprintf(mangled, sizeof(mangled), "%s__new", type_name);
-        fn_sym = cg_lookup(cg, mangled);
+        fn_sym = cg_lookup_symbol(cg, mangled);
     }
     if (!fn_sym) {
         /* legacy: type_name.new */
         snprintf(mangled, sizeof(mangled), "%s.new", type_name);
-        fn_sym = cg_lookup(cg, mangled);
+        fn_sym = cg_lookup_symbol(cg, mangled);
     }
     if (!fn_sym) {
         /* If no args and struct has no (non-interface) fields, auto-generate a zero val */
@@ -5877,7 +5363,18 @@ static LLVMValueRef gen_constructor_call(cg_t *cg, node_t *node) {
 
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
     usize_t user_argc = node->as.ctor_call.args.count;
+    if (fn_sym->requires_receiver) {
+        scalar_error(node, "instance method requires an object receiver");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    if (fn_sym->c_abi)
+        return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.ctor_call.args, node);
     unsigned n_params = LLVMCountParamTypes(fn_type);
+    if ((!LLVMIsFunctionVarArg(fn_type) && user_argc != n_params) ||
+        (LLVMIsFunctionVarArg(fn_type) && user_argc < n_params)) {
+        scalar_error(node, "method argument count does not match its declaration");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
     usize_t argc = user_argc;
 
     LLVMValueRef *args = Null;
@@ -5911,7 +5408,7 @@ static LLVMValueRef gen_err_prop_call(cg_t *cg, node_t *node) {
     if (!fn_sym && cg->current_module_prefix[0]) {
         char mod_name[512];
         snprintf(mod_name, sizeof(mod_name), "%s__%s", cg->current_module_prefix, callee);
-        fn_sym = cg_lookup(cg, mod_name);
+        fn_sym = cg_lookup_symbol(cg, mod_name);
     }
     if (!fn_sym) {
         diag_begin_error("undefined function '%s' in error propagation call", callee);
@@ -6039,34 +5536,58 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
 
     LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
-    LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(cg->ctx, 0);
     LLVMTypeRef sl_ty   = slice_struct_type(cg);
 
     LLVMValueRef base_ptr = Null;
     LLVMValueRef orig_len = Null;
     LLVMValueRef orig_cap = Null;
     LLVMTypeRef  elem_ty  = LLVMInt8TypeInContext(cg->ctx);
+    boolean_t known_capacity = False;
 
-    if (obj->kind == NodeIdentExpr) {
+    /* Slice descriptors erase their element type in LLVM. Recover it from the
+     * source expression before evaluating a member, call, index or reslice;
+     * guessing i8 here offsets every non-byte view by the wrong number of bytes.
+     * This type query emits no evaluation of the slice-producing expression. */
+    type_info_t source = scalar_resolve(cg, scalar_expr_type(cg, obj, NO_TYPE));
+    LLVMTypeRef storage = access_storage_type(cg, obj);
+    if (storage && LLVMGetTypeKind(storage) == LLVMArrayTypeKind) {
+        /* Borrow the actual array storage for identifiers and fields alike.
+         * A field expression otherwise decays to an opaque pointer and loses
+         * both its element stride and its statically known capacity. */
+        LLVMTypeRef actual;
+        LLVMValueRef array = scalar_member_address(cg, obj, &actual, Null, PtrRead);
+        if (!array) {
+            scalar_error(node, "slicing requires addressable array storage");
+            return LLVMConstNull(sl_ty);
+        }
+        LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+        LLVMValueRef indices[2] = { zero, zero };
+        base_ptr = LLVMBuildGEP2(cg->builder, storage, array, indices, 2, "arr2sl.ptr");
+        elem_ty = LLVMGetElementType(storage);
+        orig_len = LLVMConstInt(i32_ty, LLVMGetArrayLength2(storage), 0);
+        orig_cap = orig_len;
+        known_capacity = True;
+    } else if (source.base == TypeSlice && !source.is_pointer) {
+        if (!source.elem_type) {
+            scalar_error(node, "reslicing requires a resolved slice element type");
+            return LLVMConstNull(sl_ty);
+        }
+        elem_ty = get_slice_elem_llvm_type(cg, source.elem_type[0]);
+    } else if (source.is_pointer) {
+        type_info_t element = scalar_resolve(cg, ti_deref_one(source));
+        if (element.base != TypeVoid || element.is_pointer)
+            elem_ty = get_slice_elem_llvm_type(cg, element);
+    }
+
+    if (!base_ptr && obj->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-        if (sym) {
-            if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
-                /* fixed array → borrow as slice */
-                long arr_sz = sym->array_size > 0 ? sym->array_size : 0;
-                LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
-                LLVMValueRef idx[2] = { zero, zero };
-                base_ptr = LLVMBuildGEP2(cg->builder, sym->type, sym->value, idx, 2, "arr2sl.ptr");
-                elem_ty  = LLVMGetElementType(sym->type);
-                orig_len = LLVMConstInt(i32_ty, (unsigned long long)arr_sz, 0);
-                orig_cap = orig_len;
-            } else if (sym->stype.base == TypeSlice) {
-                /* slice → reslice */
-                LLVMValueRef sl = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "rsl");
-                base_ptr = LLVMBuildExtractValue(cg->builder, sl, 0, "rsl.ptr");
-                orig_len = LLVMBuildExtractValue(cg->builder, sl, 1, "rsl.len");
-                orig_cap = LLVMBuildExtractValue(cg->builder, sl, 2, "rsl.cap");
-                elem_ty  = elem_type_from_sym(cg, sym);
-            }
+        if (sym && sym->stype.base == TypeSlice) {
+            LLVMValueRef sl = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "rsl");
+            base_ptr = LLVMBuildExtractValue(cg->builder, sl, 0, "rsl.ptr");
+            orig_len = LLVMBuildExtractValue(cg->builder, sl, 1, "rsl.len");
+            orig_cap = LLVMBuildExtractValue(cg->builder, sl, 2, "rsl.cap");
+            elem_ty = elem_type_from_sym(cg, sym);
+            known_capacity = True;
         }
     }
 
@@ -6074,9 +5595,14 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
     if (!base_ptr) {
         LLVMValueRef val = gen_expr(cg, obj);
         if (LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMStructTypeKind) {
+            if (source.base != TypeSlice || source.is_pointer || !source.elem_type) {
+                scalar_error(node, "reslicing requires a resolved slice element type");
+                return LLVMConstNull(sl_ty);
+            }
             base_ptr = LLVMBuildExtractValue(cg->builder, val, 0, "rsl.ptr");
             orig_len = LLVMBuildExtractValue(cg->builder, val, 1, "rsl.len");
             orig_cap = LLVMBuildExtractValue(cg->builder, val, 2, "rsl.cap");
+            known_capacity = True;
         } else if (llvm_is_ptr(LLVMTypeOf(val))) {
             base_ptr = val;
             orig_len = LLVMConstInt(i32_ty, 0, 0);
@@ -6086,15 +5612,48 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
         }
     }
 
-    LLVMValueRef lo = lo_nd
-        ? coerce_int(cg, gen_expr(cg, lo_nd), i32_ty)
-        : LLVMConstInt(i32_ty, 0, 0);
-    LLVMValueRef hi = hi_nd
-        ? coerce_int(cg, gen_expr(cg, hi_nd), i32_ty)
-        : orig_len;
+    LLVMValueRef lo, hi, lo64;
+    if (known_capacity) {
+        /* Evaluate each bound once, preserving its source signedness until the
+         * range is checked. Narrowing to the descriptor's i32 first can turn a
+         * negative or large u64 bound into an apparently valid small index. */
+        lo64 = lo_nd ? access_index_value(cg, lo_nd) : LLVMConstInt(i64_ty, 0, 0);
+        if (!lo64) return LLVMConstNull(sl_ty);
+        LLVMValueRef hi64 = hi_nd ? access_index_value(cg, hi_nd)
+            : LLVMBuildZExt(cg->builder, orig_len, i64_ty, "rsl.len.wide");
+        if (!hi64) return LLVMConstNull(sl_ty);
+        if (cg->in_unsafe == 0) {
+            /* Half-open views may expand back to the available capacity.
+             * Unsigned comparisons reject signed-negative bounds as well:
+             * 0 <= lo <= hi <= capacity. Empty views at capacity are valid. */
+            LLVMValueRef cap64 = LLVMBuildZExt(cg->builder, orig_cap, i64_ty, "rsl.cap.wide");
+            LLVMValueRef ordered = LLVMBuildICmp(cg->builder, LLVMIntULE, lo64, hi64, "slice.range.ordered");
+            LLVMValueRef fits = LLVMBuildICmp(cg->builder, LLVMIntULE, hi64, cap64, "slice.range.fits");
+            LLVMValueRef valid = LLVMBuildAnd(cg->builder, ordered, fits, "slice.range.valid");
+            LLVMBasicBlockRef ok = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "slice.range.ok");
+            LLVMBasicBlockRef bad = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "slice.range.oob");
+            LLVMBuildCondBr(cg->builder, valid, ok, bad);
+            LLVMPositionBuilderAtEnd(cg->builder, bad);
+            LLVMValueRef message = LLVMBuildGlobalStringPtr(cg->builder, "slice range out of bounds\n", "slice.range.message");
+            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, &message, 1, "");
+            LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
+            LLVMValueRef trap = LLVMGetNamedFunction(cg->module, "llvm.trap");
+            if (!trap) trap = LLVMAddFunction(cg->module, "llvm.trap", ft);
+            LLVMBuildCall2(cg->builder, ft, trap, Null, 0, "");
+            LLVMBuildUnreachable(cg->builder);
+            LLVMPositionBuilderAtEnd(cg->builder, ok);
+        }
+        lo = LLVMBuildTrunc(cg->builder, lo64, i32_ty, "slice.lo");
+        hi = LLVMBuildTrunc(cg->builder, hi64, i32_ty, "slice.hi");
+    } else {
+        /* Preserve the legacy raw-pointer fallback; its zero cap is not proof
+         * of a backing extent and must not be used as a checked slice bound. */
+        lo = lo_nd ? coerce_int(cg, gen_expr(cg, lo_nd), i32_ty) : LLVMConstInt(i32_ty, 0, 0);
+        hi = hi_nd ? coerce_int(cg, gen_expr(cg, hi_nd), i32_ty) : orig_len;
+        lo64 = LLVMBuildZExt(cg->builder, lo, i64_ty, "lo64");
+    }
 
     /* new_ptr = GEP(base_ptr, lo) */
-    LLVMValueRef lo64    = LLVMBuildZExt(cg->builder, lo, i64_ty, "lo64");
     LLVMValueRef new_ptr = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &lo64, 1, "sl.nptr");
 
     /* new_len = hi - lo,  new_cap = orig_cap - lo */
@@ -6724,7 +6283,7 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
         snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s",
                  lib_ent->mod_prefix, meth_name);
 
-    symbol_t *fn_sym = cg_lookup(cg, mangled_sym);
+    symbol_t *fn_sym = cg_lookup_symbol(cg, mangled_sym);
     if (!fn_sym) {
         log_err("undefined static '%s' (looked up as '%s')", meth_name, mangled_sym);
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
@@ -6733,24 +6292,26 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
     unsigned n_params   = LLVMCountParamTypes(fn_type);
 
-    /* All non-"new" methods are forward-declared with a leading `this` slot.
-       For static-style colon calls the user supplies no `this`, so detect the
-       mismatch and pass null as the implicit first argument. */
-    boolean_t has_this  = ((usize_t)n_params == argc + 1);
-    usize_t   total_args = has_this ? argc + 1 : argc;
+    if (fn_sym->requires_receiver) {
+        scalar_error(node, "instance method requires an object receiver");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    if (fn_sym->c_abi)
+        return cg_abi_call(cg, fn_sym->c_abi, fn_sym->value, node->as.colon_call.args, node);
+    if ((!LLVMIsFunctionVarArg(fn_type) && argc != n_params) ||
+        (LLVMIsFunctionVarArg(fn_type) && argc < n_params)) {
+        scalar_error(node, "method argument count does not match its declaration");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    usize_t total_args = argc;
 
     heap_t args_heap = NullHeap;
     LLVMValueRef *args = Null;
     if (total_args > 0) {
         args_heap = allocate(total_args, sizeof(LLVMValueRef));
         args = args_heap.pointer;
-        usize_t offset = 0;
-        if (has_this) {
-            args[0] = LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
-            offset = 1;
-        }
         for (usize_t i = 0; i < argc; i++)
-            args[i + offset] = gen_scalar_as(cg, node->as.colon_call.args.items[i], scalar_param_type(cg, node, i));
+            args[i] = gen_scalar_as(cg, node->as.colon_call.args.items[i], scalar_param_type(cg, node, i));
     }
     if (total_args > 0 && n_params > 0) {
         heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));

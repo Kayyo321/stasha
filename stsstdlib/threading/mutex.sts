@@ -264,8 +264,10 @@ ext type atomic_counter_t: struct {
         print.('atomic_counter_t[value={}]\n', this.get());
     }
     ext fn rem(void): void {
-        cpthread.pthread_mutex_destroy(this.mutex_handle);
-        rem.(this.mutex_handle);
+        if (this.mutex_handle != nil) {
+            cpthread.pthread_mutex_destroy(this.mutex_handle);
+            rem.(this.mutex_handle);
+        }
         this.mutex_handle = nil;
         this.value = 0;
     }
@@ -322,8 +324,10 @@ ext type atomic_counter_t: struct {
         print.('atomic_counter_t[value={}]\n', this.get());
     }
     ext fn rem(void): void {
-        DeleteCriticalSection(this.mutex_handle);
-        rem.(this.mutex_handle);
+        if (this.mutex_handle != nil) {
+            DeleteCriticalSection(this.mutex_handle);
+            rem.(this.mutex_handle);
+        }
         this.mutex_handle = nil;
         this.value = 0;
     }
@@ -344,7 +348,7 @@ ext fn atomic_counter_t.new(i64 initial): atomic_counter_t {
 test 'mutex create and destroy' {
     mutex_t m = mutex_t.new();
     expect.(m.initialized);
-    mutex_t.rem();
+    m.rem();
     expect.(m.initialized == false);
 }
 
@@ -353,7 +357,7 @@ test 'mutex lock and unlock' {
     m.lock();
     m.unlock();
     expect.(true);
-    mutex_t.rem();
+    m.rem();
 }
 
 test 'mutex try_lock when unlocked returns true' {
@@ -361,13 +365,13 @@ test 'mutex try_lock when unlocked returns true' {
     bool got = m.try_lock();
     expect.(got);
     m.unlock();
-    mutex_t.rem();
+    m.rem();
 }
 
 test 'rwlock create and destroy' {
     rwlock_t rw = rwlock_t.new();
     expect.(rw.initialized);
-    rwlock_t.rem();
+    rw.rem();
     expect.(rw.initialized == false);
 }
 
@@ -376,7 +380,7 @@ test 'rwlock read lock and unlock' {
     rw.read_lock();
     rw.read_unlock();
     expect.(true);
-    rwlock_t.rem();
+    rw.rem();
 }
 
 test 'rwlock write lock and unlock' {
@@ -384,7 +388,7 @@ test 'rwlock write lock and unlock' {
     rw.write_lock();
     rw.write_unlock();
     expect.(true);
-    rwlock_t.rem();
+    rw.rem();
 }
 
 test 'atomic_counter increment and decrement' {
@@ -395,7 +399,7 @@ test 'atomic_counter increment and decrement' {
     expect_eq.(v2, 2);
     i64 v3 = c.decrement();
     expect_eq.(v3, 1);
-    atomic_counter_t.rem();
+    c.rem();
 }
 
 test 'atomic_counter add and get' {
@@ -404,7 +408,7 @@ test 'atomic_counter add and get' {
     expect_eq.(v, 15);
     i64 g = c.get();
     expect_eq.(g, 15);
-    atomic_counter_t.rem();
+    c.rem();
 }
 
 test 'atomic_counter set' {
@@ -412,33 +416,54 @@ test 'atomic_counter set' {
     c.set((i64)42);
     i64 v = c.get();
     expect_eq.(v, 42);
-    atomic_counter_t.rem();
+    c.rem();
 }
 
 test 'atomic_counter initial value' {
     atomic_counter_t c = atomic_counter_t.new(100);
     i64 v = c.get();
     expect_eq.(v, 100);
-    atomic_counter_t.rem();
+    c.rem();
 }
 
 test 'mutex print does not crash' {
     mutex_t m = mutex_t.new();
     m.print();
-    mutex_t.rem();
+    m.rem();
     expect.(true);
 }
 
 test 'rwlock print does not crash' {
     rwlock_t rw = rwlock_t.new();
     rw.print();
-    rwlock_t.rem();
+    rw.rem();
     expect.(true);
 }
 
 test 'atomic_counter print does not crash' {
     atomic_counter_t c = atomic_counter_t.new(42);
     c.print();
-    atomic_counter_t.rem();
+    c.rem();
     expect.(true);
+}
+
+test 'mutex and rwlock explicit destruction is repeatable' {
+    mutex_t m = mutex_t.new();
+    m.rem();
+    m.rem();
+    expect.(!m.initialized);
+    expect.(m.handle == nil);
+    rwlock_t rw = rwlock_t.new();
+    rw.rem();
+    rw.rem();
+    expect.(!rw.initialized);
+    expect.(rw.handle == nil);
+}
+
+test 'atomic counter explicit destruction is repeatable' {
+    atomic_counter_t c = atomic_counter_t.new(7);
+    c.rem();
+    c.rem();
+    expect.(c.mutex_handle == nil);
+    expect_eq.(c.value, 0);
 }

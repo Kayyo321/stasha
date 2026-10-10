@@ -1,0 +1,146 @@
+{
+  "scope": "Bounded experimental K0 component through external C/assembly startup and explicit pinned LLD scripts",
+  "status": "PASS",
+  "date_utc": "2026-10-10T04:51:44.489285+00:00",
+  "compiler_snapshot": "bin/stasha-abi-c4bcede1a03f",
+  "compiler_sha256": "c4bcede1a03f407f24baf56a5a4205c4cc1cf7537ef54230fd774670ec341dd3",
+  "source_git_head": "24fdf438f045303ea633c09e0d640a7657b9a17a",
+  "source_git_diff_sha256": "4c04bb5077044b16f21085db72568b0c1b9cd272fd649b8cf56564eadf8666a4",
+  "harness_source_sha256": {
+    "README.md": "7e9c97a57858035e7328b6a7f2c15734e391b59d99c76f267e9a006d37f8225c",
+    "abi_probe.S": "7816cf4b4ff388ab2c1befe184ca57e7f7b4b4d7e8ccfa151662129186cc9368",
+    "baseline.c": "908beaf6fac248ad4c7a0afad5fa4a0190364f79f565d406a45efca977ab00fd",
+    "boot.c": "3ecbd0a5f87158befae9ade05523f168b113fced530b20ec4ea731c8017fe113",
+    "boot32.S": "043e438871e6feae83c55647d37e253a02d7c0f1b73b012f316c3e25abf33e4a",
+    "boot32.ld": "10e438a19fe15ce86aaec131047c50810d0b6b681b1b82d463833525394b7d57",
+    "component.h": "cd3bf6a93506ec2fbc882a9fcce4d7325a67a05a6251947b2c1752b466226c22",
+    "component.sts": "044a39834ab799dc233538dbe83137814e5884c4c9790b9335bc3c453573e1b0",
+    "entry64.S": "793162ed0e5e5048f7a8caa821a505a656b678754d4a1f14fdd7d4e59d8f1932",
+    "host.c": "019960e79d8ca505c1f45928966e7cb5087e6c7cb469472a9d0fcb78962bb7e8",
+    "payload.ld.in": "391c26a8fd8a5d06635ea552ad6fa45cc78541ccf0d8c193154549cec04e7033",
+    "policy.json": "971fd21c27f2c57054177f86bc95e3ac8b8069965c1b44839928059b14eee705",
+    "reference.c": "5c411562d6b0e67d195dcb150fada5b47416dc3c162fc03f8dc30135ca735677",
+    "run.py": "b042fa40668e02d7babfbd2fb2434992c5b4707ff1a12f0bd899e8c8569915c8",
+    "test_runner.py": "3f3b1f257de03d24e0c2e2998a0500dea169f54db1e561511e1245d4191631eb"
+  },
+  "evidence_summary": "build/k0-results/run-apofluen/summary.json",
+  "evidence_summary_sha256": "202d545137f903caa0c127c843fd313b95815cd78c14ec863a4cf31e9c340bac",
+  "optimization_levels": [
+    0,
+    2,
+    3
+  ],
+  "debug_modes": [
+    false,
+    true
+  ],
+  "virtual_bases": [
+    "0x200000",
+    "0xffffffff80200000"
+  ],
+  "physical_base": "0x200000",
+  "successful_qemu_runs": 240,
+  "successful_host_runs": 90,
+  "host_implementations": [
+    "independent C baseline",
+    "Stasha relocatable object",
+    "same Stasha component archive"
+  ],
+  "boot_implementations": [
+    "independent C baseline",
+    "Stasha relocatable object"
+  ],
+  "fresh_starts_per_boot_case": 2,
+  "observations_per_normal_run": 5681,
+  "expected_checksum": "f98dd1cacf8539da",
+  "panic_reason_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "qemu": {
+    "path": "/workspace/shared/stasha-toolchain/bootstrap/usr/bin/qemu-system-x86_64",
+    "sha256": "d3c1a558ad220e77a4412048c8d96b44f8c2b41c7ad2a4ecfe522a4b122fe067",
+    "version": "QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers\n",
+    "machine": "pc-i440fx-10.0",
+    "cpu": "qemu64",
+    "ram": "64M",
+    "smp": 1,
+    "accelerator": "tcg,thread=single",
+    "bios": "/workspace/shared/stasha-toolchain/bootstrap/usr/share/seabios/bios-256k.bin",
+    "bios_sha256": "fc6d2ea888862e6b26d53fb877ab712324726eb8f44eb6baf076c64a31f1c3fb",
+    "data": "/workspace/shared/stasha-toolchain/bootstrap/usr/share/qemu"
+  },
+  "tool_versions": {
+    "cc": {
+      "path": "/usr/bin/gcc",
+      "sha256": "a23ecab8ff08f09ad8c80602c2c5df7f49e09c25905cb8975902e101bf72635f",
+      "version": "gcc (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    },
+    "objcopy": {
+      "path": "/usr/bin/objcopy",
+      "sha256": "403f90bbd5d26c8ab9a2ad51f56255b812e8858a83aa8740ee71791071ddb580",
+      "version": "GNU objcopy (GNU Binutils for Debian) 2.44\nCopyright (C) 2025 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty.\n"
+    },
+    "ld.lld": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/ld.lld",
+      "sha256": "baee19b05603eeee6460914ad76ec974facf9236811881b1faa6fa00c43c2f03",
+      "version": "LLD 23.0.0 (https://github.com/llvm/llvm-project.git 348061d58dfe5e59027a0d6d51f916197cdd8d68) (compatible with GNU linkers)\n"
+    },
+    "llvm-nm": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-nm",
+      "sha256": "374445eccf884c46d5e210f0360e3a0420fdedf2eb3aed1c89ce778a34a09c71",
+      "version": "llvm-nm, compatible with GNU nm\nLLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n"
+    },
+    "llvm-objdump": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-objdump",
+      "sha256": "07d3a970680c726a4bfd1542f9bd0b168344b8545d7d6e388ee5475405330d36",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n\n\n  Registered Targets:\n    aarch64    - AArch64 (little endian)\n    aarch64_32 - AArch64 (little endian ILP32)\n    aarch64_be - AArch64 (big endian)\n    arm64      - ARM64 (little endian)\n    arm64_32   - ARM64 (little endian ILP32)\n    x86        - 32-bit X86: Pentium-Pro and above\n    x86-64     - 64-bit X86: EM64T and AMD64\n"
+    },
+    "llvm-readobj": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-readobj",
+      "sha256": "6572a4582279b5ceb9a09b01a50e19fbedcfc3e67787d6f568823ec39cc012d3",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n"
+    },
+    "llvm-ar": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/llvm-ar",
+      "sha256": "8542bdcda4d1857883e45f64a382f6f3e882afebd0477e2ed2a87701870ca61b",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n"
+    },
+    "opt": {
+      "path": "/workspace/shared/stasha-toolchain/llvm-build/bin/opt",
+      "sha256": "2bc823d2ef34b4d0b94f85613872cdf6a1b52afea4c5a715f3d5caf226f05f7a",
+      "version": "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n  Optimized build.\n  Default target: x86_64-unknown-linux-gnu\n  Host CPU: znver4\n"
+    }
+  },
+  "negative_checks": [
+    "missing panic hook fails linking",
+    "out-of-range kernel code-model VMA fails relocation",
+    "strict record self-tests reject stale/missing/extra/wrong-build/wrong-reason records, wrong exits and timeout"
+  ],
+  "regression_closed": {
+    "issue": "library-mode namespaced global writes rejected valid same-component archive",
+    "failed_compiler_sha256": "c010c3fbc124edb89a003706167007328dd9e3c4e2d9599bc7ea789dd7326aa9",
+    "failed_evidence": "build/k0-results/run-d0lwd9sp/summary.json"
+  },
+  "full_k0_readiness": false,
+  "not_qualified": [
+    "native final-image compiler/linker mode",
+    "complete P3 ownership/lifetime analysis",
+    "general aggregate/variadic C ABI",
+    "compiler-lowered memory helper combinations",
+    "interrupts/K1",
+    "SMP/K2",
+    "Stasha volatile/MMIO/atomic operations",
+    "heap allocation",
+    "GDB source stepping/backtrace session",
+    "physical hardware"
+  ],
+  "notes": [
+    "No remote publication or user operating-system project was created.",
+    "Page tables are permissive test mappings; ELF RX/R/RW audits are not page-level W^X enforcement.",
+    "Startup repeats are new emulator processes, not hot-reset/interrupt-load stress.",
+    "Debug variants require DWARF info/line sections and execute; debugger usability remains separate."
+  ]
+}

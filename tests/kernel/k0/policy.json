@@ -1,0 +1,32 @@
+{
+  "profile": "experimental-bounded-k0-v1",
+  "target": "x86_64-unknown-none-elf",
+  "llvm_commit": "348061d58dfe5e59027a0d6d51f916197cdd8d68",
+  "llvm_version": "23.0.0git",
+  "relocation_model": "static",
+  "code_model": "kernel",
+  "red_zone": false,
+  "fp_simd": false,
+  "allocation": false,
+  "tls": false,
+  "unwind": false,
+  "interrupts": false,
+  "allowed_object_imports": ["__stasha_panic", "memcpy", "memmove", "memset"],
+  "panic_abi": "noreturn void(uint32_t), SysV x86-64 C",
+  "boot_protocol": "Multiboot v1 direct ELF32 loader with external long-mode bridge",
+  "payload_physical_base": "0x200000",
+  "payload_virtual_bases": ["0x200000", "0xffffffff80200000"],
+  "qemu": {
+    "version": "10.0.13",
+    "sha256": "d3c1a558ad220e77a4412048c8d96b44f8c2b41c7ad2a4ecfe522a4b122fe067",
+    "machine": "pc-i440fx-10.0",
+    "cpu": "qemu64",
+    "ram": "64M",
+    "cpus": 1,
+    "acceleration": "tcg,thread=single",
+    "bios": "SeaBIOS 1.16.3-2 bios-256k.bin",
+    "bios_sha256": "fc6d2ea888862e6b26d53fb877ab712324726eb8f44eb6baf076c64a31f1c3fb",
+    "timeout_seconds": 15
+  },
+  "hardware": "not qualified"
+}

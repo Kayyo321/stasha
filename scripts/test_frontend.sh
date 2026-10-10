@@ -28,3 +28,15 @@ if result.returncode < 0:
     sys.exit(f"FAIL: frontend regression process terminated by signal {-result.returncode}")
 sys.exit(result.returncode)
 PY
+
+# Small common-runtime diagnostics regressions use the same sanitizer settings.
+for name in diagnostic_filename logger; do
+    "$CC" "${flags[@]}" -I"$ROOT/src" \
+        "$ROOT/tests/frontend/${name}_tests.c" "$ROOT/src/common/common.c" \
+        -o "$BUILD/${name}-tests"
+    (cd "$BUILD" && "./${name}-tests") 2> "$BUILD/${name}.stderr"
+    if [[ "$name" == diagnostic_filename ]]; then
+        grep -F 'imported/module.sts:1:1' "$BUILD/${name}.stderr" >/dev/null
+        grep -F 'stack i32 value = 2;' "$BUILD/${name}.stderr" >/dev/null
+    fi
+done

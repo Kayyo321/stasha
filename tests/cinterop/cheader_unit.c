@@ -83,6 +83,45 @@ int main(int argc, char **argv) {
     free_cheader_result(&result);
     CHECK(scan_and_deallocate() == Ok);
 
+    CHECK(parse_cheader_file("support/parser_spaced_include.h", NULL, argv[1],
+                            &result, resolved, sizeof(resolved)));
+    CHECK(result.fn_count == 7);
+    CHECK(ch_result_has_const(&result, "UINT64_LIMIT"));
+    free_cheader_result(&result);
+    CHECK(scan_and_deallocate() == Ok);
+
+#if defined(__linux__)
+    CHECK(parse_cheader_file("errno.h", NULL, argv[1], &result, resolved, sizeof(resolved)));
+    CHECK(ch_result_has_const(&result, "ENOENT"));
+    CHECK(ch_result_has_const(&result, "EEXIST"));
+    CHECK(ch_result_has_const(&result, "EINVAL"));
+    free_cheader_result(&result);
+    CHECK(scan_and_deallocate() == Ok);
+#endif
+
+    CHECK(parse_cheader_file("support/parser_callback_parameters.h", NULL, argv[1],
+                            &result, resolved, sizeof(resolved)));
+    CHECK(result.tdef_count == 8);
+    CHECK(result.fn_count == 5);
+    for (usize_t i = 2; i < 5; i++) {
+        c_type_t *fp = &result.tdefs[i].actual;
+        CHECK(fp->kind == CTypeFunctionPtr);
+        CHECK(fp->fn_param_count == 1);
+        CHECK(fp->fn_params[0].type.kind == CTypePointer);
+        CHECK(fp->fn_params[0].type.elem->kind == CTypeInt);
+    }
+    CHECK(result.tdefs[5].actual.fn_params[0].type.unsupported_parameter);
+    CHECK(result.tdefs[6].actual.fn_params[0].type.unsupported_parameter);
+    CHECK(result.fns[0].params[0].type.kind == CTypePointer);
+    CHECK(result.fns[1].params[0].type.unsupported_parameter);
+    for (usize_t i = 2; i < 5; i++) {
+        CHECK(result.fns[i].params[0].type.kind == CTypePointer);
+        CHECK(result.fns[i].params[0].type.is_const);
+        CHECK(result.fns[i].params[0].type.elem->is_const);
+    }
+    free_cheader_result(&result);
+    CHECK(scan_and_deallocate() == Ok);
+
     CHECK(!parse_cheader_file("does-not-exist-regression.h", NULL, argv[1],
                              &result, resolved, sizeof(resolved)));
     CHECK(ch_active_result == NULL);
@@ -90,6 +129,7 @@ int main(int argc, char **argv) {
 
     CHECK(parse_cheader_file("string.h", NULL, argv[1], &result, resolved, sizeof(resolved)));
     CHECK(result.fn_count > 0);
+    for (usize_t i = 0; i < result.fn_count; i++) CHECK(!result.fns[i].from_user_header);
     free_cheader_result(&result);
     CHECK(scan_and_deallocate() == Ok);
     printf("C header parser: %u checks passed\n", checks);

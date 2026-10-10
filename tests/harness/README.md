@@ -96,3 +96,11 @@ successful compile alone cannot pass: the runtime must exit zero and emit
 exactly one nonempty `N passed, 0 failed` summary. Timeouts, crashes, sanitizer
 reports, missing output and empty suites fail. Make's stdlib-test/test-threads
 use this runner. This corrects the old compile-only test gate.
+
+
+The LLVM static-library capstone includes `llvm-config --system-libs` and its
+matching C++ runtime. On GNU/Linux the harness resolves `libstdc++.so` through
+`CXX` (default `c++`); `--cxx-runtime PATH_OR_LINKER_TOKEN` explicitly overrides
+this for other builds. Missing runtime resolution fails rather than silently
+skipping the capstone. This supplies test-link dependencies, not a compiler
+calling-convention exception.

@@ -37,10 +37,27 @@ static symbol_t *symtab_lookup(symtab_t *st, const char *name) {
     }
     return Null;
 }
+/* Exact emitted LLVM symbol lookup: use for already mangled names and C ABI
+ * exports. Source lexical scope must not reinterpret these names. */
+static symbol_t *cg_lookup_symbol(cg_t *cg, const char *name) {
+    symbol_t *s = symtab_lookup(&cg->globals, name);
+    if (s) s->used = True;
+    return s;
+}
+
+/* Source-name lookup is shared by reads, writes, calls and safety analysis.
+ * A root global must not capture a same-spelled imported module variable. */
 static symbol_t *cg_lookup(cg_t *cg, const char *name) {
     symbol_t *s = symtab_lookup(&cg->locals, name);
-    if (s) { s->used = True; return s; }
-    return symtab_lookup(&cg->globals, name);
+    if (!s && cg->current_module_prefix[0]) {
+        char qualified[1024];
+        int length = snprintf(qualified, sizeof(qualified), "%s__%s", cg->current_module_prefix, name);
+        if (length >= 0 && (size_t)length < sizeof(qualified))
+            s = cg_lookup_symbol(cg, qualified);
+    }
+    if (!s) s = cg_lookup_symbol(cg, name);
+    if (s) s->used = True;
+    return s;
 }
 
 /* Check if adding a local with `name` shadows an existing local at an outer

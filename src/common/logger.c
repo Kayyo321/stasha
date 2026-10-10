@@ -354,14 +354,9 @@ static result_t log_message(const char *fmt, va_list args, int log_flags) {
     char time_buffer[20];
     timestamp(time_buffer, sizeof(time_buffer));
 
-    char footer[4];
-    if (log_flags & LogFlagError) {
-        memmove(footer, "(EE)", 4);
-    } else if (log_flags & LogFlagWarn) {
-        memmove(footer, "(!!)", 4);
-    } else {
-        footer[0] = '\0';
-    }
+    /* Keep the severity marker NUL-terminated before formatting it with %s. */
+    const char *footer = (log_flags & LogFlagError) ? "(EE)" :
+                         (log_flags & LogFlagWarn) ? "(!!)" : "";
 
     char msg_buffer[1024 + 20 + 4];
     vsnprintf(msg_buffer, sizeof(msg_buffer), fmt, args);

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <limits.h>
 static type_info_t resolve_future_elem_type(cg_t *, node_t *);
+static type_info_t scalar_expr_type(cg_t *, node_t *, type_info_t);
 
 static type_info_t scalar_type(type_kind_t k) {
     type_info_t t = NO_TYPE; t.base = k; return t;
@@ -103,16 +104,7 @@ static boolean_t scalar_literal_fits(node_t *n, type_info_t t) {
     return m <= (neg ? bound : bound - 1);
 }
 static symbol_t *scalar_symbol(cg_t *cg, const char *name) {
-    /* Lexical locals win, then this module's globals, then unqualified externs.
-     * Looking up a root global first silently captured imported module names. */
-    symbol_t *s = symtab_lookup(&cg->locals, name);
-    if (!s && cg->current_module_prefix[0]) {
-        char buf[512]; snprintf(buf, sizeof(buf), "%s__%s", cg->current_module_prefix, name);
-        s = symtab_lookup(&cg->globals, buf);
-    }
-    if (!s) s = symtab_lookup(&cg->globals, name);
-    if (s) s->used = True;
-    return s;
+    return cg_lookup(cg, name);
 }
 static void scalar_register_signature(cg_t *cg, symbol_t *s, node_t *decl) {
     if (!strcmp(s->name, "__stasha_panic")) {
@@ -134,6 +126,8 @@ static void scalar_register_signature(cg_t *cg, symbol_t *s, node_t *decl) {
     }
     sig->ret_type = decl->as.fn_decl.return_count == 1
         ? scalar_resolve(cg, decl->as.fn_decl.return_types[0]) : NO_TYPE;
+    sig->is_c_abi = s->c_abi != Null;
+    sig->is_variadic = decl->as.fn_decl.is_variadic;
     s->scalar_signature = sig;
 }
 static symbol_t *scalar_call_symbol(cg_t *cg, node_t *n) {
@@ -143,14 +137,16 @@ static symbol_t *scalar_call_symbol(cg_t *cg, node_t *n) {
         if (!lib || !lib->mod_prefix) return Null;
         if (n->as.colon_call.type_name) snprintf(name, sizeof(name), "%s__%s__%s", lib->mod_prefix, n->as.colon_call.type_name, n->as.colon_call.method_name);
         else snprintf(name, sizeof(name), "%s__%s", lib->mod_prefix, n->as.colon_call.method_name);
-        return cg_lookup(cg, name);
+        return cg_lookup_symbol(cg, name);
     }
     if (n->kind == NodeErrPropCall) return scalar_symbol(cg, n->as.err_prop_call.callee);
     if (n->kind == NodeConstructorCall) {
+        if (strstr(n->as.ctor_call.type_name, "_G_"))
+            try_instantiate_generic(cg, n->as.ctor_call.type_name);
         struct_reg_t *sr = find_struct(cg, n->as.ctor_call.type_name);
         if (sr && sr->mod_prefix && sr->mod_prefix[0]) snprintf(name, sizeof(name), "%s__%s__new", sr->mod_prefix, sr->name);
         else snprintf(name, sizeof(name), "%s.new", n->as.ctor_call.type_name);
-        return cg_lookup(cg, name);
+        return cg_lookup_symbol(cg, name);
     }
     if (n->kind == NodeCallExpr) {
         symbol_t *s = scalar_symbol(cg, n->as.call.callee);
@@ -160,7 +156,7 @@ static symbol_t *scalar_call_symbol(cg_t *cg, node_t *n) {
         if (cg->current_struct_name) {
             if (cg->current_module_prefix[0]) snprintf(name, sizeof(name), "%s__%s__%s", cg->current_module_prefix, cg->current_struct_name, n->as.call.callee);
             else snprintf(name, sizeof(name), "%s.%s", cg->current_struct_name, n->as.call.callee);
-            return cg_lookup(cg, name);
+            return cg_lookup_symbol(cg, name);
         }
     }
     const char *tn = Null, *method = Null;
@@ -168,18 +164,26 @@ static symbol_t *scalar_call_symbol(cg_t *cg, node_t *n) {
         const char *obj = n->as.method_call.object->as.ident.name;
         method = n->as.method_call.method;
         lib_entry_t *lib = find_lib_entry(cg, obj);
-        if (lib && lib->mod_prefix) { snprintf(name, sizeof(name), "%s__%s", lib->mod_prefix, method); return cg_lookup(cg, name); }
-        if (lib) return cg_lookup(cg, method);
+        if (lib && lib->mod_prefix) { snprintf(name, sizeof(name), "%s__%s", lib->mod_prefix, method); return cg_lookup_symbol(cg, name); }
+        if (lib) return cg_lookup_symbol(cg, method);
         symbol_t *s = scalar_symbol(cg, obj); tn = s ? s->stype.user_name : obj;
+    } else if (n->kind == NodeMethodCall) {
+        type_info_t receiver = scalar_resolve(cg, scalar_expr_type(cg, n->as.method_call.object, NO_TYPE));
+        tn = receiver.base == TypeUser ? receiver.user_name : Null;
+        method = n->as.method_call.method;
     } else if (n->kind == NodeSelfMethodCall) {
         tn = n->as.self_method_call.type_name ? n->as.self_method_call.type_name : cg->current_struct_name;
         method = n->as.self_method_call.method;
     }
     if (tn && method) {
+        /* Resolve the source signature before gen_scalar_as records the result
+         * type. Instantiating only later during call emission loses signedness
+         * on the first use of a generic static method. */
+        if (strstr(tn, "_G_")) try_instantiate_generic(cg, tn);
         struct_reg_t *sr = find_struct(cg, tn);
         if (sr && sr->mod_prefix && sr->mod_prefix[0]) snprintf(name, sizeof(name), "%s__%s__%s", sr->mod_prefix, tn, method);
         else snprintf(name, sizeof(name), "%s.%s", tn, method);
-        return cg_lookup(cg, name);
+        return cg_lookup_symbol(cg, name);
     }
     return Null;
 }
@@ -227,6 +231,7 @@ static node_t *scalar_call_decl(cg_t *cg, node_t *n) {
             }
             symbol_t *s = scalar_symbol(cg, obj->as.ident.name);
             const char *tn = s ? s->stype.user_name : obj->as.ident.name;
+            if (tn && strstr(tn, "_G_")) try_instantiate_generic(cg, tn);
             struct_reg_t *sr = tn ? find_struct(cg, tn) : Null;
             if (sr) {
                 if (sr->mod_prefix && sr->mod_prefix[0]) snprintf(buf, sizeof(buf), "%s__%s__%s", sr->mod_prefix, sr->name, n->as.method_call.method);
@@ -272,12 +277,36 @@ static type_info_t scalar_expr_type(cg_t *cg, node_t *n, type_info_t expected) {
     case NodeBoolLitExpr: return scalar_type(TypeBool);
     case NodeCharLitExpr: return scalar_integer(expected) && expected.base != TypeBool ? expected : scalar_type(TypeU8);
     case NodeFloatLitExpr: return scalar_type(TypeF64);
+    case NodeStrLitExpr: {
+        type_info_t t = scalar_type(TypeI8);
+        t.is_pointer = True; t.ptr_depth = 1;
+        t.ptr_perm = PtrRead; t.ptr_perms[0] = PtrRead;
+        return t;
+    }
     case NodeIdentExpr: {
         symbol_t *s = scalar_symbol(cg, n->as.ident.name);
         if (s && s->scalar_signature && LLVMIsAFunction(s->value)) {
             type_info_t fn = scalar_type(TypeFnPtr); fn.fn_ptr_desc = s->scalar_signature; return fn;
         }
         return s ? scalar_resolve(cg, s->stype) : NO_TYPE;
+    }
+    case NodeAddrOf: {
+        node_t *operand = n->as.addr_of.operand;
+        if (operand->kind == NodeIdentExpr) {
+            symbol_t *s = scalar_symbol(cg, operand->as.ident.name);
+            if (s && s->scalar_signature && LLVMIsAFunction(s->value)) {
+                type_info_t fn = scalar_type(TypeFnPtr); fn.fn_ptr_desc = s->scalar_signature; return fn;
+            }
+        }
+        type_info_t t = scalar_resolve(cg, scalar_expr_type(cg, operand, NO_TYPE));
+        if (t.base == TypeVoid && !t.is_pointer) return NO_TYPE;
+        int depth = t.is_pointer ? (t.ptr_depth > 0 ? t.ptr_depth : 1) : 0;
+        if (depth >= 8) return NO_TYPE;
+        if (depth == 1) t.ptr_perms[0] = t.ptr_perm;
+        for (int i = depth; i > 0; --i) t.ptr_perms[i] = t.ptr_perms[i - 1];
+        t.is_pointer = True; t.ptr_depth = depth + 1; t.nullable = False;
+        t.ptr_perm = access_address_permissions(cg, operand); t.ptr_perms[0] = t.ptr_perm;
+        return t;
     }
     case NodeCastExpr: return scalar_resolve(cg, n->as.cast_expr.target);
     case NodeUnaryPrefixExpr: case NodeUnaryPostfixExpr:
@@ -297,9 +326,22 @@ static type_info_t scalar_expr_type(cg_t *cg, node_t *n, type_info_t expected) {
     case NodeCompoundAssign: return scalar_expr_type(cg, n->as.compound_assign.target, NO_TYPE);
     case NodeIndexExpr: case NodeFlaggedIndex: {
         node_t *object = n->kind == NodeIndexExpr ? n->as.index_expr.object : n->as.flagged_index.object;
-        type_info_t t = scalar_expr_type(cg, object, NO_TYPE);
-        if (t.base == TypeSlice && t.elem_type) return scalar_resolve(cg, t.elem_type[0]);
+        type_info_t t = scalar_resolve(cg, scalar_expr_type(cg, object, NO_TYPE));
+        LLVMTypeRef storage = access_storage_type(cg, object);
+        if (storage && LLVMGetTypeKind(storage) == LLVMArrayTypeKind) return t;
+        if (t.base == TypeSlice && !t.is_pointer && t.elem_type) return scalar_resolve(cg, t.elem_type[0]);
         return t.is_pointer ? ti_deref_one(t) : t;
+    }
+    case NodeSliceExpr: {
+        type_info_t source = scalar_resolve(cg, scalar_expr_type(cg, n->as.slice_expr.object, NO_TYPE));
+        LLVMTypeRef storage = access_storage_type(cg, n->as.slice_expr.object);
+        if (source.base == TypeSlice && !source.is_pointer &&
+            (!storage || LLVMGetTypeKind(storage) != LLVMArrayTypeKind)) return source;
+        type_info_t t = scalar_type(TypeSlice);
+        t.elem_type = alloc_type_array(1);
+        t.elem_type[0] = source.is_pointer && (!storage || LLVMGetTypeKind(storage) != LLVMArrayTypeKind)
+            ? ti_deref_one(source) : source;
+        return t;
     }
     case NodeMemberExpr: case NodeSelfMemberExpr: {
         type_info_t t = NO_TYPE; const char *field;
@@ -408,14 +450,55 @@ static void scalar_trap_if(cg_t *cg, LLVMValueRef bad, unsigned reason) {
     LLVMPositionBuilderAtEnd(cg->builder, ok);
 }
 
+/* Implemented by the source constant evaluator, not LLVM constant folding. */
+static boolean_t scalar_const_conversion_fits(cg_t *, node_t *, type_info_t, type_info_t);
+
+/* A pointer slot that remains writable cannot change its stored pointer
+ * qualifiers: storing a narrowed value there would change the capabilities
+ * observed through the original alias. Read-only paths permit narrowing.
+ * Arithmetic permission behavior is unchanged by this read/write check. */
+static boolean_t scalar_check_pointer_permissions(cg_t *cg, type_info_t from,
+                                                  type_info_t to, node_t *n) {
+    from = scalar_resolve(cg, from); to = scalar_resolve(cg, to);
+    if (cg->in_unsafe > 0 || !from.is_pointer || !to.is_pointer) return True;
+    int from_depth = from.ptr_depth > 0 ? from.ptr_depth : 1;
+    int to_depth = to.ptr_depth > 0 ? to.ptr_depth : 1;
+    boolean_t writable_slot = False;
+    for (int level = 0; level < from_depth && level < to_depth && level < 8; ++level) {
+        ptr_perm_t have = level == 0 ? from.ptr_perm : from.ptr_perms[level];
+        ptr_perm_t need = level == 0 ? to.ptr_perm : to.ptr_perms[level];
+        if (need & ~have & PtrReadWrite) {
+            scalar_error(n, "cannot widen pointer permissions outside unsafe");
+            return False;
+        }
+        if (writable_slot && ((have ^ need) & PtrReadWrite)) {
+            scalar_error(n, "cannot change nested pointer permissions through a writable pointer slot outside unsafe");
+            return False;
+        }
+        writable_slot = writable_slot || (need & PtrWrite);
+    }
+    return True;
+}
+
 static LLVMValueRef scalar_coerce(cg_t *cg, LLVMValueRef v, type_info_t from,
                                   type_info_t to, node_t *n, boolean_t explicit_cast) {
     from = scalar_resolve(cg, from); to = scalar_resolve(cg, to);
+    cg_abi_check_fnptr_conversion(cg, from, to, n);
     LLVMTypeRef dst = get_llvm_type(cg, to), src = LLVMTypeOf(v);
+    if (!scalar_check_pointer_permissions(cg, from, to, n)) return LLVMConstNull(dst);
+    /* Source typing is incomplete for some address-producing expressions.
+     * Checking the emitted pointer shape too closes the legacy NO_TYPE path
+     * without inferring integer signedness from LLVM's signless types. */
+    if (!explicit_cast && scalar_integer(to) &&
+        (from.is_pointer || from.base == TypeFnPtr || LLVMGetTypeKind(src) == LLVMPointerTypeKind)) {
+        scalar_error(n, "implicit pointer-to-integer conversion requires an explicit cast");
+        return LLVMConstNull(dst);
+    }
     if (scalar_integer(from) && scalar_integer(to) && LLVMGetTypeKind(src) == LLVMIntegerTypeKind) {
         unsigned sw = LLVMGetIntTypeWidth(src), tw = scalar_bits(to);
         if (!explicit_cast && to.base != TypeBool &&
-            (tw < sw || (scalar_unsigned(from) != scalar_unsigned(to) && !(scalar_unsigned(from) && tw > sw))))
+            (tw < sw || (scalar_unsigned(from) != scalar_unsigned(to) && !(scalar_unsigned(from) && tw > sw))) &&
+            !scalar_const_conversion_fits(cg, n, from, to))
             scalar_error(n, "implicit integer conversion may change value; use an explicit cast");
         if (to.base == TypeBool)
             return LLVMBuildICmp(cg->builder, LLVMIntNE, v, LLVMConstNull(src), "scalar.bool");

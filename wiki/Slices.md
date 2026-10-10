@@ -29,6 +29,17 @@ Stack slices never own their data. `rem.()` on a stack slice is a compile error.
 
 ---
 
+## View bounds contract
+
+For a known fixed array or existing slice, `source[lo:hi]` requires
+`0 <= lo <= hi <= capacity`. The upper bound may extend the old logical length
+up to its existing capacity. Omitted `lo` is zero; omitted `hi` is the old length.
+The result has `len = hi-lo` and `cap = old_cap-lo`. Element addressing uses the
+resolved source element type even when the source is a field, call, or index.
+Invalid bounds trap before pointer arithmetic or narrowing to descriptor fields.
+An explicit `unsafe` region suppresses these checks. Raw-pointer views have no
+proven capacity and are not included in this bounded qualification.
+
 ## Building Slices
 
 ### `make.([]T, len)` — Owned, Zeroed

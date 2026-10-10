@@ -8,7 +8,7 @@ lib "cinterop_support" = c;
 
 fn main(void): i32 {
     i32 v = c.ctor_get_canary();
-    if v != 0xC0DECA1E { print.("FAIL canary={}\n", v); ret 1; }
+    if v != (i32)0xC0DECA1E { print.("FAIL canary={}\n", v); ret 1; }
     print.("54_b_ctor: ok\n");
     ret 0;
 }

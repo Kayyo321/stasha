@@ -24,26 +24,31 @@ int fn fs_strlen(stack i8 *r+ s): u32 {
 // ── Path utilities ─────────────────────────────────────────────────────────
 
 // Join base path and name with a '/'. Result written into dst (dst_len bytes).
+// A nonempty destination receives the NUL-terminated prefix that fits.
+// A zero-length destination is left untouched.
 ext fn fs_path_join(stack i8 *r+ base, stack i8 *r+ name, stack i8 *w+ dst, u32 dst_len): void {
+    if (dst_len == 0) { ret; }
+    u32 capacity = dst_len - 1;
     u32 bi = 0;
     u32 di = 0;
 
     // Copy base into dst
-    while (base[bi] != 0 && di < dst_len - 2) {
+    while (di < capacity && base[bi] != 0) {
         dst[di] = base[bi];
         bi++;
         di++;
     }
 
     // Add separator if base doesn't end with '/' or '\' and there's room
-    if (di > 0 && dst[di - 1] != 47 && dst[di - 1] != 92 && di < dst_len - 2) {
+    // Inspect the readable source, never the write-only destination.
+    if (di > 0 && di < capacity && base[bi - 1] != 47 && base[bi - 1] != 92) {
         dst[di] = 47;   // '/'
         di++;
     }
 
     // Append name
     u32 ni = 0;
-    while (name[ni] != 0 && di < dst_len - 1) {
+    while (di < capacity && name[ni] != 0) {
         dst[di] = name[ni];
         ni++;
         di++;
@@ -262,6 +267,71 @@ test 'fs_path_join no double slash' {
     // "/tmp/" + "hello.txt" = "/tmp/hello.txt", h at index 5
     expect_eq.(dst[5], 104);  // 'h' at index 5
     rem.(dst);
+}
+
+test 'fs_path_join empty base copies name exactly' {
+    i8 dst[16] = .{};
+    fs_path_join("", "leaf", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "leaf"), 0);
+}
+
+test 'fs_path_join empty inputs terminate destination' {
+    i8 dst[2] = .{`X`, `Y`};
+    fs_path_join("", "", dst, 2);
+    expect_eq.(dst[0], 0);
+    expect_eq.(dst[1], `Y`);
+}
+
+test 'fs_path_join empty name preserves base separator behavior' {
+    i8 dst[16] = .{};
+    fs_path_join("base", "", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "base/"), 0);
+    fs_path_join("base/", "", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "base/"), 0);
+}
+
+test 'fs_path_join slash and backslash bases do not double separators' {
+    i8 dst[16] = .{};
+    fs_path_join("/", "leaf", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "/leaf"), 0);
+    fs_path_join("base/", "leaf", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "base/leaf"), 0);
+    fs_path_join("base\\", "leaf", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "base\\leaf"), 0);
+}
+
+test 'fs_path_join preserves trailing name separator' {
+    i8 dst[16] = .{};
+    fs_path_join("base", "leaf/", dst, 16);
+    expect_eq.(cstring.strcmp(dst, "base/leaf/"), 0);
+}
+
+test 'fs_path_join every short destination preserves prefix and canaries' {
+    // Covers zero and one byte, truncation within base/separator/name,
+    // exact fit, and spare capacity. Only the declared range may be written.
+    stack i8 *r+ expected = "/base/file";
+    for (u32 size = 0; size <= 12; size++) {
+        i8 dst[14] = .{};
+        for (u32 i = 0; i < 14; i++) { dst[i] = `X`; }
+        stack i8 *w+ output = &dst[1];
+        fs_path_join("/base", "file", output, size);
+        expect_eq.(dst[0], `X`);
+        if (size > 0) {
+            u32 copied = size - 1;
+            if (copied > 10) { copied = 10; }
+            for (u32 i = 0; i < copied; i++) {
+                expect_eq.(dst[i + 1], expected[i]);
+            }
+            expect_eq.(dst[copied + 1], 0);
+            for (u32 i = copied + 2; i < 14; i++) {
+                expect_eq.(dst[i], `X`);
+            }
+        } else {
+            for (u32 i = 1; i < 14; i++) {
+                expect_eq.(dst[i], `X`);
+            }
+        }
+    }
 }
 
 test 'fs_path_dirname basic' {

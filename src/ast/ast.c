@@ -158,6 +158,8 @@ fn_ptr_desc_t *alloc_fn_ptr_desc(usize_t param_count) {
     desc->params = Null;
     desc->param_count = param_count;
     desc->ret_type = NO_TYPE;
+    desc->is_c_abi = False;
+    desc->is_variadic = False;
     if (param_count > 0) {
         heap_t ph = allocate(param_count, sizeof(fn_ptr_param_t));
         arena_track(ph);

@@ -61,6 +61,20 @@ typedef struct {
 } ch_ctx_t;
 
 static const char *ch_default_dirs[] = {
+#if defined(__linux__) && defined(__GLIBC__)
+    /* Native glibc installations keep bits/ and asm/ below a multiarch
+     * directory. C header import is rejected for foreign target ABIs by
+     * the driver before any compiler-host search path is consulted. */
+# if defined(__x86_64__) && defined(__ILP32__)
+    "/usr/include/x86_64-linux-gnux32",
+# elif defined(__x86_64__)
+    "/usr/include/x86_64-linux-gnu",
+# elif defined(__i386__)
+    "/usr/include/i386-linux-gnu",
+# elif defined(__aarch64__)
+    "/usr/include/aarch64-linux-gnu",
+# endif
+#endif
     "/usr/include",
     "/usr/local/include",
     "/opt/homebrew/include",
@@ -986,10 +1000,61 @@ typedef struct {
     heap_t params_heap;
 } ch_decl_t;
 
+/* C parameter adjustment happens before mapping into language types.  An
+ * array parameter is a pointer, including when the array is behind typedefs.
+ * Preserve unsupported shapes explicitly rather than reducing them to a scalar. */
+static const c_type_t *ch_parameter_resolve(ch_ctx_t *ctx, const c_type_t *type,
+                                          boolean_t *is_const) {
+    for (usize_t depth = 0; type && type->kind == CTypeTypedefRef
+            && depth <= ctx->out->tdef_count; depth++) {
+        *is_const = *is_const || type->is_const;
+        const c_type_t *next = Null;
+        for (usize_t i = 0; i < ctx->out->tdef_count; i++) {
+            c_typedef_t *td = &ctx->out->tdefs[i];
+            if (type->name && strcmp(type->name, td->name) == 0) {
+                next = &td->actual;
+                break;
+            }
+        }
+        if (!next) break;
+        type = next;
+    }
+    if (type) *is_const = *is_const || type->is_const;
+    return type;
+}
+
+static void ch_adjust_parameter(ch_ctx_t *ctx, ch_decl_t *pd) {
+    boolean_t array_const = False;
+    const c_type_t *resolved = ch_parameter_resolve(ctx, &pd->type, &array_const);
+    if (pd->is_fn) {
+        /* Bare function parameters need a complete function-type declarator;
+         * the explicit (*name)(prototype) spelling is supported instead. */
+        pd->type.unsupported_parameter = True;
+    } else if (resolved && resolved->kind == CTypeArray) {
+        boolean_t elem_const = False;
+        const c_type_t *elem = ch_parameter_resolve(ctx, resolved->elem, &elem_const);
+        if (!elem || elem->kind == CTypeArray || resolved->unsupported_parameter) {
+            pd->type.unsupported_parameter = True;
+            return;
+        }
+        c_type_t ptr = ch_type_make(CTypePointer);
+        heap_t h = ch_owned_allocate(1, sizeof(c_type_t));
+        ptr.elem = h.pointer;
+        *ptr.elem = *resolved->elem;
+        ptr.elem->is_const = array_const || elem_const;
+        /* The importer represents pointee read-only permission on pointers. */
+        ptr.is_const = ptr.elem->is_const;
+        pd->type = ptr;
+    }
+}
+
 static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_t base) {
     ch_decl_t d;
     memset(&d, 0, sizeof(d));
     d.type = ch_type_clone(&base);
+    boolean_t fn_pointer = False;
+    boolean_t unsupported_fn_pointer = False;
+    boolean_t unprototyped_fn_pointer = False;
 
     while (ch_match(ts, CHTokStar)) {
         c_type_t ptr = ch_type_make(CTypePointer);
@@ -1025,14 +1090,33 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
 
     if (ch_match(ts, CHTokLParen)) {
         if (ch_match(ts, CHTokStar)) {
-            d.type.kind = CTypeUnsupported;
-            while (!ch_match(ts, CHTokRParen) && ch_peek(ts)->kind != CHTokEof) ts->pos++;
-            return d;
+            fn_pointer = True;
+            while (ch_is_ident(ts, "const") || ch_is_ident(ts, "volatile")
+                    || ch_is_ident(ts, "restrict") || ch_is_ident(ts, "__restrict")
+                    || ch_is_ident(ts, "__restrict__")) ts->pos++;
+            if (ch_peek(ts)->kind == CHTokIdent) {
+                d.name = ch_strdup(ch_peek(ts)->text, strlen(ch_peek(ts)->text));
+                ts->pos++;
+            }
+            if (!ch_match(ts, CHTokRParen)) {
+                /* Retain an explicitly unsupported function-pointer type
+                 * instead of dropping a parameter from its enclosing ABI.
+                 * Arrays, multiple pointer levels and returning function
+                 * declarators need fuller C declarator semantics. */
+                unsupported_fn_pointer = True;
+                int depth = 1;
+                while (depth && ch_peek(ts)->kind != CHTokEof) {
+                    if (ch_match(ts, CHTokLParen)) depth++;
+                    else if (ch_match(ts, CHTokRParen)) depth--;
+                    else ts->pos++;
+                }
+            }
+        } else {
+            ts->pos--;
         }
-        ts->pos--;
     }
 
-    if (ch_peek(ts)->kind == CHTokIdent) {
+    if (!fn_pointer && ch_peek(ts)->kind == CHTokIdent) {
         d.name = ch_strdup(ch_peek(ts)->text, strlen(ch_peek(ts)->text));
         ts->pos++;
     }
@@ -1045,8 +1129,13 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
                 len = ch_parse_int_literal(ch_peek(ts)->text, &ok);
                 ts->pos++;
             }
-            ch_match(ts, CHTokRBracket);
+            boolean_t simple_bound = ch_match(ts, CHTokRBracket);
+            if (!simple_bound) {
+                while (ch_peek(ts)->kind != CHTokRBracket && ch_peek(ts)->kind != CHTokEof) ts->pos++;
+                ch_match(ts, CHTokRBracket);
+            }
             c_type_t arr = ch_type_make(CTypeArray);
+            arr.unsupported_parameter = !simple_bound;
             arr.array_len = len;
             heap_t h = allocate(1, sizeof(c_type_t));
             ch_track_heap(h);
@@ -1057,6 +1146,8 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
         }
         if (ch_match(ts, CHTokLParen)) {
             d.is_fn = True;
+            if (fn_pointer && ch_peek(ts)->kind == CHTokRParen)
+                unprototyped_fn_pointer = True;
             /* `(void)` means zero params.  But `(void *p, …)` is a real
              * pointer-to-void parameter — only treat the bare `void` form
              * as the empty-params sentinel. */
@@ -1074,6 +1165,7 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
                 }
                 c_type_t pbase = ch_parse_type_name(ctx, ts);
                 ch_decl_t pd = ch_parse_declarator(ctx, ts, pbase);
+                ch_adjust_parameter(ctx, &pd);
                 if (pd.name || pd.type.kind != CTypeUnsupported) {
                     if (d.param_count == 0) {
                         d.params_heap = ch_owned_allocate(8, sizeof(c_param_t));
@@ -1093,6 +1185,23 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
             continue;
         }
         break;
+    }
+    if (fn_pointer) {
+        c_type_t fp = ch_type_make(CTypeFunctionPtr);
+        heap_t h = ch_owned_allocate(1, sizeof(c_type_t));
+        fp.elem = h.pointer;
+        *fp.elem = d.type;
+        fp.fn_params = d.params;
+        fp.fn_param_count = d.param_count;
+        fp.fn_variadic = d.is_variadic;
+        fp.fn_unsupported = unsupported_fn_pointer || unprototyped_fn_pointer
+            || !d.is_fn || d.type.kind == CTypeArray;
+        d.type = fp;
+        d.is_fn = False;
+        d.params = Null;
+        d.param_count = 0;
+        d.params_heap = NullHeap;
+        d.is_variadic = False;
     }
     return d;
 }
@@ -1155,6 +1264,12 @@ static void ch_parse_top_decl(ch_ctx_t *ctx, ch_tok_stream_t *ts) {
 
     ch_decl_t decl = ch_parse_declarator(ctx, ts, base);
 
+    if (is_typedef && decl.is_fn) {
+        /* A function typedef is not a callable symbol. Until full function
+         * types are represented, preserve it as an explicitly rejected alias. */
+        decl.is_fn = False;
+        decl.type.unsupported_parameter = True;
+    }
     if (decl.is_fn) {
         if (ch_peek(ts)->kind == CHTokLBrace) {
             ch_skip_balanced(ts, CHTokLBrace, CHTokRBrace);
@@ -1207,6 +1322,7 @@ static void ch_parse_top_decl(ch_ctx_t *ctx, ch_tok_stream_t *ts) {
         ch_str_list_push(&ctx->type_names, td.name);
         while (ch_match(ts, CHTokComma)) {
             ch_decl_t extra = ch_parse_declarator(ctx, ts, base);
+            if (extra.is_fn) extra.type.unsupported_parameter = True;
             if (extra.name) {
                 c_typedef_t td2;
                 memset(&td2, 0, sizeof(td2));
@@ -1336,8 +1452,12 @@ static void ch_scan_source(ch_ctx_t *ctx, const char *path, char *source) {
         char *s = line;
         while (*s == ' ' || *s == '\t') s++;
         if (*s == '#') {
-            if (strncmp(s + 1, "include", 7) == 0 && isspace((unsigned char)s[8])) {
-                char *q = s + 8;
+            char *directive = s + 1;
+            while (*directive == ' ' || *directive == '\t') directive++;
+            if (strncmp(directive, "include", 7) == 0
+                    && (isspace((unsigned char)directive[7])
+                        || directive[7] == '"' || directive[7] == '<')) {
+                char *q = directive + 7;
                 while (*q == ' ' || *q == '\t') q++;
                 if (*q == '"' || *q == '<') {
                     boolean_t quoted = (*q == '"');
@@ -1432,6 +1552,17 @@ static boolean_t parse_cheader_file(const char *header_path,
 
     if (resolved_path_out && resolved_path_cap > 0)
         snprintf(resolved_path_out, resolved_path_cap, "%s", resolved);
+    /* A standard header explicitly imported by name is still a system
+     * header. Unsupported declarations there must remain unavailable,
+     * without making unrelated supported declarations (e.g. printf)
+     * unusable merely because libc exposes an opaque private record. */
+    for (usize_t i = 0; ch_default_dirs[i]; i++) {
+        usize_t len = strlen(ch_default_dirs[i]);
+        if (strncmp(resolved, ch_default_dirs[i], len) == 0 && resolved[len] == '/') {
+            ch_at_top_file = False;
+            break;
+        }
+    }
     ch_process_file(&ctx, resolved);
     if (ctx.seen_files.heap.pointer) deallocate(ctx.seen_files.heap);
     if (ctx.type_names.heap.pointer) deallocate(ctx.type_names.heap);

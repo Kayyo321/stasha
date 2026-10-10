@@ -98,6 +98,11 @@ type arr_t: @comptime[T] struct {
     fn at(u32 idx): T {
         ret this.buf[idx];
     }
+
+    fn rem(void): void {
+        rem.(this.buf);
+        this.buf = nil;
+    }
 }
 
 fn @comptime[T] arr_t.new(i32 cap): arr_t.[T] {
@@ -106,11 +111,6 @@ fn @comptime[T] arr_t.new(i32 cap): arr_t.[T] {
         .len = 0,
         .cap = cap,
     };
-}
-
-fn arr_t.rem(void): void { // should have access to T if need be
-    rem.(arr_t.(buf));
-    arr_t.(buf) = nil;
 }
 
 // Two type parameters — a key/value pair.

@@ -552,6 +552,84 @@ static c_struct_t *find_cheader_struct(cheader_result_t *r, const char *name) {
     return Null;
 }
 
+static boolean_t cheader_builtin_typedef(const char *name) {
+    static const char *names[] = {"int8_t", "uint8_t", "int16_t", "uint16_t",
+        "int32_t", "uint32_t", "int64_t", "uint64_t", "size_t", "ssize_t",
+        "ptrdiff_t", "intptr_t", "uintptr_t"};
+    for (usize_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (strcmp(name, names[i]) == 0) return True;
+    return False;
+}
+
+static c_type_t *resolve_cheader_type(cheader_result_t *r, c_type_t *type) {
+    for (usize_t depth = 0; type && depth < 128; depth++) {
+        if (type->kind != CTypeTypedefRef || !type->name
+                || cheader_builtin_typedef(type->name)) return type;
+        c_typedef_t *td = find_cheader_typedef(r, type->name);
+        if (!td) return type;
+        type = &td->actual;
+    }
+    return Null;
+}
+
+/* C pointer permissions describe the immediate pointee, not whether the
+ * pointer object itself is const. Accumulate qualification on typedef uses
+ * and their definitions without treating const on a pointer as const data. */
+static boolean_t cheader_type_is_const(cheader_result_t *r, c_type_t *type) {
+    boolean_t is_const = False;
+    for (usize_t depth = 0; type && depth <= r->tdef_count; ++depth) {
+        is_const = is_const || type->is_const;
+        if (type->kind != CTypeTypedefRef || !type->name) break;
+        c_typedef_t *td = find_cheader_typedef(r, type->name);
+        if (!td) break;
+        type = &td->actual;
+    }
+    return is_const;
+}
+
+static boolean_t cheader_type_has_unsupported_layout(cheader_result_t *r, c_type_t *type) {
+    type = resolve_cheader_type(r, type);
+    if (!type) return True;
+    if (type->kind == CTypePointer) return False;
+    if (type->kind == CTypeFunctionPtr) return type->fn_unsupported;
+    if (type->kind == CTypeArray)
+        return type->array_len <= 0 || cheader_type_has_unsupported_layout(r, type->elem);
+    if (type->kind == CTypeStructRef || type->kind == CTypeUnionRef) {
+        c_struct_t *st = find_cheader_struct(r, type->name);
+        return !st || st->field_count == 0 || st->unsupported_layout;
+    }
+    if (type->kind == CTypeTypedefRef)
+        return !type->name || !cheader_builtin_typedef(type->name);
+    return type->kind == CTypeUnsupported || type->kind == CTypeVoid
+        || type->kind == CTypeLongDouble;
+}
+
+static void classify_cheader_layouts(cheader_result_t *r) {
+    for (usize_t i = 0; i < r->struct_count; i++) {
+        c_struct_t *st = &r->structs[i];
+        st->unsupported_layout = st->is_union;
+        for (usize_t j = 0; j < st->field_count; j++)
+            if (st->fields[j].is_bitfield) st->unsupported_layout = True;
+    }
+    /* Propagate rejection through by-value dependencies, independently of
+     * declaration order. Pointers preserve their ABI as opaque handles. */
+    for (usize_t pass = 0; pass < r->struct_count; pass++) {
+        boolean_t changed = False;
+        for (usize_t i = 0; i < r->struct_count; i++) {
+            c_struct_t *st = &r->structs[i];
+            if (st->unsupported_layout) continue;
+            for (usize_t j = 0; j < st->field_count; j++) {
+                if (cheader_type_has_unsupported_layout(r, &st->fields[j].type)) {
+                    st->unsupported_layout = True;
+                    changed = True;
+                    break;
+                }
+            }
+        }
+        if (!changed) break;
+    }
+}
+
 static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
                             const char *decl_name, c_type_t *ct,
                             type_info_t *out, long *array_len_out,
@@ -564,6 +642,43 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
         && ((decl_name[0] == '_' && decl_name[1] == '_')
             || strcmp(decl_name, "arg") == 0));
 
+    if (ct->unsupported_parameter) {
+        if (emit_diag) {
+            diag_begin_error("C declaration '%s' has an unsupported parameter declarator",
+                             decl_name ? decl_name : "?");
+            diag_span(DIAG_NODE(src_node), True,
+                      "use a one-dimensional array or pointer parameter, and explicit (*callback)(prototype) syntax");
+            diag_finish();
+        }
+        return False;
+    }
+
+    if (ct->kind == CTypeFunctionPtr) {
+        if (ct->fn_unsupported || !ct->elem) {
+            if (emit_diag) {
+                diag_begin_error("C declaration '%s' has an unsupported function-pointer declarator",
+                                 decl_name ? decl_name : "?");
+                diag_span(DIAG_NODE(src_node), True,
+                          "use a single function pointer with an explicit prototype; use (void) for no parameters");
+                diag_finish();
+            }
+            return False;
+        }
+        fn_ptr_desc_t *desc = alloc_fn_ptr_desc(ct->fn_param_count);
+        desc->is_c_abi = True;
+        desc->is_variadic = ct->fn_variadic;
+        if (!map_c_type(src_node, r, decl_name, ct->elem, &desc->ret_type, Null, emit_diag))
+            return False;
+        for (usize_t i = 0; i < ct->fn_param_count; i++) {
+            if (!map_c_type(src_node, r, decl_name, &ct->fn_params[i].type,
+                            &desc->params[i].type, Null, emit_diag)) return False;
+            desc->params[i].storage = StorageStack;
+        }
+        out->base = TypeFnPtr;
+        out->fn_ptr_desc = desc;
+        return True;
+    }
+
     if (ct->kind == CTypeArray) {
         if (array_len_out) *array_len_out = ct->array_len;
         return map_c_type(src_node, r, decl_name, ct->elem, out, Null, emit_diag);
@@ -575,12 +690,14 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
          * the pointer width is correct on 64-bit targets — otherwise we'd
          * fall through to an unresolvable TypeUser{OpaqueFoo} and corrupt
          * the high 32 bits at runtime. */
-        if (ct->elem && ct->elem->kind == CTypeStructRef && ct->elem->name) {
-            c_struct_t *def = find_cheader_struct(r, ct->elem->name);
-            if (!def || def->field_count == 0) {
+        c_type_t *pointee = resolve_cheader_type(r, ct->elem);
+        if (pointee && (pointee->kind == CTypeStructRef || pointee->kind == CTypeUnionRef)
+                && pointee->name) {
+            c_struct_t *def = find_cheader_struct(r, pointee->name);
+            if (!def || def->field_count == 0 || def->unsupported_layout) {
                 out->base = TypeVoid;
                 out->is_pointer = True;
-                out->ptr_perm = ct->is_const ? PtrRead : PtrReadWrite;
+                out->ptr_perm = cheader_type_is_const(r, ct->elem) ? PtrRead : PtrReadWrite;
                 return True;
             }
         }
@@ -598,7 +715,7 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
         }
         *out = inner;
         out->is_pointer = True;
-        out->ptr_perm = ct->is_const ? PtrRead : PtrReadWrite;
+        out->ptr_perm = cheader_type_is_const(r, ct->elem) ? PtrRead : PtrReadWrite;
         return True;
     }
 
@@ -658,6 +775,20 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
             return False;
         case CTypeStructRef:
         case CTypeUnionRef:
+            {
+                c_struct_t *st = find_cheader_struct(r, ct->name);
+                if (!st || st->unsupported_layout || !st->field_count) {
+                    if (emit_diag) {
+                        diag_begin_error("C declaration '%s' uses an unsupported or incomplete aggregate by value",
+                                         decl_name ? decl_name : "?");
+                        diag_span(DIAG_NODE(src_node), True,
+                                  "only pointers to opaque C aggregates can be imported");
+                        diag_finish();
+                    }
+                    return False;
+                }
+            }
+            /* fall through */
         case CTypeEnumRef:
             if (!ct->name) break;
             out->base = TypeUser;
@@ -746,6 +877,7 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
             diag_finish();
             continue;
         }
+        classify_cheader_layouts(&result);
 
         /* Auto-link companion .c file if it exists alongside the resolved header. */
         {
@@ -809,6 +941,16 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
                 goto next_struct;
             }
 
+            if (st->unsupported_layout) {
+                if (st->from_user_header) {
+                    diag_begin_error("C struct '%s' has an unsupported by-value field layout", st->name);
+                    diag_span(DIAG_NODE(decl), True,
+                              "a field has an unsupported type, array extent, or aggregate dependency");
+                    diag_finish();
+                }
+                goto next_struct;
+            }
+
             node_t *tn = make_node(NodeTypeDecl, decl->line);
             tn->col = decl->col;
             tn->source_file = decl->source_file;
@@ -826,7 +968,7 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
                 long array_len = 0;
                 if (!map_c_type(decl, &result, f->name, &f->type, &ti, &array_len,
                                 st->from_user_header))
-                    continue;
+                    goto next_struct;
                 node_t *field = make_node(NodeVarDecl, decl->line);
                 field->col = decl->col;
                 field->source_file = decl->source_file;
@@ -914,8 +1056,14 @@ next_struct:
             c_fn_t *fn = &result.fns[j];
             type_info_t ret;
             if (!map_c_type(decl, &result, fn->name, &fn->ret, &ret, Null,
-                            fn->from_user_header))
+                            fn->from_user_header)) {
+                if (fn->from_user_header) {
+                    diag_begin_error("C function '%s' has an unsupported return type", fn->name);
+                    diag_span(DIAG_NODE(decl), True, "cannot import an incomplete C function signature");
+                    diag_finish();
+                }
                 continue;
+            }
             node_t *fd = make_node(NodeFnDecl, decl->line);
             fd->col = decl->col;
             fd->source_file = decl->source_file;
@@ -932,8 +1080,14 @@ next_struct:
             for (usize_t k = 0; k < fn->param_count; k++) {
                 type_info_t pti;
                 if (!map_c_type(decl, &result, fn->params[k].name, &fn->params[k].type, &pti, Null,
-                                fn->from_user_header))
+                                fn->from_user_header)) {
+                    if (fn->from_user_header) {
+                        diag_begin_error("C function '%s' has an unsupported parameter type", fn->name);
+                        diag_span(DIAG_NODE(decl), True, "cannot import an incomplete C function signature");
+                        diag_finish();
+                    }
                     goto skip_fn_decl;
+                }
                 node_t *param = make_node(NodeVarDecl, decl->line);
                 param->col = decl->col;
                 param->source_file = decl->source_file;

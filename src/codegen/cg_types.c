@@ -221,6 +221,7 @@ static LLVMTypeRef get_llvm_type(cg_t *cg, type_info_t ti) {
 
 /* Build the LLVM function type for a TypeFnPtr descriptor. */
 static LLVMTypeRef build_fn_ptr_llvm_type(cg_t *cg, fn_ptr_desc_t *desc) {
+    if (desc->is_c_abi) return cg_abi_fn_ptr_type(cg, desc);
     LLVMTypeRef ret_ty = get_llvm_type(cg, desc->ret_type);
     LLVMTypeRef *param_types = Null;
     heap_t pt_heap = NullHeap;

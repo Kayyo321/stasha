@@ -21,12 +21,42 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 /* ── Global context ── */
 
 static const char *g_filename = "<unknown>";
 static const char *g_source   = Null;
 static boolean_t   g_render_enabled = True;
+
+/* File names may come from temporary import-resolution buffers. Intern them
+ * for the diagnostic context lifetime; diag_get_file() pointers stay stable
+ * when a nested parser switches to another file. Source text remains borrowed. */
+typedef struct diag_filename_entry {
+    struct diag_filename_entry *next;
+    char text[];
+} diag_filename_entry_t;
+static diag_filename_entry_t *g_diag_filenames;
+
+static const char *diag_own_filename(const char *filename) {
+    if (!filename) return "<unknown>";
+    for (diag_filename_entry_t *entry = g_diag_filenames; entry; entry = entry->next)
+        if (strcmp(entry->text, filename) == 0) return entry->text;
+    size_t length = strlen(filename);
+    if (length > SIZE_MAX - sizeof(diag_filename_entry_t) - 1) {
+        fputs("fatal: diagnostic filename is too long\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+    diag_filename_entry_t *entry = malloc(sizeof(*entry) + length + 1);
+    if (!entry) {
+        fputs("fatal: cannot retain diagnostic filename\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+    memcpy(entry->text, filename, length + 1);
+    entry->next = g_diag_filenames;
+    g_diag_filenames = entry;
+    return entry->text;
+}
 
 /* ── Warning/error configuration ── */
 static diag_config_t g_diag_config = { False, WarnUnusedVar };
@@ -66,7 +96,7 @@ void diag_register_source(const char *filename, const char *source) {
         }
     }
     if (g_source_registry_count < DIAG_MAX_REGISTERED_SOURCES) {
-        g_source_registry[g_source_registry_count].filename = filename;
+        g_source_registry[g_source_registry_count].filename = diag_own_filename(filename);
         g_source_registry[g_source_registry_count].source   = source;
         g_source_registry_count++;
     }
@@ -99,7 +129,7 @@ static const char *lookup_registered_source(const char *filename) {
 }
 
 void diag_set_file(const char *filename) {
-    g_filename = filename ? filename : "<unknown>";
+    g_filename = diag_own_filename(filename);
     /* Auto-switch the active source text for snippet rendering. */
     const char *registered = lookup_registered_source(g_filename);
     if (registered) g_source = registered;

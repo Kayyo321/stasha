@@ -670,7 +670,9 @@ static void gen_ret(cg_t *cg, node_t *node) {
         check_ext_returns_int_ptr(cg, rv, cg->current_fn_linkage, node->line);
     }
 
-    LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
+    cg_abi_fn_t *return_abi = cg_abi_current(cg);
+    LLVMTypeRef ret_type = return_abi ? return_abi->result.source
+        : LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
     LLVMValueRef result = Null;
     if (value_count == 0) {
         if (cg->current_fn_is_entry_main)
@@ -712,7 +714,9 @@ static void gen_ret(cg_t *cg, node_t *node) {
        before any cleanup. Do not reload locals after their destructor runs. */
     emit_cleanup_to_depth(cg, 0, moved, moved_count);
     if (moved_heap.pointer) deallocate(moved_heap);
-    if (result)
+    if (return_abi)
+        cg_abi_return(cg, return_abi, result);
+    else if (result)
         LLVMBuildRet(cg->builder, result);
     else
         LLVMBuildRetVoid(cg->builder);

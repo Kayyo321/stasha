@@ -28,6 +28,19 @@ int main(int argc, char **argv) {
         LLVMConstIntGetZExtValue(cg_const_int(LLVMInt8TypeInContext(cg.ctx), 128, 1)) != 128 ||
         LLVMConstIntGetSExtValue(cg_const_int(wide, UINT64_MAX, 1)) != -1 ||
         LLVMConstIntGetZExtValue(cg_const_int(wide, UINT64_MAX, 0)) != UINT64_MAX) return 4;
+    /* Source scope and emitted names must remain distinct even when their
+     * spellings collide; these are the same helpers used by assignment. */
+    symtab_add(&cg.globals, "value", NULL, NULL, scalar_type(TypeU64), 0);
+    symtab_add(&cg.globals, "dep__value", NULL, NULL, scalar_type(TypeU8), 0);
+    symtab_add(&cg.globals, "dep__dep__value", NULL, NULL, scalar_type(TypeU16), 0);
+    strcpy(cg.current_module_prefix, "dep");
+    if (cg_lookup(&cg, "value") != &cg.globals.entries[1] ||
+        cg_lookup_symbol(&cg, "value") != &cg.globals.entries[0] ||
+        cg_lookup_symbol(&cg, "dep__value") != &cg.globals.entries[1]) return 5;
+    symtab_add(&cg.locals, "value", NULL, NULL, scalar_type(TypeU32), 0);
+    if (cg_lookup(&cg, "value") != &cg.locals.entries[0]) return 6;
+    symtab_free(&cg.locals); symtab_free(&cg.globals);
+    cg.current_module_prefix[0] = 0;
     const type_kind_t kinds[] = {TypeI8, TypeU8, TypeI16, TypeU16, TypeI32, TypeU32, TypeI64, TypeU64};
     const token_kind_t ops[] = {TokPlus, TokPlusBang, TokMinusBang, TokStarBang, TokSlash, TokPercent, TokGt, TokGtGt};
     const char *names[] = {"add", "checked_add", "checked_sub", "checked_mul", "div", "rem", "gt", "right"};

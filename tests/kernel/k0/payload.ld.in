@@ -1,0 +1,19 @@
+OUTPUT_FORMAT(elf64-x86-64)
+OUTPUT_ARCH(i386:x86-64)
+ENTRY(_k0_entry)
+PHDRS { text PT_LOAD FLAGS(5); rodata PT_LOAD FLAGS(4); data PT_LOAD FLAGS(6); }
+SECTIONS {
+  . = @VMA@;
+  .text : AT(ADDR(.text) - @DELTA@) { KEEP(*(.text.entry)) *(.text .text.*) } :text
+  . = ALIGN(4096);
+  .rodata : AT(ADDR(.rodata) - @DELTA@) { *(.rodata .rodata.*) KEEP(*(.k0.keep)) } :rodata
+  . = ALIGN(4096);
+  .data : AT(ADDR(.data) - @DELTA@) { *(.data .data.*) } :data
+  . = ALIGN(16);
+  __bss_start = .;
+  .bss (NOLOAD) : AT(ADDR(.bss) - @DELTA@) { *(.bss .bss.*) *(COMMON) } :data
+  __bss_end = .;
+  .stack (NOLOAD) : AT(ADDR(.stack) - @DELTA@) { KEEP(*(.stack)) } :data
+  ASSERT(. - @VMA@ < 0x80000, "qualification image exceeds 512 KiB")
+  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) *(.llvm_addrsig) }
+}

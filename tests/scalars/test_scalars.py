@@ -134,7 +134,7 @@ class GeneratorTests(unittest.TestCase):
     def test_inventory_is_deterministic_and_complete(self):
         first, second = cases(), cases()
         self.assertEqual(first, second)
-        self.assertEqual(len(first), 576)
+        self.assertEqual(len(first), 577)
         self.assertEqual(len({case.name for case in first}), len(first))
         for typ in TYPES:
             selected = [case for case in first if typ.name in case.tags]
