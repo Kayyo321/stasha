@@ -19,7 +19,10 @@ def run(cmd, *, env=None):
 
 def generate(d):
     sts = ['@[[freestanding, crash: disable]];\n']
-    c = ['#include <stdint.h>\n#include <stddef.h>\n#include <stdio.h>\n#include <string.h>\n']
+    # Freestanding indexed access requires the shared panic symbol even when
+    # all fixture indices are valid. Any unexpected panic fails this oracle.
+    c = ['#include <stdint.h>\n#include <stddef.h>\n#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n',
+         '_Noreturn void __stasha_panic(uint32_t reason) { fprintf(stderr, "unexpected Stasha panic: %u\\n", (unsigned)reason); abort(); }\n']
     layouts, calls = [], []
     def case(name, stbody, cbody, assigns, condition, transform, packed=False, union=False):
         attr = '@packed' if packed else '@c_layout'

@@ -1,9 +1,87 @@
 # Hosted memory-access contract regressions
 
-This bounded P3 suite tests the existing hosted promises in
-`wiki/Safety-System.md`, plus source-typed dereference width. It does not qualify
-kernel memory safety: K0 rejects slices/heap and requires explicit unsafe raw
-pointer access. The initial review was followed by shared access-lowering repairs.
+These suites cover bounded hosted access contracts, including A1 explicit
+array/slice checks and source-typed dereference width. They do not qualify
+general memory safety: K0 still rejects slices/heap and requires explicit unsafe
+raw-pointer access. The historical P3 review below predates the A1 contract.
+
+## A1 current contract and runner
+
+```sh
+python3 tests/memory/run_bounds_a1.py --compiler ./bin/stasha \
+  --opt 0,1,2,3 --artifacts /tmp/stasha-bounds-a1
+```
+
+Use a frozen compiler binary with its exact-source receipt for qualification.
+`--case NAME` is repeatable; `--list` prints the current inventory. The runner
+links an exact strong `__stasha_panic` reason-6 hook; hook output and exit status
+also verify the expected operand trace where specified. This test hook's I/O is
+instrumentation, not compiler-generated bounds-path I/O. Runtime cases run at
+each requested level; diagnostic cases remain compile-only even if accidentally
+accepted. Preserve compiler/runner/hook hashes and per-case compile/runtime/IR
+artifacts. Do not infer a passing A1 result from the historical receipts below.
+
+The implemented A1 contract is:
+
+- Explicit fixed-array reads, stores, compound updates, and recursive indexes
+  require `0 <= index < actual LLVM array extent`. Only pure terminal
+  `&array[N]` permits one-past formation, with no element load or dereference
+  permission. Nested bases remain strict; `&matrix[rows][0]` is invalid.
+- Slice reads, stores, compound updates, and indexed addresses use logical
+  `len`; `&slice[len]` is invalid. Descriptors must have `len >= 0` and
+  `cap >= len`, including explicit unchecked accesses. Shape is numerical
+  validation, not backing-allocation, lifetime, or initialization proof.
+- All source index/range widths and signedness survive until validation;
+  negative signed, narrow unsigned high-bit, `2^32+k`, and full `u64` boundaries
+  must not be made valid by truncation. Extents use actual array storage.
+- Base/index and source/lo/hi evaluate once in that order. Plain assignment
+  evaluates RHS before indexed target; compound assignment evaluates target
+  before RHS. Guards follow the operation's relevant operands. Descriptor
+  rebinding must affect later accesses. An RHS invalidating a saved compound
+  target is a lifetime issue beyond A1.
+- Ordinary bounds/ranges/shape checks remain active in `unsafe`.
+  `[unchecked: index]` requires `unsafe` and suppresses only its own extent
+  guard, preserving shape/type validation and checks in its base, index
+  expression, and surrounding operations.
+- Array views require `0 <= lo <= hi <= N`, rejecting array-to-slice conversion
+  when `N > INT32_MAX`. Slice views require `0 <= lo <= hi <= current len`, not
+  capacity. Result `len = hi-lo`, `cap = old_cap-lo`; empty-at-end is valid.
+- Raw data-pointer ranges require `unsafe`, explicit `hi`, and a resolved
+  non-void sized element. Pointer/lo/hi evaluate once. Full-width guards require
+  `0 <= lo <= hi <= INT32_MAX`, plus `hi <= target_max_size / ABI_element_size`
+  before the range offset when element size is nonzero. Zero-sized elements
+  avoid division. Result `data = ptr + lo`, `len = cap = hi-lo`.
+  Functions, futures, and opaque handles require an explicit typed data-pointer
+  cast before view construction. The caller asserts a live, correctly aligned,
+  initialized, correctly typed interval with mutation permission. Empty views
+  still need a valid in-allocation or one-past pointer; null is permitted only
+  for `0:0` as a precondition, not runtime null/lifetime proof.
+- All bounds/shape failures use nonreturning `void __stasha_panic(u32)` reason
+  6. Hosted default: weak trap without I/O. Freestanding final images: required
+  external hook. Scalar reasons 1–5 remain stable; 7 (null) and 8 (allocation)
+  remain reserved. There is no unwind/defer-on-panic promise. Preserve focused
+  hook checks and freestanding required-hook/object-import evidence separately.
+
+The source-backed archive marker is **ABI 4**: rebuild older source-backed
+archives despite the unchanged three-field descriptor layout. The marker alone
+does not change native C ABI shape.
+
+A1 excludes initialization-produced writes/ranges/spreads, `foreach`-generated
+indexing, `copy`, `append`, allocation, general raw-pointer access,
+initialization, ownership/lifetimes, concurrency, and atomic/volatile semantics.
+`append`/`rem` ownership remains unqualified: aliases, fields, and returned
+interior views can reach realloc/free; neither `heap` nor `cap` establishes a
+live owning allocation base. Raw `new`/`mov` policies, K0 restrictions, and
+indexed `++`/`--` rejection remain unchanged.
+
+## Historical P3 access runner and evidence
+
+The following baseline and initial checked-access results record the previous
+contract. In particular, old unsafe bounds-suppression controls, native trap
+matching, and any capacity-expanding view assumptions are not A1 acceptance
+criteria. Keep their counts/hashes as history; use fresh exact-binary A1 evidence
+for the current contract. The initial review was followed by shared
+access-lowering repairs.
 
 Run:
 
@@ -29,10 +107,12 @@ remaining inside its live two-element backing array. Thus a missing check can
 be observed without executing a physical out-of-allocation access. Expected
 behavior is the documented bounds trap. Trap evidence requires exact native
 trap termination and slice-specific guard/trap pre-optimization IR; this is not
-an instrumented panic-hook reason test. Unsafe slice accesses are an explicit
-positive control and still remain inside the backing allocation.
+an instrumented panic-hook reason test. Under the previous contract, unsafe slice
+accesses were a positive suppression control and remained inside the backing
+allocation. A1 instead requires ordinary invalid accesses inside unsafe to fail;
+only the explicit unsafe `unchecked` flag skips its own extent guard.
 
-## Checked access checkpoint
+## Historical checked access checkpoint (previous contract)
 
 Compiler `bin/stasha-access-20261010T0608` (SHA256
 `898e29222174e20635244d50ad3e63d80a297e61312ebf60afaf3bf4b3faec7f`)
@@ -43,7 +123,7 @@ are being validated; the earlier 67 passes are not a whole-language claim.
 CFG nullable facts, alias lifetimes, receiver effects, and unbounded raw-pointer
 view construction remain outside this checkpoint’s qualified scope.
 
-## Executed baseline, 10 October 2026
+## Historical executed baseline, 10 October 2026 (previous contract)
 
 Compiler: `bin/stasha-parameters-20261010T0531`
 SHA256: `a19c57fcb4f92d1c45518aeccef3c01266982a39da9d0fcbf9d9c1f63c5fcdbc`
@@ -95,7 +175,11 @@ Failures, prioritized:
    name-based entry, while aliases copy its closed state instead of sharing
    allocation state. Shadowing, reassignment, and branch joins are unmodeled.
 
-## Proposed serialized repair
+## Historical proposed serialized repair
+
+This proposal records the initial review. Its unsafe suppression wording is
+superseded by the A1 contract above; the unresolved nullable/ownership items
+remain separate work, not evidence that those repairs have been implemented.
 
 1. Replace identifier-only dereference typing with the resolved immediate
    operand type (`scalar_expr_type`, alias resolution, then `ti_deref_one`).
@@ -129,10 +213,12 @@ Failures, prioritized:
    Implement a bounded explicitly documented conservative analysis first; do not
    claim full hosted memory safety from local helper calls or K0 restrictions.
 
-The existing wiki says unsafe suppresses safety checks and explicitly permits
-permission widening there; existing `check_permission_widening` also skips unsafe.
-Any intentional narrowing of that contract should be explicit and covered by
-compatibility tests, not an accidental consequence of a new lvalue helper.
+At that review, the wiki described unsafe as suppressing safety checks and
+permitted permission widening; `check_permission_widening` also skipped unsafe.
+A1 intentionally changes the bounds contract: ordinary checks now persist and
+unchecked indexing requires unsafe. Existing pointer-permission escapes are
+separate. This compatibility change requires fresh regression evidence and
+ABI-4 source-backed archive rebuilds.
 
 
 ## Pointer qualifier regression suite
@@ -151,4 +237,5 @@ the original standalone fixture files were not included, so these are not
 byte-identical reruns. Arithmetic permission consistency, pointer depth/type
 reinterpretation, integer-pointer conversions, lifetimes and nullable flow are
 not qualified by this suite. Fresh-address arithmetic and bare-star declarations
-remain compatibility controls. Explicit `unsafe` escapes remain supported.
+remain compatibility controls. Existing explicit pointer-permission `unsafe`
+escapes remain supported; this does not disable ordinary A1 bounds checks.

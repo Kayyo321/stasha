@@ -5,17 +5,19 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import signal
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 from generate import Case, cases, write_corpus
 from reference import (BY_NAME, TYPES, ScalarError, ScalarTrap, binary, boundaries,
                        canonical_hex, cast, common_type, literal, logical, unary)
-from run import build_trap_hook, capture, resolve_cc, run_case
+from run import build_trap_hook, capture, resolve_cc, run_case, self_test_trap_hook
 
 
 class ReferenceTests(unittest.TestCase):
@@ -213,6 +215,46 @@ else:
 output.write_text('#!' + sys.executable + '\n' + body + '\n')
 output.chmod(0o700)
 '''
+
+
+class PanicHookContractTests(unittest.TestCase):
+    REASONS = {1: 'overflow', 2: 'division-by-zero', 3: 'division-overflow',
+               4: 'invalid-shift', 5: 'fp-cast-range', 6: 'bounds', 7: 'null',
+               8: 'allocation', 99: 'unknown:99'}
+
+    def test_hook_preserves_all_reason_mappings(self):
+        source = Path(__file__).with_name('panic_hook.c').read_text()
+        mappings = {int(number): name for number, name in
+                    re.findall(r'case (\d+): name = "([^"]+)"; break;', source)}
+        self.assertEqual(mappings, {reason: name for reason, name in self.REASONS.items() if reason != 99})
+        self.assertIn('STASHA_TRAP:unknown:%u', source)
+        self.assertIn('_Exit(87)', source)
+        self.assertIn('_Exit(86)', source)
+
+    def test_host_probe_checks_all_abi_reasons_without_native_build(self):
+        # A mocked host tool verifies the probe inventory and failure oracle;
+        # it is not evidence of real C linkage or Stasha code generation.
+        for incorrect_reason in (None, 6, 7, 8, 99):
+            with self.subTest(incorrect_reason=incorrect_reason), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                built = {'status': 'PASS', 'object': str(directory / 'panic_hook.o'), 'problems': []}
+                observed = []
+                def fake_capture(command, cwd, prefix, timeout):
+                    if Path(prefix).name == 'compile-probe':
+                        (directory / 'hook_probe').write_bytes(b'mock executable')
+                        return {'category': 'exit', 'returncode': 0, 'stdout': '', 'stderr': ''}
+                    reason = int(command[-1])
+                    observed.append(reason)
+                    name = 'wrong' if reason == incorrect_reason else self.REASONS[reason]
+                    return {'category': 'exit', 'returncode': 87 if reason == 99 else 86,
+                            'stdout': '', 'stderr': 'STASHA_TRAP:' + name + '\n'}
+                with mock.patch('run.build_trap_hook', return_value=built), \
+                        mock.patch('run.capture', side_effect=fake_capture):
+                    result = self_test_trap_hook(directory, Path('/mock-cc'), 1)
+                self.assertEqual(observed, list(self.REASONS))
+                self.assertEqual(result['status'], 'PASS' if incorrect_reason is None else 'FAIL')
+                if incorrect_reason is not None:
+                    self.assertIn('wrong hook result for reason ' + str(incorrect_reason), result['problems'])
 
 
 @unittest.skipUnless(os.name == 'posix', 'POSIX subprocess signal contract')

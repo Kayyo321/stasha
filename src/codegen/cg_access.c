@@ -122,33 +122,37 @@ static LLVMValueRef access_index_value(cg_t *cg, node_t *index_node) {
                              !scalar_unsigned(type), "index.wide");
 }
 
-/* The source index is widened once with its own signedness. Unsigned comparison
- * rejects negative signed indices (now huge u64 values) and large u64 indices.
- * Never cache a mutable slice's length in the symbol's array-size metadata. */
-static void access_slice_bounds(cg_t *cg, LLVMValueRef index, LLVMValueRef length,
-                                 boolean_t unchecked) {
-    if (cg->in_unsafe > 0 || unchecked) return;
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(cg->ctx);
-    LLVMValueRef len = LLVMBuildIntCast2(cg->builder, length, i64, False, "slice.length");
-    LLVMValueRef valid = LLVMBuildICmp(cg->builder, LLVMIntULT, index, len, "slice.inbounds");
-    LLVMBasicBlockRef ok = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "slice.ok");
-    LLVMBasicBlockRef bad = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "slice.oob");
-    LLVMBuildCondBr(cg->builder, valid, ok, bad);
-    LLVMPositionBuilderAtEnd(cg->builder, bad);
-    LLVMValueRef message = LLVMBuildGlobalStringPtr(cg->builder, "slice index out of bounds\n", "slice.bounds.message");
-    LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, &message, 1, "");
-    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
-    LLVMValueRef trap = LLVMGetNamedFunction(cg->module, "llvm.trap");
-    if (!trap) trap = LLVMAddFunction(cg->module, "llvm.trap", ft);
-    LLVMBuildCall2(cg->builder, ft, trap, Null, 0, "");
-    LLVMBuildUnreachable(cg->builder);
-    LLVMPositionBuilderAtEnd(cg->builder, ok);
+/* Terminal address formation is distinct from permissions. It permits only a
+ * final fixed-array one-past address; recursive bases always select elements. */
+typedef enum { AccessElement, AccessTerminalAddress } access_purpose_t;
+
+/* Descriptor shape is mandatory even for explicitly unchecked indexing. This
+ * validates numbers only, not backing allocation, initialization or lifetime. */
+static void access_slice_shape(cg_t *cg, LLVMValueRef length, LLVMValueRef capacity) {
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    LLVMValueRef negative = LLVMBuildICmp(cg->builder, LLVMIntSLT, length, zero, "slice.len.negative");
+    LLVMValueRef short_cap = LLVMBuildICmp(cg->builder, LLVMIntSLT, capacity, length, "slice.cap.short");
+    scalar_trap_if(cg, LLVMBuildOr(cg->builder, negative, short_cap, "slice.shape.invalid"), 6);
+}
+
+/* Source-signed widening plus unsigned comparison rejects negative signed
+ * indices and large u64 values without truncating either index or extent. */
+static void access_extent_bounds(cg_t *cg, LLVMValueRef index, LLVMValueRef extent,
+                                  boolean_t unchecked, access_purpose_t purpose) {
+    if (unchecked) return;
+    LLVMValueRef bad = LLVMBuildICmp(cg->builder,
+        purpose == AccessTerminalAddress ? LLVMIntUGT : LLVMIntUGE,
+        index, extent, "index.out.of.bounds");
+    scalar_trap_if(cg, bad, 6);
 }
 
 static LLVMValueRef access_index_address(cg_t *cg, node_t *node,
                                          LLVMTypeRef *type, symbol_t **root,
-                                         ptr_perm_t access) {
+                                         ptr_perm_t access, access_purpose_t purpose) {
     boolean_t unchecked = node->kind == NodeFlaggedIndex;
+    if (unchecked && cg->in_unsafe == 0) {
+        scalar_error(node, "unchecked indexing requires an unsafe block"); return Null;
+    }
     node_t *object = unchecked ? node->as.flagged_index.object : node->as.index_expr.object;
     node_t *index_node = unchecked ? node->as.flagged_index.index : node->as.index_expr.index;
     LLVMTypeRef storage = access_storage_type(cg, object);
@@ -159,9 +163,14 @@ static LLVMValueRef access_index_address(cg_t *cg, node_t *node,
         if (!base) return Null;
         LLVMValueRef index = access_index_value(cg, index_node);
         if (!index) return Null;
-        *type = LLVMGetElementType(storage);
+        if (!actual || LLVMGetTypeKind(actual) != LLVMArrayTypeKind) {
+            scalar_error(node, "indexing requires actual array storage"); return Null;
+        }
+        LLVMValueRef extent = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), LLVMGetArrayLength2(actual), 0);
+        access_extent_bounds(cg, index, extent, unchecked, purpose);
+        *type = LLVMGetElementType(actual);
         LLVMValueRef indices[2] = {LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0), index};
-        return LLVMBuildGEP2(cg->builder, storage, base, indices, 2, "array.address");
+        return LLVMBuildGEP2(cg->builder, actual, base, indices, 2, "array.address");
     }
     if (source.base == TypeSlice && !source.is_pointer) {
         if (!source.elem_type) { scalar_error(node, "slice access requires a resolved element type"); return Null; }
@@ -175,7 +184,11 @@ static LLVMValueRef access_index_address(cg_t *cg, node_t *node,
         if (!index) return Null;
         LLVMValueRef data = LLVMBuildExtractValue(cg->builder, slice, 0, "slice.data");
         LLVMValueRef length = LLVMBuildExtractValue(cg->builder, slice, 1, "slice.len");
-        access_slice_bounds(cg, index, length, unchecked);
+        LLVMValueRef capacity = LLVMBuildExtractValue(cg->builder, slice, 2, "slice.cap");
+        access_slice_shape(cg, length, capacity);
+        LLVMValueRef extent = LLVMBuildZExt(cg->builder, length, LLVMInt64TypeInContext(cg->ctx), "slice.length");
+        /* Slice addresses always select an element, including terminal &s[i]. */
+        access_extent_bounds(cg, index, extent, unchecked, AccessElement);
         *type = get_slice_elem_llvm_type(cg, source.elem_type[0]);
         return LLVMBuildGEP2(cg->builder, *type, data, &index, 1, "slice.address");
     }

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Focused hosted slice-view construction contracts.
 
-Known arrays and slices use half-open ranges satisfying 0 <= lo <= hi <= cap.
-Reslicing may expand beyond the old len up to cap. Bounds retain source width
-and signedness until checked; unsafe suppresses the guard. Raw-pointer slices
-retain their legacy, unqualified capacity behavior and are tested only against
-live backing storage. No out-of-storage pointer is dereferenced by this corpus.
+Known arrays and slices use half-open ranges satisfying 0 <= lo <= hi <= len
+(or the actual fixed-array extent). Spare capacity does not permit expansion.
+Bounds retain source width and signedness until checked, including inside unsafe.
+Raw-pointer construction needs unsafe and an explicit upper bound; its len/cap
+record the caller's assertion of a live, initialized interval, not ownership.
+No out-of-storage pointer is dereferenced by this corpus.
 """
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import platform
 import tempfile
@@ -70,12 +72,14 @@ def cases():
     for name, body in (
         ('expand_to_capacity',
          'stack i32 a[4] = .{1, 2, 3, 4}; stack []i32 short = a[0:1];\n'
-         'stack []i32 expanded = short[1:4];\n'
-         'if (len.(expanded) != 3 || cap.(expanded) != 3 || expanded[2] != 4) { ret 1; }\nret 0;'),
+         'stack []i32 _invalid = short[1:4]; ret 0;'),
         ('empty_at_capacity',
          'stack i32 a[2] = .{1, 2}; stack []i32 view = a[0:1];\n'
-         'stack []i32 empty = view[2:2];\n'
-         'if (len.(empty) != 0 || cap.(empty) != 0) { ret 1; } ret 0;'),
+         'stack []i32 _invalid = view[2:2]; ret 0;'),
+        ('empty_at_logical_end',
+         'stack i32 a[2] = .{1, 2}; stack []i32 view = a[0:1];\n'
+         'stack []i32 empty = view[1:1];\n'
+         'if (len.(empty) != 0 || cap.(empty) != 1) { ret 1; } ret 0;'),
         ('empty_nil',
          'stack []i32 view = nil; stack []i32 empty = view[:];\n'
          'if (len.(empty) != 0 || cap.(empty) != 0) { ret 1; } ret 0;'),
@@ -97,17 +101,20 @@ def cases():
          'if (a[0].pad != 11 || a[0].value != 4660 || a[1].pad != 22 || a[1].value != 10000) { ret 1; } ret 0;'),
         ('raw_pointer_typed_width',
          'stack i32 a[3] = .{4660, 9000, 11000}; stack i32 *rw ptr = &a[0];\n'
-         'stack []i32 view = ptr[1:2];\n'
-         'if (view[0] != 9000) { ret 1; } view[0] += 1000;\n'
+         'unsafe { stack []i32 view = ptr[1:2];\n'
+         'if (len.(view) != 1 || cap.(view) != 1 || view[0] != 9000) { ret 1; }\n'
+         'view[0] += 1000; }\n'
          'if (a[0] != 4660 || a[1] != 10000 || a[2] != 11000) { ret 2; } ret 0;'),
         ('unsafe_range_suppressed',
          'stack i32 a[2] = .{1, 2}; stack []i32 view = a[:];\n'
-         'unsafe { stack []i32 reversed = view[1:0];\n'
-         'if (cap.(reversed) != 1) { ret 1; } } ret 0;'),
+         'unsafe { stack []i32 _invalid = view[1:0]; } ret 0;'),
     ):
         decl = ('type Entry: struct { ext i64 pad; ext i32 value; };\n'
                 'type Box: struct { ext []Entry view; };' if name == 'struct_element_width' else '')
-        result.append(access.Case(name, access.program(name, body, decl)))
+        invalid = name in ('expand_to_capacity', 'empty_at_capacity', 'unsafe_range_suppressed')
+        result.append(access.Case(name, access.program(name, body, decl),
+                                  outcome='trap' if invalid else 'success',
+                                  reason='bounds' if invalid else ''))
 
     for name, typ, lo, hi, source in (
         ('negative_lo_i8', 'i8', '-1', '1', 'view'),
@@ -130,7 +137,7 @@ def cases():
                 'stack ' + typ + ' lo = ' + lo + '; stack ' + typ + ' hi = ' + hi + ';\n'
                 'stack []i32 _invalid = ' + source + '[lo:hi]; ret 0;')
         result.append(access.Case(name, access.program(name, body), outcome='trap',
-                                  reason='slice range', observations=[
+                                  reason='bounds', observations=[
                                       'The invalid view is never dereferenced; a construction guard must trap.']))
 
     for path, expression in (('member', '_box.view'), ('call', 'get(&_box)'),
@@ -143,7 +150,7 @@ def cases():
                 'stack Box _box = .{.view = view}; stack [][]i32 _views = make.{view};\n'
                 'stack []i32 _invalid = ' + expression + '[0:4]; ret 0;')
         result.append(access.Case(name, access.program(name, body, decl),
-                                  outcome='trap', reason='slice range'))
+                                  outcome='trap', reason='bounds'))
 
     for bound in ('lower', 'upper'):
         name = 'noninteger_' + bound
@@ -167,6 +174,8 @@ def main():
     parser.add_argument('--case', action='append', default=[])
     parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--list', action='store_true')
+    parser.add_argument('--cc', default=os.environ.get('CC', 'cc'),
+                        help='trusted installed host C compiler for the strong panic hook')
     args = parser.parse_args()
     selected = [case for case in cases() if not args.case or case.name in args.case]
     if not selected or set(args.case) - {case.name for case in selected}:
@@ -180,32 +189,24 @@ def main():
     args.compiler = args.compiler.resolve(strict=True)
     args.compiler_arg = []
     args.compile_timeout, args.run_timeout = 30, 5
-    args.trap_hook_object = None
-    args.require_trap_reasons = False
-    args.trap_hook_pattern, args.trap_exit_code = None, None
-    args.trap_signal = access.scalar_runner.default_trap_signal()
-    if not args.trap_signal:
-        parser.error('no qualified native trap signal on this host')
     if args.artifacts:
         args.artifacts.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix='slice-views-', dir=args.artifacts))
+    work = Path(tempfile.mkdtemp(prefix='slice-views-', dir=args.artifacts)).resolve()
     before = access.scalar_runner.sha256(args.compiler)
     summary = {'compiler': str(args.compiler), 'compiler_sha256': before,
                'utc': datetime.now(timezone.utc).isoformat(), 'host': platform.platform(),
                'runner_sha256': access.scalar_runner.sha256(__file__),
                'source': access.provenance(), 'results': []}
+    summary['hook_build'] = access.prepare_bounds_hook(args, work, selected)
+    if summary['hook_build'] and summary['hook_build']['status'] != 'PASS':
+        summary.update(status='FAIL', problems=['strong bounds panic hook unavailable'])
+        access.scalar_runner.write_json(work / 'summary.json', summary)
+        print('FAIL', summary['hook_build']['problems'], work / 'summary.json')
+        return 1
     for case in selected:
         for opt in ([0] if case.outcome == 'rejection' else opts):
             case_dir = work / (case.name + '-O' + str(opt))
             result = access.scalar_runner.run_case(case, opt, args, case_dir)
-            if case.outcome == 'trap' and result.get('compile', {}).get('returncode') == 0:
-                pre = case_dir / 'pre.ll'
-                ir = pre.read_text() if pre.is_file() else ''
-                if 'slice range out of bounds' not in ir or 'call void @llvm.trap' not in ir:
-                    result['problems'].append('missing slice construction guard diagnostic and trap IR')
-                result['status'] = 'PASS' if not result['problems'] else 'FAIL'
-                result['trap_reason_verified'] = False
-                result['trap_evidence'] = 'Exact native trap signal plus range-specific pre-optimization guard IR.'
             print(result['status'], case.name, 'O' + str(opt), '; '.join(result['problems']))
             summary['results'].append(result)
     summary['compiler_sha256_after'] = access.scalar_runner.sha256(args.compiler)

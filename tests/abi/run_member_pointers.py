@@ -92,9 +92,13 @@ ext fn @comptime[T] Generic.empty(void): Generic.[T] {
 }
 
 '''
+# Freestanding checked fixed-array access needs a runtime hook. Unexpected
+# panics terminate nonzero; no member/ABI assertion is relaxed.
 DRIVER = '''#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+_Noreturn void __stasha_panic(uint32_t reason) { fprintf(stderr, "unexpected Stasha panic: %u\\n", (unsigned)reason); abort(); }
 typedef struct { uint8_t tag; uint64_t value; uint16_t elems[3]; } Inner;
 typedef struct { uint32_t guard; Inner inner; Inner *link; } Outer;
 typedef struct __attribute__((packed)) { uint8_t tag; uint64_t value; uint16_t elems[3]; } Packed;

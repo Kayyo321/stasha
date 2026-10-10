@@ -4,7 +4,9 @@ This page describes Stasha’s safety contracts. The current development compile
 has qualified subsets, not a complete memory-safety proof: nullable flow, alias
 lifetimes, receiver effects, and allocation-failure behavior are still being
 repaired and tested. See [implementation status](Kernel-Readiness-Status.md).
-Slice bounds are runtime checks unless proved redundant or explicitly suppressed.
+Explicit fixed-array and slice accesses have the A1 checks described below.
+Ordinary checks remain active inside `unsafe`; the unsafe-only `unchecked` index
+flag suppresses just its own extent guard.
 
 ---
 
@@ -30,7 +32,8 @@ heap  u8  *r+ walker  = start;  // read and walk forward
 
 ### Permissions Only Narrow
 
-You can narrow permissions (give up capabilities), but you can never widen them:
+Outside `unsafe`, you can narrow permissions (give up capabilities), but cannot
+widen them through the checked pointer conversions:
 
 ```stasha
 heap i32 *rw p = new.(4);
@@ -38,7 +41,8 @@ heap i32 *r  q = p;       // OK: narrowing rw → r
 // heap i32 *rw r = q;   // ERROR: cannot widen r → rw
 ```
 
-This means once you hand a read-only pointer to a function, that function cannot acquire write access.
+Checked conversions preserve the read-only restriction; unsafe escapes and
+arbitrary reinterpretation are not a general proof of immutability.
 
 Explicit pointer-to-pointer casts also check read/write permissions outside
 `unsafe`. Nested read/write qualifiers can narrow only through a read-only
@@ -127,41 +131,109 @@ fn get_ptr(): stack i32 *rw {
 }
 ```
 
-This prevents dangling pointers from function returns.
+This diagnoses selected direct escapes. Alias-based and general lifetime
+enforcement remains unqualified; A1 bounds checks do not repair it.
 
 ---
 
-## Slice Bounds Checking
+## A1: Explicit Array and Slice Bounds
 
-Every slice index goes through a bounds check by default:
+Explicit reads, stores, compound updates, and indexed addresses share bounds
+lowering. For a fixed array, reads/stores/updates require `0 <= index < N`, using
+the actual LLVM array extent, including fields and nested array storage. Only a
+pure terminal `&array[index]` permits `index == N`: it forms a one-past pointer,
+loads no element, and does not permit dereference. Recursive bases still select
+an element. Thus `&matrix[rows][0]` fails, but
+`&matrix[rows-1][columns]` may form a one-past pointer to the final row.
+
+For slices, all four operations require `0 <= index < len`, including address
+formation: `&slice[len]` is invalid. The signed i32 descriptor fields must satisfy
+`len >= 0` and `cap >= len`. Shape validation is numerical; it does not prove
+backing allocation, initialized values, or lifetime.
 
 ```stasha
 heap []i32 s = make.([]i32, 5);
 s[4] = 99;   // OK: 4 < 5
-s[5] = 99;   // RUNTIME ERROR: index 5 >= len 5 → llvm.trap (abort)
+s[5] = 99;   // reason-6 panic: index 5 >= len 5
 ```
 
-Compile-time constant indices that are provably in-bounds are optimized out automatically.
+Indexes and range bounds retain their full source width and signedness before
+validation; negative signed values and large `u64` values cannot pass by integer
+truncation. Fixed-array extents likewise are not truncated to descriptor width.
 
-Slice reads, stores, compound updates, and indexed address derivation use the
-same logical-length check. Forming a view from a known fixed array or slice
-requires `0 <= lo <= hi <= capacity`; expansion beyond the old length but within
-capacity is permitted. The new view has length `hi-lo` and capacity `old_cap-lo`.
-Bounds retain source signedness before validation, so a negative or very large
-index cannot become valid by integer truncation. Raw-pointer view construction
-has no proven capacity and is outside this bounds qualification.
+Each relevant expression evaluates once, in the existing order:
 
-### Skip Bounds Check
+- Read/address: base, then index.
+- Range: source, then `lo`, then `hi`.
+- Plain indexed assignment: RHS, then target base and index.
+- Compound assignment: target base and index, then RHS.
 
-When you can prove the index is valid, use `[unchecked: i]`:
+The operation's shape/extent guards follow its relevant operands; a failed
+compound target prevents RHS evaluation. A later RHS that invalidates the saved
+target address is an ownership/lifetime issue beyond bounds checking.
+
+Array views require `0 <= lo <= hi <= N`; arrays with `N > INT32_MAX` cannot be
+converted to a slice. Slice views require `0 <= lo <= hi <= current len`.
+Capacity never authorizes exposing elements beyond that length. Omitted `lo` is
+zero and omitted `hi` is the source length. Result length is `hi-lo`, capacity is
+`old_cap-lo`; empty-at-end ranges are valid. Ordinary range and descriptor checks
+remain active inside `unsafe`.
+
+### Explicit Unsafe Index Escape
+
+`[unchecked: i]` requires an `unsafe` block:
 
 ```stasha
-for (stack i32 i = 0; i < len.(s); i++) {
-    s[unchecked: i] = i;   // no bounds check emitted
+unsafe {
+    for (stack i32 i = 0; i < len.(s); i++) {
+        s[unchecked: i] = i;   // skips only this index's extent guard
+    }
 }
 ```
 
-Use this only when you are certain the index is in range.
+Use it only when you have established access validity. Descriptor shape and
+resolved element-type validation remain. Checks in the base, index expression,
+or surrounding operations remain: an unchecked outer access cannot hide an
+ordinary invalid access used to compute its index. Using `unchecked` outside
+`unsafe` is a compile-time error.
+
+### Unsafe Raw-Pointer Views
+
+`ptr[lo:hi]` requires `unsafe`, an explicit `hi`, and a resolved non-void sized
+data element type. Function values, futures, and opaque runtime handles cannot
+implicitly become views; an explicit typed data-pointer cast is required first.
+The pointer and bounds evaluate once, in that order. Full-width guards require
+`0 <= lo <= hi <= INT32_MAX` and, for nonzero target ABI element size,
+`hi <= target_max_size / element_size` before the range offset. Zero-sized
+elements avoid division. Result data is `ptr + lo` and `len = cap = hi-lo`.
+
+The caller asserts that the interval is live, correctly aligned, initialized,
+correctly typed, and permits mutation through the resulting slice. An empty
+interval still requires a valid in-allocation or one-past result pointer. Null
+is permitted only for `0:0` by this unsafe precondition; these numerical guards
+do not add runtime null or lifetime proof. Descriptor fields record the caller's
+assertion, not physical backing or ownership evidence.
+
+### Failure Hook, Compatibility, and Boundary
+
+Invalid index/range/shape checks call nonreturning
+`void __stasha_panic(u32 reason)` with reason **6**. The hosted weak default traps
+without I/O. Freestanding final images must supply the hook. Scalar reasons 1–5
+are unchanged; 7 (null) and 8 (allocation) remain reserved. Returning from the
+hook violates its ABI; there is no unwinding or defer-on-panic guarantee.
+
+Rebuild source-backed archives for **ABI 4** after these source-compatibility
+changes. The three-field descriptor layout is unchanged; the marker alone does
+not change native C ABI shape.
+
+A1 excludes initialization-produced writes/ranges/spreads, `foreach`-generated
+indexing, `copy`, `append`, allocation, general raw-pointer access, initialization,
+ownership/lifetimes, concurrency, and atomic/volatile semantics. K0 capability
+restrictions and indexed `++`/`--` rejection are unchanged. General `append` and
+`rem` remain ownership-unqualified: aliases, fields, and returned interior views
+can reach realloc/free. Neither `heap` storage nor capacity proves a live owning
+allocation base. See [Slices](Slices.md) and the
+[regression contract](../tests/memory/README.md) for the bounded scope.
 
 ---
 
@@ -191,7 +263,9 @@ if result != nil {
 }
 ```
 
-The compiler tracks that inside the `if result != nil { ... }` branch, `result` is narrowed to non-nil.
+This is the intended guarded-use pattern. General CFG non-null tracking remains
+unqualified; accepting this example does not prove that unguarded, aliased, or
+later-invalidated uses are rejected. A1 does not add nullable-flow analysis.
 
 ---
 
@@ -222,36 +296,39 @@ stack i32 result = process_and_free(data, 4);
 
 ## `unsafe {}` Blocks
 
-All safety checks can be suppressed inside an `unsafe {}` block. Use this only when you have manually verified correctness:
+`unsafe` permits existing pointer/domain escapes and explicit unchecked indexing.
+It does not remove ordinary array/slice bounds, descriptor-shape, or range checks.
+Use it only when you have manually verified the extra obligations:
 
 ```stasha
 unsafe {
     // Pointer arithmetic without permission
-    // Bounds checks disabled
-    // Domain rules suspended
+    // Existing domain escapes remain available
     // Permission widening allowed
     for (stack i32 i = 0; i < n; i++) {
-        dst[i] = src[i];   // no bounds check
+        dst[i] = src[i];   // ordinary array/slice checks remain active
     }
 }
 ```
 
-Unsafe blocks are narrow by design. Safety resumes immediately after the closing `}`.
+Keep unsafe blocks narrow. Use `[unchecked: i]` inside them only for the specific
+extent check you mean to suppress; other operations retain their own checks.
 
 ---
 
-## Summary: What the Compiler Catches
+## Summary: Bounded Checks and Open Work
 
 | Bug | Detection |
 |-----|-----------|
-| Buffer overflow | Bounds check on every index |
-| Use-after-free | Conservative provenance tracking |
-| Stack escape | Return-of-local-address analysis |
-| Permission violation | Pointer permission type system |
-| Domain mismatch | Storage domain tracking |
-| Null dereference | Nullable pointer type + nil check |
-| Missing ownership transfer | `@frees` attribute verification |
-| `rem.()` on non-owned ptr | Stack pointer `rem.()` error |
+| Explicit array/slice out-of-range access | A1 extent checks, with the explicit unsafe index escape above |
+| Malformed slice length/capacity | Numerical shape check; no allocation/lifetime proof |
+| Use-after-free | General alias/lifetime analysis remains unqualified |
+| Stack escape | Selected direct return/storage diagnostics; not general alias proof |
+| Permission violation | Bounded pointer permission checks outside unsafe |
+| Domain mismatch | Storage-domain diagnostics; not allocation-base ownership proof |
+| Null dereference | General nullable-flow enforcement remains unqualified |
+| Missing ownership transfer | `@frees` checks are not general ownership qualification |
+| `rem.()` on non-owned ptr | Direct stack-pointer rejection is not proof for other pointers/views |
 | Const write | `const`/`final` → only `*r` pointers |
 | Arithmetic without permission | `+` permission required |
 
@@ -259,31 +336,9 @@ Unsafe blocks are narrow by design. Safety resumes immediately after the closing
 
 ## Safety vs Performance
 
-Safety checks have zero runtime cost at the type level (permissions, domains) — those are compile-time only.
-
-Bounds checks do have a small runtime cost. In hot inner loops, you can:
-1. Use `[unchecked: i]` when the index is provably safe
-2. Use `unsafe {}` for the entire hot loop
-3. Use pointer arithmetic with `*rw+` or `*r+` to avoid indexed access
-
-```stasha
-// Safe (bounds checked):
-for (stack i32 i = 0; i < len.(s); i++) {
-    total += s[i];
-}
-
-// Faster (no bounds check):
-for (stack i32 i = 0; i < len.(s); i++) {
-    total += s[unchecked: i];
-}
-
-// Fastest (pointer arithmetic, unsafe):
-unsafe {
-    stack i32 *r+ p = s.ptr;
-    stack i32 *r  end = p + len.(s);
-    while p < end {
-        total += p[0];
-        p = p + 1;
-    }
-}
-```
+Permissions/domain diagnostics are compile-time checks. Bounds and descriptor
+checks are emitted at runtime unless optimization proves them redundant.
+`unsafe` alone does not remove them. The unsafe-only `unchecked` flag removes
+one extent guard, not all checks; no speedup follows without measurement of the
+actual optimized program. General raw-pointer operations are outside A1's
+bounds guarantee and are not a substitute for establishing access validity.

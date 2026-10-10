@@ -55,7 +55,7 @@ def cases():
     slice_init = 'stack i32 a[1] = .{7}; stack []i32 v = a[:]; stack Box b = .{v}; '
     box = 'type Box: struct { ext []i32 view; };'
     add('slice_addr_readonly_container', slice_init + 'stack Box *r p = &b; stack i32 *rw q = &p.view[0]; q[0] = 9; if a[0] != 9 { ret 1; }', box)
-    add('slice_addr_readonly_container_unchecked', slice_init + 'stack Box *r p = &b; stack i32 *rw q = &p.view[unchecked: 0]; q[0] = 9; if a[0] != 9 { ret 1; }', box)
+    add('slice_addr_readonly_container_unchecked', slice_init + 'stack Box *r p = &b; unsafe { stack i32 *rw q = &p.view[unchecked: 0]; q[0] = 9; } if a[0] != 9 { ret 1; }', box)
     add('slice_addr_writeonly_container', slice_init + 'stack Box *w p = &b; stack i32 *rw _q = &p.view[0];', box, True)
     add('slice_descriptor_readonly', slice_init + 'stack Box *r p = &b; stack View *rw _q = &p.view;', 'type View: []i32; ' + box, True)
     for qualifier in ('const', 'final'):

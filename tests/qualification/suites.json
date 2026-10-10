@@ -216,6 +216,22 @@
       "status": "not-implemented",
       "owner": "compiler",
       "gate": "P9"
+    },
+    {
+      "id": "explicit-access-bounds-a1",
+      "scope": "hosted-and-freestanding-bounded-access",
+      "status": "available",
+      "owner": "compiler",
+      "gate": "P3/P5",
+      "command": [
+        "python3",
+        "tests/memory/run_bounds_a1.py",
+        "--compiler",
+        "./bin/stasha",
+        "--opt",
+        "0,1,2,3"
+      ],
+      "qualification": "Fixed-array/slice explicit reads, writes, compound updates, indexed addresses and views; exact reason-6 hooks. Excludes allocation, initialization validity, lifetime/ownership, append/copy and implicit generated accesses. See checkpoint-bounds-a1-2026-10-10.json."
     }
   ],
   "policy": "No skips qualify as passes. Entries without runners block their declared gate. Platform xfails require explicit exact failure signatures in their runner.",

@@ -306,7 +306,9 @@ Equivalent to writing `lib "name" from <path>; imp name;` but in one declaration
 
 ## Pointer & Memory Safety Rules
 
-These rules are enforced by the compiler at every declaration and assignment.
+The compiler implements the bounded checks below, not a complete memory-safety
+proof. General ownership, alias lifetimes, nullable flow, and initialization
+remain separate qualification work.
 
 ### Storage domain — `heap` vs `stack` on pointer variables
 
@@ -322,7 +324,7 @@ The storage qualifier on a **pointer** variable describes where the *pointed-to 
 
 ### What the compiler enforces
 
-1. **Non-pointer heap vars are rejected.** `heap i32 x = 5;` is a compile error. Use `heap i32 *rw p = new.(sizeof.(i32));`. Exception: `heap []T` slice types are allowed (they carry an internal heap-owned data pointer).
+1. **Non-pointer heap vars are rejected.** `heap i32 x = 5;` is a compile error. Use `heap i32 *rw p = new.(sizeof.(i32));`. Exception: `heap []T` slice types are allowed. Their descriptor contains a data pointer; the storage qualifier alone does not prove allocation-base ownership.
 
 2. **Wrong-domain pointer init/assign is rejected.**
    - `stack T *rw p = new.(n);` → error: heap alloc into stack pointer
@@ -333,7 +335,57 @@ The storage qualifier on a **pointer** variable describes where the *pointed-to 
 
 4. **`rem.()` on a stack pointer is rejected.** Only `heap` pointers may be freed with `rem.()`.
 
-5. **All checks are suppressed inside `unsafe {}` blocks.**
+5. **Ordinary array/slice bounds, descriptor-shape, and range checks remain active inside `unsafe {}`.** Existing pointer/domain escapes are separate. `[unchecked: i]` requires `unsafe` and suppresses only that index's extent guard; it does not suppress descriptor/type validation or checks in its base, index expression, or surrounding operations.
+
+### A1: explicit indexed access and views
+
+- Fixed-array reads, stores, compound updates, and nonterminal indexes require
+  `0 <= i < N`, using the actual LLVM array extent, including nested arrays and
+  fields. A pure terminal `&array[N]` may form a one-past address without loading
+  an element; it cannot be dereferenced. Recursive bases remain strict:
+  `&matrix[rows][0]` is invalid, while `&matrix[rows-1][columns]` may be one-past.
+- Slice reads, stores, compound updates, and indexed addresses require
+  `0 <= i < len`. `&slice[len]` is invalid. The descriptor must have `len >= 0`
+  and `cap >= len`, including explicitly unchecked accesses. This validates
+  numbers, not backing storage, initialized values, or lifetime.
+- Integer indexes and bounds retain their full source width and signedness
+  before validation. Negative signed values and large `u64` values cannot pass
+  by truncating to the descriptor's signed i32 fields.
+- Operands evaluate once: base then index for reads/addresses; source, `lo`, then
+  `hi` for ranges; RHS before indexed target for plain assignment; target before
+  RHS for compound assignment. Shape/extent guards follow the relevant operands.
+  A compound RHS invalidating its saved target remains a lifetime issue.
+- Array views require `0 <= lo <= hi <= N`; array-to-slice conversion rejects
+  `N > INT32_MAX`. Slice views require `0 <= lo <= hi <= current len`, never spare
+  capacity. Omitted bounds are zero/current length. The result is
+  `{data + lo, hi-lo, old_cap-lo}`; empty-at-end ranges are valid.
+- A raw data-pointer range requires `unsafe`, an explicit `hi`, and a resolved
+  non-void sized element type. Check full-width `0 <= lo <= hi <= INT32_MAX` and
+  `hi <= target_max_size / target_ABI_element_size` before the range offset
+  (zero-sized elements need no division). The result is
+  `{ptr + lo, hi-lo, hi-lo}`. Function values, futures, and opaque handles do not
+  implicitly become data views; an explicit typed data-pointer cast is required.
+  The caller asserts a live, aligned, initialized, correctly typed interval with
+  permission for the resulting mutable slice. Empty intervals preserve a valid
+  in-allocation or one-past `ptr + lo`; null is permitted only for `0:0` as a
+  caller precondition, not a runtime null or lifetime guarantee.
+- Bounds/shape failures call nonreturning `void __stasha_panic(u32)` with reason
+  6. The hosted weak default traps without I/O; freestanding final images must
+  provide the hook. Reasons 1–5 are unchanged, 7 is reserved for null, and 8 for
+  allocation. Panic makes no unwinding/defer guarantee.
+
+A1 excludes initialization-produced writes/ranges/spreads, `foreach`-generated
+indexing, `copy`, `append`, allocation, general raw-pointer access, lifetimes,
+initialization, concurrency, and atomic/volatile semantics. General `append` and
+`rem` remain ownership-unqualified: aliases, fields, and returned interior views
+can reach realloc/free; neither `heap` nor `cap` proves a live owning allocation
+base. Existing K0 restrictions and indexed `++`/`--` rejection remain unchanged.
+
+These source-compatibility changes require rebuilding source-backed archives for
+**ABI 4**, even though the three-field slice descriptor layout is unchanged.
+The archive marker alone does not change native C ABI shape. See
+[Safety System](wiki/Safety-System.md), [Slices](wiki/Slices.md), and the
+[memory regression contract](tests/memory/README.md).
 
 ### Correct patterns
 

@@ -116,11 +116,11 @@ def archive_abi():
     result=capture([compiler,'lib',str(libsource),'-o',str(archive)],ROOT,archive_dir/'lib-compile',a.timeout)
     assert result['returncode']==0 and archive.is_file(),result['stderr']
     metadata=Path(str(archive)+'.stasha-abi')
-    text=metadata.read_text(); assert text.startswith('STASHA_ABI 3\nTARGET ')
+    text=metadata.read_text(); assert text.startswith('STASHA_ABI 4\nTARGET ')
     output=archive_dir/'caller'
     result=capture([compiler,'build',str(caller),'-o',str(output)],ROOT,archive_dir/'valid-compile',a.timeout)
     assert result['returncode']==0 and output.is_file(),result['stderr']
-    metadata.write_text(text.replace('STASHA_ABI 3','STASHA_ABI 1'))
+    metadata.write_text(text.replace('STASHA_ABI 4','STASHA_ABI 1'))
     result=capture([compiler,'build',str(caller),'-o',str(output)],ROOT,archive_dir/'invalid-compile',a.timeout)
     assert result['returncode']==1 and not output.exists(),result['stderr']
     assert 'incompatible ABI metadata' in result['stderr']

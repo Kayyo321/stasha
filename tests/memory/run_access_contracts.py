@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded hosted P3 access-contract regressions; unsafe inputs never run."""
+"""Bounded hosted access contracts; rejected programs are never executed."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -58,12 +58,14 @@ def cases():
     backing = 'stack i32 backing[2] = .{7, 8};\nstack []i32 view = backing[0:1];\n'
     for access, body in [('read', 'ret view[1];'), ('store', 'view[1] = 9;\nret 0;'), ('compound', 'view[1] += 1;\nret 0;')]:
         name = 'slice_oob_' + access
-        result.append(Case(name, program(name, backing + body), outcome='trap', reason='slice bounds',
+        result.append(Case(name, program(name, backing + body), outcome='trap', reason='bounds',
                            observations=['Index is outside view length but inside the two-element live backing array.']))
     name = 'slice_in_bounds'
     result.append(Case(name, program(name, backing + 'view[0] = 9;\nview[0] += 1;\nif (view[0] != 10 || backing[0] != 10 || backing[1] != 8) { ret 1; }\nprint.("MEMORY_OK\\n");\nret 0;'), stdout='MEMORY_OK\n'))
     name = 'slice_unsafe'
-    result.append(Case(name, program(name, backing + 'unsafe { view[1] = 9; view[1] += 1; if (view[1] != 10) { ret 1; } }\nif (backing[1] != 10) { ret 2; }\nprint.("MEMORY_OK\\n");\nret 0;'), stdout='MEMORY_OK\n'))
+    result.append(Case(name, program(name, backing + 'unsafe { view[1] = 9; }\nret 0;'),
+                       outcome='trap', reason='bounds', observations=[
+                           'Ordinary slice bounds checks remain active inside unsafe; live backing extends past len.']))
     name = 'nullable_guarded'
     result.append(Case(name, program(name, 'stack i32 x = 7;\nif (guarded(&x) != 7 || guarded(nil) != 0) { ret 1; }\nprint.("MEMORY_OK\\n");\nret 0;',
         'fn guarded(stack ?i32 *rw p): i32 { if (p != nil) { ret *.(p); } ret 0; }'), stdout='MEMORY_OK\n'))
@@ -104,7 +106,7 @@ def cases():
         body = ('stack i32 backing[2] = .{7, 8}; stack []i32 view = backing[0:1];\n'
                 'stack Box box = .{.view = view};\n' + statement)
         result.append(Case(name, program(name, body, 'type Box: struct { ext []i32 view; };'),
-                           outcome='trap', reason='slice bounds'))
+                           outcome='trap', reason='bounds'))
     reject('nonpointer_deref', 'stack i32 x = 7; ret *.(x);', diagnostic='dereference.*pointer|pointer.*dereference')
     reject('writeonly_container_pointer_slot', declarations=
            'type Box: struct { ext i32 *rw ptr; };\n'
@@ -134,9 +136,29 @@ def cases():
                'type Box: struct { ext i32 value; };\n')
     result.append(Case('unchecked_slice_store_compound', program('unchecked_slice_store_compound',
                       'stack i32 a[2] = .{7, 8}; stack []i32 view = a[0:1];\n'
-                      'view[unchecked: 1] = 11; view[unchecked: 1] += 2;\n'
+                      'unsafe { view[unchecked: 1] = 11; view[unchecked: 1] += 2;\n'
+                      'if (view[unchecked: 1] != 13) { ret 2; } }\n'
                       'if a[1] != 13 { ret 1; } ret 0;')))
     return result
+
+
+def prepare_bounds_hook(args, work, selected):
+    """Use the scalar runner's exact reason oracle, never a signal-only fallback."""
+    args.trap_hook_object = None
+    args.require_trap_reasons = True
+    args.trap_hook_pattern = '^STASHA_TRAP:{reason}$'
+    args.trap_exit_code = 86
+    args.trap_signal = None
+    if not any(case.outcome == 'trap' for case in selected):
+        return None
+    try:
+        cc = scalar_runner.resolve_cc(args.cc)
+    except ValueError as error:
+        return {'status': 'FAIL', 'problems': [str(error)]}
+    built = scalar_runner.build_trap_hook(work / 'panic-hook', cc, args.compile_timeout)
+    if built['status'] == 'PASS':
+        args.trap_hook_object = Path(built['object'])
+    return built
 
 
 def provenance():
@@ -158,6 +180,8 @@ def main():
     p.add_argument('--case', action='append', default=[])
     p.add_argument('--artifacts', type=Path)
     p.add_argument('--list', action='store_true')
+    p.add_argument('--cc', default=os.environ.get('CC', 'cc'),
+                   help='trusted installed host C compiler for the strong panic hook')
     p.add_argument('--scope', choices=['all', 'access'], default='all',
                    help='access excludes separately scoped nullable and provenance/escape analyses')
     args = p.parse_args()
@@ -171,31 +195,24 @@ def main():
     args.compiler = args.compiler.resolve(strict=True)
     args.compiler_arg = []
     args.compile_timeout, args.run_timeout = 30, 5
-    args.trap_hook_object = None
-    args.require_trap_reasons = False
-    args.trap_hook_pattern, args.trap_exit_code = None, None
-    args.trap_signal = scalar_runner.default_trap_signal()
-    if not args.trap_signal: p.error('no qualified native trap signal on this host')
     if args.artifacts: args.artifacts.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix='memory-access-', dir=args.artifacts))
+    work = Path(tempfile.mkdtemp(prefix='memory-access-', dir=args.artifacts)).resolve()
     before = scalar_runner.sha256(args.compiler)
     summary = {'compiler': str(args.compiler), 'compiler_sha256': before,
                'utc': datetime.now(timezone.utc).isoformat(), 'host': platform.platform(),
                'runner_sha256': scalar_runner.sha256(__file__), 'source': provenance(), 'results': []}
+    summary['hook_build'] = prepare_bounds_hook(args, work, selected)
+    if summary['hook_build'] and summary['hook_build']['status'] != 'PASS':
+        summary.update(status='FAIL', problems=['strong bounds panic hook unavailable'])
+        scalar_runner.write_json(work / 'summary.json', summary)
+        print('FAIL', summary['hook_build']['problems'], work / 'summary.json')
+        return 1
     summary['version'] = scalar_runner.capture([args.compiler, '--version'], work, work / 'version', 10)
     for c in selected:
         # Diagnostics are frontend contracts; run each once, independent of optimizer.
         for opt in ([0] if c.outcome == 'rejection' else opts):
             case_dir = work / (c.name + '-O' + str(opt))
             result = scalar_runner.run_case(c, opt, args, case_dir)
-            if c.outcome == 'trap' and result.get('compile', {}).get('returncode') == 0:
-                pre = case_dir / 'pre.ll'
-                ir = pre.read_text() if pre.is_file() else ''
-                if not ('slice index out of bounds' in ir and 'call void @llvm.trap' in ir):
-                    result['problems'].append('missing slice bounds diagnostic and trap IR')
-                result['status'] = 'PASS' if not result['problems'] else 'FAIL'
-                result['trap_reason_verified'] = False
-                result['trap_evidence'] = 'Exact native trap termination plus source-specific pre-optimization guard IR; no hook reason assertion.'
             print(result['status'], c.name, 'O' + str(opt), '; '.join(result['problems']))
             summary['results'].append(result)
     summary['compiler_sha256_after'] = scalar_runner.sha256(args.compiler)

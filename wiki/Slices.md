@@ -4,11 +4,14 @@ A slice is a fat pointer — `(data*, len, cap)` — that gives a dynamic view o
 
 ```stasha
 []T              // the slice type
-heap []T         // owned slice (heap-backed buffer)
+heap []T         // heap-domain slice; not proof of allocation-base ownership
 stack []T        // borrowed view (no ownership)
 ```
 
-This page covers slice ownership, building, growing, iterating, and the new `make.{...}` initializer that landed alongside compound-init `.{...}`.
+This page describes the slice APIs and the A1 explicit-access/view contract.
+Allocation, initialization-produced writes, `foreach`, `copy`, `append`, and
+general ownership/lifetime safety are not qualified by A1. Examples of those
+APIs describe intended usage, not proof that their inputs or ownership are safe.
 
 ---
 
@@ -23,22 +26,100 @@ The storage qualifier on a slice variable describes where the **backing buffer**
 | `stack []T v = arr[:];` | array on stack | (nothing) | Borrowed view |
 | `stack []T s = make.{...};` | alloca region | (nothing) | Compiler-managed |
 
-`heap []T` is **the one allowed exception** to the rule that disallows `heap` on non-pointer variables — slices are internally a pointer type, so a `heap []T` carries an internal heap-owned data pointer that the compiler tracks correctly.
+`heap []T` is **the one allowed exception** to the rule that disallows `heap` on
+non-pointer variables: a slice descriptor includes a data pointer. Neither this
+qualifier nor `cap` proves that the pointer is a live owning allocation base.
+Aliased, field-held, or returned views can still reach realloc/free; general
+`append`/`rem` ownership enforcement remains unqualified.
 
 Stack slices never own their data. `rem.()` on a stack slice is a compile error.
 
 ---
 
-## View bounds contract
+## A1: Explicit Access and View Bounds
 
-For a known fixed array or existing slice, `source[lo:hi]` requires
-`0 <= lo <= hi <= capacity`. The upper bound may extend the old logical length
-up to its existing capacity. Omitted `lo` is zero; omitted `hi` is the old length.
-The result has `len = hi-lo` and `cap = old_cap-lo`. Element addressing uses the
-resolved source element type even when the source is a field, call, or index.
-Invalid bounds trap before pointer arithmetic or narrowing to descriptor fields.
-An explicit `unsafe` region suppresses these checks. Raw-pointer views have no
-proven capacity and are not included in this bounded qualification.
+Explicit slice reads, stores, compound updates, and indexed addresses require
+`0 <= index < len`. `&slice[len]` is invalid, even for a live backing allocation
+with spare capacity. The descriptor's signed i32 fields must have `len >= 0` and
+`cap >= len`. Shape validation is numerical; it proves neither backing storage
+nor initialization/lifetime. Ordinary checks remain active inside `unsafe`.
+
+Fixed-array access uses the actual LLVM array extent `N`, including nested
+arrays and fields. Reads, stores, updates, and recursive base indexes require
+`0 <= index < N`. Only pure terminal `&array[N]` may form a one-past address,
+without loading an element or permitting its dereference. For example,
+`&matrix[rows][0]` is invalid although `&matrix[rows-1][columns]` may be one-past.
+
+For an array, `source[lo:hi]` requires `0 <= lo <= hi <= N`. Array-to-slice
+conversion rejects `N > INT32_MAX` before constructing descriptor fields.
+For an existing slice it requires `0 <= lo <= hi <= current len`, never spare
+capacity. Omitted `lo` is zero; omitted `hi` is the array extent/current length.
+The result has `data = old_data + lo`, `len = hi-lo`, and `cap = old_cap-lo`
+(`old_cap = N` for an array). Empty-at-end ranges remain valid. Capacity metadata
+does not permit reading or reslicing past the current logical length.
+
+Indexes and range bounds retain their full source integer width and signedness
+until validation, so negative signed values and large `u64` values cannot pass
+by truncation. Checks precede the indexed/range-offset GEP and narrowing into
+descriptor fields. The source element type is retained for supported field,
+call, nested-index, and view expressions.
+
+Operands evaluate once: base then index for reads/addresses; source, `lo`, then
+`hi` for ranges; RHS before target base/index for plain indexed assignment;
+target base/index before RHS for compound assignment. The relevant operands
+precede the operation's shape/extent guards. A compound RHS invalidating its
+saved address remains an ownership/lifetime issue.
+
+`[unchecked: index]` requires `unsafe` and skips only that index's extent guard.
+It retains shape/type validation and does not disable checks within the base,
+index expression, or surrounding operations. Ordinary range checks cannot be
+disabled by enclosing them in `unsafe`.
+
+### Explicit Unsafe Raw-Pointer Views
+
+A raw data-pointer range requires `unsafe`, an explicit upper bound, and a
+resolved non-void sized element type:
+
+```stasha
+stack i32 arr[2] = .{7, 8};
+stack i32 *rw p = &arr[0];
+unsafe {
+    stack []i32 view = p[0:2];   // data=p, len=cap=2
+    stack []i32 end = p[2:2];    // data=p+2, len=cap=0
+}
+```
+
+Pointer, `lo`, and `hi` evaluate once in that order; omitted `lo` is zero.
+Full-width guards require `0 <= lo <= hi <= INT32_MAX`. Before forming the range
+offset, `hi` must also fit `target_max_size / target_ABI_element_size`; zero-sized
+elements have no byte offset and need no division. Result data is `ptr + lo`,
+with **`len = cap = hi-lo`**. Function values, futures, and opaque handles cannot
+implicitly become data views, even when LLVM represents them as pointers. An
+explicit typed data-pointer cast is required first and does not prove validity.
+
+By constructing this mutable view, the caller asserts that the selected interval
+is live, correctly aligned, initialized, correctly typed, and has the required
+mutation permission. An empty interval preserves `ptr + lo`, which must be
+valid within an allocation or one-past it. Null is permitted only for `0:0` as
+an unsafe caller precondition; there is no new runtime null/lifetime proof.
+The descriptor records this assertion, not ownership of the allocation base.
+Raw `new`/`mov` policies are unchanged.
+
+### Failure and Compatibility
+
+Invalid bounds or descriptor shape call the nonreturning
+`void __stasha_panic(u32)` hook with reason **6**. The hosted weak default traps
+without I/O; freestanding final images must provide the hook. Reasons 1–5 are
+unchanged, while 7 (null) and 8 (allocation) remain reserved. No unwind or
+defer-on-panic behavior is promised.
+
+Rebuild source-backed archives for **ABI 4** after these semantic changes. The
+three-field descriptor layout remains unchanged, and the archive marker alone
+does not change native C ABI shape. A1 does not qualify initialization-produced
+writes/ranges/spreads, `foreach`-generated indexing, `copy`, `append`, allocation,
+general raw-pointer access, initialization, ownership/lifetimes, concurrency, or
+atomic/volatile semantics. Existing K0 restrictions and indexed `++`/`--`
+rejection are unchanged.
 
 ## Building Slices
 
@@ -191,6 +272,9 @@ stack []i32 c = b[1:3];         // len=2 cap=6
 ```
 
 `cap` shrinks only when the lower bound moves; the upper bound moves the `len`.
+For example, `b[0:5]` above is invalid because `len.(b) == 4`, even though
+`cap.(b) == 7`. An empty `b[4:4]` view is valid. The retained capacity is metadata,
+not permission to expose uninitialized or previously hidden elements.
 
 ---
 
@@ -244,6 +328,12 @@ The compiler rejects this with a *stack escape* diagnostic.
 
 ## `append.()` and Growth
 
+This API's allocation and ownership behavior is outside A1 qualification.
+Only a live owning allocation base may be reallocated or freed. A `heap`
+declaration and a numerically valid `cap` do not establish that precondition;
+borrowed/interior views can still reach these operations through aliases,
+fields, or returned values. Do not infer ownership safety from acceptance.
+
 ```stasha
 heap []i32 grow = make.([]i32, 0, 2);
 defer rem.(grow);
@@ -257,7 +347,9 @@ Behaviour:
 - If `len < cap`, the same backing store is reused (O(1)).
 - If `len == cap`, a new buffer is allocated at **2× capacity** and the old one is freed internally.
 
-Always reassign — `grow = append.(grow, val)` — and only call `rem.()` on the **final** value of the variable. Intermediate `append` returns are no longer live owners.
+For the intended owning-buffer pattern, reassign `grow = append.(grow, val)`
+and free only the current valid owner. Growth may invalidate aliases. Reassignment
+alone is not proof of a live owning base or safe allocation-failure handling.
 
 ### Nil Slices
 
@@ -316,7 +408,7 @@ See [Control Flow](Control-Flow#foreach--slice-iteration) for the full grammar.
 make.([]T, len)         // allocate, zero, cap = len
 make.([]T, len, cap)    // allocate with explicit capacity
 make.{...}              // compound initializer (literals, ranges, spread)
-append.(s, val)         // grow if needed; return new owner
+append.(s, val)         // grow if needed; ownership safety is not A1-qualified
 copy.(dst, src)         // copy min(len) elements; return count
 len.(s)                 // current element count
 cap.(s)                 // backing capacity
@@ -341,9 +433,12 @@ int fn dangling(): stack []i32 {
 ```stasha
 heap []i32 s = make.([]i32, 0, 4);
 heap []i32 t = append.(s, 1);
-rem.(s);                  // ERROR — t may now be the live owner
-rem.(t);                  // OK
+// rem.(s);               // invalid ownership pattern; not reliably diagnosed
+rem.(t);                  // only if t is the sole current live owning base
 ```
+
+Depending on growth, `s` may alias `t` or hold a stale pointer. The compiler does
+not yet qualify general alias/ownership enforcement for `append` or `rem`.
 
 **Forgetting the storage qualifier on `make.{}`:**
 ```stasha

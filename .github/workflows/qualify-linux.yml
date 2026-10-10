@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: linux-qualification-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve long main-branch toolchain builds so they can finish and cache.
+  # Pull requests may cancel superseded work; older pending main runs may be replaced.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   compiler:

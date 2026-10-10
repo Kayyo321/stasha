@@ -247,7 +247,8 @@ def self_test_trap_hook(directory, cc, timeout):
     else:
         result['probe_runs'] = []
         for reason, name in [(1, 'overflow'), (2, 'division-by-zero'), (3, 'division-overflow'),
-                             (4, 'invalid-shift'), (5, 'fp-cast-range'), (99, 'unknown:99')]:
+                             (4, 'invalid-shift'), (5, 'fp-cast-range'), (6, 'bounds'),
+                             (7, 'null'), (8, 'allocation'), (99, 'unknown:99')]:
             executed = capture([str(binary_path), str(reason)], directory,
                                directory / ('reason-' + str(reason)), timeout)
             result['probe_runs'].append(executed)

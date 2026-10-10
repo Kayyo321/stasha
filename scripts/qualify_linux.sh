@@ -20,6 +20,7 @@ python3 tests/harness/compiler_suites.py diag "$compiler" --artifacts "$artifact
 python3 tests/harness/compiler_suites.py signals "$compiler" --artifacts "$artifacts/signals" --keep-artifacts
 python3 tests/harness/compiler_suites.py cinterop "$compiler" --llvm-config "$llvm_build/bin/llvm-config" --require-prerequisites --artifacts "$artifacts/cinterop" --keep-artifacts
 python3 tests/scalars/run.py --compiler "$compiler" --opt 0,1,2,3 --build-trap-hook --require-trap-reasons --artifacts "$artifacts/scalars"
+python3 tests/memory/run_bounds_a1.py --compiler "$compiler" --cc "${CC:-clang}" --opt 0,1,2,3 --artifacts "$artifacts/bounds-a1"
 python3 tests/layout/run_layout_tests.py --compiler "$compiler" --cc "${CC:-clang}"
 python3 tests/abi/run_sysv_aggregates.py "$compiler" --cc "${CC:-clang}" --out "$artifacts/abi"
 python3 tests/abi/run_c_callbacks.py "$compiler" --cc "${CC:-clang}" --out "$artifacts/callbacks"

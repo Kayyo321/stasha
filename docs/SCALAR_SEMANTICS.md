@@ -100,7 +100,7 @@ contract.
 | 3 | signed MIN / -1 or MIN % -1 |
 | 4 | invalid shift count |
 | 5 | floating-to-integer range/NaN |
-| 6 | reserved: bounds |
+| 6 | invalid explicit array/slice index, view range, or slice descriptor shape (A1) |
 | 7 | reserved: null |
 | 8 | reserved: allocation |
 
@@ -112,6 +112,58 @@ the ABI. Stasha source definitions of this reserved hook are rejected until the
 compiler can prove they do not return; only an exact external `void(u32)`
 declaration and a reviewed C/assembly implementation are supported. The differential harness can link a strong C hook and verify the exact
 reason plus a fixed exit code; a signal alone does not qualify reason selection.
+
+### A1 bounds integration
+
+A1 uses the same reason-6 hook for explicit indexed reads, stores, compound
+updates, and address formation, plus view-range/descriptor-shape checks. Reasons
+1–5 remain stable, and 7 (null) and 8 (allocation) remain reserved. These calls
+have no implicit I/O or unwinding/defer-on-panic guarantee.
+
+Index and range expressions retain their full source integer width and
+signedness until validation. Source-signed widening and unsigned full-width
+comparison reject negative signed and large `u64` inputs without first narrowing
+to the descriptor's signed i32 fields. Fixed arrays use their actual LLVM extent
+`N`: ordinary element and recursive-base access requires `0 <= index < N`.
+Only pure terminal `&array[N]` may form an unloaded, non-dereferenceable one-past
+address. Slices require `0 <= index < len`, including indexed addresses, so
+`&slice[len]` is invalid. Descriptor fields must have `len >= 0` and `cap >= len`.
+
+Array views require `0 <= lo <= hi <= N`; conversion rejects `N > INT32_MAX`.
+Slice views require `0 <= lo <= hi <= current len`, never spare capacity. Their
+result has `len = hi-lo` and `cap = old_cap-lo`; empty-at-end ranges are valid.
+Ordinary bounds, shape, and range checks persist inside `unsafe`. The unsafe-only
+`[unchecked: index]` skips only its own extent guard, retaining shape/type checks
+and checks in its operands or surrounding operations.
+
+Each relevant operand evaluates once: base then index for reads/addresses;
+source, `lo`, then `hi` for ranges; RHS before indexed target for plain assignment;
+target before RHS for compound assignment. Shape/extent guards follow the
+relevant operands. Bounds checking does not prove that a later compound RHS
+leaves its saved target alive.
+
+An explicit unsafe raw data-pointer range requires an explicit `hi` and a
+resolved non-void sized element type. Full-width checks require
+`0 <= lo <= hi <= INT32_MAX` and, for nonzero target ABI element size,
+`hi <= target_max_size / element_size` before the range offset. Zero-sized
+elements avoid division. Result data is `ptr + lo`, with `len = cap = hi-lo`.
+Function values, futures, and opaque handles need an explicit typed data-pointer
+cast before view construction. The caller asserts a live, aligned, initialized,
+correctly typed interval and permission for the mutable slice. Empty intervals
+still require a valid in-allocation/one-past result; null is permitted only for
+`0:0` as a caller precondition. These are not runtime null/lifetime proofs.
+
+A1 excludes initialization-produced writes/ranges/spreads, `foreach`-generated
+indexing, `copy`, `append`, allocation, general raw-pointer access,
+initialization, ownership/lifetimes, concurrency, and atomic/volatile semantics.
+General `append`/`rem` remain ownership-unqualified: neither `heap` nor capacity
+establishes a live owning allocation base, including through aliases, fields,
+and returned views. K0 restrictions and indexed `++`/`--` rejection are unchanged.
+See [Safety System](../wiki/Safety-System.md) and [Slices](../wiki/Slices.md).
+
+These source-compatibility changes require rebuilding source-backed archives
+for **ABI 4**, although the three-field slice descriptor layout is unchanged.
+This compatibility marker alone does not change native C ABI shape.
 
 ## Constant evaluation
 

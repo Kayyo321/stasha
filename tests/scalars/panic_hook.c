@@ -15,7 +15,9 @@ _Noreturn void __stasha_panic(uint32_t reason) {
         case 3: name = "division-overflow"; break;
         case 4: name = "invalid-shift"; break;
         case 5: name = "fp-cast-range"; break;
-        /* ABI values 6/7/8 are reserved for bounds/null/allocation. */
+        case 6: name = "bounds"; break;
+        case 7: name = "null"; break;
+        case 8: name = "allocation"; break;
         default:
             fprintf(stderr, "STASHA_TRAP:unknown:%u\n", (unsigned)reason);
             fflush(stderr);

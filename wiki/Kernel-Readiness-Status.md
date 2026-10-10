@@ -1,9 +1,38 @@
 # Kernel-readiness status
 
-## Restored development checkpoint (10 October 2026)
+## A1 explicit-access checkpoint (10 October 2026)
+
+The current bounded hardening stage adds checked fixed-array and slice explicit
+access, logical-length view bounds, unsafe-only local unchecked indexing, and a
+shared reason-6 panic hook. Source-backed archives now require **ABI 4** rebuilds;
+the descriptor physical layout is unchanged. See the
+[A1 evidence receipt](../tests/qualification/checkpoint-bounds-a1-2026-10-10.json)
+and [bounds contract](Safety-System.md#a1-explicit-array-and-slice-bounds).
+
+The frozen A1 compiler is identified by SHA-256
+`574bcc7e60cf4001967c94e5a6dc082fd97456e272e8057420c6bb2d27a512bf`.
+Its exact source manifest and results are in the receipt. It builds on published
+restoration commit `79ea057ee5c0f4bd4d791bc99d2806a06a349ab3`.
+The hosted gate and all 36 rebuilt standard-library modules pass locally. Focused
+qualification includes 305 new bounds outcomes, 299 slice-view outcomes, 77
+shared-access outcomes, pointer regressions and 23 freestanding hook/layout
+checks. Six K0 host/object/archive configurations pass; current boot and hardware
+execution remain **NOT_RUN**.
+
+This does not prove initialized values, backing-allocation validity, lifetime,
+ownership, concurrency, or whole-language memory safety. Initializer-generated
+writes, foreach-generated indexing, general copy/append and allocation remain
+outside A1. Raw views record an explicit unsafe caller assertion, not ownership.
+The next stages are checked explicit-count construction, verified interface
+signatures/dispatch, and the approved separate owned-buffer/borrowed-slice design
+with actual move/borrow enforcement. Those stages are not implemented by A1.
+Native platform release, interrupts, SMP, hardware and complete OS readiness
+remain open. Historical results below apply only to their identified snapshot.
+
+## Historical restored development checkpoint (10 October 2026)
 
 This is a tested **development checkpoint**, not a release, a memory-safety
-certificate, or a completed OS-development qualification. The latest receipt is
+certificate, or a completed OS-development qualification. Its historical receipt is
 [restored checkpoint evidence](../tests/qualification/checkpoint-restored-2026-10-10.json).
 It identifies the exact compiler, source hashes, commands, toolchain, test scope,
 and remaining boundaries. Older evidence below does not automatically apply to
@@ -62,7 +91,7 @@ verify exact error exit, source location and no object. Invalid programs are nev
 executed. Some positive core fixtures also retain unused-capture warnings. These
 are disclosed limitations, not silently suppressed diagnostics.
 
-### Open qualification work
+### Open work recorded at the restored checkpoint
 
 - Complete fixed-array/slice bounds and allocation-size/growth/OOM checking.
 - Complete interface signatures and implementation checks, then separately

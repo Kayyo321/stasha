@@ -3677,7 +3677,7 @@ static LLVMValueRef scalar_member_address(cg_t *cg, node_t *node,
     if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar)
         return access_deref_address(cg, node, type, access);
     if (node->kind == NodeIndexExpr || node->kind == NodeFlaggedIndex)
-        return access_index_address(cg, node, type, root, access);
+        return access_index_address(cg, node, type, root, access, AccessElement);
     if (node->kind == NodeSelfMemberExpr) {
         symbol_t *self = scalar_symbol(cg, "this");
         const char *name = node->as.self_member.type_name;
@@ -4404,7 +4404,7 @@ static LLVMValueRef gen_zone_move(cg_t *cg, node_t *node) {
     return LLVMBuildCall2(cg->builder, cg->zone_move_type, cg->zone_move_fn, args, 3, "zmove");
 }
 
-/* buf[unchecked: i] — identical to gen_index but never emits bounds check */
+/* buf[unchecked: i] requires unsafe and suppresses only its own extent guard. */
 static LLVMValueRef gen_flagged_index(cg_t *cg, node_t *node) {
     return gen_index(cg, node);
 }
@@ -4676,8 +4676,14 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
         LLVMTypeRef storage = Null;
         type_info_t expected = scalar_expected(cg, node);
         ptr_perm_t access = expected.is_pointer ? (expected.ptr_perm & PtrReadWrite) : PtrNone;
-        LLVMValueRef address = scalar_member_address(cg, operand, &storage, Null, access);
+        boolean_t indexed = operand->kind == NodeIndexExpr || operand->kind == NodeFlaggedIndex;
+        LLVMValueRef address = indexed
+            ? access_index_address(cg, operand, &storage, Null, access, AccessTerminalAddress)
+            : scalar_member_address(cg, operand, &storage, Null, access);
         if (address) return address;
+        /* A failed shared indexed path already diagnosed the error. Never
+         * reevaluate its base/index through the old permissive fallback. */
+        if (indexed) return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
     }
     if (operand->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, operand->as.ident.name);
@@ -4694,62 +4700,6 @@ static LLVMValueRef gen_addr_of(cg_t *cg, node_t *node) {
             return LLVMBuildLoad2(cg->builder, ptr_ty, sym->value, "hptr");
         }
         return sym->value; /* alloca = address of the stack variable */
-    }
-    /* &arr[i] / &ptr[i] — address of an indexed element (GEP, no load) */
-    if (operand->kind == NodeIndexExpr) {
-        node_t *obj = operand->as.index_expr.object;
-        LLVMValueRef index_val = gen_expr(cg, operand->as.index_expr.index);
-        if (obj->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-            if (!sym) {
-                diag_begin_error("undefined variable '%s'", obj->as.ident.name);
-                diag_span(DIAG_NODE(obj), True, "not found in this scope");
-                diag_finish();
-                return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
-            }
-            if (LLVMGetTypeKind(sym->type) == LLVMArrayTypeKind) {
-                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
-                index_val = coerce_int(cg, index_val, LLVMInt32TypeInContext(cg->ctx));
-                LLVMValueRef indices[2] = { zero, index_val };
-                return LLVMBuildGEP2(cg->builder, sym->type, sym->value, indices, 2, "aidxptr");
-            }
-            if (llvm_is_ptr(sym->type)) {
-                LLVMValueRef ptr = LLVMBuildLoad2(cg->builder, sym->type, sym->value, "ptr");
-                type_info_t elem_ti = ti_deref_one(sym->stype);
-                LLVMTypeRef elem_ty = get_llvm_type(cg, elem_ti);
-                index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                return LLVMBuildGEP2(cg->builder, elem_ty, ptr, &index_val, 1, "pidxptr");
-            }
-        }
-        /* &self.field[idx] — address of element in a self-member pointer field */
-        if (obj->kind == NodeSelfMemberExpr) {
-            symbol_t *this_sym = cg_lookup(cg, "this");
-            if (this_sym) {
-                char *type_name = obj->as.self_member.type_name;
-                if (!type_name) type_name = cg->current_struct_name;
-                if (type_name && cg->generic_tmpl_name && cg->generic_inst_name
-                        && strcmp(type_name, cg->generic_tmpl_name) == 0)
-                    type_name = cg->generic_inst_name;
-                struct_reg_t *sr = type_name ? find_struct(cg, type_name) : Null;
-                if (sr) {
-                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
-                    LLVMValueRef this_ptr = LLVMBuildLoad2(cg->builder, ptr_ty, this_sym->value, "this");
-                    const char *fname = obj->as.self_member.field;
-                    for (usize_t fi = 0; fi < sr->field_count; fi++) {
-                        if (strcmp(sr->fields[fi].name, fname) != 0) continue;
-                        LLVMValueRef field_gep = LLVMBuildStructGEP2(cg->builder, sr->llvm_type,
-                            this_ptr, (unsigned)sr->fields[fi].index, fname);
-                        LLVMTypeRef ptr_type = get_llvm_type(cg, sr->fields[fi].type);
-                        LLVMValueRef inner_ptr = LLVMBuildLoad2(cg->builder, ptr_type, field_gep, "smfptr");
-                        type_info_t elem_ti = ti_deref_one(sr->fields[fi].type);
-                        LLVMTypeRef elem_type = get_llvm_type(cg, elem_ti);
-                        index_val = coerce_int(cg, index_val, LLVMInt64TypeInContext(cg->ctx));
-                        /* GEP only — no load, we want the address */
-                        return LLVMBuildGEP2(cg->builder, elem_type, inner_ptr, &index_val, 1, "smidxptr");
-                    }
-                }
-            }
-        }
     }
     /* &Type.(field) — address of a self-member field */
     if (operand->kind == NodeSelfMemberExpr) {
@@ -5564,7 +5514,12 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
         LLVMValueRef indices[2] = { zero, zero };
         base_ptr = LLVMBuildGEP2(cg->builder, storage, array, indices, 2, "arr2sl.ptr");
         elem_ty = LLVMGetElementType(storage);
-        orig_len = LLVMConstInt(i32_ty, LLVMGetArrayLength2(storage), 0);
+        uint64_t extent = LLVMGetArrayLength2(actual);
+        if (extent > INT32_MAX) {
+            scalar_error(node, "array-to-slice extent exceeds INT32_MAX");
+            return LLVMConstNull(sl_ty);
+        }
+        orig_len = LLVMConstInt(i32_ty, extent, 0);
         orig_cap = orig_len;
         known_capacity = True;
     } else if (source.base == TypeSlice && !source.is_pointer) {
@@ -5574,20 +5529,19 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
         }
         elem_ty = get_slice_elem_llvm_type(cg, source.elem_type[0]);
     } else if (source.is_pointer) {
+        if (cg->in_unsafe == 0 || !hi_nd) {
+            scalar_error(node, "raw-pointer slicing requires unsafe and an explicit upper bound");
+            return LLVMConstNull(sl_ty);
+        }
         type_info_t element = scalar_resolve(cg, ti_deref_one(source));
-        if (element.base != TypeVoid || element.is_pointer)
-            elem_ty = get_slice_elem_llvm_type(cg, element);
-    }
-
-    if (!base_ptr && obj->kind == NodeIdentExpr) {
-        symbol_t *sym = cg_lookup(cg, obj->as.ident.name);
-        if (sym && sym->stype.base == TypeSlice) {
-            LLVMValueRef sl = LLVMBuildLoad2(cg->builder, sl_ty, sym->value, "rsl");
-            base_ptr = LLVMBuildExtractValue(cg->builder, sl, 0, "rsl.ptr");
-            orig_len = LLVMBuildExtractValue(cg->builder, sl, 1, "rsl.len");
-            orig_cap = LLVMBuildExtractValue(cg->builder, sl, 2, "rsl.cap");
-            elem_ty = elem_type_from_sym(cg, sym);
-            known_capacity = True;
+        if (element.base == TypeVoid && !element.is_pointer) {
+            scalar_error(node, "raw-pointer slicing requires a resolved non-void sized element type");
+            return LLVMConstNull(sl_ty);
+        }
+        elem_ty = get_slice_elem_llvm_type(cg, element);
+        if (!elem_ty || !LLVMTypeIsSized(elem_ty)) {
+            scalar_error(node, "raw-pointer slicing requires a resolved non-void sized element type");
+            return LLVMConstNull(sl_ty);
         }
     }
 
@@ -5604,6 +5558,12 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
             orig_cap = LLVMBuildExtractValue(cg->builder, val, 2, "rsl.cap");
             known_capacity = True;
         } else if (llvm_is_ptr(LLVMTypeOf(val))) {
+            /* Opaque LLVM pointers also represent functions and runtime
+             * handles. Only an admitted source data pointer may form a view. */
+            if (!source.is_pointer) {
+                scalar_error(node, "slicing requires an array, slice or typed data pointer");
+                return LLVMConstNull(sl_ty);
+            }
             base_ptr = val;
             orig_len = LLVMConstInt(i32_ty, 0, 0);
             orig_cap = orig_len;
@@ -5622,35 +5582,38 @@ static LLVMValueRef gen_slice_expr(cg_t *cg, node_t *node) {
         LLVMValueRef hi64 = hi_nd ? access_index_value(cg, hi_nd)
             : LLVMBuildZExt(cg->builder, orig_len, i64_ty, "rsl.len.wide");
         if (!hi64) return LLVMConstNull(sl_ty);
-        if (cg->in_unsafe == 0) {
-            /* Half-open views may expand back to the available capacity.
-             * Unsigned comparisons reject signed-negative bounds as well:
-             * 0 <= lo <= hi <= capacity. Empty views at capacity are valid. */
-            LLVMValueRef cap64 = LLVMBuildZExt(cg->builder, orig_cap, i64_ty, "rsl.cap.wide");
-            LLVMValueRef ordered = LLVMBuildICmp(cg->builder, LLVMIntULE, lo64, hi64, "slice.range.ordered");
-            LLVMValueRef fits = LLVMBuildICmp(cg->builder, LLVMIntULE, hi64, cap64, "slice.range.fits");
-            LLVMValueRef valid = LLVMBuildAnd(cg->builder, ordered, fits, "slice.range.valid");
-            LLVMBasicBlockRef ok = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "slice.range.ok");
-            LLVMBasicBlockRef bad = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "slice.range.oob");
-            LLVMBuildCondBr(cg->builder, valid, ok, bad);
-            LLVMPositionBuilderAtEnd(cg->builder, bad);
-            LLVMValueRef message = LLVMBuildGlobalStringPtr(cg->builder, "slice range out of bounds\n", "slice.range.message");
-            LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, &message, 1, "");
-            LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
-            LLVMValueRef trap = LLVMGetNamedFunction(cg->module, "llvm.trap");
-            if (!trap) trap = LLVMAddFunction(cg->module, "llvm.trap", ft);
-            LLVMBuildCall2(cg->builder, ft, trap, Null, 0, "");
-            LLVMBuildUnreachable(cg->builder);
-            LLVMPositionBuilderAtEnd(cg->builder, ok);
-        }
+        /* All operands have been evaluated in source order before a guard.
+         * Capacity is storage metadata, never permission to expose elements
+         * beyond the current logical length, including inside unsafe. */
+        access_slice_shape(cg, orig_len, orig_cap);
+        LLVMValueRef len64 = LLVMBuildZExt(cg->builder, orig_len, i64_ty, "rsl.len.bound");
+        LLVMValueRef reversed = LLVMBuildICmp(cg->builder, LLVMIntUGT, lo64, hi64, "slice.range.reversed");
+        LLVMValueRef past_len = LLVMBuildICmp(cg->builder, LLVMIntUGT, hi64, len64, "slice.range.past.len");
+        scalar_trap_if(cg, LLVMBuildOr(cg->builder, reversed, past_len, "slice.range.invalid"), 6);
         lo = LLVMBuildTrunc(cg->builder, lo64, i32_ty, "slice.lo");
         hi = LLVMBuildTrunc(cg->builder, hi64, i32_ty, "slice.hi");
     } else {
-        /* Preserve the legacy raw-pointer fallback; its zero cap is not proof
-         * of a backing extent and must not be used as a checked slice bound. */
-        lo = lo_nd ? coerce_int(cg, gen_expr(cg, lo_nd), i32_ty) : LLVMConstInt(i32_ty, 0, 0);
-        hi = hi_nd ? coerce_int(cg, gen_expr(cg, hi_nd), i32_ty) : orig_len;
-        lo64 = LLVMBuildZExt(cg->builder, lo, i64_ty, "lo64");
+        /* Raw-pointer views record the caller's unsafe assertion of a live,
+         * initialized interval; their numerical extent is not ownership proof. */
+        lo64 = lo_nd ? access_index_value(cg, lo_nd) : LLVMConstInt(i64_ty, 0, 0);
+        if (!lo64) return LLVMConstNull(sl_ty);
+        LLVMValueRef hi64 = access_index_value(cg, hi_nd);
+        if (!hi64) return LLVMConstNull(sl_ty);
+        LLVMValueRef reversed = LLVMBuildICmp(cg->builder, LLVMIntUGT, lo64, hi64, "raw.range.reversed");
+        LLVMValueRef too_large = LLVMBuildICmp(cg->builder, LLVMIntUGT, hi64,
+            LLVMConstInt(i64_ty, INT32_MAX, 0), "raw.range.too.large");
+        LLVMValueRef invalid = LLVMBuildOr(cg->builder, reversed, too_large, "raw.range.invalid");
+        uint64_t stride = LLVMABISizeOfType(cg->di_data_layout, elem_ty);
+        /* A zero-sized element has no byte offset; avoid host division by zero. */
+        if (stride) {
+            LLVMValueRef offset_overflow = LLVMBuildICmp(cg->builder, LLVMIntUGT, hi64,
+                LLVMConstInt(i64_ty, cg_layout_max_size(cg) / stride, 0), "raw.range.offset.overflow");
+            invalid = LLVMBuildOr(cg->builder, invalid, offset_overflow, "raw.range.invalid.offset");
+        }
+        scalar_trap_if(cg, invalid, 6);
+        lo = LLVMBuildTrunc(cg->builder, lo64, i32_ty, "raw.slice.lo");
+        hi = LLVMBuildTrunc(cg->builder, hi64, i32_ty, "raw.slice.hi");
+        orig_cap = hi;
     }
 
     /* new_ptr = GEP(base_ptr, lo) */
