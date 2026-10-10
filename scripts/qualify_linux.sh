@@ -12,7 +12,7 @@ trap 'code=$?; if (( code != 0 )); then printf "FAIL exit=%s\n" "$code" > "$arti
 llvm_build="$(realpath "${LLVM_BUILD:-build/llvm}")"
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || { echo 'Requires Linux x86-64' >&2; exit 1; }
 mkdir -p "$artifacts"
-python3 scripts/verify_llvm_toolchain.py --llvm-build "$llvm_build" --output "$artifacts/toolchain.json"
+python3 scripts/verify_llvm_toolchain.py --llvm-build "$llvm_build" --require-clang --output "$artifacts/toolchain.json"
 sha256sum "$compiler" > "$artifacts/compiler.sha256"
 "$compiler" --version > "$artifacts/compiler-version.txt"
 bash scripts/test_harness_selftest.sh

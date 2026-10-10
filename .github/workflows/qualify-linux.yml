@@ -24,6 +24,7 @@ jobs:
       CXX: clang++
       LLVM_BUILD: build/llvm
       LLVM_TARGETS: X86;AArch64
+      LLVM_ENABLE_PROJECTS: 'lld;clang'
       CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -45,12 +46,17 @@ jobs:
         id: llvm-cache
         with:
           path: build/llvm
-          key: llvm-qualification-v1-${{ steps.inputs.outputs.key }}
+          key: llvm-qualification-v2-${{ steps.inputs.outputs.key }}
       - name: Build pinned LLVM and LLD
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: make llvm LLVM_BUILD_JOBS=2 LLVM_LINK_JOBS=1
+      - name: Ensure pinned Clang and resource headers
+        # Also repair/validate warm caches; the bootstrap intentionally builds LLD only.
+        run: |
+          cmake -S extlib/llvm/llvm -B "$LLVM_BUILD" -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" -DLLVM_APPEND_VC_REV=ON -DLLVM_PARALLEL_LINK_JOBS=1
+          cmake --build "$LLVM_BUILD" --target clang --parallel 2
       - name: Verify pinned source and build identity
-        run: python3 scripts/verify_llvm_toolchain.py --llvm-build build/llvm --output build/qualification/toolchain.json
+        run: python3 scripts/verify_llvm_toolchain.py --llvm-build "$LLVM_BUILD" --require-clang --output build/qualification/toolchain.json
       - name: Build compiler
         run: make -j2 STASHA_NO_OPENSSL=1 all tests/cinterop/build/libcinterop_support.a
       - name: Run strict hosted compiler qualification

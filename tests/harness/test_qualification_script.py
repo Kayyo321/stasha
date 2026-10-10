@@ -14,15 +14,26 @@ class QualificationShellTests(unittest.TestCase):
             root=Path(tmp); tools=root/'tools';tools.mkdir(); output=root/'evidence'
             if stale:
                 output.mkdir();(output/'RESULT.txt').write_text('PASS stale')
-            compiler=root/'compiler';compiler.write_text('#!/bin/sh\necho mock-compiler\n');compiler.chmod(0o755)
+            trace=root/'commands.log'
+            compiler=root/'compiler';compiler.write_text('#!/bin/sh\nprintf "compiler %s\\n" "$*" >> "$MOCK_TRACE"\necho mock-compiler\n');compiler.chmod(0o755)
             python=tools/'python3'
-            body=f'#!/bin/sh\nexit {code}\n'
+            preamble='#!/bin/sh\nprintf "python3 %s\\n" "$*" >> "$MOCK_TRACE"\n'
+            body=preamble+f'exit {code}\n'
             if fail_match is not None:
-                body=f'#!/bin/sh\ncase "$1" in {fail_match}) exit {code};; esac\nexit 0\n'
+                body=preamble+f'case "$1" in {fail_match}) exit {code};; esac\nexit 0\n'
             python.write_text(body);python.chmod(0o755)
-            env=dict(os.environ,PATH=str(tools)+os.pathsep+os.environ['PATH'],LLVM_BUILD=str(root))
+            env=dict(os.environ,PATH=str(tools)+os.pathsep+os.environ['PATH'],PYTHON=str(python),LLVM_BUILD=str(root),MOCK_TRACE=str(trace))
             result=subprocess.run(['bash',str(ROOT/'scripts/qualify_linux.sh'),str(compiler),str(output)],env=env,capture_output=True,text=True,timeout=20)
+            self.commands=trace.read_text().splitlines() if trace.exists() else []
+            self.status=(output/'STATUS.txt').read_text() if (output/'STATUS.txt').exists() else None
             return result,(output/'RESULT.txt').read_text() if (output/'RESULT.txt').exists() else None
+    def test_clang_preflight_failure_stops_before_compiler_or_suites(self):
+        result,receipt=self.invoke(84,stale=True,fail_match='scripts/verify_llvm_toolchain.py')
+        self.assertEqual(result.returncode,84,result.stderr);self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=84\n')
+        self.assertEqual(len(self.commands),1,self.commands)
+        self.assertTrue(self.commands[0].startswith('python3 scripts/verify_llvm_toolchain.py --llvm-build '))
+        self.assertIn(' --require-clang --output ',self.commands[0])
     def test_failed_stage_cannot_publish_pass(self):
         result,receipt=self.invoke(73)
         self.assertEqual(result.returncode,73,result.stderr); self.assertIsNone(receipt)
@@ -63,5 +74,7 @@ class QualificationShellTests(unittest.TestCase):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('bounded Linux hosted compiler qualification',receipt)
+        self.assertIn(' --require-clang --output ',self.commands[0])
+        self.assertEqual(self.commands[1],'compiler --version')
 
 if __name__=='__main__': unittest.main()
