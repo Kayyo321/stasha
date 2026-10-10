@@ -8,9 +8,24 @@
 #endif
 
 #include <vector>
+#include <string>
+#if defined(__linux__)
+#include <errno.h>
+#include <limits.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <llvm/TargetParser/Host.h>
+#endif
 #include <lld/Common/Driver.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Object/ArchiveWriter.h>
+#include <llvm/Object/Binary.h>
+#include <llvm/Object/ObjectFile.h>
+#include <llvm/Object/ELFObjectFile.h>
+#include <llvm/BinaryFormat/ELF.h>
+#include <llvm/TargetParser/Triple.h>
 #include <llvm/Support/Error.h>
 LLD_HAS_DRIVER(macho)
 LLD_HAS_DRIVER(elf)
@@ -18,6 +33,67 @@ LLD_HAS_DRIVER(coff)
 
 extern "C" {
 #include "linker.h"
+}
+
+extern "C" result_t audit_kernel_object(const char *obj_path) {
+    auto binary = llvm::object::createBinary(obj_path);
+    if (!binary) {
+        log_err("kernel object audit: %s", llvm::toString(binary.takeError()).c_str());
+        return Err;
+    }
+    auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(binary->getBinary());
+    if (!object || !object->isELF() || object->getArch() != llvm::Triple::x86_64 ||
+        object->getBytesInAddress() != 8) {
+        log_err("kernel object audit: expected a 64-bit x86 ELF object");
+        return Err;
+    }
+    bool failed = false;
+    for (const auto &symbol : object->symbols()) {
+        auto flags = symbol.getFlags();
+        auto name = symbol.getName();
+        if (!flags || !name) {
+            if (!flags) llvm::consumeError(flags.takeError());
+            if (!name) llvm::consumeError(name.takeError());
+            log_err("kernel object audit: cannot read symbol metadata");
+            failed = true;
+            continue;
+        }
+        if (name->empty()) continue;
+        if (!(*flags & llvm::object::SymbolRef::SF_Undefined)) {
+            if (*name == "__stasha_panic" || *name == "memcpy" || *name == "memmove" || *name == "memset") {
+                log_err("kernel object audit: reserved runtime hook definition '%s'", name->str().c_str());
+                failed = true;
+            }
+            continue;
+        }
+        if (*name != "__stasha_panic" && *name != "memcpy" && *name != "memmove" && *name != "memset") {
+            log_err("kernel object audit: unqualified runtime import '%s'", name->str().c_str());
+            failed = true;
+        }
+    }
+    for (const auto &section : object->sections()) {
+        auto name = section.getName();
+        if (!name) {
+            llvm::consumeError(name.takeError());
+            log_err("kernel object audit: cannot read section metadata");
+            failed = true;
+            continue;
+        }
+        if (!section.getSize()) continue;
+        llvm::object::ELFSectionRef elf_section(section);
+        uint32_t type = elf_section.getType();
+        if ((elf_section.getFlags() & llvm::ELF::SHF_TLS) ||
+            type == llvm::ELF::SHT_PREINIT_ARRAY || type == llvm::ELF::SHT_INIT_ARRAY ||
+            type == llvm::ELF::SHT_FINI_ARRAY || name->starts_with(".preinit_array") ||
+            name->starts_with(".tdata") || name->starts_with(".tbss") ||
+            name->starts_with(".init_array") || name->starts_with(".fini_array") ||
+            name->starts_with(".ctors") || name->starts_with(".dtors") ||
+            name->starts_with(".eh_frame") || name->starts_with(".gcc_except_table")) {
+            log_err("kernel object audit: forbidden hosted section '%s'", name->str().c_str());
+            failed = true;
+        }
+    }
+    return failed ? Err : Ok;
 }
 
 static bool g_linker_debug_mode = false;
@@ -87,9 +163,125 @@ static const char *get_sdk_path(void) {
 }
 #endif
 
+#if defined(__linux__)
+/* Query the native C toolchain for its startup/runtime paths, without a shell.
+ * These are host tools, not a substitute sysroot for a foreign target. */
+static bool linux_cc_query(const char *cc, const std::string &option,
+                           std::string &output) {
+    int fds[2];
+    if (pipe(fds) != 0) return false;
+    pid_t child = fork();
+    if (child == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(127);
+        close(fds[1]);
+        execlp(cc, cc, option.c_str(), (char *)nullptr);
+        _exit(127);
+    }
+    close(fds[1]);
+    if (child < 0) { close(fds[0]); return false; }
+    output.clear();
+    char buffer[512];
+    bool read_ok = true;
+    for (;;) {
+        ssize_t count = read(fds[0], buffer, sizeof(buffer));
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) { read_ok = false; break; }
+        if (!count) break;
+        if (output.size() + (size_t)count >= PATH_MAX) {
+            read_ok = false;
+            kill(child, SIGKILL);
+            break;
+        }
+        output.append(buffer, (size_t)count);
+    }
+    close(fds[0]);
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) output.pop_back();
+    return read_ok && waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+           !output.empty() && output.find('\n') == std::string::npos;
+}
+
+static bool linux_cc_file(const char *cc, const char *name, std::string &path) {
+    std::string found;
+    if (!linux_cc_query(cc, std::string("-print-file-name=") + name, found) || found == name) {
+        log_err("native Linux startup: '%s' cannot locate %s", cc, name);
+        return false;
+    }
+    char absolute[PATH_MAX];
+    struct stat st;
+    if (!realpath(found.c_str(), absolute) || stat(absolute, &st) != 0 ||
+        !S_ISREG(st.st_mode) || access(absolute, R_OK) != 0) {
+        log_err("native Linux startup: unreadable %s reported by '%s'", name, cc);
+        return false;
+    }
+    path = absolute;
+    return true;
+}
+
+struct LinuxHostedRuntime {
+    std::string crt1, crti, crtbegin, crtend, crtn;
+    std::string libc, libm, libgcc, libgcc_s, loader;
+    std::string system_search, compiler_search;
+    const char *emulation = nullptr;
+};
+
+static bool linux_hosted_runtime(const char *target_triple, const char *obj_path,
+                                 LinuxHostedRuntime &rt) {
+    llvm::Triple target(target_triple ? target_triple : "");
+    llvm::Triple host(llvm::sys::getProcessTriple());
+    if (!target.isOSLinux() || !host.isOSLinux() || target.getArch() != host.getArch() ||
+        (target.getArch() != llvm::Triple::x86_64 && target.getArch() != llvm::Triple::aarch64) ||
+        target.getEnvironment() != llvm::Triple::GNU || !target.isOSBinFormatELF()) {
+        log_err("hosted Linux linking supports only the native 64-bit GNU/Linux ABI; use obj/ir for foreign target '%s'", target_triple ? target_triple : "");
+        return false;
+    }
+    auto binary = llvm::object::createBinary(obj_path);
+    if (!binary) {
+        log_err("hosted Linux linking: %s", llvm::toString(binary.takeError()).c_str());
+        return false;
+    }
+    auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(binary->getBinary());
+    if (!object || !object->isELF() || !object->isRelocatableObject() ||
+        object->getArch() != target.getArch() || object->getBytesInAddress() != 8) {
+        log_err("hosted Linux linking: object does not match the native target ABI");
+        return false;
+    }
+    const char *cc = getenv("CC");
+    if (!cc || !cc[0]) cc = "cc";
+    std::string cc_machine;
+    if (!linux_cc_query(cc, "-dumpmachine", cc_machine)) {
+        log_err("hosted Linux linking requires a working native C compiler; set CC to its executable path");
+        return false;
+    }
+    llvm::Triple cc_target(llvm::Triple::normalize(cc_machine));
+    if (!cc_target.isOSLinux() || cc_target.getArch() != target.getArch() ||
+        cc_target.getEnvironment() != target.getEnvironment()) {
+        log_err("hosted Linux linking: CC target '%s' does not match '%s'", cc_machine.c_str(), target_triple);
+        return false;
+    }
+    const char *loader = target.getArch() == llvm::Triple::x86_64
+        ? "ld-linux-x86-64.so.2" : "ld-linux-aarch64.so.1";
+    rt.emulation = target.getArch() == llvm::Triple::x86_64 ? "elf_x86_64" : "aarch64linux";
+    if (!linux_cc_file(cc, "crt1.o", rt.crt1) || !linux_cc_file(cc, "crti.o", rt.crti) ||
+        !linux_cc_file(cc, "crtbegin.o", rt.crtbegin) || !linux_cc_file(cc, "crtend.o", rt.crtend) ||
+        !linux_cc_file(cc, "crtn.o", rt.crtn) || !linux_cc_file(cc, "libc.so", rt.libc) ||
+        !linux_cc_file(cc, "libm.so", rt.libm) || !linux_cc_file(cc, "libgcc.a", rt.libgcc) ||
+        !linux_cc_file(cc, "libgcc_s.so", rt.libgcc_s) || !linux_cc_file(cc, loader, rt.loader)) return false;
+    rt.system_search = "-L" + rt.libc.substr(0, rt.libc.find_last_of('/'));
+    rt.compiler_search = "-L" + rt.libgcc.substr(0, rt.libgcc.find_last_of('/'));
+    return true;
+}
+#endif
+
 extern "C" result_t link_object(const char *obj_path, const char *output_path,
-                                 const char **extra_libs) {
+                                 const char **extra_libs, const char *target_triple) {
     std::vector<const char *> args;
+#if !defined(__linux__)
+    (void)target_triple;
+#endif
 
 #ifdef __APPLE__
     args.push_back("ld64.lld");
@@ -142,37 +334,45 @@ extern "C" result_t link_object(const char *obj_path, const char *output_path,
         pdb_arg = std::string("/pdb:") + output_path + ".pdb";
         args.push_back(pdb_arg.c_str());
     }
-#else
+#elif defined(__linux__)
+    LinuxHostedRuntime runtime;
+    if (!linux_hosted_runtime(target_triple, obj_path, runtime)) return Err;
     args.push_back("ld.lld");
+    args.push_back("--fatal-warnings");
+    args.push_back("--eh-frame-hdr");
+    args.push_back("-m");
+    args.push_back(runtime.emulation);
+    args.push_back("-e");
+    args.push_back("_start");
+    args.push_back("-dynamic-linker");
+    args.push_back(runtime.loader.c_str());
+    args.push_back(runtime.system_search.c_str());
+    args.push_back(runtime.compiler_search.c_str());
+    args.push_back(runtime.crt1.c_str());
+    args.push_back(runtime.crti.c_str());
+    args.push_back(runtime.crtbegin.c_str());
     args.push_back(obj_path);
-    /* custom .a libraries from `lib "name" from "path"` declarations */
     if (extra_libs) {
-        for (const char **p = extra_libs; *p; p++)
-            args.push_back(*p);
+        for (const char **p = extra_libs; *p; p++) args.push_back(*p);
     }
+    args.push_back(runtime.libm.c_str());
+    args.push_back("-lpthread");
+    args.push_back("-ldl");
+    args.push_back("--start-group");
+    args.push_back(runtime.libgcc.c_str());
+    args.push_back("--as-needed");
+    args.push_back(runtime.libgcc_s.c_str());
+    args.push_back("--no-as-needed");
+    args.push_back(runtime.libc.c_str());
+    args.push_back("--end-group");
+    args.push_back(runtime.crtend.c_str());
+    args.push_back(runtime.crtn.c_str());
     args.push_back("-o");
     args.push_back(output_path);
-    /* System lib search paths — Ubuntu/Debian multiarch + traditional. */
-#if defined(__aarch64__) || defined(__arm64__)
-    args.push_back("-L/usr/lib/aarch64-linux-gnu");
-    args.push_back("-L/lib/aarch64-linux-gnu");
 #else
-    args.push_back("-L/usr/lib/x86_64-linux-gnu");
-    args.push_back("-L/lib/x86_64-linux-gnu");
-#endif
-    args.push_back("-L/usr/lib64");
-    args.push_back("-L/lib64");
-    args.push_back("-L/usr/lib");
-    args.push_back("-L/lib");
-    args.push_back("-lc");
-    args.push_back("-lm");
-    args.push_back("-lpthread");  /* thread runtime requires pthreads on Linux */
-    args.push_back("-dynamic-linker");
-#if defined(__aarch64__) || defined(__arm64__)
-    args.push_back("/lib/ld-linux-aarch64.so.1");
-#else
-    args.push_back("/lib64/ld-linux-x86-64.so.2");
-#endif
+    (void)target_triple;
+    log_err("hosted executable linking is not supported on this host; emit an object instead");
+    return Err;
 #endif
 
     llvm::raw_null_ostream null_os;

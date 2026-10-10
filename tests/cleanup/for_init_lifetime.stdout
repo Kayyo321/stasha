@@ -1,0 +1,19 @@
+normal.body.defer 0
+drop 10
+normal.body 1
+normal.body.defer 1
+drop 11
+drop 2
+after.normal
+drop 40
+after.zero
+break.body.defer
+drop 51
+drop 50
+after.break
+return.body.defer
+drop 61
+drop 60
+return.result 6
+drop 90
+for_init_lifetime: ok

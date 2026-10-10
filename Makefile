@@ -52,7 +52,7 @@ else
 endif
 
 CFLAGS   = -Wall -Wextra -std=c2x -Isrc $(LLVM_CFLAGS)
-CXXFLAGS = -Wall -Wextra -std=c++17 -Isrc $(LLVM_CFLAGS) $(LLD_CFLAGS)
+CXXFLAGS = -Wall -Wextra $(shell "$(LLVM_CFG)" --cxxflags 2>/dev/null) -std=c++17 -Isrc $(LLD_CFLAGS)
 ifneq (,$(or $(filter Windows_NT,$(OS)),$(findstring MINGW,$(OS_RAW)),$(findstring MSYS,$(OS_RAW)),$(findstring UCRT,$(OS_RAW))))
 LDFLAGS  = -Wl,--start-group $(LLD_LDLIBS) $(LLVM_LDFLAGS) -Wl,--end-group -lstdc++ -lzstd -lz -lws2_32 -lntdll
 else ifneq (,$(findstring Darwin,$(OS_RAW)))
@@ -128,6 +128,7 @@ SRCS = src/main.c                       \
        src/lexer/lexer.c                 \
        src/ast/ast.c                     \
        src/analysis/coroutines.c         \
+       src/analysis/kernel.c             \
        src/parser/parser.c               \
        src/preprocessor/preprocessor.c  \
        src/tooling/editor.c             \
@@ -246,6 +247,7 @@ stdlib: $(TARGET) $(STDLIB_LIBS) stsstdlib/serial/libjson.a stsstdlib/net/libhtt
 	@cp stsstdlib/time/clock.sts     bin/stdlib/
 	@cp stsstdlib/regex/libregex.a   bin/stdlib/
 	@cp stsstdlib/regex/regex.sts    bin/stdlib/
+	@for a in $(STDLIB_LIBS); do cp "$$a.stasha-abi" bin/stdlib/; done
 	@echo "stdlib installed -> bin/stdlib/"
 
 # Modules that require platform-specific external libs not available everywhere.
@@ -282,7 +284,7 @@ endif
 	        printf "  %-55s" "$$f ..."; echo "SKIP"; skip=$$((skip+1)); continue; \
 	    fi; \
 	    printf "  %-55s" "$$f ..."; \
-	    out=$$($(TARGET) test "$$f" 2>&1); \
+	    out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$$f" 2>&1); \
 	    code=$$?; \
 	    if [ $$code -eq 0 ]; then \
 	        echo "PASS"; pass=$$((pass+1)); \
@@ -298,7 +300,7 @@ endif
 	    fi; \
 	done; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_JSON) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_JSON)" -l stsstdlib/serial/libjson.a 2>&1); \
+	out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_JSON)" -l stsstdlib/serial/libjson.a 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -307,7 +309,7 @@ endif
 	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_HTTP) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_HTTP)" -l stsstdlib/net/libhttp.a 2>&1); \
+	out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_HTTP)" -l stsstdlib/net/libhttp.a 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -317,7 +319,7 @@ endif
 	fi; \
 	if [ "$(STASHA_NO_OPENSSL)" != "1" ]; then \
 	  printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRNG) ..."; \
-	  out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRNG)" -l $(STDLIB_BUNDLED_CRNG_LIB) 2>&1); \
+	  out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_CRNG)" -l $(STDLIB_BUNDLED_CRNG_LIB) 2>&1); \
 	  code=$$?; \
 	  if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -327,7 +329,7 @@ endif
 	  fi; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLARGS) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CLARGS)" -l stsstdlib/sys/libcl_args.a 2>&1); \
+	out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_CLARGS)" -l stsstdlib/sys/libcl_args.a 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -336,7 +338,7 @@ endif
 	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CRYPTO) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CRYPTO)" -l stsstdlib/crypto/libcrypto.a 2>&1); \
+	out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_CRYPTO)" -l stsstdlib/crypto/libcrypto.a 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -345,7 +347,7 @@ endif
 	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_CLOCK) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_CLOCK)" -l stsstdlib/time/libclock.a 2>&1); \
+	out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_CLOCK)" -l stsstdlib/time/libclock.a 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -354,7 +356,7 @@ endif
 	    echo "$$out" | grep -E "^error:|FAIL|failed|ld\.lld|ld64\.lld|lld-link|undefined|>>>" | head -10 | sed 's/^/      /'; \
 	fi; \
 	printf "  %-55s" "$(STDLIB_TEST_BUNDLED_REGEX) ..."; \
-	out=$$($(TARGET) test "$(STDLIB_TEST_BUNDLED_REGEX)" -l stsstdlib/regex/libregex.a 2>&1); \
+	out=$$(python3 tests/harness/run_language_tests.py $(TARGET) "$(STDLIB_TEST_BUNDLED_REGEX)" -l stsstdlib/regex/libregex.a 2>&1); \
 	code=$$?; \
 	if [ $$code -eq 0 ]; then \
 	    echo "PASS"; pass=$$((pass+1)); \
@@ -567,7 +569,7 @@ test-threads: $(TARGET) $(THREAD_RUNTIME_LIB)
 	@fail=0; \
 	for f in $(THREAD_TEST_SRCS); do \
 	    echo "--- $$f ---"; \
-	    if ! $(TARGET) test "$$f"; then \
+	    if ! python3 tests/harness/run_language_tests.py $(TARGET) "$$f"; then \
 	        echo "FAIL: $$f"; fail=1; \
 	    fi; \
 	done; \
@@ -582,7 +584,7 @@ COMMON_IMPLS := $(wildcard src/common/*.c)
 # Unity-build includes must trigger recompilation too.
 -include $(OBJS:.o=.d) $(LINKER_OBJ:.o=.d)
 
-build/obj/%.o: src/%.c $(HDRS)
+build/obj/%.o: src/%.c $(HDRS) Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
@@ -590,7 +592,7 @@ build/obj/codegen/codegen.o: $(CODEGEN_IMPLS)
 build/obj/parser/parser.o: $(PARSER_IMPLS)
 build/obj/common/common.o: $(COMMON_IMPLS)
 
-$(LINKER_OBJ): src/linker/linker.cpp
+$(LINKER_OBJ): src/linker/linker.cpp Makefile
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 

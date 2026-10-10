@@ -1,0 +1,158 @@
+[
+  {
+    "name": "normal_order",
+    "source": "normal_order.sts",
+    "outcome": "success",
+    "stdout": "body\ninner.defer 2\ninner.defer 1\ndrop 4\ndrop 3\nouter.resume\nouter.defer 2\nouter.defer 1\ndrop 2\ndrop 1\nnormal_order: ok\n"
+  },
+  {
+    "name": "return_values",
+    "source": "return_values.sts",
+    "outcome": "success",
+    "stdout": "call 7\nscalar.defer 99\nscalar.result 7\ncall 11\ncall 22\npair.defer 101 202\npair.result 11 22\nreturn_values: ok\n"
+  },
+  {
+    "name": "early_return",
+    "source": "early_return.sts",
+    "outcome": "success",
+    "stdout": "early\nbranch.defer\ndrop 3\ninner.defer\ndrop 2\nouter.defer\ndrop 1\nresult 17\nnormal.inner\ninner.defer\ndrop 2\nnormal.outer\nouter.defer\ndrop 1\nresult 29\nearly_return: ok\n"
+  },
+  {
+    "name": "return_heap_scalar",
+    "source": "return_heap_scalar.sts",
+    "outcome": "success",
+    "stdout": "release 999\nresult 73\nreturn_heap_scalar: ok\n"
+  },
+  {
+    "name": "aggregate_branch_join",
+    "source": "aggregate_branch_join.sts",
+    "outcome": "success",
+    "stdout": "choose.defer\nresult 1\ndrop 1\njoined\nchoose.defer\ndrop 1\nresult 2\ndrop 2\naggregate_branch_join: ok\n"
+  },
+  {
+    "name": "aggregate_multi_return",
+    "source": "aggregate_multi_return.sts",
+    "outcome": "success",
+    "stdout": "pair.defer\ndrop 3\nresults 1 2\ndrop 2\ndrop 1\naggregate_multi_return: ok\n"
+  },
+  {
+    "name": "for_init_lifetime",
+    "source": "for_init_lifetime.sts",
+    "outcome": "success",
+    "stdout": "normal.body.defer 0\ndrop 10\nnormal.body 1\nnormal.body.defer 1\ndrop 11\ndrop 2\nafter.normal\ndrop 40\nafter.zero\nbreak.body.defer\ndrop 51\ndrop 50\nafter.break\nreturn.body.defer\ndrop 61\ndrop 60\nreturn.result 6\ndrop 90\nfor_init_lifetime: ok\n"
+  },
+  {
+    "name": "nested_loops",
+    "source": "nested_loops.sts",
+    "outcome": "success",
+    "stdout": "inner.defer 0 1\ndrop 0\ninner.defer 0 2\ndrop 1\nouter.resume 0\nouter.defer 0\ndrop 100\ninner.defer 1 1\ndrop 10\ninner.defer 1 2\ndrop 11\nouter.resume 1\nouter.defer 1\ndrop 101\nnested_loops: ok\n"
+  },
+  {
+    "name": "loop_families",
+    "source": "loop_families.sts",
+    "outcome": "success",
+    "stdout": "foreach.defer 1\ndrop 11\nforeach.body 2\nforeach.defer 2\ndrop 12\nforeach.defer 3\ndrop 13\nafter.foreach\ndo.defer 1\ndrop 20\ndo.defer 2\ndrop 21\nafter.do 2\ninf.defer 1\ndrop 30\ninf.defer 2\ndrop 31\nafter.inf 2\ndrop 90\nloop_families: ok\n"
+  },
+  {
+    "name": "nested_switch",
+    "source": "nested_switch.sts",
+    "outcome": "success",
+    "stdout": "nested.case.defer\ndrop 30\nafter.nested.switch\ncase.zero.defer\ndrop 20\nafter.switch 0\nloop.defer 0\ndrop 10\ncase.default.defer\ndrop 21\nloop.defer 1\ndrop 11\ndrop 2\nnested_switch: ok\n"
+  },
+  {
+    "name": "defer_shadow_lookup",
+    "source": "defer_shadow_lookup.sts",
+    "outcome": "success",
+    "stdout": "body 21\nshadow 21\noriginal 11\ndefer_shadow_lookup: ok\n"
+  },
+  {
+    "name": "defer_branch_locals",
+    "source": "defer_branch_locals.sts",
+    "outcome": "success",
+    "stdout": "defer.body 100\nnested.defer 100\ndrop 8\nfirst 1\njoined 2\ndefer.body 100\nnested.defer 100\ndrop 8\nsecond 2\ndefer_branch_locals: ok\n"
+  },
+  {
+    "name": "defer_nested_control",
+    "source": "defer_nested_control.sts",
+    "outcome": "success",
+    "stdout": "body\ndefer.loop 0\ndrop 10\ndefer.loop 1\ndrop 11\ndefer.switch\ndefer.inf\ndefer.done\ndefer_nested_control: ok\n"
+  },
+  {
+    "name": "defer_deep_stack",
+    "source": "defer_deep_stack.sts",
+    "outcome": "success",
+    "stdout": "body\ndeep.body\ndeep.defer\ndrop 99\nouter.defer 4\nouter.defer 3\nouter.defer 2\nouter.defer 1\nouter.defer 0\ndrop 7\ndrop 6\ndrop 5\ndrop 4\ndrop 3\ndrop 2\ndrop 1\ndefer_deep_stack: ok\n"
+  },
+  {
+    "name": "lexical_zones",
+    "source": "lexical_zones.sts",
+    "outcome": "success",
+    "stdout": "normal.body\nnormal.zone 10\nafter.normal\nloop.zone 20\nloop.defer 0\nloop.zone 21\nloop.defer 1\nafter.loop\nreturn.inner 31\nreturn.outer 30\nresult 61\nlexical_zones: ok\n"
+  },
+  {
+    "name": "defer_return",
+    "source": "negative/defer_return.sts",
+    "outcome": "rejection",
+    "diagnostic": "(?m)^error(?:\\[[^\\]]+\\])?:.*'ret' cannot leave a deferred cleanup"
+  },
+  {
+    "name": "defer_break_outward",
+    "source": "negative/defer_break_outward.sts",
+    "outcome": "rejection",
+    "diagnostic": "(?m)^error(?:\\[[^\\]]+\\])?:.*'break' used outside of a loop"
+  },
+  {
+    "name": "defer_continue_outward",
+    "source": "negative/defer_continue_outward.sts",
+    "outcome": "rejection",
+    "diagnostic": "(?m)^error(?:\\[[^\\]]+\\])?:.*'continue' used outside of a loop"
+  },
+  {
+    "name": "for_init_out_of_scope",
+    "source": "negative/for_init_out_of_scope.sts",
+    "outcome": "rejection",
+    "diagnostic": "(?m)^error(?:\\[[^\\]]+\\])?:.*undefined variable 'index'"
+  },
+  {
+    "name": "defer_later_declaration",
+    "source": "negative/defer_later_declaration.sts",
+    "outcome": "rejection",
+    "diagnostic": "(?m)^error(?:\\[[^\\]]+\\])?:.*undefined variable 'later'"
+  },
+  {
+    "name": "defer_local_out_of_scope",
+    "source": "negative/defer_local_out_of_scope.sts",
+    "outcome": "rejection",
+    "diagnostic": "(?m)^error(?:\\[[^\\]]+\\])?:.*undefined variable 'local'"
+  },
+  {
+    "name": "task_return_values",
+    "source": "task_return_values.sts",
+    "outcome": "success",
+    "stdout": "call 7\ntask.defer 99\nresult 7\ntask_return_values: ok\n"
+  },
+  {
+    "name": "task_nested_lambda",
+    "source": "task_nested_lambda.sts",
+    "outcome": "success",
+    "stdout": "lambda.body 6\nlambda.defer 99\ntask.body 7\ntask.defer 90\nresult 17\ntask_nested_lambda: ok\n"
+  },
+  {
+    "name": "task_lazy_generic",
+    "source": "task_lazy_generic.sts",
+    "outcome": "success",
+    "stdout": "generic.body 7\ngeneric.defer 99\ntask.body 7\ntask.defer 90\nresult 11\ntask_lazy_generic: ok\n"
+  },
+  {
+    "name": "task_watch_handler",
+    "source": "task_watch_handler.sts",
+    "outcome": "success",
+    "stdout": "before.send\nhandler.body 7\nhandler.defer 17\nafter.first.send\nafter.second.send\ntask.defer 90\nresult 11 handled 1\ntask_watch_handler: ok\n"
+  },
+  {
+    "name": "task_watch_return",
+    "source": "task_watch_return.sts",
+    "outcome": "success",
+    "stdout": "handler.body 7\nhandler.defer 7\nafter.return\nhandler.body 8\nhandler.defer 8\nafter.break\ntask.defer 90\nresult 12 handled 2\ntask_watch_return: ok\n"
+  }
+]

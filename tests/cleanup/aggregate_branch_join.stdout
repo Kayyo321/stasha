@@ -1,0 +1,9 @@
+choose.defer
+result 1
+drop 1
+joined
+choose.defer
+drop 1
+result 2
+drop 2
+aggregate_branch_join: ok

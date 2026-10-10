@@ -9,13 +9,16 @@
  */
 void linker_set_debug_mode(boolean_t on);
 
+/* Inspect actual emitted kernel imports and forbidden hosted sections. */
+result_t audit_kernel_object(const char *obj_path);
+
 /*
  * extra_libs: NULL-terminated array of .a library paths to link in addition
  * to the object file (from `lib "name" from "path"` declarations).
  * May be NULL if there are no custom libraries.
  */
 result_t link_object(const char *obj_path, const char *output_path,
-                     const char **extra_libs);
+                     const char **extra_libs, const char *target_triple);
 
 /*
  * Freestanding link: skips -lSystem / -lc / -lm / -lpthread.  Intended for

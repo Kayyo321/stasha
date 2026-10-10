@@ -34,7 +34,9 @@ extern "C" {
 
 /* Allocate `size` bytes from the zone identified by *zone_ptr.
  * *zone_ptr is a void* that the runtime uses for internal state.
- * Pass a pointer to a NULL-initialised void* for a fresh zone. */
+ * Pass a pointer to a NULL-initialised void* for a fresh zone.
+ * Results satisfy alignof(max_align_t); over-aligned objects are unsupported.
+ * Unrepresentable sizes or allocation failure return NULL. */
 void *__zone_alloc(void **zone_ptr, size_t size);
 
 /* Free all memory allocated from the zone and reset *zone_ptr to NULL.

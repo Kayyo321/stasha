@@ -1,0 +1,31 @@
+mod cleanup_defer_nested_control;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn main(void): i32 {
+    stack i32 visits = 0;
+    {
+        defer {
+            for (stack i32 index = 0; index < 3; index++) {
+                stack Tracked _local = .{ .id = 10 + index };
+                defer print.('defer.loop {}\n', index);
+                visits = visits + 1;
+                if (index == 0) { continue; }
+                break;
+            }
+            switch (visits) {
+                case 2: { print.('defer.switch\n'); break; }
+                default: { visits = 100; }
+            }
+            inf { print.('defer.inf\n'); break; }
+            print.('defer.done\n');
+        }
+        print.('body\n');
+    }
+    if (visits != 2) { ret 1; }
+    print.('defer_nested_control: ok\n');
+    ret 0;
+}

@@ -87,3 +87,12 @@ prove the harness contracts, not that Stasha compiles any language feature.
 The mock executable/scripts are exercised on POSIX with Bash. For MSYS2 CI,
 install its `python` package alongside Bash; native Windows Python and process
 handling still require separate platform verification.
+
+## Language test-block execution
+
+`python3 tests/harness/run_language_tests.py bin/stasha FILE.sts [-l LIB]`
+compiles into a fresh retained directory, then executes that new program. A
+successful compile alone cannot pass: the runtime must exit zero and emit
+exactly one nonempty `N passed, 0 failed` summary. Timeouts, crashes, sanitizer
+reports, missing output and empty suites fail. Make's stdlib-test/test-threads
+use this runner. This corrects the old compile-only test gate.

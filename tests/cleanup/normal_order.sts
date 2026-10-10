@@ -1,0 +1,28 @@
+mod cleanup_normal_order;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn main(void): i32 {
+    stack i32 reached = 0;
+    {
+        stack Tracked _first = .{ .id = 1 };
+        defer print.('outer.defer 1\n');
+        stack Tracked _second = .{ .id = 2 };
+        defer print.('outer.defer 2\n');
+        {
+            stack Tracked _third = .{ .id = 3 };
+            defer print.('inner.defer 1\n');
+            stack Tracked _fourth = .{ .id = 4 };
+            defer print.('inner.defer 2\n');
+            print.('body\n');
+        }
+        reached = reached + 1;
+        print.('outer.resume\n');
+    }
+    if (reached != 1) { ret 1; }
+    print.('normal_order: ok\n');
+    ret 0;
+}

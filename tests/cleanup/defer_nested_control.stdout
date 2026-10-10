@@ -1,0 +1,9 @@
+body
+defer.loop 0
+drop 10
+defer.loop 1
+drop 11
+defer.switch
+defer.inf
+defer.done
+defer_nested_control: ok

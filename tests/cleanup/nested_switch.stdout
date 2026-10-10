@@ -1,0 +1,14 @@
+nested.case.defer
+drop 30
+after.nested.switch
+case.zero.defer
+drop 20
+after.switch 0
+loop.defer 0
+drop 10
+case.default.defer
+drop 21
+loop.defer 1
+drop 11
+drop 2
+nested_switch: ok

@@ -59,7 +59,7 @@ ext type str_view_t: struct {
     ext fn equals(stack str_view_t *r other): bool {
         if (this.len != other.length()) { ret false; }
         for (i32 i = 0; i < this.len; ++i) {
-            if (this.ptr[i] != other.at(i)) { ret false; }
+            if (this.ptr[i] != other.at((u32)i)) { ret false; }
         }
         ret true;
     }
@@ -99,7 +99,7 @@ ext type str_view_t: struct {
     ext fn equ(stack str_view_t *r other): bool {
         if (this.len != other.length()) { ret false; }
         for (i32 i = 0; i < this.len; i++) {
-            if (this.ptr[i] != other.at(i)) { ret false; }
+            if (this.ptr[i] != other.at((u32)i)) { ret false; }
         }
         ret true;
     }

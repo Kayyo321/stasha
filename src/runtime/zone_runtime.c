@@ -3,6 +3,8 @@
 #include "zone_runtime.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdalign.h>
 
 /* Each block in the zone chain.
  * Layout: [zone_block_t header] [data bytes ...] */
@@ -12,7 +14,7 @@ typedef struct zone_block {
     struct zone_block *next;
     size_t             used;   /* bytes used in this block */
     size_t             cap;    /* usable bytes after the header */
-    /* data follows immediately after this header */
+    alignas(max_align_t) unsigned char data[];
 } zone_block_t;
 
 /* The zone handle stored in the user's void*. */
@@ -24,6 +26,7 @@ typedef struct zone_state {
 
 static zone_block_t *zone_new_block(size_t min_size) {
     size_t cap = min_size > ZONE_BLOCK_SIZE ? min_size : ZONE_BLOCK_SIZE;
+    if (cap > SIZE_MAX - sizeof(zone_block_t)) return NULL;
     zone_block_t *blk = (zone_block_t *)malloc(sizeof(zone_block_t) + cap);
     if (!blk) return NULL;
     blk->next = NULL;
@@ -38,6 +41,13 @@ void *__zone_alloc(void **zone_ptr, size_t size) {
     if (!zone_ptr) return NULL;
     if (size == 0) size = 1;
 
+    const size_t alignment = alignof(max_align_t);
+    size_t remainder = size % alignment;
+    size_t padding = remainder ? alignment - remainder : 0;
+    if (size > SIZE_MAX - padding) return NULL;
+    size_t aligned = size + padding;
+    if (aligned > SIZE_MAX - sizeof(zone_block_t)) return NULL;
+
     /* Initialise zone on first use */
     zone_state_t *zs = (zone_state_t *)*zone_ptr;
     if (!zs) {
@@ -47,12 +57,9 @@ void *__zone_alloc(void **zone_ptr, size_t size) {
         *zone_ptr = zs;
     }
 
-    /* Align to 8 bytes */
-    size_t aligned = (size + 7u) & ~7u;
-
     /* Find a block with enough space or allocate a new one */
     zone_block_t *blk = zs->head;
-    if (!blk || blk->used + aligned > blk->cap) {
+    if (!blk || aligned > blk->cap - blk->used) {
         zone_block_t *new_blk = zone_new_block(aligned);
         if (!new_blk) return NULL;
         new_blk->next = blk;
@@ -60,7 +67,7 @@ void *__zone_alloc(void **zone_ptr, size_t size) {
         blk = new_blk;
     }
 
-    void *ptr = (char *)(blk + 1) + blk->used;
+    void *ptr = blk->data + blk->used;
     blk->used += aligned;
     return ptr;
 }

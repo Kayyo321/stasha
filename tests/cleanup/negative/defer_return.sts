@@ -1,0 +1,6 @@
+mod cleanup_reject_defer_return;
+
+fn main(void): i32 {
+    defer { ret 3; }
+    ret 0;
+}

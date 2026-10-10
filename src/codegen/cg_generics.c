@@ -153,6 +153,7 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     memset(&dummy, 0, sizeof(dummy));
     symtab_add(&cg->globals,
                ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
+    scalar_register_signature(cg, &cg->globals.entries[cg->globals.count - 1], method_decl);
     if (total_params > 0) deallocate(ptypes_heap);
 
     /* register as destructor if rem */
@@ -171,6 +172,10 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     mangle_module_prefix(module_name ? module_name : "", cg->current_module_prefix,
                          sizeof(cg->current_module_prefix));
 
+    type_info_t *saved_returns = cg->current_return_types;
+    usize_t saved_return_count = cg->current_return_count;
+    cg->current_return_types = method_decl->as.fn_decl.return_types;
+    cg->current_return_count = method_decl->as.fn_decl.return_count;
     cg->current_fn                  = fn;
     cg->current_struct_name         = (char *)inst_struct_name;
     cg->current_fn_is_inline_method = True; /* generic struct method — this allowed */
@@ -209,6 +214,8 @@ static void instantiate_method(cg_t *cg, node_t *method_decl,
     }
 
     gen_block(cg, method_decl->as.fn_decl.body);
+    cg->current_return_types = saved_returns;
+    cg->current_return_count = saved_return_count;
 
     LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(cg->builder);
     if (!LLVMGetBasicBlockTerminator(cur_bb)) {
@@ -255,6 +262,21 @@ static void try_instantiate_generic(cg_t *cg, const char *mangled_name) {
     /* ── save outer function-generation context (we may be called lazily
      *     from inside an active gen_block / gen_local_var etc.) ── */
     LLVMValueRef      saved_fn          = cg->current_fn;
+    type_info_t *saved_returns = cg->current_return_types;
+    usize_t saved_return_count = cg->current_return_count;
+    LLVMBasicBlockRef saved_break = cg->break_target, saved_continue = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth, saved_continue_depth = cg->continue_cleanup_depth;
+    boolean_t saved_emitting_defer = cg->emitting_defer;
+    sts_coro_ctx_t saved_coro = cg->cur_coro;
+    boolean_t saved_async_task = cg->current_fn_is_async_task;
+    boolean_t saved_entry_main = cg->current_fn_is_entry_main;
+    boolean_t saved_inline_method = cg->current_fn_is_inline_method;
+    cg->break_target = cg->continue_target = Null;
+    cg->break_cleanup_depth = cg->continue_cleanup_depth = 0;
+    cg->emitting_defer = False;
+    memset(&cg->cur_coro, 0, sizeof(cg->cur_coro));
+    cg->current_fn_is_async_task = False;
+    cg->current_fn_is_entry_main = False;
     char             *saved_struct_name = cg->current_struct_name;
     linkage_t         saved_fn_linkage  = cg->current_fn_linkage;
     usize_t           saved_dtor_depth  = cg->dtor_depth;
@@ -290,7 +312,8 @@ static void try_instantiate_generic(cg_t *cg, const char *mangled_name) {
 
     /* ── register LLVM named struct ── */
     LLVMTypeRef stype = LLVMStructCreateNamed(cg->ctx, inst_name_intern);
-    register_struct(cg, inst_name_intern, stype, False);
+    register_struct(cg, inst_name_intern, stype,
+                    tmpl->as.type_decl.decl_kind == TypeDeclUnion);
     struct_reg_t *sr = find_struct(cg, inst_name_intern);
     if (!sr) goto restore;
 
@@ -301,57 +324,10 @@ static void try_instantiate_generic(cg_t *cg, const char *mangled_name) {
         sr->mod_prefix = ast_strdup(pfx, strlen(pfx));
     }
 
-    /* ── copy @comptime: fields from template (values are constants) ── */
-    {
-        usize_t fc = tmpl->as.type_decl.fields.count;
-        for (usize_t j = 0; j < fc; j++) {
-            node_t *field = tmpl->as.type_decl.fields.items[j];
-            if (!(field->as.var_decl.flags & VdeclComptimeField)) continue;
-            if (sr->ct_field_count >= 16) break;
-            long val = 0;
-            if (field->as.var_decl.init
-                    && field->as.var_decl.init->kind == NodeIntLitExpr)
-                val = field->as.var_decl.init->as.int_lit.value;
-            sr->ct_fields[sr->ct_field_count].name  = field->as.var_decl.name;
-            sr->ct_fields[sr->ct_field_count].value = val;
-            sr->ct_field_count++;
-        }
-    }
-
-    /* ── lay out LLVM struct body ── */
-    {
-        usize_t fc = tmpl->as.type_decl.fields.count;
-        /* count non-comptime runtime fields */
-        usize_t llvm_fc = 0;
-        for (usize_t j = 0; j < fc; j++) {
-            node_t *field = tmpl->as.type_decl.fields.items[j];
-            if (field->as.var_decl.flags & VdeclComptimeField) continue;
-            llvm_fc++;
-        }
-
-        heap_t ft_heap = NullHeap;
-        LLVMTypeRef *field_types = Null;
-        if (llvm_fc > 0) {
-            ft_heap = allocate(llvm_fc, sizeof(LLVMTypeRef));
-            field_types = ft_heap.pointer;
-        }
-
-        usize_t fi = 0;
-        for (usize_t j = 0; j < fc; j++) {
-            node_t *field = tmpl->as.type_decl.fields.items[j];
-            if (field->as.var_decl.flags & VdeclComptimeField) continue;
-            type_info_t fti = resolve_alias(cg, field->as.var_decl.type);
-            /* apply generic substitution so concrete types are stored in the registry */
-            fti = subst_type_info(cg, fti);
-            field_types[fi] = get_llvm_type(cg, fti);
-            struct_add_field(sr, field->as.var_decl.name, fti, fi,
-                             field->as.var_decl.linkage,
-                             field->as.var_decl.storage);
-            fi++;
-        }
-        LLVMStructSetBody(stype, field_types, (unsigned)llvm_fc, 0);
-        if (llvm_fc > 0) deallocate(ft_heap);
-    }
+    /* Generic instances use exactly the same array, bitfield, representation
+       and target layout rules as ordinary structs. */
+    sr->layout_decl = tmpl;
+    if (!cg_layout_struct(cg, inst_name_intern)) goto restore;
 
     /* ── instantiate inline methods (defined inside the struct body) ── */
     for (usize_t m = 0; m < tmpl->as.type_decl.methods.count; m++) {
@@ -394,6 +370,15 @@ restore:
     cg->dtor_cap            = saved_dtor_cap;
     cg->dtor_depth          = saved_dtor_depth;
     cg->current_fn          = saved_fn;
+    cg->current_return_types = saved_returns;
+    cg->current_return_count = saved_return_count;
+    cg->break_target = saved_break; cg->continue_target = saved_continue;
+    cg->break_cleanup_depth = saved_break_depth; cg->continue_cleanup_depth = saved_continue_depth;
+    cg->emitting_defer = saved_emitting_defer;
+    cg->cur_coro = saved_coro;
+    cg->current_fn_is_async_task = saved_async_task;
+    cg->current_fn_is_entry_main = saved_entry_main;
+    cg->current_fn_is_inline_method = saved_inline_method;
     cg->current_struct_name = saved_struct_name;
     cg->current_fn_linkage  = saved_fn_linkage;
     if (saved_bb && cg->builder)
@@ -439,6 +424,21 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
 
     /* ── save outer function-generation context ── */
     LLVMValueRef      saved_fn          = cg->current_fn;
+    type_info_t *saved_returns = cg->current_return_types;
+    usize_t saved_return_count = cg->current_return_count;
+    LLVMBasicBlockRef saved_break = cg->break_target, saved_continue = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth, saved_continue_depth = cg->continue_cleanup_depth;
+    boolean_t saved_emitting_defer = cg->emitting_defer;
+    sts_coro_ctx_t saved_coro = cg->cur_coro;
+    boolean_t saved_async_task = cg->current_fn_is_async_task;
+    boolean_t saved_entry_main = cg->current_fn_is_entry_main;
+    boolean_t saved_inline_method = cg->current_fn_is_inline_method;
+    cg->break_target = cg->continue_target = Null;
+    cg->break_cleanup_depth = cg->continue_cleanup_depth = 0;
+    cg->emitting_defer = False;
+    memset(&cg->cur_coro, 0, sizeof(cg->cur_coro));
+    cg->current_fn_is_async_task = False;
+    cg->current_fn_is_entry_main = False;
     char             *saved_struct_name = cg->current_struct_name;
     linkage_t         saved_fn_linkage  = cg->current_fn_linkage;
     usize_t           saved_dtor_depth  = cg->dtor_depth;
@@ -514,6 +514,7 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
 
     type_info_t dummy; memset(&dummy, 0, sizeof(dummy));
     symtab_add(&cg->globals, inst_name_intern, fn, Null, dummy, False);
+    scalar_register_signature(cg, &cg->globals.entries[cg->globals.count - 1], tmpl);
     if (pc > 0) deallocate(ptypes_heap);
 
     /* ── generate body ── */
@@ -526,6 +527,8 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
                                  sizeof(cg->current_module_prefix));
 
         cg->current_fn                  = fn;
+        cg->current_return_types = tmpl->as.fn_decl.return_types;
+        cg->current_return_count = tmpl->as.fn_decl.return_count;
         cg->current_struct_name         = Null;
         cg->current_fn_is_inline_method = False; /* standalone generic fn — no this */
         cg->current_fn_linkage          = LinkageInternal;
@@ -605,6 +608,15 @@ static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name) 
     cg->dtor_cap            = saved_dtor_cap;
     cg->dtor_depth          = saved_dtor_depth;
     cg->current_fn          = saved_fn;
+    cg->current_return_types = saved_returns;
+    cg->current_return_count = saved_return_count;
+    cg->break_target = saved_break; cg->continue_target = saved_continue;
+    cg->break_cleanup_depth = saved_break_depth; cg->continue_cleanup_depth = saved_continue_depth;
+    cg->emitting_defer = saved_emitting_defer;
+    cg->cur_coro = saved_coro;
+    cg->current_fn_is_async_task = saved_async_task;
+    cg->current_fn_is_entry_main = saved_entry_main;
+    cg->current_fn_is_inline_method = saved_inline_method;
     cg->current_struct_name = saved_struct_name;
     cg->current_fn_linkage  = saved_fn_linkage;
     if (saved_bb && cg->builder)

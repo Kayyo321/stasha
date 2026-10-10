@@ -1,0 +1,7 @@
+mod cleanup_reject_defer_local_out_of_scope;
+
+fn main(void): i32 {
+    { defer stack i32 local = 7; }
+    print.('{}\n', local);
+    ret 0;
+}

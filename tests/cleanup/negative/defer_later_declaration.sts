@@ -1,0 +1,8 @@
+mod cleanup_reject_defer_later_declaration;
+
+fn main(void): i32 {
+    defer print.('{}\n', later);
+    stack i32 later = 7;
+    print.('normal {}\n', later);
+    ret 0;
+}

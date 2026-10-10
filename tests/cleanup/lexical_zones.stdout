@@ -1,0 +1,12 @@
+normal.body
+normal.zone 10
+after.normal
+loop.zone 20
+loop.defer 0
+loop.zone 21
+loop.defer 1
+after.loop
+return.inner 31
+return.outer 30
+result 61
+lexical_zones: ok

@@ -93,7 +93,35 @@ static void expect_literal(const char *literal, uint64_t magnitude,
     }
 }
 
+static void test_match_literal(const char *text, uint64_t magnitude, boolean_t negative) {
+    char source[320];
+    snprintf(source, sizeof(source), "mod front; fn main(void): i32 { match 0 { %s => { ret 1; } _ => { ret 0; } } }", text);
+    case_name = text;
+    for (int mode = 0; mode < 2; ++mode) {
+        node_t *module = parse_case(source, (boolean_t)mode);
+        CHECK(module && !get_error_count());
+        node_t *fn = module->as.module.decls.items[0];
+        CHECK(fn->kind == NodeFnDecl);
+        node_t *match = fn->as.fn_decl.body->as.block.stmts.items[0];
+        CHECK(match->kind == NodeMatchStmt);
+        node_t *value = match->as.match_stmt.arms.items[0]->as.match_arm.literal_expr;
+        if (negative) {
+            CHECK(value && value->kind == NodeUnaryPrefixExpr && value->as.unary.op == TokMinus);
+            value = value->as.unary.operand;
+        }
+        CHECK(value && value->kind == NodeIntLitExpr);
+        CHECK(value->as.int_lit.value == magnitude);
+        finish_case();
+    }
+}
+
 static void test_literals(void) {
+    test_match_literal("18446744073709551615", UINT64_MAX, False);
+    test_match_literal("0xffffffffffffffff", UINT64_MAX, False);
+    test_match_literal("-9223372036854775808", UINT64_C(9223372036854775808), True);
+    test_match_literal("-0x8000000000000000", UINT64_C(9223372036854775808), True);
+    expect_rejected("match magnitude overflow", "mod t; fn f(void): void { match 0 { 18446744073709551616 => {} } }", "exceeds maximum supported magnitude");
+
     const uint64_t boundaries[] = {
         0, 1, 127, 128, 255, 256, 32767, 32768, 65535, 65536,
         UINT64_C(2147483647), UINT64_C(2147483648), UINT64_C(4294967295),

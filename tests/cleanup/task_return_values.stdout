@@ -1,0 +1,4 @@
+call 7
+task.defer 99
+result 7
+task_return_values: ok

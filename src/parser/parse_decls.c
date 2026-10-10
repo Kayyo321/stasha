@@ -773,7 +773,7 @@ static node_t *parse_match_stmt(parser_t *p) {
         arm->any_bind_storage = StorageDefault;
         arm->as.match_arm.guard_expr    = Null;
         arm->as.match_arm.is_literal    = False;
-        arm->as.match_arm.literal_value = 0;
+        arm->as.match_arm.literal_expr = Null;
 
         /* wildcard arm: _ => { ... } */
         if (check(p, TokIdent) &&
@@ -792,13 +792,7 @@ static node_t *parse_match_stmt(parser_t *p) {
             arm->as.match_arm.enum_name   = Null;
             arm->as.match_arm.variant_name = Null;
             arm->as.match_arm.bind_name   = Null;
-            long sign = 1;
-            if (match_tok(p, TokMinus)) sign = -1;
-            long val = 0;
-            for (usize_t i = 0; i < p->current.length; i++)
-                val = val * 10 + (p->current.start[i] - '0');
-            arm->as.match_arm.literal_value = sign * val;
-            advance_parser(p); /* consume int literal */
+            arm->as.match_arm.literal_expr = parse_unary(p);
 
         } else if (!is_any_match && is_builtin_type_token(p->current.kind)) {
             /* Tier 2 type-pattern arm for va.foreach typed dispatch:

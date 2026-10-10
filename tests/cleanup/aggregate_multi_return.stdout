@@ -1,0 +1,6 @@
+pair.defer
+drop 3
+results 1 2
+drop 2
+drop 1
+aggregate_multi_return: ok

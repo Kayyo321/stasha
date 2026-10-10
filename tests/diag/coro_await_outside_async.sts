@@ -6,5 +6,5 @@ async fn square(i32 x): i32 {
 
 fn main(void): i32 {
     stack future.[i32] f = async.(square)(7);
-    ret await(f);
+    ret await.(f) - 49;
 }

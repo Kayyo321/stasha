@@ -1,0 +1,21 @@
+mod cleanup_return_heap_scalar;
+
+
+fn read_owned(void): i32 {
+    heap i32 *rw data = new.(sizeof.(i32));
+    data[0] = 73;
+    defer {
+        data[0] = 999;
+        print.('release {}\n', data[0]);
+        rem.(data);
+    }
+    ret data[0];
+}
+
+fn main(void): i32 {
+    stack i32 value = read_owned();
+    print.('result {}\n', value);
+    if (value != 73) { ret 1; }
+    print.('return_heap_scalar: ok\n');
+    ret 0;
+}

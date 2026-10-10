@@ -1,0 +1,47 @@
+mod cleanup_lexical_zones;
+
+
+fn return_from_zone(void): i32 {
+    zone outer {
+        stack i32 *rw left = new.(sizeof.(i32)) in outer;
+        left[0] = 30;
+        defer print.('return.outer {}\n', left[0]);
+        zone inner {
+            stack i32 *rw right = new.(sizeof.(i32)) in inner;
+            right[0] = 31;
+            defer {
+                print.('return.inner {}\n', right[0]);
+                right[0] = 999;
+            }
+            ret left[0] + right[0];
+        }
+    }
+}
+
+fn main(void): i32 {
+    stack i32 visits = 0;
+    zone normal {
+        stack i32 *rw value = new.(sizeof.(i32)) in normal;
+        value[0] = 10;
+        defer print.('normal.zone {}\n', value[0]);
+        print.('normal.body\n');
+    }
+    print.('after.normal\n');
+    for (stack i32 index = 0; index < 3; index++) {
+        defer print.('loop.defer {}\n', index);
+        zone iteration {
+            stack i32 *rw value = new.(sizeof.(i32)) in iteration;
+            value[0] = 20 + index;
+            defer print.('loop.zone {}\n', value[0]);
+            visits = visits + 1;
+            if (index == 0) { continue; }
+            break;
+        }
+    }
+    print.('after.loop\n');
+    stack i32 result = return_from_zone();
+    print.('result {}\n', result);
+    if (visits != 2 || result != 61) { ret 1; }
+    print.('lexical_zones: ok\n');
+    ret 0;
+}

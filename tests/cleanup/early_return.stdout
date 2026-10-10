@@ -1,0 +1,16 @@
+early
+branch.defer
+drop 3
+inner.defer
+drop 2
+outer.defer
+drop 1
+result 17
+normal.inner
+inner.defer
+drop 2
+normal.outer
+outer.defer
+drop 1
+result 29
+early_return: ok

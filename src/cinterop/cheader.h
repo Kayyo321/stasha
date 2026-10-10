@@ -2,6 +2,7 @@
 #define CHeaderH
 
 #include "../common/common.h"
+#include <stdint.h>
 
 typedef enum {
     CTypeUnsupported = 0,
@@ -88,12 +89,18 @@ typedef struct {
     char *name;
     c_enum_variant_t *variants;
     usize_t variant_count;
+    boolean_t unsupported_values;
+    boolean_t from_user_header;
     heap_t variants_heap; /* internal */
 } c_enum_t;
 
 typedef struct {
     char *name;
-    long value;
+    uint64_t magnitude;
+    boolean_t negative;
+    c_type_kind_t type;
+    boolean_t invalid;
+    boolean_t from_user_header;
 } c_const_t;
 
 typedef struct {

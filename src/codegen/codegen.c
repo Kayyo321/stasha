@@ -9,6 +9,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "codegen.h"
+#include "../common/abi.h"
+#include "cg_llvm_constants.h"
+
+/* Resolve once before semantic target decisions. LLVM owns canonical triple
+ * syntax; the shared descriptor supplies the supported language ABI facts. */
+result_t codegen_resolve_target(const char *requested, sts_target_spec *out) {
+    char *host = requested && requested[0] ? Null : LLVMGetDefaultTargetTriple();
+    const char *raw = requested && requested[0] ? requested : host;
+    if (!raw || !raw[0]) {
+        diag_begin_error("LLVM did not provide a default target; use --target");
+        diag_finish();
+        if (host) LLVMDisposeMessage(host);
+        return Err;
+    }
+    char *normalized = LLVMNormalizeTargetTriple(raw);
+    int status = sts_target_init(out, normalized);
+    if (status != 0) {
+        diag_begin_error("unsupported target '%s': no qualified target descriptor", normalized);
+        diag_finish();
+    }
+    LLVMDisposeMessage(normalized);
+    if (host) LLVMDisposeMessage(host);
+    return status == 0 ? Ok : Err;
+}
 
 /* ── DI type cache ── */
 
@@ -79,6 +103,7 @@ typedef struct {
     LLVMValueRef value;
     LLVMTypeRef type;
     type_info_t stype;
+    fn_ptr_desc_t *scalar_signature; /* resolved source call types, independent of LLVM */
     int flags;              /* SymAtomic | SymHeapVar | SymConst | SymFinal | SymNil */
     storage_t storage;      /* storage domain of the variable */
     linkage_t linkage;
@@ -109,6 +134,7 @@ typedef struct {
     int bit_offset;     /* bit position within backing field (0 if not a bitfield) */
     int bit_width;      /* bitfield width in bits (0 = not a bitfield) */
     long array_size;    /* > 0 if field is a fixed-size array, 0 otherwise */
+    LLVMTypeRef llvm_type; /* complete storage type, including every array dimension */
 } field_info_t;
 
 /* compile-time-only field (from @comptime: section) — excluded from runtime layout */
@@ -127,6 +153,11 @@ typedef struct {
     heap_t fields_heap;
     LLVMValueRef destructor;
     boolean_t is_union;     /* True if this is a union type */
+    boolean_t is_packed;    /* explicit @packed only; @c_layout is natural */
+    node_t *layout_decl;    /* declaration used to complete an opaque type */
+    unsigned layout_state; /* 0 pending, 1 visiting, 2 complete, 3 invalid */
+    uint64_t size_bytes;
+    unsigned abi_alignment;
     /* @comptime: fields — compile-time metadata, excluded from runtime layout */
     comptime_field_t ct_fields[16];
     usize_t ct_field_count;
@@ -153,7 +184,11 @@ typedef struct {
 
 typedef struct {
     char *name;
-    LLVMTypeRef llvm_type;   /* i32 for C-style; { i32, [N x i8] } for tagged */
+    LLVMTypeRef llvm_type;   /* i32 for plain; { i32, aligned storage } for tagged */
+    node_t *layout_decl;
+    unsigned layout_state; /* same dependency states as struct_reg_t */
+    uint64_t payload_size;
+    unsigned payload_alignment;
     boolean_t is_tagged;     /* True if any variant carries a payload */
     variant_info_t *variants;
     usize_t variant_count;
@@ -175,7 +210,13 @@ typedef struct {
 typedef struct {
     LLVMValueRef alloca_val;
     char *struct_name;       /* non-null for struct dtors */
+    boolean_t is_zone;       /* lexical zone: __zone_free(&zone_pointer) */
 } dtor_var_t;
+
+typedef struct {
+    node_t *stmt;
+    usize_t locals_count;    /* names visible at the defer declaration */
+} deferred_stmt_t;
 
 typedef struct {
     dtor_var_t *vars;
@@ -183,7 +224,7 @@ typedef struct {
     usize_t capacity;
     heap_t heap;
     /* deferred statements (run in LIFO at scope exit) */
-    node_t **deferred;
+    deferred_stmt_t *deferred;
     usize_t deferred_count;
     usize_t deferred_cap;
     heap_t deferred_heap;
@@ -284,6 +325,9 @@ typedef struct {
 
     LLVMBasicBlockRef break_target;
     LLVMBasicBlockRef continue_target;
+    usize_t break_cleanup_depth;    /* number of scopes retained by destination */
+    usize_t continue_cleanup_depth;
+    boolean_t emitting_defer;       /* deferred code cannot return from its owner */
 
     linkage_t current_fn_linkage;   /* linkage of the function being compiled */
     boolean_t current_fn_is_entry_main; /* root main lowered to C entry point */
@@ -294,6 +338,11 @@ typedef struct {
                                         unqualified intra-module function resolution */
 
     LLVMTypeRef error_type;         /* {i1, ptr} for built-in error */
+    node_t *scalar_context_node;
+    type_info_t scalar_context_type;
+    type_info_t scalar_aggregate_element;
+    type_info_t *current_return_types;
+    usize_t current_return_count;
     LLVMTypeRef hint_ret_type;      /* hint for C lib call return type (set by gen_local_var) */
 
     /* hints for make.{...} when LHS is []T — set by gen_local_var around the
@@ -424,6 +473,7 @@ typedef struct {
 
     /* ── target & fileheader state ── */
     const char *target_triple;
+    sts_target_spec target_spec;
 
     /* Lifecycle blocks collected from the module for @llvm.global_ctors/dtors. */
     node_t *init_blocks[128];
@@ -433,6 +483,7 @@ typedef struct {
 
     /* Module-level freestanding flag (blocks auto-stdlib/runtime linking hints). */
     boolean_t freestanding;
+    boolean_t kernel_profile;
 
     /* Crash protection lifecycle blocks (@[[crash]] { ... }). */
     node_t  *crash_blocks[128];
@@ -507,6 +558,12 @@ static void gen_stmt(cg_t *cg, node_t *node);
 static void gen_block(cg_t *cg, node_t *node);
 static symbol_t *try_instantiate_generic_fn(cg_t *cg, const char *mangled_name);
 
+/* Target layout queries are shared with sizeof constant evaluation. */
+static boolean_t cg_layout_require_type(cg_t *cg, type_info_t ti, usize_t line);
+static boolean_t cg_layout_query(cg_t *cg, type_info_t ti, const char *field,
+                                 usize_t line, uint64_t *size,
+                                 unsigned *alignment, uint64_t *offset);
+
 /* DI helpers — defined after the registry helpers but called from gen_local_var
    and gen_stmt which appear earlier in the file. */
 static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti);
@@ -527,8 +584,10 @@ static void gen_quit_stmt(cg_t *cg, node_t *node);
 #include "cg_types.c"
 #include "cg_coro.c"
 #include "cg_registry.c"
+#include "cg_layout.c"
 #include "cg_interfaces.c"
 #include "cg_expr.c"
+#include "cg_global_const.c"
 #include "cg_stmt.c"
 #include "cg_generics.c"
 #include "cg_debug.c"
@@ -539,9 +598,16 @@ static void gen_quit_stmt(cg_t *cg, node_t *node);
 
 result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                  const char *target_triple, const char *source_file,
-                 boolean_t debug_mode, int optimization_level) {
+                 boolean_t debug_mode, int optimization_level, boolean_t emit_ir) {
     usize_t errors_before = get_error_count();
     result_t emit_result = Ok;
+    if (ast && ast->kind == NodeModule && ast->as.module.has_org) {
+        diag_begin_error("org is not implemented; use an explicit linker script for image addresses");
+        diag_span(DIAG_NODE(ast), True, "image address cannot be ignored");
+        diag_finish();
+        remove(obj_output);
+        return Err;
+    }
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
     cg.ast         = ast;
@@ -549,14 +615,18 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     cg.test_mode   = test_mode;
     cg.debug_mode  = debug_mode;
     cg.source_file = source_file;
-    cg.target_triple = target_triple;
+    if (codegen_resolve_target(target_triple, &cg.target_spec) != Ok) return Err;
+    cg.target_triple = cg.target_spec.triple;
     if (ast && ast->kind == NodeModule) {
         cg.freestanding                  = ast->as.module.freestanding;
+        cg.kernel_profile                = ast->as.module.kernel_profile;
         cg.crash_protection_disabled     = ast->as.module.crash_protection_disabled;
         cg.crash_tracking_disabled       = ast->as.module.crash_tracking_disabled;
     }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
+    LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorError, "stasha.abi", 10,
+        LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), STASHA_ABI_VERSION, 0)));
     cg.builder     = LLVMCreateBuilderInContext(cg.ctx);
     cg.current_fn  = Null;
     cg.current_struct_name = Null;
@@ -574,35 +644,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     LLVMInitializeAllAsmParsers();
 
     char *early_error = Null;
-    char *triple;
-    if (target_triple && target_triple[0] != '\0') {
-        triple = LLVMCreateMessage(target_triple);
-    } else {
-        triple = LLVMGetDefaultTargetTriple();
-        /* Some LLVM builds (notably the arm64-Linux extlib build used in
-         * CI) return an empty string from LLVMGetDefaultTargetTriple
-         * when LLVM_HOST_TRIPLE wasn't baked in. Fall back to a
-         * compile-time triple derived from the build platform so
-         * stasha can still emit code. */
-        if (!triple || triple[0] == '\0') {
-            if (triple) LLVMDisposeMessage(triple);
-            #if defined(__APPLE__) && defined(__aarch64__)
-                triple = LLVMCreateMessage("arm64-apple-darwin");
-            #elif defined(__APPLE__)
-                triple = LLVMCreateMessage("x86_64-apple-darwin");
-            #elif defined(__linux__) && defined(__aarch64__)
-                triple = LLVMCreateMessage("aarch64-unknown-linux-gnu");
-            #elif defined(__linux__) && defined(__x86_64__)
-                triple = LLVMCreateMessage("x86_64-unknown-linux-gnu");
-            #elif defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64))
-                triple = LLVMCreateMessage("aarch64-pc-windows-msvc");
-            #elif defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
-                triple = LLVMCreateMessage("x86_64-pc-windows-msvc");
-            #else
-                triple = LLVMCreateMessage("");
-            #endif
-        }
-    }
+    char *triple = LLVMCreateMessage(cg.target_spec.triple);
     LLVMSetTarget(cg.module, triple);
 
     LLVMTargetRef early_target;
@@ -611,23 +653,40 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         diag_finish();
         LLVMDisposeMessage(early_error);
         LLVMDisposeMessage(triple);
+        LLVMDisposeBuilder(cg.builder);
+        LLVMDisposeModule(cg.module);
         LLVMContextDispose(cg.ctx);
         return Err;
     }
     LLVMCodeGenOptLevel opt_level = map_opt_level(optimization_level);
-    boolean_t is_native = !target_triple || target_triple[0] == '\0';
-    char *cpu_str  = is_native ? LLVMGetHostCPUName()     : NULL;
-    char *feat_str = is_native ? LLVMGetHostCPUFeatures() : NULL;
+    /* Explicit native and implicit native targets have identical CPU policy.
+     * Host feature autodetection belongs behind a future explicit option. */
     LLVMTargetMachineRef machine = LLVMCreateTargetMachine(
-        early_target, triple,
-        cpu_str  ? cpu_str  : "generic",
-        feat_str ? feat_str : "",
-        opt_level, LLVMRelocPIC, LLVMCodeModelDefault);
-    if (cpu_str)  LLVMDisposeMessage(cpu_str);
-    if (feat_str) LLVMDisposeMessage(feat_str);
+        early_target, triple, "generic",
+        cg.kernel_profile ? "-mmx,-sse,-sse2,-avx,-avx2,-avx512f,+soft-float" : "",
+        opt_level, cg.kernel_profile ? LLVMRelocStatic : LLVMRelocPIC,
+        cg.kernel_profile ? LLVMCodeModelKernel : LLVMCodeModelDefault);
+    if (!machine) {
+        diag_begin_error("cannot create target machine for '%s'", triple);
+        diag_finish();
+        LLVMDisposeMessage(triple);
+        LLVMDisposeBuilder(cg.builder);
+        LLVMDisposeModule(cg.module);
+        LLVMContextDispose(cg.ctx);
+        return Err;
+    }
 
     cg.di_data_layout = LLVMCreateTargetDataLayout(machine);
     LLVMSetModuleDataLayout(cg.module, cg.di_data_layout);
+    unsigned actual_pointer_bits = LLVMPointerSize(cg.di_data_layout) * 8;
+    if (actual_pointer_bits != cg.target_spec.pointer_bits) {
+        diag_begin_error("target pointer width disagrees with LLVM data layout (%u versus %u)",
+                         cg.target_spec.pointer_bits, actual_pointer_bits);
+        diag_finish();
+        emit_result = Err;
+        goto cg_cleanup;
+    }
+
 
     /* ── DI builder initialisation ── */
     if (cg.debug_mode && cg.source_file) {
@@ -897,6 +956,12 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* @[[if: ...]] / @[[require: ...]] gating */
             if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
                 continue;
+            if (decl->as.type_decl.decl_kind != TypeDeclStruct
+                    && decl->as.type_decl.decl_kind != TypeDeclUnion
+                    && (decl->as.type_decl.attr_flags || decl->as.type_decl.align_value)) {
+                cg_layout_error(decl->line, "representation attributes require a struct or union", decl->as.type_decl.name);
+                continue;
+            }
             if (decl->as.type_decl.decl_kind == TypeDeclInterface) {
                 /* Register interface as a fat-pointer struct { ptr, ptr } */
                 char llvm_type_name[512];
@@ -942,6 +1007,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                 LLVMTypeRef stype = LLVMStructCreateNamed(cg.ctx, llvm_type_name);
                 register_struct(&cg, decl->as.type_decl.name, stype,
                                 decl->as.type_decl.decl_kind == TypeDeclUnion);
+                cg.structs[cg.struct_count - 1].layout_decl = decl;
                 /* store module prefix on the struct entry for method lookup */
                 if (cg.struct_count > 0 && decl->module_name) {
                     char pfx[512];
@@ -952,144 +1018,22 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             } else if (decl->as.type_decl.decl_kind == TypeDeclEnum) {
                 register_enum(&cg, decl->as.type_decl.name,
                               &decl->as.type_decl.variants);
+                cg.enums[cg.enum_count - 1].layout_decl = decl;
             } else if (decl->as.type_decl.decl_kind == TypeDeclAlias) {
                 register_alias(&cg, decl->as.type_decl.name, decl->as.type_decl.alias_type);
             }
         }
     }
 
-    /* pass 0b: set struct/union bodies (now that all types are registered) */
-    for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
-        node_t *decl = ast->as.module.decls.items[i];
-        if (decl->kind != NodeTypeDecl) continue;
-        if (decl->as.type_decl.decl_kind != TypeDeclStruct
-            && decl->as.type_decl.decl_kind != TypeDeclUnion)
-            continue;
-
-        /* skip generic template structs — they have no concrete LLVM type */
-        if (decl->as.type_decl.type_param_count > 0) continue;
-
-        /* @[[if: ...]] gated out — skip entirely */
-        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
-
-        struct_reg_t *sr = find_struct(&cg, decl->as.type_decl.name);
-        if (!sr) continue;
-
-        boolean_t is_packed = (decl->as.type_decl.attr_flags & AttrPacked) != 0
-                            || (decl->as.type_decl.attr_flags & AttrCLayout) != 0;
-
-        if (decl->as.type_decl.decl_kind == TypeDeclUnion) {
-            /* Union: single body = byte array of largest member size */
-            usize_t fc = decl->as.type_decl.fields.count;
-            usize_t max_size = 0;
-            for (usize_t j = 0; j < fc; j++) {
-                node_t *field = decl->as.type_decl.fields.items[j];
-                type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
-                usize_t sz = payload_type_size(fti);
-                if (sz > max_size) max_size = sz;
-                /* all union fields map to index 0 (they overlap) */
-                struct_add_field(sr, field->as.var_decl.name, fti, 0,
-                                 field->as.var_decl.linkage,
-                                 field->as.var_decl.storage);
-            }
-            if (max_size == 0) max_size = 1;
-            LLVMTypeRef body = LLVMArrayType2(LLVMInt8TypeInContext(cg.ctx),
-                                               (unsigned long long)max_size);
-            LLVMStructSetBody(sr->llvm_type, &body, 1, is_packed ? 1 : 0);
-        } else {
-            /* Struct: field layout with bitfield packing */
-            usize_t fc = decl->as.type_decl.fields.count;
-            LLVMTypeRef *field_types = Null;
-            heap_t ft_heap = NullHeap;
-            usize_t llvm_field_count = 0;
-
-            /* first pass: collect @comptime: fields */
-            for (usize_t j = 0; j < fc; j++) {
-                node_t *field = decl->as.type_decl.fields.items[j];
-                if (!(field->as.var_decl.flags & VdeclComptimeField)) continue;
-                if (sr->ct_field_count >= 16) continue;
-                long val = 0;
-                if (field->as.var_decl.init && field->as.var_decl.init->kind == NodeIntLitExpr)
-                    val = field->as.var_decl.init->as.int_lit.value;
-                sr->ct_fields[sr->ct_field_count].name = field->as.var_decl.name;
-                sr->ct_fields[sr->ct_field_count].value = val;
-                sr->ct_field_count++;
-            }
-
-            if (fc > 0) {
-                ft_heap = allocate(fc, sizeof(LLVMTypeRef));
-                field_types = ft_heap.pointer;
-                usize_t j = 0;
-                while (j < fc) {
-                    node_t *field = decl->as.type_decl.fields.items[j];
-
-                    /* skip @comptime: fields — they have no runtime layout */
-                    if (field->as.var_decl.flags & VdeclComptimeField) { j++; continue; }
-
-                    int bw = field->as.var_decl.bitfield_width;
-                    if (bw > 0) {
-                        /* start of a bitfield group — pack consecutive bitfields
-                           of the same base type into one backing integer */
-                        type_info_t base_ti = resolve_alias(&cg, field->as.var_decl.type);
-                        LLVMTypeRef backing_type = get_llvm_type(&cg, base_ti);
-                        usize_t backing_idx = llvm_field_count;
-                        int bit_pos = 0;
-
-                        while (j < fc) {
-                            node_t *bf = decl->as.type_decl.fields.items[j];
-                            int w = bf->as.var_decl.bitfield_width;
-                            if (w <= 0) break; /* not a bitfield, stop grouping */
-                            type_info_t bfti = resolve_alias(&cg, bf->as.var_decl.type);
-                            struct_add_field_ex(sr, bf->as.var_decl.name, bfti,
-                                                backing_idx,
-                                                bf->as.var_decl.linkage,
-                                                bf->as.var_decl.storage,
-                                                bit_pos, w);
-                            bit_pos += w;
-                            j++;
-                        }
-                        field_types[llvm_field_count++] = backing_type;
-                    } else {
-                        /* normal (non-bitfield) field */
-                        type_info_t fti = resolve_alias(&cg, field->as.var_decl.type);
-                        int _fndim = (field->as.var_decl.flags & VdeclArray)
-                                     ? (field->as.var_decl.array_ndim > 0
-                                        ? field->as.var_decl.array_ndim : 1)
-                                     : 0;
-                        if (_fndim > 0) {
-                            /* Build nested LLVM array type from innermost to outermost. */
-                            LLVMTypeRef _ft = get_llvm_type(&cg, fti);
-                            for (int _d = _fndim - 1; _d >= 0; _d--)
-                                _ft = LLVMArrayType2(_ft,
-                                          (unsigned long long)field->as.var_decl.array_sizes[_d]);
-                            field_types[llvm_field_count] = _ft;
-                        } else {
-                            field_types[llvm_field_count] = get_llvm_type(&cg, fti);
-                        }
-                        struct_add_field(sr, field->as.var_decl.name, fti,
-                                         llvm_field_count,
-                                         field->as.var_decl.linkage,
-                                         field->as.var_decl.storage);
-                        /* store outermost dimension in field_info for GEP/decay */
-                        if (_fndim > 0 && sr->field_count > 0)
-                            sr->fields[sr->field_count - 1].array_size =
-                                field->as.var_decl.array_sizes[0];
-                        llvm_field_count++;
-                        j++;
-                    }
-                }
-            }
-            LLVMStructSetBody(sr->llvm_type, field_types, (unsigned)llvm_field_count,
-                              is_packed ? 1 : 0);
-            if (fc > 0) deallocate(ft_heap);
-        }
-
-        /* alignment attribute */
-        if (decl->as.type_decl.align_value > 0) {
-            /* LLVM doesn't directly set alignment on struct type;
-               alignment is applied per-variable. We store it for later use. */
-        }
+    /* Complete by-value dependencies before querying DataLayout. Pointer cycles
+       remain legal; a by-value cycle gets a source diagnostic, never an LLVM
+       assertion on an opaque or infinitely recursive type. */
+    for (usize_t i = 0; i < cg.struct_count; i++) {
+        const char *name = cg.structs[i].name;
+        if (cg.structs[i].layout_decl) cg_layout_struct(&cg, name);
     }
+    for (usize_t i = 0; i < cg.enum_count; i++)
+        cg_layout_enum(&cg, cg.enums[i].name);
 
     /* early abort: type registration errors make function codegen unreliable */
     if (get_error_count() > errors_before) goto cg_cleanup;
@@ -1118,19 +1062,17 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (cg_fh_skip_decl(&cg, decl->headers, decl->line))
                 continue;
 
-            type_info_t ti = resolve_alias(&cg, decl->as.var_decl.type);
-            LLVMTypeRef type = get_llvm_type(&cg, ti);
-            /* Globals declared as fixed-size arrays (e.g. `extern int32_t
-             * buf[8];` from cheader) must be laid out as LLVM array types
-             * so indexing/sizeof do the right thing.  Mirror the wrapping
-             * already done for fn params and struct fields. */
-            if (decl->as.var_decl.flags & VdeclArray) {
-                int _nd = decl->as.var_decl.array_ndim > 0
-                          ? decl->as.var_decl.array_ndim : 1;
-                for (int _d = _nd - 1; _d >= 0; _d--)
-                    type = LLVMArrayType2(type,
-                        (unsigned long long)decl->as.var_decl.array_sizes[_d]);
+            type_info_t ti = cg_layout_resolve_type(&cg, decl->as.var_decl.type);
+            if (!ti.is_pointer && (ti.base == TypeVoid || ti.base == TypeInfer || ti.base == TypeError)) {
+                scalar_error(decl, "global storage requires an explicit complete object type");
+                continue;
             }
+            if (decl->as.var_decl.storage == StorageHeap && !ti.is_pointer && ti.base != TypeSlice) {
+                scalar_error(decl, "heap global storage requires a pointer or supported heap slice");
+                continue;
+            }
+            LLVMTypeRef type = cg_layout_field_type(&cg, decl, &ti);
+            if (!type) continue;
             /* mangle the LLVM symbol name for imported-module globals */
             char var_llvm_name[512];
             mangle_global(decl->is_c_extern ? Null : decl->module_name,
@@ -1143,6 +1085,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
                                       override_name, sizeof(override_name), &abi_c)) {
                 strncpy(var_llvm_name, override_name, sizeof(var_llvm_name) - 1);
                 var_llvm_name[sizeof(var_llvm_name) - 1] = '\0';
+            }
+            if (!strcmp(var_llvm_name, "__stasha_panic")) {
+                scalar_error(decl, "__stasha_panic is reserved for the exact nonreturning runtime function ABI");
+                continue;
             }
             LLVMValueRef global = LLVMAddGlobal(cg.module, type, var_llvm_name);
 
@@ -1168,30 +1114,11 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->as.var_decl.flags & VdeclTls)
                 LLVMSetThreadLocal(global, 1);
 
-            /* library-backed ext globals: no initializer — linker resolves from .a */
-            if (decl->from_lib) {
-                LLVMSetExternallyInitialized(global, 1);
-            } else {
-                /* initializer — must be a constant expression */
-                LLVMValueRef init_val = LLVMConstNull(type);
-                if (decl->as.var_decl.init) {
-                    node_t *iv = decl->as.var_decl.init;
-                    if (iv->kind == NodeIntLitExpr)
-                        init_val = LLVMConstInt(type,
-                            (unsigned long long)iv->as.int_lit.value, 1);
-                    else if (iv->kind == NodeFloatLitExpr)
-                        init_val = LLVMConstReal(type, iv->as.float_lit.value);
-                    else if (iv->kind == NodeBoolLitExpr)
-                        init_val = LLVMConstInt(type, iv->as.bool_lit.value, 0);
-                    else if (iv->kind == NodeCharLitExpr)
-                        init_val = LLVMConstInt(type, (unsigned char)iv->as.char_lit.value, 0);
-                    else if (iv->kind == NodeNilExpr)
-                        init_val = LLVMConstNull(type);
-                    else if (iv->kind == NodeStrLitExpr)
-                        init_val = LLVMConstNull(type); /* string globals handled below */
-                }
-                LLVMSetInitializer(global, init_val);
-            }
+            /* Complete definitions are initialized after all symbols exist,
+             * allowing relocatable addresses of later globals/functions. */
+            if (decl->from_lib) LLVMSetExternallyInitialized(global, 1);
+            /* No placeholder initializer: unresolved forward/cyclic scalar
+             * constants must not appear to be initialized to zero. */
 
             int sym_flags = 0;
             if (decl->as.var_decl.flags & VdeclAtomic)   sym_flags |= SymAtomic;
@@ -1414,6 +1341,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
+            scalar_register_signature(&cg, &cg.globals.entries[cg.globals.count - 1], decl);
 
             if (total_params > 0) deallocate(ptypes_heap);
 
@@ -1508,6 +1436,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             type_info_t dummy = {.base=TypeVoid, .is_pointer=False, .ptr_perm=PtrNone};
             symtab_add(&cg.globals, ast_strdup(fn_name, strlen(fn_name)), fn, Null, dummy, False);
+            scalar_register_signature(&cg, &cg.globals.entries[cg.globals.count - 1], method);
             deallocate(ptypes_heap);
 
             if (strcmp(method->as.fn_decl.name, "rem") == 0) {
@@ -1516,6 +1445,26 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             }
         }
     }
+
+    /* Static initializer pass: all global/function declarations now exist. */
+    for (usize_t i = 0; i < ast->as.module.decls.count; ++i) {
+        node_t *decl = ast->as.module.decls.items[i];
+        if (decl->kind != NodeVarDecl || decl->from_lib) continue;
+        if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
+        char name[512], override[512];
+        mangle_global(decl->is_c_extern ? Null : decl->module_name, decl->as.var_decl.name, name, sizeof(name));
+        boolean_t abi_c = False;
+        if (cg_fh_override_symbol(decl->headers, decl->as.var_decl.name, override, sizeof(override), &abi_c)) {
+            strncpy(name, override, sizeof(name) - 1); name[sizeof(name) - 1] = 0;
+        }
+        LLVMValueRef global = LLVMGetNamedGlobal(cg.module, name);
+        if (!global) continue;
+        mangle_module_prefix(decl->module_name ? decl->module_name : "", cg.current_module_prefix, sizeof(cg.current_module_prefix));
+        LLVMValueRef initial = cg_global_constant(&cg, decl->as.var_decl.init,
+            decl->as.var_decl.type, LLVMGlobalGetValueType(global), decl->as.var_decl.storage, 0);
+        LLVMSetInitializer(global, initial);
+    }
+    cg.current_module_prefix[0] = 0;
 
     /* pass 1b: generate vtable globals for structs implementing interfaces.
        All functions are forward-declared in pass 1, so we can now create vtables. */
@@ -1585,6 +1534,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
         symbol_t *sym = cg_lookup(&cg, fn_name);
         cg.current_fn = sym->value;
+        cg.current_return_types = decl->as.fn_decl.return_types;
+        cg.current_return_count = decl->as.fn_decl.return_count;
         cg.current_fn_linkage = decl->as.fn_decl.linkage;
         cg.current_fn_is_entry_main = (decl->module_name == Null)
                                    && strcmp(decl->as.fn_decl.name, "main") == 0;
@@ -1831,6 +1782,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             symbol_t *sym = cg_lookup(&cg, fn_name);
             if (!sym) continue;
             cg.current_fn = sym->value;
+            cg.current_return_types = method->as.fn_decl.return_types;
+            cg.current_return_count = method->as.fn_decl.return_count;
             cg.current_struct_name = decl->as.type_decl.name;
             cg.current_fn_is_inline_method = True; /* inline struct method — this keyword allowed */
             mangle_module_prefix(decl->module_name ? decl->module_name : "",
@@ -2016,6 +1969,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             if (decl->kind != NodeTestBlock) continue;
             if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
             cg.current_fn = test_fns[ti];
+            cg.current_return_types = Null;
+            cg.current_return_count = 0;
             cg.locals.count = 0;
             cg.dtor_depth = 0;
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, cg.current_fn, "entry");
@@ -2099,7 +2054,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     /* ── @[[init]] / @[[exit]] lifecycle blocks → global_ctors/global_dtors ── */
     LLVMValueRef crash_ctor_fn = Null;
-    if (!cg.crash_protection_disabled)
+    if (!cg.freestanding && !cg.crash_protection_disabled)
         crash_ctor_fn = cg_emit_crash_blocks(&cg,
                                               cg.crash_blocks, cg.crash_block_count);
     cg_emit_lifecycle_blocks(&cg,
@@ -2116,18 +2071,24 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.di_builder = Null;
     }
 
+    cg_layout_normalize_memory_alignment(&cg);
+
+    if (cg.kernel_profile) {
+        const char *attributes[] = {"noredzone", "noimplicitfloat", "nounwind"};
+        for (LLVMValueRef fn = LLVMGetFirstFunction(cg.module); fn; fn = LLVMGetNextFunction(fn)) {
+            if (LLVMIsDeclaration(fn)) continue;
+            for (unsigned i = 0; i < sizeof(attributes) / sizeof(attributes[0]); ++i) {
+                unsigned kind = LLVMGetEnumAttributeKindForName(attributes[i], strlen(attributes[i]));
+                LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+                    LLVMCreateEnumAttribute(cg.ctx, kind, 0));
+            }
+            LLVMAddTargetDependentFunctionAttr(fn, "frame-pointer", "all");
+        }
+    }
+
     /* verify */
     /* ── LLVM verification and emission (skipped when earlier passes had errors) ── */
     if (get_error_count() > errors_before) goto cg_cleanup;
-
-    char *error = Null;
-    if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
-        diag_begin_error("LLVM IR verification failed: %s", error);
-        diag_finish();
-        LLVMDisposeMessage(error);
-    } else {
-        if (error) LLVMDisposeMessage(error);
-    }
 
     if (getenv("STS_DUMP_IR_PRE")) {
         /* Dump IR before the coroutine pass pipeline runs. Useful when
@@ -2139,9 +2100,21 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMDisposeMessage(ir_str);
     }
 
+    char *error = Null;
+    if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
+        diag_begin_error("LLVM IR verification failed: %s", error);
+        diag_finish();
+        LLVMDisposeMessage(error);
+        emit_result = Err;
+        goto cg_cleanup;
+    } else {
+        if (error) LLVMDisposeMessage(error);
+    }
+
+
     if (get_error_count() == errors_before && ast_requires_coro_pipeline(ast)) {
         LLVMPassBuilderOptionsRef pb_opts = LLVMCreatePassBuilderOptions();
-        LLVMPassBuilderOptionsSetVerifyEach(pb_opts, debug_mode ? 1 : 0);
+        LLVMPassBuilderOptionsSetVerifyEach(pb_opts, 1);
         LLVMErrorRef pass_err = LLVMRunPasses(
             cg.module,
             "coro-early,cgscc(coro-split),coro-cleanup,globaldce",
@@ -2153,7 +2126,6 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             diag_begin_error("LLVM coroutine pass pipeline failed: %s", msg ? msg : "unknown error");
             diag_finish();
             if (msg) LLVMDisposeErrorMessage(msg);
-            LLVMConsumeError(pass_err);
             emit_result = Err;
             goto cg_cleanup;
         }
@@ -2161,8 +2133,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
     if (get_error_count() == errors_before && optimization_level > 0) {
         LLVMPassBuilderOptionsRef opt_opts = LLVMCreatePassBuilderOptions();
-        LLVMPassBuilderOptionsSetVerifyEach(opt_opts, debug_mode ? 1 : 0);
-        const char *opt_pipeline = optimization_level >= 3 ? "default<O3>" : "default<O2>";
+        LLVMPassBuilderOptionsSetVerifyEach(opt_opts, 1);
+        const char *opt_pipeline = optimization_level >= 3 ? "default<O3>" :
+                                   optimization_level == 1 ? "default<O1>" : "default<O2>";
         LLVMErrorRef opt_err = LLVMRunPasses(cg.module, opt_pipeline, machine, opt_opts);
         LLVMDisposePassBuilderOptions(opt_opts);
         if (opt_err) {
@@ -2170,7 +2143,6 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             diag_begin_error("LLVM optimization pass failed: %s", msg ? msg : "unknown error");
             diag_finish();
             if (msg) LLVMDisposeErrorMessage(msg);
-            LLVMConsumeError(opt_err);
             emit_result = Err;
             goto cg_cleanup;
         }
@@ -2184,18 +2156,35 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         LLVMDisposeMessage(ir_str);
     }
 
-    /* emit object file — reuse the machine created during early target init */
+    /* The final module must remain valid after every transformation.
+     * Verification is required in release builds as well as debug builds. */
+    error = Null;
+    if (LLVMVerifyModule(cg.module, LLVMReturnStatusAction, &error)) {
+        diag_begin_error("LLVM IR verification failed after optimization: %s", error);
+        diag_finish();
+        LLVMDisposeMessage(error);
+        emit_result = Err;
+        goto cg_cleanup;
+    }
+    if (error) LLVMDisposeMessage(error);
+
+    /* Final artifact emission is separate from archive or executable linking. */
     error = Null;
     emit_result = Ok;
-    if (LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
-                                     LLVMObjectFile, &error)) {
-        diag_begin_error("object file emission failed: %s", error);
+    int emission_failed = emit_ir
+        ? LLVMPrintModuleToFile(cg.module, obj_output, &error)
+        : LLVMTargetMachineEmitToFile(machine, cg.module, (char *)obj_output,
+                                      LLVMObjectFile, &error);
+    if (emission_failed) {
+        diag_begin_error("%s emission failed: %s", emit_ir ? "LLVM IR" : "object file", error);
         diag_finish();
         LLVMDisposeMessage(error);
         emit_result = Err;
     }
 
 cg_cleanup:
+    /* Failed compilation must never leave an object that looks current. */
+    if (emit_result != Ok || get_error_count() > errors_before) remove(obj_output);
     LLVMDisposeTargetMachine(machine);
     LLVMDisposeMessage(triple);
     if (cg.di_data_layout) LLVMDisposeTargetData(cg.di_data_layout);
@@ -2227,3 +2216,6 @@ cg_cleanup:
     if (emit_result != Ok) return Err;
     return get_error_count() > errors_before ? Err : Ok;
 }
+
+/* Do not leak the canonical constructor wrapper into including test TUs. */
+#undef LLVMConstInt

@@ -23,7 +23,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             && node->as.var_decl.init) {
         LLVMValueRef init_val = gen_expr(cg, node->as.var_decl.init);
         LLVMTypeRef  inferred = LLVMTypeOf(init_val);
-        type_info_t  ti       = llvm_type_to_ti(inferred);
+        type_info_t ti = scalar_expr_type(cg, node->as.var_decl.init, NO_TYPE);
+        if (ti.base == TypeVoid && !ti.is_pointer) ti = llvm_type_to_ti(inferred);
         /* Infer future.[T] / stream.[T] when the RHS is a thread/async
            dispatch, so later lowering can recover the carried element type. */
         node_t *init_n = node->as.var_decl.init;
@@ -264,7 +265,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 cg->hint_var_flags  = node->as.var_decl.flags;
             }
             cg->hint_ret_type = type;
-            init = gen_expr(cg, node->as.var_decl.init);
+            init = gen_scalar_as(cg, node->as.var_decl.init, ti);
             cg->hint_ret_type   = Null;
             cg->hint_slice_elem = saved_slice_elem;
             cg->hint_storage    = saved_storage;
@@ -300,6 +301,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
            lookup does not need to inspect LLVM IR use-chains. */
         if ((node->as.var_decl.flags & VdeclConst) && node->as.var_decl.init
                 && node->as.var_decl.init->kind == NodeIntLitExpr
+                && node->as.var_decl.init->as.int_lit.value <= INT64_MAX
                 && cg->locals.count > 0)
             cg->locals.entries[cg->locals.count - 1].const_int_val =
                 (long long)node->as.var_decl.init->as.int_lit.value;
@@ -338,6 +340,7 @@ static void gen_local_var(cg_t *cg, node_t *node) {
 }
 
 static void gen_for(cg_t *cg, node_t *node) {
+    usize_t locals_before = cg->locals.count;
     push_dtor_scope(cg);
 
     if (node->as.for_stmt.init) {
@@ -354,6 +357,10 @@ static void gen_for(cg_t *cg, node_t *node) {
 
     LLVMBasicBlockRef saved_break = cg->break_target;
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    cg->break_cleanup_depth = cg->dtor_depth;
+    cg->continue_cleanup_depth = cg->dtor_depth;
     cg->break_target = end_bb;
     cg->continue_target = inc_bb;
 
@@ -376,14 +383,14 @@ static void gen_for(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     cg->break_target = saved_break;
     cg->continue_target = saved_cont;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
 
-    /* don't emit destructors here — pop without emitting */
-    if (cg->dtor_depth > 0) {
-        dtor_scope_t *scope = &cg->dtor_stack[cg->dtor_depth - 1];
-        if (scope->heap.pointer != Null) deallocate(scope->heap);
-        if (scope->deferred_heap.pointer != Null) deallocate(scope->deferred_heap);
-        cg->dtor_depth--;
-    }
+    /* Both condition-false and break reach this block. Break unwinds the
+       body only; the for-init scope is released exactly once here. Continue
+       retains this scope, and return unwinds it before leaving the function. */
+    pop_dtor_scope(cg);
+    cg->locals.count = locals_before;
 }
 
 static void gen_foreach(cg_t *cg, node_t *node) {
@@ -437,6 +444,10 @@ static void gen_foreach(cg_t *cg, node_t *node) {
 
     LLVMBasicBlockRef saved_break = cg->break_target;
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    cg->break_cleanup_depth = cg->dtor_depth;
+    cg->continue_cleanup_depth = cg->dtor_depth;
     cg->break_target    = end_bb;
     cg->continue_target = inc_bb;
 
@@ -467,6 +478,8 @@ static void gen_foreach(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     cg->break_target    = saved_break;
     cg->continue_target = saved_cont;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
 
     /* Remove the iteration variable from locals. */
     cg->locals.count = locals_before;
@@ -479,6 +492,10 @@ static void gen_while(cg_t *cg, node_t *node) {
 
     LLVMBasicBlockRef saved_break = cg->break_target;
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    cg->break_cleanup_depth = cg->dtor_depth;
+    cg->continue_cleanup_depth = cg->dtor_depth;
     cg->break_target = end_bb;
     cg->continue_target = cond_bb;
 
@@ -497,6 +514,8 @@ static void gen_while(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     cg->break_target = saved_break;
     cg->continue_target = saved_cont;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
 }
 
 static void gen_do_while(cg_t *cg, node_t *node) {
@@ -506,6 +525,10 @@ static void gen_do_while(cg_t *cg, node_t *node) {
 
     LLVMBasicBlockRef saved_break = cg->break_target;
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    cg->break_cleanup_depth = cg->dtor_depth;
+    cg->continue_cleanup_depth = cg->dtor_depth;
     cg->break_target = end_bb;
     cg->continue_target = cond_bb;
 
@@ -524,6 +547,8 @@ static void gen_do_while(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     cg->break_target = saved_break;
     cg->continue_target = saved_cont;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
 }
 
 static void gen_inf_loop(cg_t *cg, node_t *node) {
@@ -532,6 +557,10 @@ static void gen_inf_loop(cg_t *cg, node_t *node) {
 
     LLVMBasicBlockRef saved_break = cg->break_target;
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    cg->break_cleanup_depth = cg->dtor_depth;
+    cg->continue_cleanup_depth = cg->dtor_depth;
     cg->break_target = end_bb;
     cg->continue_target = body_bb;
 
@@ -545,6 +574,8 @@ static void gen_inf_loop(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     cg->break_target = saved_break;
     cg->continue_target = saved_cont;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
 }
 
 static void gen_if(cg_t *cg, node_t *node) {
@@ -582,95 +613,109 @@ static void gen_if(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
 }
 
+/* A named aggregate return transfers that local's cleanup to the caller on
+   this edge only. This is deliberately not general ownership/alias analysis. */
+static usize_t collect_return_moves(cg_t *cg, node_t *node, LLVMValueRef *moved) {
+    usize_t count = 0;
+    for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
+        node_t *rv = node->as.ret_stmt.values.items[i];
+        if (rv->kind != NodeIdentExpr) continue;
+        symbol_t *sym = cg_lookup(cg, rv->as.ident.name);
+        if (!sym) continue;
+        type_info_t ti = resolve_alias(cg, sym->stype);
+        if (ti.base == TypeUser && !ti.is_pointer)
+            moved[count++] = sym->value;
+    }
+    return count;
+}
+
 static void gen_ret(cg_t *cg, node_t *node) {
-    /* Coroutine ret:
-         - Stream coroutine: `ret;` only (analysis rejects `ret expr;`); jump to
-           final-suspend, which sets eos/complete + runs coro.end.
-         - Task coroutine: `ret expr;` stores the result into the promise's
-           item slot, sets complete=1, then jumps to final-suspend.  `ret;`
-           on a void-returning task just sets complete=1 and finalizes. */
-    if (cg->cur_coro.active) {
-        emit_all_dtor_calls(cg);
-        if (cg->current_fn && cg->current_fn_is_async_task) {
-            if (node->as.ret_stmt.values.count == 0) {
-                sts_emit_task_void_ret(cg, &cg->cur_coro);
-            } else {
-                LLVMValueRef rv = gen_expr(cg, node->as.ret_stmt.values.items[0]);
-                sts_emit_task_ret(cg, &cg->cur_coro, rv);
-            }
-        } else {
-            LLVMValueRef final_v = Null;
-            if (node->as.ret_stmt.values.count > 0)
-                final_v = gen_expr(cg, node->as.ret_stmt.values.items[0]);
-            sts_emit_stream_ret(cg, &cg->cur_coro, final_v);
-        }
+    if (cg->emitting_defer) {
+        diag_begin_error("'ret' cannot leave a deferred cleanup");
+        diag_span(DIAG_NODE(node), True, "return inside defer");
+        diag_finish();
         return;
     }
 
-    /* pointer safety: check each return value */
-    for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
+    usize_t value_count = node->as.ret_stmt.values.count;
+    heap_t moved_heap = value_count ? allocate(value_count, sizeof(LLVMValueRef)) : NullHeap;
+    LLVMValueRef *moved = moved_heap.pointer;
+    usize_t moved_count = collect_return_moves(cg, node, moved);
+
+    /* Coroutine return values must also be evaluated before cleanup. The
+       resulting SSA value survives mutations/releases performed by defers. */
+    if (cg->cur_coro.active) {
+        LLVMValueRef rv = Null;
+        if (value_count) {
+            type_info_t rt = cg->current_fn_is_async_task && cg->current_return_count
+                ? cg->current_return_types[0] : llvm_type_to_ti(cg->cur_coro.item_type);
+            rv = gen_scalar_as(cg, node->as.ret_stmt.values.items[0], rt);
+        }
+        emit_cleanup_to_depth(cg, 0, moved, moved_count);
+        if (cg->current_fn && cg->current_fn_is_async_task) {
+            if (value_count == 0)
+                sts_emit_task_void_ret(cg, &cg->cur_coro);
+            else
+                sts_emit_task_ret(cg, &cg->cur_coro, rv);
+        } else {
+            sts_emit_stream_ret(cg, &cg->cur_coro, rv);
+        }
+        if (moved_heap.pointer) deallocate(moved_heap);
+        return;
+    }
+
+    for (usize_t i = 0; i < value_count; i++) {
         node_t *rv = node->as.ret_stmt.values.items[i];
         check_stack_escape(cg, rv, node->line);
         check_ext_returns_int_ptr(cg, rv, cg->current_fn_linkage, node->line);
     }
 
-    /* If returning a named struct variable, move it out of dtor scopes so
-       the destructor isn't called — the caller takes ownership. */
-    if (node->as.ret_stmt.values.count == 1) {
-        node_t *rv = node->as.ret_stmt.values.items[0];
-        if (rv->kind == NodeIdentExpr) {
-            symbol_t *sym = cg_lookup(cg, rv->as.ident.name);
-            if (sym && sym->stype.base == TypeUser && !sym->stype.is_pointer)
-                remove_from_dtor_scopes(cg, sym->value);
-        }
-    }
-
-    /* call destructors for all active scopes before returning */
-    emit_all_dtor_calls(cg);
-
-    if (node->as.ret_stmt.values.count == 0) {
-        LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
+    LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
+    LLVMValueRef result = Null;
+    if (value_count == 0) {
         if (cg->current_fn_is_entry_main)
-            LLVMBuildRet(cg->builder, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0));
-        else if (LLVMGetTypeKind(ret_type) == LLVMVoidTypeKind)
-            LLVMBuildRetVoid(cg->builder);
-        else
-            LLVMBuildRet(cg->builder, LLVMConstNull(ret_type));
-    } else if (node->as.ret_stmt.values.count == 1) {
-        LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
-        LLVMValueRef val;
-        /* nil returning as error → {i1=0, ptr=null} */
+            result = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        else if (LLVMGetTypeKind(ret_type) != LLVMVoidTypeKind)
+            result = LLVMConstNull(ret_type);
+    } else if (value_count == 1) {
         if (node->as.ret_stmt.values.items[0]->kind == NodeNilExpr
             && ret_type == cg->error_type) {
-            val = make_nil_error(cg);
+            result = make_nil_error(cg);
         } else {
             cg->hint_ret_type = ret_type;
-            val = gen_expr(cg, node->as.ret_stmt.values.items[0]);
+            type_info_t rt = cg->current_return_count ? cg->current_return_types[0] : llvm_type_to_ti(ret_type);
+            if (cg->current_fn_is_entry_main) rt = scalar_type(TypeI32);
+            result = gen_scalar_as(cg, node->as.ret_stmt.values.items[0], rt);
             cg->hint_ret_type = Null;
-            val = coerce_int(cg, val, ret_type);
+            result = coerce_int(cg, result, ret_type);
         }
-        LLVMBuildRet(cg->builder, val);
     } else {
-        /* multi-return: pack into struct */
-        LLVMTypeRef ret_type = LLVMGetReturnType(LLVMGlobalGetValueType(cg->current_fn));
-        LLVMValueRef agg = LLVMGetUndef(ret_type);
-        for (usize_t i = 0; i < node->as.ret_stmt.values.count; i++) {
+        result = LLVMGetUndef(ret_type);
+        for (usize_t i = 0; i < value_count; i++) {
             LLVMTypeRef field_type = LLVMStructGetTypeAtIndex(ret_type, (unsigned)i);
             LLVMValueRef val;
-            /* nil in an error slot → {i1=0, ptr=null} */
             if (node->as.ret_stmt.values.items[i]->kind == NodeNilExpr
                 && field_type == cg->error_type) {
                 val = make_nil_error(cg);
             } else {
                 cg->hint_ret_type = field_type;
-                val = gen_expr(cg, node->as.ret_stmt.values.items[i]);
+                type_info_t rt = i < cg->current_return_count ? cg->current_return_types[i] : llvm_type_to_ti(field_type);
+                val = gen_scalar_as(cg, node->as.ret_stmt.values.items[i], rt);
                 cg->hint_ret_type = Null;
                 val = coerce_int(cg, val, field_type);
             }
-            agg = LLVMBuildInsertValue(cg->builder, agg, val, (unsigned)i, "");
+            result = LLVMBuildInsertValue(cg->builder, result, val, (unsigned)i, "");
         }
-        LLVMBuildRet(cg->builder, agg);
     }
+
+    /* Every expression (including aggregate loads and calls) is evaluated
+       before any cleanup. Do not reload locals after their destructor runs. */
+    emit_cleanup_to_depth(cg, 0, moved, moved_count);
+    if (moved_heap.pointer) deallocate(moved_heap);
+    if (result)
+        LLVMBuildRet(cg->builder, result);
+    else
+        LLVMBuildRetVoid(cg->builder);
 }
 
 /* ── print.(fmt, args...) helpers ── */
@@ -806,7 +851,7 @@ static void print_emit_cstr(cg_t *cg, const char *s, boolean_t to_stderr) {
     }
 }
 
-static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, boolean_t to_stderr) {
+static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, type_info_t source, boolean_t to_stderr) {
     const char *fmt_str;
     LLVMValueRef print_val = val;
 
@@ -818,7 +863,7 @@ static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, boolea
                                        LLVMDoubleTypeInContext(cg->ctx), "fpext");
         fmt_str = "%g";
     } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
-        fmt_str = "%lld";
+        fmt_str = scalar_unsigned(source) ? "%llu" : "%lld";
     } else if (ty == LLVMInt8TypeInContext(cg->ctx)) {
         fmt_str = "%c";
         print_val = LLVMBuildSExt(cg->builder, val,
@@ -828,10 +873,9 @@ static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, boolea
         print_val = LLVMBuildZExt(cg->builder, val,
                                    LLVMInt32TypeInContext(cg->ctx), "bext");
     } else {
-        fmt_str = "%d";
+        fmt_str = scalar_unsigned(source) ? "%u" : "%d";
         if (ty != LLVMInt32TypeInContext(cg->ctx))
-            print_val = LLVMBuildSExt(cg->builder, val,
-                                       LLVMInt32TypeInContext(cg->ctx), "iext");
+            print_val = scalar_coerce(cg, val, source, scalar_type(TypeI32), Null, True);
     }
 
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, fmt_str, "pfmt");
@@ -907,9 +951,9 @@ static print_spec_t parse_print_spec(const char *s, usize_t len) {
     return sp;
 }
 
-static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
+static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, type_info_t source,
                                    const char *spec, usize_t slen, boolean_t to_stderr) {
-    if (slen == 0) { print_emit_scalar(cg, val, ty, to_stderr); return; }
+    if (slen == 0) { print_emit_scalar(cg, val, ty, source, to_stderr); return; }
 
     print_spec_t sp = parse_print_spec(spec, slen);
 
@@ -918,8 +962,7 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
         if (sp.alt_form) print_emit_cstr(cg, "0b", to_stderr);
         LLVMValueRef ival = val;
         if (llvm_is_int(ty) && ty != LLVMInt64TypeInContext(cg->ctx))
-            ival = LLVMBuildSExt(cg->builder, val,
-                                  LLVMInt64TypeInContext(cg->ctx), "i64e");
+            ival = scalar_coerce(cg, val, source, scalar_type(TypeU64), Null, True);
         LLVMValueRef bfn = ensure_print_binary_fn(cg, to_stderr);
         LLVMTypeRef bfty = LLVMGlobalGetValueType(bfn);
         LLVMValueRef a[1] = { ival };
@@ -948,8 +991,7 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
             dval = LLVMBuildFPExt(cg->builder, val,
                                    LLVMDoubleTypeInContext(cg->ctx), "fpext");
         else if (llvm_is_int(ty))
-            dval = LLVMBuildSIToFP(cg->builder, val,
-                                    LLVMDoubleTypeInContext(cg->ctx), "itof");
+            dval = scalar_coerce(cg, val, source, scalar_type(TypeF64), Null, True);
 
         /* build: %[flags][width][.prec]g */
         char pfmt[32];
@@ -975,10 +1017,8 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
         /* sign-extend to the right width for printf */
         boolean_t use64 = (ty == LLVMInt64TypeInContext(cg->ctx));
         LLVMValueRef ival = val;
-        if (llvm_is_int(ty) && !use64) {
-            ival = LLVMBuildSExt(cg->builder, val,
-                                  LLVMInt32TypeInContext(cg->ctx), "iext");
-        }
+        if (llvm_is_int(ty) && LLVMGetIntTypeWidth(ty) < 32)
+            ival = scalar_coerce(cg, val, source, scalar_type(TypeI32), Null, True);
 
         /* build: %[flags][width]ll?[base] */
         char pfmt[32];
@@ -993,6 +1033,7 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty,
         if (use64) { pfmt[n++] = 'l'; pfmt[n++] = 'l'; }
 
         char base_ch = (sp.base != 0) ? sp.base : 'd';
+        if (base_ch == 'd' && scalar_unsigned(source)) base_ch = 'u';
         pfmt[n++] = base_ch;
         pfmt[n] = '\0';
 
@@ -1028,7 +1069,7 @@ static void print_emit_struct_default(cg_t *cg, LLVMValueRef val, struct_reg_t *
 
         LLVMValueRef fval = LLVMBuildExtractValue(cg->builder, val,
                                                    (unsigned)f->index, "");
-        print_emit_scalar(cg, fval, LLVMTypeOf(fval), to_stderr);
+        print_emit_scalar(cg, fval, LLVMTypeOf(fval), scalar_resolve(cg, f->type), to_stderr);
     }
 
     print_emit_cstr(cg, "}", to_stderr);
@@ -1075,7 +1116,7 @@ static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen
             }
         }
     } else {
-        print_emit_scalar_spec(cg, val, ty, spec, slen, to_stderr);
+        print_emit_scalar_spec(cg, val, ty, scalar_expr_type(cg, arg, NO_TYPE), spec, slen, to_stderr);
     }
 }
 
@@ -1243,7 +1284,9 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
             LLVMValueRef elem = LLVMBuildExtractValue(cg->builder, ret_val, (unsigned)i, "");
             symbol_t *sym = cg_lookup(cg, targets->items[i]->as.var_decl.name);
             if (sym) {
-                elem = coerce_int(cg, elem, sym->type);
+                node_t *f = scalar_call_decl(cg, values->items[0]);
+                type_info_t from = f && i < f->as.fn_decl.return_count ? f->as.fn_decl.return_types[i] : NO_TYPE;
+                elem = scalar_coerce(cg, elem, from, sym->stype, targets->items[i], False);
                 LLVMBuildStore(cg->builder, elem, sym->value);
             }
         }
@@ -1251,8 +1294,8 @@ static void gen_multi_assign(cg_t *cg, node_t *node) {
         /* multiple values: assign 1:1 */
         usize_t count = targets->count < values->count ? targets->count : values->count;
         for (usize_t i = 0; i < count; i++) {
-            LLVMValueRef val = gen_expr(cg, values->items[i]);
             symbol_t *sym = cg_lookup(cg, targets->items[i]->as.var_decl.name);
+            LLVMValueRef val = gen_scalar_as(cg, values->items[i], sym ? sym->stype : (type_info_t)NO_TYPE);
             if (sym) {
                 val = coerce_int(cg, val, sym->type);
                 LLVMBuildStore(cg->builder, val, sym->value);
@@ -1284,6 +1327,7 @@ static void gen_match(cg_t *cg, node_t *node) {
     /* get subject alloca pointer (for payload extraction in tagged enums / any types) */
     LLVMValueRef subject_alloca = Null;
     LLVMValueRef discriminant;
+    type_info_t discriminant_ti = scalar_type(TypeI32);
 
     if (is_any_match) {
         /* subject is any.(val) — get the inner value (the any struct) */
@@ -1349,7 +1393,10 @@ static void gen_match(cg_t *cg, node_t *node) {
     } else {
         /* C-style enum or unknown: subject is already an integer discriminant */
         discriminant = gen_expr(cg, subject_node);
-        discriminant = coerce_int(cg, discriminant, LLVMInt32TypeInContext(cg->ctx));
+        discriminant_ti = scalar_expr_type(cg, subject_node, NO_TYPE);
+        if (!scalar_integer(discriminant_ti) || !llvm_is_int(LLVMTypeOf(discriminant))) {
+            scalar_error(subject_node, "match subject must have a resolved integer type"); return;
+        }
     }
 
     /* collect wildcard arm and count cases */
@@ -1367,8 +1414,8 @@ static void gen_match(cg_t *cg, node_t *node) {
        (must happen before switch so alloc_in_entry goes in the entry block) */
     LLVMValueRef disc_alloca = Null;
     if (wildcard_arm && wildcard_arm->as.match_arm.bind_name) {
-        LLVMTypeRef i32ty = LLVMInt32TypeInContext(cg->ctx);
-        disc_alloca = alloc_in_entry(cg, i32ty, wildcard_arm->as.match_arm.bind_name);
+        LLVMTypeRef subject_type = LLVMTypeOf(discriminant);
+        disc_alloca = alloc_in_entry(cg, subject_type, wildcard_arm->as.match_arm.bind_name);
         LLVMBuildStore(cg->builder, discriminant, disc_alloca);
     }
 
@@ -1389,6 +1436,7 @@ static void gen_match(cg_t *cg, node_t *node) {
         if (arm->as.match_arm.is_wildcard) continue;
 
         long disc_val = -1;
+        uint64_t literal_bits = 0;
 
         if (arm->is_any_arm) {
             /* any-type arm: discriminant is the variant index inside the any struct */
@@ -1420,8 +1468,8 @@ static void gen_match(cg_t *cg, node_t *node) {
 
             LLVMBasicBlockRef arm_bb =
                 LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.any.arm");
-            LLVMAddCase(sw,
-                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+            scalar_add_case(cg, arm, sw,
+                LLVMConstInt(LLVMTypeOf(discriminant),
                              (unsigned long long)disc_val, 0),
                 arm_bb);
             LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
@@ -1469,7 +1517,12 @@ static void gen_match(cg_t *cg, node_t *node) {
 
         /* integer literal arm: use the stored literal value directly */
         if (arm->as.match_arm.is_literal) {
-            disc_val = arm->as.match_arm.literal_value;
+            scalar_constant_t constant;
+            if (!scalar_const_eval(cg, arm->as.match_arm.literal_expr, discriminant_ti, &constant) ||
+                !scalar_const_convert(&constant, discriminant_ti, False)) {
+                scalar_error(arm->as.match_arm.literal_expr, "match literal is outside the subject type range"); continue;
+            }
+            literal_bits = constant.bits;
         } else {
             /* find variant discriminant value */
             variant_info_t *vi_tmp = Null;
@@ -1501,8 +1554,8 @@ static void gen_match(cg_t *cg, node_t *node) {
 
             LLVMBasicBlockRef arm_bb =
                 LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.arm");
-            LLVMAddCase(sw,
-                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
+            scalar_add_case(cg, arm, sw,
+                LLVMConstInt(LLVMTypeOf(discriminant),
                              (unsigned long long)disc_val, 0),
                 arm_bb);
             LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
@@ -1549,9 +1602,8 @@ static void gen_match(cg_t *cg, node_t *node) {
         {
             LLVMBasicBlockRef arm_bb =
                 LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "match.lit.arm");
-            LLVMAddCase(sw,
-                LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
-                             (unsigned long long)(long long)disc_val, 0),
+            scalar_add_case(cg, arm, sw,
+                LLVMConstInt(LLVMTypeOf(discriminant), literal_bits, 0),
                 arm_bb);
             LLVMPositionBuilderAtEnd(cg->builder, arm_bb);
 
@@ -1585,10 +1637,9 @@ static void gen_match(cg_t *cg, node_t *node) {
         if (wildcard_arm->as.match_arm.bind_name && disc_alloca) {
             type_info_t bind_ti;
             memset(&bind_ti, 0, sizeof(bind_ti));
-            bind_ti.base = TypeI32;
-            LLVMTypeRef i32ty = LLVMInt32TypeInContext(cg->ctx);
+            bind_ti = discriminant_ti;
             symtab_add(&cg->locals, wildcard_arm->as.match_arm.bind_name,
-                       disc_alloca, i32ty, bind_ti, False);
+                       disc_alloca, LLVMTypeOf(discriminant), bind_ti, False);
         }
 
         push_dtor_scope(cg);
@@ -1607,7 +1658,10 @@ static void gen_match(cg_t *cg, node_t *node) {
 
 static void gen_switch(cg_t *cg, node_t *node) {
     LLVMValueRef subject = gen_expr(cg, node->as.switch_stmt.expr);
-    subject = coerce_int(cg, subject, LLVMInt32TypeInContext(cg->ctx));
+    type_info_t subject_ti = scalar_expr_type(cg, node->as.switch_stmt.expr, NO_TYPE);
+    if (!scalar_integer(subject_ti) || !llvm_is_int(LLVMTypeOf(subject))) {
+        scalar_error(node, "switch subject must have a resolved integer type"); return;
+    }
 
     usize_t case_count = node->as.switch_stmt.cases.count;
     LLVMBasicBlockRef end_bb =
@@ -1632,8 +1686,13 @@ static void gen_switch(cg_t *cg, node_t *node) {
     }
 
     LLVMValueRef sw = LLVMBuildSwitch(cg->builder, subject, default_bb, num_cases);
+    heap_t seen_heap = allocate(num_cases ? num_cases : 1, sizeof(uint64_t));
+    uint64_t *seen_values = seen_heap.pointer;
+    unsigned seen_count = 0;
 
     LLVMBasicBlockRef saved_break = cg->break_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    cg->break_cleanup_depth = cg->dtor_depth;
     cg->break_target = end_bb;
 
     for (usize_t i = 0; i < case_count; i++) {
@@ -1656,13 +1715,17 @@ static void gen_switch(cg_t *cg, node_t *node) {
         /* add each case value to the switch */
         for (usize_t v = 0; v < c->as.switch_case.values.count; v++) {
             node_t *val_node = c->as.switch_case.values.items[v];
-            LLVMValueRef case_val;
-            if (val_node->kind == NodeIntLitExpr)
-                case_val = LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
-                    (unsigned long long)val_node->as.int_lit.value, 1);
-            else
-                case_val = coerce_int(cg, gen_expr(cg, val_node),
-                    LLVMInt32TypeInContext(cg->ctx));
+            scalar_constant_t constant;
+            if (!scalar_const_eval(cg, val_node, subject_ti, &constant) ||
+                !scalar_const_convert(&constant, subject_ti, False)) {
+                scalar_error(val_node, "switch case must be a representable integer constant");
+                continue;
+            }
+            boolean_t duplicate = False;
+            for (unsigned j = 0; j < seen_count; ++j) if (seen_values[j] == constant.bits) duplicate = True;
+            if (duplicate) { scalar_error(val_node, "duplicate switch case value"); continue; }
+            seen_values[seen_count++] = constant.bits;
+            LLVMValueRef case_val = LLVMConstInt(LLVMTypeOf(subject), constant.bits, 0);
             LLVMAddCase(sw, case_val, case_bb);
         }
 
@@ -1677,6 +1740,8 @@ static void gen_switch(cg_t *cg, node_t *node) {
 
     LLVMPositionBuilderAtEnd(cg->builder, end_bb);
     cg->break_target = saved_break;
+    cg->break_cleanup_depth = saved_break_depth;
+    deallocate(seen_heap);
 }
 
 static void gen_asm_stmt(cg_t *cg, node_t *node) {
@@ -1716,22 +1781,13 @@ static void gen_comptime_if(cg_t *cg, node_t *node) {
     char *value = node->as.comptime_if.value;
     boolean_t match = False;
 
-    if (strcmp(key, "platform") == 0 || strcmp(key, "os") == 0) {
-#if defined(__APPLE__)
-        match = (strcmp(value, "macos") == 0 || strcmp(value, "darwin") == 0);
-#elif defined(__linux__)
-        match = (strcmp(value, "linux") == 0);
-#elif defined(_WIN32)
-        match = (strcmp(value, "windows") == 0);
-#endif
-    } else if (strcmp(key, "arch") == 0) {
-#if defined(__x86_64__) || defined(_M_X64)
-        match = (strcmp(value, "x86_64") == 0 || strcmp(value, "amd64") == 0);
-#elif defined(__aarch64__) || defined(_M_ARM64)
-        match = (strcmp(value, "aarch64") == 0 || strcmp(value, "arm64") == 0);
-#elif defined(__i386__) || defined(_M_IX86)
-        match = (strcmp(value, "x86") == 0 || strcmp(value, "i386") == 0);
-#endif
+    if (strcmp(key, "platform") == 0 || strcmp(key, "os") == 0)
+        match = sts_target_os_matches(&cg->target_spec, value);
+    else if (strcmp(key, "arch") == 0)
+        match = sts_target_arch_matches(&cg->target_spec, value);
+    else {
+        scalar_error(node, "unknown compile-time target selector (expected os, platform, or arch)");
+        return;
     }
 
     if (match) {
@@ -1786,7 +1842,8 @@ static boolean_t lookup_comptime_field(cg_t *cg, const char *struct_name,
                 if (!(f->as.var_decl.flags & VdeclComptimeField)) continue;
                 if (strcmp(f->as.var_decl.name, field) != 0) continue;
                 if (f->as.var_decl.init && f->as.var_decl.init->kind == NodeIntLitExpr) {
-                    *out = f->as.var_decl.init->as.int_lit.value;
+                    if (f->as.var_decl.init->as.int_lit.value > LONG_MAX) return False;
+                    *out = (long)f->as.var_decl.init->as.int_lit.value;
                     return True;
                 }
                 if (f->as.var_decl.init && f->as.var_decl.init->kind == NodeBoolLitExpr) {
@@ -1800,70 +1857,17 @@ static boolean_t lookup_comptime_field(cg_t *cg, const char *struct_name,
 }
 
 static boolean_t eval_comptime_expr(cg_t *cg, node_t *expr, long *out) {
-    if (!expr) return False;
-    switch (expr->kind) {
-        case NodeIntLitExpr:
-            *out = expr->as.int_lit.value;
-            return True;
-        case NodeBoolLitExpr:
-            *out = expr->as.bool_lit.value ? 1 : 0;
-            return True;
-        case NodeSizeofExpr: {
-            LLVMTypeRef ty = get_llvm_type(cg, expr->as.sizeof_expr.type);
-            *out = (long)LLVMABISizeOfType(LLVMGetModuleDataLayout(cg->module), ty);
-            return True;
-        }
-        case NodeMemberExpr: {
-            node_t *obj = expr->as.member_expr.object;
-            if (obj && obj->kind == NodeIdentExpr) {
-                return lookup_comptime_field(cg, obj->as.ident.name,
-                                            expr->as.member_expr.field, out);
-            }
-            return False;
-        }
-        case NodeUnaryPrefixExpr:
-            if (expr->as.unary.op == TokMinus) {
-                long v;
-                if (!eval_comptime_expr(cg, expr->as.unary.operand, &v)) return False;
-                *out = -v;
-                return True;
-            }
-            if (expr->as.unary.op == TokBang) {
-                long v;
-                if (!eval_comptime_expr(cg, expr->as.unary.operand, &v)) return False;
-                *out = !v;
-                return True;
-            }
-            return False;
-        case NodeBinaryExpr: {
-            long l, r;
-            if (!eval_comptime_expr(cg, expr->as.binary.left, &l)) return False;
-            if (!eval_comptime_expr(cg, expr->as.binary.right, &r)) return False;
-            switch (expr->as.binary.op) {
-                case TokPlus:    *out = l + r;  return True;
-                case TokMinus:   *out = l - r;  return True;
-                case TokStar:    *out = l * r;  return True;
-                case TokSlash:   if (!r) return False; *out = l / r; return True;
-                case TokPercent: if (!r) return False; *out = l % r; return True;
-                case TokEqEq:    *out = l == r; return True;
-                case TokBangEq:  *out = l != r; return True;
-                case TokLt:      *out = l < r;  return True;
-                case TokLtEq:    *out = l <= r; return True;
-                case TokGt:      *out = l > r;  return True;
-                case TokGtEq:    *out = l >= r; return True;
-                case TokAmpAmp:  *out = l && r; return True;
-                case TokPipePipe:*out = l || r; return True;
-                case TokAmp:     *out = l & r;  return True;
-                case TokPipe:    *out = l | r;  return True;
-                case TokCaret:   *out = l ^ r;  return True;
-                case TokLtLt:    *out = l << r; return True;
-                case TokGtGt:    *out = l >> r; return True;
-                default: return False;
-            }
-        }
-        default:
-            return False;
-    }
+    scalar_constant_t value;
+    if (!scalar_const_eval(cg, expr, NO_TYPE, &value)) return False;
+    /* This legacy API returns a signed host long for layout metadata. Do not
+     * truncate a full-domain u64. Comparisons still evaluate in that domain. */
+    unsigned w = scalar_bits(value.type);
+    uint64_t bits = value.bits;
+    boolean_t neg = !scalar_unsigned(value.type) && (bits & (UINT64_C(1) << (w - 1)));
+    uint64_t mag = neg ? (UINT64_C(0) - bits) & scalar_mask(w) : bits;
+    if ((!neg && mag > LONG_MAX) || (neg && mag > (uint64_t)LONG_MAX + 1)) return False;
+    if (out) *out = neg ? (mag == (uint64_t)LONG_MAX + 1 ? LONG_MIN : -(long)mag) : (long)mag;
+    return True;
 }
 
 static void comptime_assert_fail(cg_t *cg, node_t *node,
@@ -1992,8 +1996,10 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             sts_emit_yield_now(cg, &cg->cur_coro);
             break;
         case NodeBreakStmt:
-            if (cg->break_target)
+            if (cg->break_target) {
+                emit_cleanup_to_depth(cg, cg->break_cleanup_depth, Null, 0);
                 LLVMBuildBr(cg->builder, cg->break_target);
+            }
             else {
                 diag_begin_error("'break' used outside of a loop, switch, or watch handler");
                 diag_span(DIAG_NODE(node), True, "break here");
@@ -2005,8 +2011,10 @@ static void gen_stmt(cg_t *cg, node_t *node) {
         case NodeSendStmt:     gen_send_stmt(cg, node); break;
         case NodeQuitStmt:     gen_quit_stmt(cg, node); break;
         case NodeContinueStmt:
-            if (cg->continue_target)
+            if (cg->continue_target) {
+                emit_cleanup_to_depth(cg, cg->continue_cleanup_depth, Null, 0);
                 LLVMBuildBr(cg->builder, cg->continue_target);
+            }
             else {
                 diag_begin_error("'continue' used outside of a loop");
                 diag_span(DIAG_NODE(node), True, "continue here");
@@ -2051,6 +2059,8 @@ static void gen_stmt(cg_t *cg, node_t *node) {
 
         /* ── zone name { body } — lexical zone, freed at closing brace ── */
         case NodeZoneDecl: {
+            usize_t saved_locals = cg->locals.count;
+            push_dtor_scope(cg);
             const char *zname = node->as.zone_decl.name;
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             LLVMValueRef alloca_z = alloc_in_entry(cg, ptr_ty, zname);
@@ -2064,15 +2074,12 @@ static void gen_stmt(cg_t *cg, node_t *node) {
             symtab_set_last_extra(&cg->locals, False, False, LinkageNone,
                                   cg->dtor_depth, -1);
             symtab_set_last_loc(&cg->locals, node->line, node->col, node->len);
-            /* generate the zone body */
+            /* Register before entering the body so return/break/continue
+               release body resources first, then the zone, exactly once. */
+            add_zone_cleanup(cg, alloca_z);
             gen_block(cg, node->as.zone_decl.body);
-            /* emit __zone_free(&zone_ptr) at lexical scope exit.
-             * __zone_free takes void** so it can set *zone_ptr = NULL.
-             * It is a no-op when *zone_ptr is already NULL. */
-            {
-                LLVMValueRef fa[1] = { alloca_z }; /* void** */
-                LLVMBuildCall2(cg->builder, cg->zone_free_type, cg->zone_free_fn, fa, 1, "");
-            }
+            pop_dtor_scope(cg);
+            cg->locals.count = saved_locals;
             break;
         }
 
@@ -2124,6 +2131,9 @@ static void gen_block(cg_t *cg, node_t *node) {
         if (cur && LLVMGetBasicBlockTerminator(cur))
             block_terminated = True;
     }
+    /* Cleanup may be a local's only use. Emit it before unused warnings so
+       declaration-point defer lookup can mark the original symbol used. */
+    pop_dtor_scope(cg);
     /* emit unused variable warnings for locals added in this block */
     for (usize_t i = old_count; i < cg->locals.count; i++) {
         symbol_t *entry = &cg->locals.entries[i];
@@ -2137,6 +2147,5 @@ static void gen_block(cg_t *cg, node_t *node) {
             diag_finish();
         }
     }
-    pop_dtor_scope(cg);
     cg->locals.count = old_count;
 }

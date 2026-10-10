@@ -48,13 +48,21 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
     LLVMMetadataRef cached = di_cache_lookup(cg, name);
     if (cached) return cached;
 
-    /* Sentinel: break cycles by inserting a placeholder immediately. */
-    LLVMMetadataRef sentinel =
-        LLVMDIBuilderCreateUnspecifiedType(cg->di_builder, name, strlen(name));
+    struct_reg_t *sr = find_struct(cg, name);
+    enum_reg_t *er = find_enum(cg, name);
+    boolean_t replaceable = sr || (er && er->is_tagged);
+    /* A temporary composite is replaced once members are complete, preserving
+       pointer-to-self debug types instead of permanently caching an unspecified
+       sentinel for the recursive edge. DW_TAG_structure_type=0x13, union=0x17. */
+    LLVMMetadataRef sentinel = replaceable
+        ? LLVMDIBuilderCreateReplaceableCompositeType(cg->di_builder,
+            sr && sr->is_union ? 0x17 : 0x13, name, strlen(name),
+            cg->di_compile_unit, cg->di_file, 0, 0, 0, 0,
+            LLVMDIFlagFwdDecl, "", 0)
+        : LLVMDIBuilderCreateUnspecifiedType(cg->di_builder, name, strlen(name));
     di_cache_set(cg, name, sentinel);
 
     /* ── struct / union ── */
-    struct_reg_t *sr = find_struct(cg, name);
     if (sr) {
         uint64_t size_bits  = 0;
         uint32_t align_bits = 0;
@@ -75,6 +83,21 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
             for (usize_t m = 0; m < member_count; m++) {
                 field_info_t *f    = &sr->fields[m];
                 LLVMMetadataRef mty = get_di_type(cg, f->type);
+                LLVMTypeRef storage_type = f->llvm_type ? f->llvm_type : get_llvm_type(cg, f->type);
+                if (LLVMGetTypeKind(storage_type) == LLVMArrayTypeKind) {
+                    LLVMMetadataRef dims[8];
+                    unsigned ndim = 0;
+                    LLVMTypeRef elem = storage_type;
+                    while (LLVMGetTypeKind(elem) == LLVMArrayTypeKind && ndim < 8) {
+                        dims[ndim++] = LLVMDIBuilderGetOrCreateSubrange(cg->di_builder,
+                            0, (int64_t)LLVMGetArrayLength2(elem));
+                        elem = LLVMGetElementType(elem);
+                    }
+                    mty = LLVMDIBuilderCreateArrayType(cg->di_builder,
+                        LLVMABISizeOfType(cg->di_data_layout, storage_type) * 8,
+                        LLVMABIAlignmentOfType(cg->di_data_layout, storage_type) * 8,
+                        mty, dims, ndim);
+                }
 
                 if (f->bit_width > 0) {
                     /* Bitfield: storage offset is the offset of the backing
@@ -102,7 +125,7 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
                     uint64_t member_size_bits = 0;
                     uint32_t member_align_bits = 0;
                     if (cg->di_data_layout) {
-                        LLVMTypeRef mllvm = get_llvm_type(cg, f->type);
+                        LLVMTypeRef mllvm = storage_type;
                         offset_bits      = LLVMOffsetOfElement(cg->di_data_layout,
                                                                sr->llvm_type,
                                                                (unsigned)f->index) * 8;
@@ -111,6 +134,7 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
                         member_align_bits = (uint32_t)(
                             LLVMABIAlignmentOfType(cg->di_data_layout, mllvm) * 8);
                     }
+                    if (sr->is_packed) member_align_bits = 8;
                     /* Unions: all fields start at offset 0. */
                     if (sr->is_union) offset_bits = 0;
 
@@ -149,12 +173,12 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
         }
 
         if (member_count > 0) deallocate(members_heap);
+        LLVMMetadataReplaceAllUsesWith(sentinel, di_composite);
         di_cache_set(cg, name, di_composite);
         return di_composite;
     }
 
     /* ── enum ── */
-    enum_reg_t *er = find_enum(cg, name);
     if (er) {
         usize_t var_count = er->variant_count;
         heap_t  vars_heap = NullHeap;
@@ -172,9 +196,7 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
             }
         }
 
-        uint64_t size_bits = 32; /* simple enums are i32 */
-        if (er->is_tagged && cg->di_data_layout)
-            size_bits = LLVMABISizeOfType(cg->di_data_layout, er->llvm_type) * 8;
+        uint64_t size_bits = 32; /* the tag is always i32, not the whole union */
 
         /* Underlying integer type for the enum tag. */
         LLVMMetadataRef di_base = LLVMDIBuilderCreateBasicType(
@@ -190,8 +212,44 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
             di_base);
 
         if (var_count > 0) deallocate(vars_heap);
-        di_cache_set(cg, name, di_enum);
-        return di_enum;
+        LLVMMetadataRef result = di_enum;
+        if (er->is_tagged) {
+            heap_t payload_heap = var_count ? allocate(var_count, sizeof(LLVMMetadataRef)) : NullHeap;
+            LLVMMetadataRef *payloads = payload_heap.pointer;
+            unsigned payload_count = 0;
+            for (usize_t i = 0; i < var_count; i++) {
+                variant_info_t *v = &er->variants[i];
+                if (!v->has_payload) continue;
+                LLVMTypeRef vt = get_llvm_type(cg, v->payload_type);
+                payloads[payload_count++] = LLVMDIBuilderCreateMemberType(
+                    cg->di_builder, cg->di_compile_unit, v->name, strlen(v->name),
+                    cg->di_file, 0, LLVMABISizeOfType(cg->di_data_layout, vt) * 8,
+                    LLVMABIAlignmentOfType(cg->di_data_layout, vt) * 8, 0,
+                    LLVMDIFlagZero, get_di_type(cg, v->payload_type));
+            }
+            LLVMMetadataRef payload = LLVMDIBuilderCreateUnionType(cg->di_builder,
+                cg->di_compile_unit, "payload", 7, cg->di_file, 0,
+                er->payload_size * 8, er->payload_alignment * 8, LLVMDIFlagZero,
+                payloads, payload_count, 0, "", 0);
+            LLVMMetadataRef members[2] = {
+                LLVMDIBuilderCreateMemberType(cg->di_builder, cg->di_compile_unit,
+                    "tag", 3, cg->di_file, 0, 32, 32, 0, LLVMDIFlagZero, di_enum),
+                LLVMDIBuilderCreateMemberType(cg->di_builder, cg->di_compile_unit,
+                    "payload", 7, cg->di_file, 0, er->payload_size * 8,
+                    er->payload_alignment * 8,
+                    LLVMOffsetOfElement(cg->di_data_layout, er->llvm_type, 1) * 8,
+                    LLVMDIFlagZero, payload)
+            };
+            result = LLVMDIBuilderCreateStructType(cg->di_builder,
+                cg->di_compile_unit, name, strlen(name), cg->di_file, 0,
+                LLVMABISizeOfType(cg->di_data_layout, er->llvm_type) * 8,
+                LLVMABIAlignmentOfType(cg->di_data_layout, er->llvm_type) * 8,
+                LLVMDIFlagZero, Null, members, 2, 0, Null, "", 0);
+            if (payload_heap.pointer) deallocate(payload_heap);
+            LLVMMetadataReplaceAllUsesWith(sentinel, result);
+        }
+        di_cache_set(cg, name, result);
+        return result;
     }
 
     /* Unknown user type: keep the sentinel unspecified type. */
@@ -205,22 +263,24 @@ static LLVMMetadataRef get_di_named_type(cg_t *cg, const char *name) {
 static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti) {
     if (!cg->debug_mode) return Null;
 
-    type_info_t resolved = resolve_alias(cg, ti);
+    type_info_t resolved = cg_layout_resolve_type(cg, ti);
 
     if (resolved.is_pointer) {
         /* Remove one pointer level; recurse for multi-level pointers. */
         type_info_t pointee   = ti_deref_one(resolved);
         LLVMMetadataRef inner = get_di_type(cg, pointee);
-        /* Pointer width: 64-bit on all currently supported targets. */
+        LLVMTypeRef ptr_type = LLVMPointerTypeInContext(cg->ctx, 0);
         return LLVMDIBuilderCreatePointerType(
-            cg->di_builder, inner, 64, 0, 0, "", 0);
+            cg->di_builder, inner,
+            LLVMABISizeOfType(cg->di_data_layout, ptr_type) * 8,
+            LLVMABIAlignmentOfType(cg->di_data_layout, ptr_type) * 8, 0, "", 0);
     }
 
     switch (resolved.base) {
         case TypeVoid:
             return Null;
         case TypeBool:
-            return LLVMDIBuilderCreateBasicType(cg->di_builder, "bool", 4, 1,
+            return LLVMDIBuilderCreateBasicType(cg->di_builder, "bool", 4, 8,
                 STS_DW_ATE_boolean, LLVMDIFlagZero);
         case TypeI8:
             return LLVMDIBuilderCreateBasicType(cg->di_builder, "i8",  2,  8,
@@ -257,9 +317,14 @@ static LLVMMetadataRef get_di_type(cg_t *cg, type_info_t ti) {
             return LLVMDIBuilderCreateUnspecifiedType(
                 cg->di_builder, "error", 5);
         case TypeFnPtr:
+        case TypeFuture:
+        case TypeStream:
+        case TypeZone:
             /* Function pointers are opaque pointers in LLVM's model. */
             return LLVMDIBuilderCreatePointerType(
-                cg->di_builder, Null, 64, 0, 0, "", 0);
+                cg->di_builder, Null,
+            LLVMABISizeOfType(cg->di_data_layout, LLVMPointerTypeInContext(cg->ctx, 0)) * 8,
+            LLVMABIAlignmentOfType(cg->di_data_layout, LLVMPointerTypeInContext(cg->ctx, 0)) * 8, 0, "", 0);
         case TypeUser:
             return get_di_named_type(cg, resolved.user_name);
     }

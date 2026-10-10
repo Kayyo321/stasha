@@ -1,0 +1,6 @@
+lambda.body 6
+lambda.defer 99
+task.body 7
+task.defer 90
+result 17
+task_nested_lambda: ok

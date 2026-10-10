@@ -2,8 +2,8 @@ mod row11_define;
 
 cheader "support/defines.h" search "tests/cinterop";
 
-// Plain `#define NAME <int>` macros are surfaced as int64 constants by
-// ch_extract_define.  Function-like macros and non-integer macros are
+// Simple integer macros preserve their C literal signedness and width.
+// Function-like macros and non-integer macros are
 // skipped silently and must NOT crash the parser.
 
 fn main(void): i32 {
@@ -14,6 +14,12 @@ fn main(void): i32 {
     if HEX_U_SUFFIX != 0x1F    { print.("FAIL HEX_U_SUFFIX\n"); ret 1; }
     if LONG_SUFFIX  != 100000  { print.("FAIL LONG_SUFFIX\n");  ret 1; }
     if ULL_SUFFIX   != 0xFF    { print.("FAIL ULL_SUFFIX\n");   ret 1; }
+    if UINT64_LIMIT != 18446744073709551615 { print.("FAIL UINT64_LIMIT\n"); ret 1; }
+    if INT64_LIMIT != 9223372036854775807 { print.("FAIL INT64_LIMIT\n"); ret 1; }
+    if NEG_INT64 != -9223372036854775807 { print.("FAIL NEG_INT64\n"); ret 1; }
+    if UINT32_LIMIT != 4294967295 { print.("FAIL UINT32_LIMIT\n"); ret 1; }
+    if NEG_UNSIGNED != 4294967295 { print.("FAIL NEG_UNSIGNED\n"); ret 1; }
+    if NEG_ULL != 18446744073709551615 { print.("FAIL NEG_ULL\n"); ret 1; }
 
     print.("11_define: ok\n");
     ret 0;

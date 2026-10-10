@@ -7,5 +7,5 @@ async fn numbers(void): stream.[i64] {
 
 fn main(void): void {
     stack future.[stream.[i64]] f = async.(numbers)();
-    future.drop(f);
+    future.drop.(f);
 }

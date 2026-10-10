@@ -1,0 +1,8 @@
+mod cleanup_reject_defer_continue_outward;
+
+fn main(void): i32 {
+    for (stack i32 index = 0; index < 1; index++) {
+        defer { continue; }
+    }
+    ret 0;
+}

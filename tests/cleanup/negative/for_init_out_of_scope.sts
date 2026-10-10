@@ -1,0 +1,7 @@
+mod cleanup_reject_for_init_out_of_scope;
+
+fn main(void): i32 {
+    for (stack i32 index = 0; index < 1; index++) {}
+    print.('{}\n', index);
+    ret 0;
+}

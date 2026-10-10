@@ -21,6 +21,11 @@ static void register_struct(cg_t *cg, const char *name, LLVMTypeRef llvm_type,
     sr->fields_heap = NullHeap;
     sr->destructor = Null;
     sr->is_union = is_union;
+    sr->is_packed = False;
+    sr->layout_decl = Null;
+    sr->layout_state = LLVMTypeIsSized(llvm_type) ? 2 : 0;
+    sr->size_bytes = 0;
+    sr->abi_alignment = 0;
     sr->ct_field_count = 0;
     sr->is_any_type = False;
     sr->any_variant_count = 0;
@@ -50,6 +55,7 @@ static void struct_add_field_ex(struct_reg_t *sr, const char *name, type_info_t 
     sr->fields[sr->field_count].bit_offset  = bit_offset;
     sr->fields[sr->field_count].bit_width   = bit_width;
     sr->fields[sr->field_count].array_size  = 0;
+    sr->fields[sr->field_count].llvm_type = Null;
     sr->field_count++;
 }
 
@@ -69,43 +75,28 @@ static void register_enum(cg_t *cg, const char *name, node_list_t *variants) {
         cg->enum_cap = new_cap;
     }
     enum_reg_t *er = &cg->enums[cg->enum_count++];
+    memset(er, 0, sizeof(*er));
     er->name = (char *)name;
-    er->is_tagged = False;
     er->variant_count = variants->count;
-
+    er->variants_heap = NullHeap;
     if (variants->count > 0) {
         er->variants_heap = allocate(variants->count, sizeof(variant_info_t));
         er->variants = er->variants_heap.pointer;
-
-        /* determine if any variant has a payload (tagged enum) */
-        usize_t max_payload = 0;
         for (usize_t i = 0; i < variants->count; i++) {
             node_t *v = variants->items[i];
             er->variants[i].name = v->as.enum_variant.name;
             er->variants[i].value = (long)i;
             er->variants[i].has_payload = v->as.enum_variant.has_payload;
             er->variants[i].payload_type = v->as.enum_variant.payload_type;
-            if (v->as.enum_variant.has_payload) {
-                er->is_tagged = True;
-                usize_t sz = payload_type_size(v->as.enum_variant.payload_type);
-                if (sz > max_payload) max_payload = sz;
-            }
+            if (v->as.enum_variant.has_payload) er->is_tagged = True;
         }
-
-        if (er->is_tagged) {
-            /* tagged union: { i32, [max_payload x i8] } */
-            LLVMTypeRef byte_arr = LLVMArrayType2(
-                LLVMInt8TypeInContext(cg->ctx), (unsigned long long)max_payload);
-            LLVMTypeRef fields[2] = { LLVMInt32TypeInContext(cg->ctx), byte_arr };
-            er->llvm_type = LLVMStructTypeInContext(cg->ctx, fields, 2, 0);
-        } else {
-            er->llvm_type = LLVMInt32TypeInContext(cg->ctx);
-        }
-    } else {
-        er->variants_heap = NullHeap;
-        er->variants = Null;
-        er->llvm_type = LLVMInt32TypeInContext(cg->ctx);
     }
+    /* Payloads may name a type declared later. Register an opaque identity now
+       and resolve the body only after every declaration has been registered. */
+    er->llvm_type = er->is_tagged
+        ? LLVMStructCreateNamed(cg->ctx, name)
+        : LLVMInt32TypeInContext(cg->ctx);
+    er->layout_state = er->is_tagged ? 0 : 2;
 }
 
 /* Scan the body of a .rem destructor and record which fields it calls rem.() on.

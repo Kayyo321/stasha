@@ -1,0 +1,3 @@
+mod invalid_integer_macro;
+cheader "integer_macro_range.h";
+fn main(void): i32 { ret 0; }

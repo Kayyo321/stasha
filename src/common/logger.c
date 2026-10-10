@@ -1,3 +1,8 @@
+#ifndef _WIN32
+#include <sys/file.h>
+#include <fcntl.h>
+#endif
+
 static int create_log_directory(const char *path) {
 #ifdef _WIN32
     return _mkdir(path);
@@ -17,6 +22,8 @@ static result_t ensure_log_directory(void) {
     }
 
     if (create_log_directory(LogDirectory) != 0) {
+        if (errno == EEXIST && stat(LogDirectory, &path_stat) == 0 && S_ISDIR(path_stat.st_mode))
+            return Ok;
         fprintf(stderr, "Failed to create log directory '%s': %s\n", LogDirectory, strerror(errno));
         return Err;
     }
@@ -288,10 +295,29 @@ void quit(result_t res) {
 }
 
 result_t open_logger(void) {
-    if (prepare_log_path() != Ok)
+    if (ensure_log_directory() != Ok) return Err;
+#ifndef _WIN32
+    /* Rotation plus opening the new inode is one transaction. Otherwise
+     * parallel compiler invocations can rename each other's selected source
+     * and fail compilation before parsing begins. Open log descriptors remain
+     * valid after a later invocation rotates their pathname on POSIX. */
+    char lock_path[PATH_MAX];
+    snprintf(lock_path, sizeof(lock_path), "%s/.rotation-lock", LogDirectory);
+    int lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    if (lock_fd < 0) return Err;
+    while (flock(lock_fd, LOCK_EX) != 0) {
+        if (errno == EINTR) continue;
+        close(lock_fd);
         return Err;
-
-    log_file = fopen(log_path(), "a");
+    }
+#endif
+    result_t prepared = prepare_log_path();
+    if (prepared == Ok) log_file = fopen(log_path(), "a");
+#ifndef _WIN32
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+#endif
+    if (prepared != Ok) return Err;
     if (!log_file) {
         fprintf(stderr, "Failed to open log file: %s\n", log_path());
         return Err;

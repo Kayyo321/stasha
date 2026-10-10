@@ -1,0 +1,18 @@
+mod cleanup_defer_shadow_lookup;
+
+
+fn main(void): i32 {
+    stack i32 total = 0;
+    {
+        stack i32 value = 10;
+        defer { print.('original {}\n', value); total = total + value; }
+        value = 11;
+        stack i32 value = 20;
+        defer { print.('shadow {}\n', value); total = total + value; }
+        value = 21;
+        print.('body {}\n', value);
+    }
+    if (total != 32) { ret 1; }
+    print.('defer_shadow_lookup: ok\n');
+    ret 0;
+}

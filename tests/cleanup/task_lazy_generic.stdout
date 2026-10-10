@@ -1,0 +1,6 @@
+generic.body 7
+generic.defer 99
+task.body 7
+task.defer 90
+result 11
+task_lazy_generic: ok

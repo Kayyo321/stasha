@@ -1,0 +1,30 @@
+mod cleanup_defer_branch_locals;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn choose(stack bool early): i32 {
+    stack i32 value = 1;
+    defer {
+        stack Tracked _local = .{ .id = 8 };
+        stack i32 value = 100;
+        defer print.('nested.defer {}\n', value);
+        print.('defer.body {}\n', value);
+    }
+    if (early) { ret value; }
+    value = 2;
+    print.('joined {}\n', value);
+    ret value;
+}
+
+fn main(void): i32 {
+    stack i32 first = choose(true);
+    print.('first {}\n', first);
+    stack i32 second = choose(false);
+    print.('second {}\n', second);
+    if (first != 1 || second != 2) { ret 1; }
+    print.('defer_branch_locals: ok\n');
+    ret 0;
+}

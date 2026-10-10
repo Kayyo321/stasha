@@ -1,0 +1,26 @@
+mod cleanup_aggregate_multi_return;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn pair(void): [Tracked, Tracked] {
+    stack Tracked left = .{ .id = 1 };
+    stack Tracked right = .{ .id = 2 };
+    stack Tracked _temporary = .{ .id = 3 };
+    defer print.('pair.defer\n');
+    ret left, right;
+}
+
+fn main(void): i32 {
+    stack i32 total = 0;
+    {
+        stack Tracked [left, right] = pair();
+        print.('results {} {}\n', left.id, right.id);
+        total = left.id + right.id;
+    }
+    if (total != 3) { ret 1; }
+    print.('aggregate_multi_return: ok\n');
+    ret 0;
+}

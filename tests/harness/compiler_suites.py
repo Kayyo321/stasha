@@ -42,6 +42,16 @@ def diag_cases():
                     flags=list(flags), patterns=[pattern], absent=list(absent), count=count)
 
     return [
+        case("error_bad_type", "unknown type"),
+        case("error_break_outside_loop", "break.*outside"),
+        case("error_missing_semicolon", "expected ';'"),
+        case("error_pointer_safety", "stack address.*heap pointer"),
+        case("error_ptr_arith_no_permission", "pointer arithmetic.*permi"),
+        case("error_unexpected_token", "expected|unexpected|unterminated"),
+        case("error_unknown_function", "undefined function"),
+        case("error_unknown_variable", "undefined variable"),
+        case("warn_unused_variable", WARNING + ".*unused", outcome="success", count=2,
+             absent=[r"warning.*_ignored", r"warning.*'used'"]),
         case("dedup_undefined_var", ERROR + r".*undefined variable", count=1),
         case("dedup_undefined_fn", ERROR + r".*undefined function", count=1),
         dict(case("dedup_undefined_type", ERROR + r".*unknown type", count=1),
@@ -60,12 +70,15 @@ def diag_cases():
         case("warn_unused_with_wall", WARNING + ".*unused", outcome="success"),
         case("strict_promotes_warning", ERROR, flags=["--strict"], absent=[WARNING + ".*unused"]),
         case("strict_promotes_warning", WARNING, outcome="success"),
-        # This historical expectation conflicts with newer await documentation.
-        # It is deliberately not weakened or silently marked xfail here.
-        case("coro_await_outside_async", "only legal inside 'async fn'"),
+        # Documented v2 semantics allow synchronous await in ordinary functions.
+        # Assert successful execution, rather than retaining the obsolete negative.
+        dict(case("coro_await_outside_async", "", outcome="success"),
+             patterns=[], stdout="", stdout_exact=True, runtime_exit=0),
         case("coro_yield_outside_async", "'yield' is only legal inside 'async fn'"),
         case("coro_mixed_yield_types", "must share one type"),
-        case("coro_stream_nonvoid_ret", "cannot return a final value"),
+        # Typed final stream values are a documented supported feature.
+        dict(case("coro_stream_nonvoid_ret", "", outcome="success"),
+             patterns=[], stdout="", stdout_exact=True, runtime_exit=0),
         case("coro_async_dispatch_stream", "cannot dispatch yielding async function"),
         case("coro_await_next_requires_stream", "expects a stream"),
         dict(case("dedup_undefined_var", r"^error: aborting due to"), name="dedup_undefined_var/summary"),
@@ -88,9 +101,15 @@ def interop_cases():
                       outcome="success", stdout="ModuleID", llvm=True))
     for name, pattern in [("bitfield_unsupported", "bitfield"),
                           ("long_double_unsupported", "long double"),
+                          ("integer_macro_range", "C macro.*out-of-range integer literal"),
                           ("union_layout", "union")]:
         cases.append(dict(name="neg/" + name, source="tests/cinterop/neg/" + name + ".sts",
                           outcome="rejection", patterns=[ERROR + ".*" + pattern]))
+    if platform.system() == "Linux" and platform.libc_ver()[0] == "glibc" and platform.machine() in ("x86_64", "aarch64"):
+        cases.append(dict(name="neg/c_environment_mismatch",
+                          source="tests/cinterop/neg/c_environment_mismatch.sts",
+                          flags=["--target", platform.machine() + "-unknown-linux-musl"],
+                          outcome="rejection", patterns=[ERROR + ".*C header imports.*target sysroot"]))
     cases.append(dict(name="xfail/04b_struct_byval_arg",
                       source="tests/cinterop/xfail/04b_struct_byval_arg.sts",
                       outcome="success", stdout="04b_struct_byval_arg: ok", support=True,

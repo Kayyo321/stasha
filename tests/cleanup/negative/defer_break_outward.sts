@@ -1,0 +1,9 @@
+mod cleanup_reject_defer_break_outward;
+
+fn main(void): i32 {
+    inf {
+        defer { break; }
+        break;
+    }
+    ret 0;
+}

@@ -1,0 +1,8 @@
+before.send
+handler.body 7
+handler.defer 17
+after.first.send
+after.second.send
+task.defer 90
+result 11 handled 1
+task_watch_handler: ok

@@ -1,0 +1,30 @@
+mod cleanup_task_watch_return;
+
+type Signal: struct { ext i32 code; };
+int i32 handled = 0;
+
+async fn task(void): i32 {
+    stack i32 outer = 10;
+    defer { outer = 90; print.('task.defer {}\n', outer); }
+    watch.(Signal event) => {
+        defer print.('handler.defer {}\n', event.code);
+        print.('handler.body {}\n', event.code);
+        handled = handled + 1;
+        if (event.code == 7) { ret; }
+        break;
+    }
+    send.(Signal{.code = 7});
+    print.('after.return\n');
+    send.(Signal{.code = 8});
+    print.('after.break\n');
+    send.(Signal{.code = 9});
+    ret outer + handled;
+}
+
+fn main(void): i32 {
+    stack i32 result = await.(task());
+    print.('result {} handled {}\n', result, handled);
+    if (result != 12 || handled != 2) { ret 1; }
+    print.('task_watch_return: ok\n');
+    ret 0;
+}

@@ -181,16 +181,16 @@ static LLVMTypeRef get_llvm_base_type(cg_t *cg, type_info_t ti) {
             /* zone is an opaque void* to zone_state_t; stored as ptr in structs/params */
             return LLVMPointerTypeInContext(cg->ctx, 0);
         case TypeVa: {
-            /* platform va_list buffer: alloca'd byte array.
-               Sizes: x86_64 = 24 bytes (one __va_list_tag),
-                      AArch64 = 32 bytes, 32-bit = 4 bytes (plain ptr). */
-            unsigned va_bytes = 8; /* conservative default */
-            const char *triple = cg->target_triple;
-            if (triple) {
-                if      (strstr(triple, "x86_64"))                         va_bytes = 24;
-                else if (strstr(triple, "aarch64") || strstr(triple, "arm64")) va_bytes = 32;
-                else if (strstr(triple, "arm")    || strstr(triple, "i686")
-                      || strstr(triple, "i386"))                           va_bytes = 4;
+            /* Selected-target va_list storage. This does not qualify the full
+             * variadic calling convention; kernel mode rejects variadics. */
+            unsigned va_bytes = cg->target_spec.pointer_bits / 8;
+            if (sts_target_os_matches(&cg->target_spec, "windows")) {
+                /* Microsoft ABIs use a pointer cursor. */
+            } else if (sts_target_arch_matches(&cg->target_spec, "x86_64")) {
+                va_bytes = cg->target_spec.pointer_bits == 32 ? 16 : 24;
+            } else if (sts_target_arch_matches(&cg->target_spec, "aarch64") &&
+                       !sts_target_os_matches(&cg->target_spec, "macos")) {
+                va_bytes = 32;
             }
             return LLVMArrayType2(LLVMInt8TypeInContext(cg->ctx), va_bytes);
         }
@@ -236,6 +236,9 @@ static LLVMTypeRef build_fn_ptr_llvm_type(cg_t *cg, fn_ptr_desc_t *desc) {
     return fn_ty;
 }
 
+/* Scalar failure helper is defined in cg_scalar.c. */
+static void scalar_trap_if(cg_t *, LLVMValueRef, unsigned);
+
 static LLVMValueRef coerce_int(cg_t *cg, LLVMValueRef val, LLVMTypeRef target) {
     LLVMTypeRef src = LLVMTypeOf(val);
     if (src == target) return val;
@@ -251,8 +254,18 @@ static LLVMValueRef coerce_int(cg_t *cg, LLVMValueRef val, LLVMTypeRef target) {
     if (sk == LLVMIntegerTypeKind && (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind))
         return LLVMBuildSIToFP(cg->builder, val, target, "itof");
     /* float -> int */
-    if ((sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) && tk == LLVMIntegerTypeKind)
+    if ((sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) && tk == LLVMIntegerTypeKind) {
+        /* Legacy signed conversion remains defined even on unsupported values;
+         * typed scalar paths use scalar_coerce with explicit signedness. */
+        unsigned width = LLVMGetIntTypeWidth(target);
+        if (width == 1) return LLVMBuildFCmp(cg->builder, LLVMRealUNE, val, LLVMConstReal(src, 0.0), "ftobool");
+        double bound = 1.0;
+        for (unsigned i = 1; i < width; ++i) bound *= 2.0;
+        LLVMValueRef lo = LLVMBuildFCmp(cg->builder, LLVMRealOGE, val, LLVMConstReal(src, -bound), "legacy.fp.lo");
+        LLVMValueRef hi = LLVMBuildFCmp(cg->builder, LLVMRealOLT, val, LLVMConstReal(src, bound), "legacy.fp.hi");
+        scalar_trap_if(cg, LLVMBuildNot(cg->builder, LLVMBuildAnd(cg->builder, lo, hi, "legacy.fp.ok"), "legacy.fp.bad"), 5);
         return LLVMBuildFPToSI(cg->builder, val, target, "ftoi");
+    }
     /* float -> float */
     if ((sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) &&
         (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
@@ -295,22 +308,14 @@ static boolean_t llvm_is_ptr(LLVMTypeRef t) {
 
 /* ── payload size helper ── */
 
-static usize_t payload_type_size(type_info_t ti) {
-    if (ti.is_pointer) return 8;
-    switch (ti.base) {
-        case TypeBool: case TypeI8:  case TypeU8:  return 1;
-        case TypeI16:  case TypeU16:               return 2;
-        case TypeI32:  case TypeU32: case TypeF32: return 4;
-        case TypeI64:  case TypeU64: case TypeF64: return 8;
-        case TypeSlice: return 16; /* ptr(8) + len(4) + cap(4) */
-        case TypeStream:
-        case TypeFuture:
-        case TypeZone:
-        case TypeFnPtr:
-            return 8;
-        case TypeVa: return 32; /* conservative: AArch64 max size */
-        default: return 8; /* conservative default for user types */
+static usize_t payload_type_size(cg_t *cg, type_info_t ti) {
+    LLVMTypeRef type = get_llvm_type(cg, ti);
+    if (!LLVMTypeIsSized(type)) {
+        diag_begin_error("payload requires a complete, sized target type");
+        diag_finish();
+        return 0;
     }
+    return (usize_t)LLVMABISizeOfType(LLVMGetModuleDataLayout(cg->module), type);
 }
 
 /* ── infer type_info_t from an LLVM type (for let bindings) ── */

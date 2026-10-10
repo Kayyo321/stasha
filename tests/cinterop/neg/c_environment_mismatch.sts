@@ -1,0 +1,3 @@
+mod invalid_c_environment;
+cheader "../support/defines.h";
+fn main(void): i32 { ret 0; }

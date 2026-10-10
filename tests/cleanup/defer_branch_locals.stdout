@@ -1,0 +1,10 @@
+defer.body 100
+nested.defer 100
+drop 8
+first 1
+joined 2
+defer.body 100
+nested.defer 100
+drop 8
+second 2
+defer_branch_locals: ok

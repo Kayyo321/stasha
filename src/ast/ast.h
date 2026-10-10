@@ -385,7 +385,7 @@ struct node {
 
     union {
         /* ── top-level ── */
-        struct { char *name; node_list_t decls; boolean_t freestanding; long org_addr; boolean_t has_org; boolean_t crash_protection_disabled; boolean_t crash_tracking_disabled; } module;
+        struct { char *name; node_list_t decls; boolean_t freestanding; boolean_t kernel_profile; long org_addr; boolean_t has_org; boolean_t crash_protection_disabled; boolean_t crash_tracking_disabled; } module;
 
         /* @[[init]] / @[[exit]] blocks */
         struct { char *title; char *before_name; char *after_name; node_t *body; int priority; } lifecycle_block;
@@ -479,7 +479,7 @@ struct node {
             node_t *body;
             node_t *guard_expr;    /* optional: `if expr` guard, null = no guard */
             boolean_t is_literal;  /* True: integer literal pattern arm */
-            long literal_value;    /* value when is_literal */
+            node_t *literal_expr; /* magnitude-preserving literal or unary minus */
         } match_arm;
 
         /* switch statement */

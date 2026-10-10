@@ -1,0 +1,27 @@
+mod cleanup_nested_loops;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn main(void): i32 {
+    stack i32 visits = 0;
+    for (stack i32 outer_index = 0; outer_index < 2; outer_index++) {
+        stack Tracked _outer = .{ .id = 100 + outer_index };
+        defer print.('outer.defer {}\n', outer_index);
+        stack i32 inner_index = 0;
+        while (inner_index < 3) {
+            stack Tracked _inner = .{ .id = outer_index * 10 + inner_index };
+            defer print.('inner.defer {} {}\n', outer_index, inner_index);
+            visits = visits + 1;
+            inner_index = inner_index + 1;
+            if (inner_index == 1) { continue; }
+            break;
+        }
+        print.('outer.resume {}\n', outer_index);
+    }
+    if (visits != 4) { ret 1; }
+    print.('nested_loops: ok\n');
+    ret 0;
+}

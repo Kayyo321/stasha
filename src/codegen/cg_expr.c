@@ -1,4 +1,7 @@
 /* ── expressions ── */
+#include "cg_scalar.c"
+#include "cg_scalar_const.c"
+#include <math.h>
 
 /* forward declaration — defined in cg_generics.c */
 static type_info_t subst_type_info(cg_t *cg, type_info_t ti);
@@ -34,23 +37,19 @@ static LLVMValueRef llvm_to_bool(cg_t *cg, LLVMValueRef val) {
     if (LLVMGetTypeKind(t) == LLVMPointerTypeKind)
         return LLVMBuildIsNotNull(cg->builder, val, "tobool");
     if (LLVMGetTypeKind(t) == LLVMFloatTypeKind || LLVMGetTypeKind(t) == LLVMDoubleTypeKind)
-        return LLVMBuildFCmp(cg->builder, LLVMRealONE, val, LLVMConstReal(t, 0.0), "tobool");
+        return LLVMBuildFCmp(cg->builder, LLVMRealUNE, val, LLVMConstReal(t, 0.0), "tobool");
     return LLVMBuildICmp(cg->builder, LLVMIntNE, val, LLVMConstInt(t, 0, 0), "tobool");
 }
 
 static boolean_t const_int_value(node_t *node, long *out) {
-    if (!node) return False;
-    if (node->kind == NodeIntLitExpr) {
-        if (out) *out = node->as.int_lit.value;
-        return True;
-    }
-    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokMinus
-            && node->as.unary.operand
-            && node->as.unary.operand->kind == NodeIntLitExpr) {
-        if (out) *out = -node->as.unary.operand->as.int_lit.value;
-        return True;
-    }
-    return False;
+    uint64_t magnitude; boolean_t negative;
+    if (!scalar_literal(node, &magnitude, &negative)) return False;
+    if ((!negative && magnitude > LONG_MAX) ||
+        (negative && magnitude > (uint64_t)LONG_MAX + 1)) return False;
+    if (out) *out = negative
+        ? (magnitude == (uint64_t)LONG_MAX + 1 ? LONG_MIN : -(long)magnitude)
+        : (long)magnitude;
+    return True;
 }
 
 static boolean_t const_float_value(node_t *node, double *out) {
@@ -102,17 +101,23 @@ static long count_range_values(node_t *node, boolean_t *ok) {
         if (!const_float_value(node->as.range_expr.start, &start)
                 || !const_float_value(node->as.range_expr.end, &end)
                 || (node->as.range_expr.step && !const_float_value(node->as.range_expr.step, &step))
-                || step == 0.0) {
+                || step == 0.0 || !isfinite(start) || !isfinite(end) || !isfinite(step)) {
             if (ok) *ok = False;
             return 0;
         }
         long count = 0;
         if (step > 0.0) {
             double limit = node->as.range_expr.inclusive ? end + (step * 0.5) : end;
-            for (double v = start; v < limit; v += step) count++;
+            for (double v = start; v < limit; v += step) {
+                if (count >= 16777216 || v + step == v) { if (ok) *ok = False; return 0; }
+                count++;
+            }
         } else {
             double limit = node->as.range_expr.inclusive ? end + (step * 0.5) : end;
-            for (double v = start; v > limit; v += step) count++;
+            for (double v = start; v > limit; v += step) {
+                if (count >= 16777216 || v + step == v) { if (ok) *ok = False; return 0; }
+                count++;
+            }
         }
         if (ok) *ok = True;
         return count;
@@ -133,16 +138,20 @@ static long count_range_values(node_t *node, boolean_t *ok) {
         return 0;
     }
 
-    long count = 0;
-    if (step > 0) {
-        long limit = node->as.range_expr.inclusive ? end + 1 : end;
-        for (long v = start; v < limit; v += step) count++;
-    } else {
-        long limit = node->as.range_expr.inclusive ? end - 1 : end;
-        for (long v = start; v > limit; v += step) count++;
+    boolean_t ascending = step > 0;
+    if ((ascending && start > end) || (!ascending && start < end) ||
+        (start == end && !node->as.range_expr.inclusive)) {
+        if (ok) *ok = True;
+        return 0;
     }
+    uint64_t distance = ascending ? (uint64_t)end - (uint64_t)start : (uint64_t)start - (uint64_t)end;
+    uint64_t stride = ascending ? (uint64_t)step : UINT64_C(0) - (uint64_t)step;
+    uint64_t quotient = node->as.range_expr.inclusive ? distance / stride : (distance - 1) / stride;
+    /* Resource bound for initializer expansion, independent of host long. */
+    if (quotient >= UINT64_C(16777216)) { if (ok) *ok = False; return 0; }
     if (ok) *ok = True;
-    return count;
+    return (long)(quotient + 1);
+
 }
 
 static long count_spread_values(cg_t *cg, node_t *node, boolean_t *ok);
@@ -162,7 +171,7 @@ static long count_compound_init_values(cg_t *cg, node_t *node, boolean_t *needs_
         node_t *item = node->as.compound_init.items.items[i];
         if (item->kind == NodeInitIndex) {
             long idx = 0;
-            if (!const_int_value(item->as.init_index.index, &idx) || idx < 0) {
+            if (!const_int_value(item->as.init_index.index, &idx) || idx < 0 || idx >= 16777216) {
                 local_ok = False;
                 break;
             }
@@ -191,6 +200,7 @@ static long count_compound_init_values(cg_t *cg, node_t *node, boolean_t *needs_
         if (cursor > max_index) max_index = cursor;
     }
 
+    if (max_index > 16777216) local_ok = False;
     if (needs_trailing_nul) *needs_trailing_nul = saw_string_spread;
     if (ok) *ok = local_ok;
     return max_index;
@@ -237,7 +247,7 @@ static void store_array_value_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeRef el
     LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &idx_val, 1, "init.idx");
     LLVMTypeRef saved_hint = cg->hint_ret_type;
     cg->hint_ret_type = elem_ty;
-    LLVMValueRef val = gen_expr(cg, value_node);
+    LLVMValueRef val = gen_scalar_as(cg, value_node, cg->scalar_aggregate_element);
     cg->hint_ret_type = saved_hint;
     if (LLVMTypeOf(val) != elem_ty)
         val = coerce_int(cg, val, elem_ty);
@@ -265,7 +275,7 @@ static boolean_t emit_range_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeR
         if (!const_float_value(node->as.range_expr.start, &start)
                 || !const_float_value(node->as.range_expr.end, &end)
                 || (node->as.range_expr.step && !const_float_value(node->as.range_expr.step, &step))
-                || step == 0.0) {
+                || step == 0.0 || !isfinite(start) || !isfinite(end) || !isfinite(step)) {
             diag_begin_error("range bounds and step must be compile-time literals");
             diag_span(DIAG_NODE(node), True, "range used here");
             diag_finish();
@@ -338,6 +348,22 @@ static boolean_t emit_range_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeR
 
     boolean_t ok = True;
     long count = count_range_values(node, &ok);
+    if (!ok) { scalar_error(node, "initializer range exceeds its deterministic resource limit"); return False; }
+    type_info_t et = cg->scalar_aggregate_element;
+    if (count > 0 && scalar_integer(et)) {
+        uint64_t last_bits = (uint64_t)start + (uint64_t)(count - 1) * (uint64_t)step;
+        long last = last_bits <= (uint64_t)LONG_MAX ? (long)last_bits
+            : (UINT64_C(0) - last_bits == (uint64_t)LONG_MAX + 1 ? LONG_MIN : -(long)(UINT64_C(0) - last_bits));
+        long ends[2] = { start, last };
+        for (unsigned e = 0; e < 2; ++e) {
+            node_t lit = {0}, neg = {0}; lit.kind = NodeIntLitExpr;
+            lit.as.int_lit.value = ends[e] < 0 ? UINT64_C(0) - (uint64_t)ends[e] : (uint64_t)ends[e];
+            neg.kind = NodeUnaryPrefixExpr; neg.as.unary.op = TokMinus; neg.as.unary.operand = &lit;
+            if (!scalar_literal_fits(ends[e] < 0 ? &neg : &lit, et)) {
+                scalar_error(node, "range element is outside the contextual element type"); return False;
+            }
+        }
+    }
     if (count > MAKE_INIT_LOOP_THRESHOLD) {
         /* runtime loop: for (i64 i=0; i<count; i++)
          *   base[cursor+i] = (T)(start + i*step) */
@@ -363,7 +389,9 @@ static boolean_t emit_range_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeR
         LLVMPositionBuilderAtEnd(cg->builder, body_bb);
         LLVMValueRef mul    = LLVMBuildMul(cg->builder, i_v, step_v, "rng.mul");
         LLVMValueRef val_i64 = LLVMBuildAdd(cg->builder, start_v, mul, "rng.v");
-        LLVMValueRef val    = coerce_int(cg, val_i64, elem_ty);
+        LLVMValueRef val = scalar_numeric(et)
+            ? scalar_coerce(cg, val_i64, scalar_type(TypeI64), et, node, True)
+            : coerce_int(cg, val_i64, elem_ty);
         LLVMValueRef off    = LLVMBuildAdd(cg->builder, cur_v, i_v, "rng.off");
         LLVMValueRef gep    = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &off, 1, "rng.gep");
         LLVMBuildStore(cg->builder, val, gep);
@@ -376,24 +404,19 @@ static boolean_t emit_range_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMTypeR
         return True;
     }
 
-    if (step > 0) {
-        long limit = node->as.range_expr.inclusive ? end + 1 : end;
-        for (long v = start; v < limit; v += step) {
-            node_t fake = {0};
-            fake.kind = NodeIntLitExpr;
-            fake.as.int_lit.value = v;
-            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
-            (*cursor)++;
+    long value = start;
+    for (long i = 0; i < count; ++i) {
+        node_t literal = {0}, negative = {0};
+        literal.kind = NodeIntLitExpr;
+        literal.as.int_lit.value = value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+        node_t *element = &literal;
+        if (value < 0) {
+            negative.kind = NodeUnaryPrefixExpr; negative.as.unary.op = TokMinus;
+            negative.as.unary.operand = &literal; element = &negative;
         }
-    } else {
-        long limit = node->as.range_expr.inclusive ? end - 1 : end;
-        for (long v = start; v > limit; v += step) {
-            node_t fake = {0};
-            fake.kind = NodeIntLitExpr;
-            fake.as.int_lit.value = v;
-            store_array_value_at(cg, base_ptr, elem_ty, *cursor, &fake);
-            (*cursor)++;
-        }
+        store_array_value_at(cg, base_ptr, elem_ty, *cursor, element);
+        (*cursor)++;
+        if (i + 1 < count) value += step;
     }
     return True;
 }
@@ -440,7 +463,7 @@ static boolean_t emit_spread_values_at(cg_t *cg, LLVMValueRef base_ptr, LLVMType
                 LLVMValueRef dst_gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr,
                                                     &dst_idx, 1, "spread.dst");
                 if (src_elem_ty != elem_ty)
-                    val = coerce_int(cg, val, elem_ty);
+                    val = scalar_coerce(cg, val, sym->stype, cg->scalar_aggregate_element, expr, False);
                 LLVMBuildStore(cg->builder, val, dst_gep);
                 (*cursor)++;
             }
@@ -473,7 +496,7 @@ static boolean_t store_struct_field(cg_t *cg, LLVMValueRef tmp, struct_reg_t *sr
             field_ty = LLVMArrayType2(field_ty, (unsigned long long)sr->fields[i].array_size);
         LLVMTypeRef saved_hint = cg->hint_ret_type;
         cg->hint_ret_type = field_ty;
-        LLVMValueRef val = gen_expr(cg, value_node);
+        LLVMValueRef val = gen_scalar_as(cg, value_node, sr->fields[i].type);
         cg->hint_ret_type = saved_hint;
         if (LLVMTypeOf(val) != field_ty)
             val = coerce_int(cg, val, field_ty);
@@ -586,8 +609,7 @@ static LLVMValueRef gen_compound_init(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_int_lit(cg_t *cg, node_t *node) {
-    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),
-                        (unsigned long long)node->as.int_lit.value, 1);
+    return scalar_emit_literal(cg, node, scalar_literal_type(node, scalar_expected(cg, node)));
 }
 
 static LLVMValueRef gen_float_lit(cg_t *cg, node_t *node) {
@@ -599,8 +621,12 @@ static LLVMValueRef gen_bool_lit(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_char_lit(cg_t *cg, node_t *node) {
-    return LLVMConstInt(LLVMInt8TypeInContext(cg->ctx),
-                        (unsigned char)node->as.char_lit.value, 0);
+    node_t literal = *node;
+    literal.kind = NodeIntLitExpr;
+    literal.as.int_lit.value = (unsigned char)node->as.char_lit.value;
+    type_info_t expected = scalar_expected(cg, node);
+    if (!scalar_integer(expected) || expected.base == TypeBool) expected = scalar_type(TypeU8);
+    return scalar_emit_literal(cg, &literal, expected);
 }
 
 static LLVMValueRef gen_str_lit(cg_t *cg, node_t *node) {
@@ -608,15 +634,7 @@ static LLVMValueRef gen_str_lit(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
-    symbol_t *sym = cg_lookup(cg, node->as.ident.name);
-    /* module-level globals are stored under the mangled name (e.g. "config__MathPI").
-       When inside a function in the same module, try the prefixed form as fallback. */
-    if (!sym && cg->current_module_prefix[0]) {
-        char mangled[512];
-        snprintf(mangled, sizeof(mangled), "%s__%s",
-                 cg->current_module_prefix, node->as.ident.name);
-        sym = cg_lookup(cg, mangled);
-    }
+    symbol_t *sym = scalar_symbol(cg, node->as.ident.name);
     if (!sym) {
         /* Inside a capturing lambda body: if the name is in the capture list,
            load it from the env struct (last parameter of the lambda function). */
@@ -688,6 +706,8 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
         }
         return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     }
+    /* A named function is already a callable address, not storage to load. */
+    if (LLVMIsAFunction(sym->value)) return sym->value;
     if (sym->flags & SymHeapVar) {
         /* heap primitive: alloca holds the malloc ptr; do double-load */
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
@@ -709,7 +729,7 @@ static LLVMValueRef gen_ident(cg_t *cg, node_t *node) {
 /* ── comparison chain: x > 10 and < 20 / x == 1 or 2 or 3 ──
  *
  * base_expr is evaluated exactly once.  Conditions are combined with integer
- * AND/OR (non-short-circuit) on the i1 results; AND binds tighter than OR.
+ * short-circuit CFG edges on the i1 results; AND binds tighter than OR.
  *
  * Precedence grouping: accumulate an AND-sub-result, flush to OR whenever an
  * OR connector is encountered, then OR all flushed groups at the end.
@@ -737,7 +757,7 @@ static LLVMValueRef gen_single_cmp(cg_t *cg, LLVMValueRef base_val,
             return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOEQ, base_val, rhs_val, "ceq")
                          : LLVMBuildICmp(cg->builder, LLVMIntEQ,   base_val, rhs_val, "ceq");
         case TokBangEq:
-            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealONE, base_val, rhs_val, "cne")
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealUNE, base_val, rhs_val, "cne")
                          : LLVMBuildICmp(cg->builder, LLVMIntNE,   base_val, rhs_val, "cne");
         default:
             return LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0);
@@ -745,42 +765,44 @@ static LLVMValueRef gen_single_cmp(cg_t *cg, LLVMValueRef base_val,
 }
 
 static LLVMValueRef gen_cmp_chain(cg_t *cg, node_t *node) {
-    /* evaluate base once — handles getValue() > 10 and < 20 safely */
-    LLVMValueRef base_val = gen_expr(cg, node->as.cmp_chain.base_expr);
+    node_t *base_node = node->as.cmp_chain.base_expr;
+    type_info_t base_type = scalar_expr_type(cg, base_node, NO_TYPE);
+    LLVMValueRef base = gen_expr(cg, base_node);
     usize_t count = node->as.cmp_chain.count;
-
-    /* evaluate all comparison results eagerly */
-    LLVMValueRef cmp[CMP_CHAIN_MAX];
-    for (usize_t i = 0; i < count; i++) {
-        LLVMValueRef rhs_val = gen_expr(cg, node->as.cmp_chain.rhs_nodes[i]);
-        /* coerce rhs to match base type when they are integer constants */
-        if (!llvm_is_float(LLVMTypeOf(base_val))
-                && LLVMTypeOf(rhs_val) != LLVMTypeOf(base_val)
-                && LLVMGetTypeKind(LLVMTypeOf(rhs_val)) == LLVMIntegerTypeKind)
-            rhs_val = coerce_int(cg, rhs_val, LLVMTypeOf(base_val));
-        cmp[i] = gen_single_cmp(cg, base_val, node->as.cmp_chain.cmp_ops[i], rhs_val);
-    }
-
-    /* combine respecting AND > OR precedence:
-     * scan left-to-right; accumulate an AND-group; flush on OR connector      */
-    LLVMValueRef and_res  = cmp[0];
-    LLVMValueRef or_acc   = Null;   /* accumulated OR operands */
-
-    for (usize_t i = 1; i < count; i++) {
-        if (node->as.cmp_chain.logical_ops[i] == 0) {
-            /* AND: fold into current AND group */
-            and_res = LLVMBuildAnd(cg->builder, and_res, cmp[i], "chain.and");
+    if (!count) return LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0);
+    LLVMBasicBlockRef merge = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "chain.merge");
+    LLVMBasicBlockRef tests[CMP_CHAIN_MAX];
+    LLVMValueRef values[CMP_CHAIN_MAX * 2];
+    LLVMBasicBlockRef blocks[CMP_CHAIN_MAX * 2]; unsigned incoming = 0;
+    for (usize_t i = 0; i < count; ++i)
+        tests[i] = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "chain.test");
+    LLVMBuildBr(cg->builder, tests[0]);
+    for (usize_t i = 0; i < count; ++i) {
+        LLVMPositionBuilderAtEnd(cg->builder, tests[i]);
+        node_t *rhs_node = node->as.cmp_chain.rhs_nodes[i];
+        LLVMValueRef rhs = gen_scalar_as(cg, rhs_node, base_type);
+        LLVMValueRef cmp = scalar_integer(base_type)
+            ? scalar_integer_op(cg, node->as.cmp_chain.cmp_ops[i], base, rhs, base_type)
+            : gen_single_cmp(cg, base, node->as.cmp_chain.cmp_ops[i], rhs);
+        LLVMBasicBlockRef current = LLVMGetInsertBlock(cg->builder);
+        usize_t next_or = i + 1;
+        while (next_or < count && node->as.cmp_chain.logical_ops[next_or] == 0) ++next_or;
+        boolean_t more_and = i + 1 < count && node->as.cmp_chain.logical_ops[i + 1] == 0;
+        LLVMBasicBlockRef yes = more_and ? tests[i + 1] : merge;
+        LLVMBasicBlockRef no = next_or < count ? tests[next_or] : merge;
+        if (yes == merge && no == merge) {
+            values[incoming] = cmp; blocks[incoming++] = current;
+            LLVMBuildBr(cg->builder, merge);
         } else {
-            /* OR: flush current AND group into or_acc, start new AND group */
-            or_acc  = or_acc ? LLVMBuildOr(cg->builder, or_acc, and_res, "chain.or")
-                             : and_res;
-            and_res = cmp[i];
+            if (yes == merge) { values[incoming] = LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 1, 0); blocks[incoming++] = current; }
+            if (no == merge) { values[incoming] = LLVMConstInt(LLVMInt1TypeInContext(cg->ctx), 0, 0); blocks[incoming++] = current; }
+            LLVMBuildCondBr(cg->builder, cmp, yes, no);
         }
     }
-
-    /* combine final AND group with any pending OR accumulator */
-    return or_acc ? LLVMBuildOr(cg->builder, or_acc, and_res, "chain.final")
-                  : and_res;
+    LLVMPositionBuilderAtEnd(cg->builder, merge);
+    LLVMValueRef phi = LLVMBuildPhi(cg->builder, LLVMInt1TypeInContext(cg->ctx), "chain");
+    LLVMAddIncoming(phi, values, blocks, incoming);
+    return phi;
 }
 
 static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
@@ -857,35 +879,75 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
         }
     }
 
-    LLVMValueRef left = gen_expr(cg, node->as.binary.left);
-    LLVMValueRef right = gen_expr(cg, node->as.binary.right);
-
+    type_info_t expected = scalar_expected(cg, node);
+    token_kind_t op = node->as.binary.op;
+    type_info_t common = scalar_common(cg, node->as.binary.left, node->as.binary.right, expected);
+    boolean_t shift = op == TokLtLt || op == TokGtGt;
+    if (shift) common = scalar_expr_type(cg, node->as.binary.left, expected);
+    type_info_t lti = scalar_expr_type(cg, node->as.binary.left, NO_TYPE);
+    type_info_t rti = scalar_expr_type(cg, node->as.binary.right, NO_TYPE);
+    if (scalar_integer(lti) && scalar_integer(rti) && !scalar_integer(common)) {
+        scalar_error(node, "mixed signed and unsigned arithmetic requires an explicit cast");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
+    LLVMValueRef left, right;
+    if (scalar_numeric(common)) {
+        left = gen_scalar_as(cg, node->as.binary.left, common);
+        right = shift ? scalar_shift_count(cg, node->as.binary.right, common)
+                      : gen_scalar_as(cg, node->as.binary.right, common);
+    } else {
+        left = gen_expr(cg, node->as.binary.left);
+        right = gen_expr(cg, node->as.binary.right);
+    }
     LLVMTypeRef lt = LLVMTypeOf(left);
     LLVMTypeRef rt = LLVMTypeOf(right);
-
-    /* promote to matching types */
-    if (lt != rt) {
-        if (llvm_is_float(lt) || llvm_is_float(rt)) {
-            LLVMTypeRef wider = LLVMDoubleTypeInContext(cg->ctx);
-            left = coerce_int(cg, left, wider);
-            right = coerce_int(cg, right, wider);
-        } else if (llvm_is_int(lt) && llvm_is_int(rt)) {
-            unsigned lw = LLVMGetIntTypeWidth(lt);
-            unsigned rw = LLVMGetIntTypeWidth(rt);
-            LLVMTypeRef wider = lw >= rw ? lt : rt;
-            left = coerce_int(cg, left, wider);
-            right = coerce_int(cg, right, wider);
-        }
+    if (!scalar_numeric(common) && lt != rt && !llvm_is_ptr(lt) && !llvm_is_ptr(rt)) {
+        LLVMTypeRef wider = llvm_is_float(lt) || llvm_is_float(rt)
+            ? LLVMDoubleTypeInContext(cg->ctx)
+            : (llvm_is_int(lt) && llvm_is_int(rt) && LLVMGetIntTypeWidth(rt) > LLVMGetIntTypeWidth(lt) ? rt : lt);
+        type_info_t fallback = llvm_type_to_ti(wider);
+        left = scalar_coerce(cg, left, lti, fallback, node->as.binary.left, True);
+        right = scalar_coerce(cg, right, rti, fallback, node->as.binary.right, True);
         lt = LLVMTypeOf(left);
     }
-
     boolean_t is_fp = llvm_is_float(lt);
+    if (scalar_integer(common)) return scalar_integer_op(cg, op, left, right, common);
+    if (llvm_is_int(lt)) {
+        /* Legacy hosted call inference has no source signedness descriptor.
+         * Keep that hosted compatibility path explicit and poison-free. */
+        if (cg->kernel_profile) {
+            scalar_error(node, "kernel arithmetic requires resolved source scalar types");
+            return LLVMConstNull(lt);
+        }
+        type_info_t legacy = llvm_type_to_ti(lt);
+        if (shift) {
+            LLVMValueRef bad = LLVMBuildICmp(cg->builder, LLVMIntUGE, right,
+                LLVMConstInt(LLVMTypeOf(right), LLVMGetIntTypeWidth(lt), 0), "legacy.shift.bad");
+            scalar_trap_if(cg, bad, 4);
+        }
+        return scalar_integer_op(cg, op, left, right, legacy);
+    }
+    if (is_fp) {
+        switch (op) {
+        case TokPlus: case TokMinus: case TokStar: case TokSlash: case TokPercent:
+        case TokLt: case TokGt: case TokLtEq: case TokGtEq: case TokEqEq: case TokBangEq:
+            break;
+        default:
+            scalar_error(node, "this operator requires integer operands");
+            return LLVMConstNull(lt);
+        }
+    }
+
+    if (!is_fp && !llvm_is_int(lt) && !llvm_is_ptr(lt)) {
+        scalar_error(node, "binary operator requires scalar operands");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
 
     /* pointer arithmetic: ptr ± integer → GEP (i8 base = byte-level stride) */
     if ((node->as.binary.op == TokPlus || node->as.binary.op == TokMinus)
         && LLVMGetTypeKind(LLVMTypeOf(left)) == LLVMPointerTypeKind) {
         LLVMTypeRef i8 = LLVMInt8TypeInContext(cg->ctx);
-        right = coerce_int(cg, right, LLVMInt64TypeInContext(cg->ctx));
+        right = scalar_coerce(cg, right, rti, scalar_type(TypeU64), node->as.binary.right, True);
         if (node->as.binary.op == TokMinus)
             right = LLVMBuildNeg(cg->builder, right, "neg");
         return LLVMBuildGEP2(cg->builder, i8, left, &right, 1, "ptrarith");
@@ -924,7 +986,7 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
             return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealOEQ, left, right, "feq")
                          : LLVMBuildICmp(cg->builder, LLVMIntEQ, left, right, "eq");
         case TokBangEq:
-            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealONE, left, right, "fne")
+            return is_fp ? LLVMBuildFCmp(cg->builder, LLVMRealUNE, left, right, "fne")
                          : LLVMBuildICmp(cg->builder, LLVMIntNE, left, right, "ne");
 
         /* wrapping arithmetic (+% -% *%) — LLVM integer add/sub/mul already wraps */
@@ -935,47 +997,9 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
         case TokStarPercent:
             return LLVMBuildMul(cg->builder, left, right, "wmul");
 
-        /* trapping arithmetic (+! -! *!) — overflow intrinsics + trap */
-        case TokPlusBang: case TokMinusBang: case TokStarBang: {
-            const char *intrinsic;
-            if (node->as.binary.op == TokPlusBang)      intrinsic = "llvm.sadd.with.overflow.i32";
-            else if (node->as.binary.op == TokMinusBang) intrinsic = "llvm.ssub.with.overflow.i32";
-            else                                          intrinsic = "llvm.smul.with.overflow.i32";
-
-            LLVMTypeRef i32 = LLVMInt32TypeInContext(cg->ctx);
-            left  = coerce_int(cg, left,  i32);
-            right = coerce_int(cg, right, i32);
-
-            /* build { i32, i1 } return type */
-            LLVMTypeRef ret_fields[2] = { i32, LLVMInt1TypeInContext(cg->ctx) };
-            LLVMTypeRef ret_type = LLVMStructTypeInContext(cg->ctx, ret_fields, 2, 0);
-            LLVMTypeRef param_types[2] = { i32, i32 };
-            LLVMTypeRef fn_type = LLVMFunctionType(ret_type, param_types, 2, 0);
-
-            LLVMValueRef fn = LLVMGetNamedFunction(cg->module, intrinsic);
-            if (!fn) fn = LLVMAddFunction(cg->module, intrinsic, fn_type);
-
-            LLVMValueRef args[2] = { left, right };
-            LLVMValueRef result = LLVMBuildCall2(cg->builder, fn_type, fn, args, 2, "ov");
-            LLVMValueRef val = LLVMBuildExtractValue(cg->builder, result, 0, "ov.val");
-            LLVMValueRef overflowed = LLVMBuildExtractValue(cg->builder, result, 1, "ov.flag");
-
-            /* branch: if overflowed, call llvm.trap; else continue */
-            LLVMBasicBlockRef trap_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ov.trap");
-            LLVMBasicBlockRef ok_bb   = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "ov.ok");
-            LLVMBuildCondBr(cg->builder, overflowed, trap_bb, ok_bb);
-
-            LLVMPositionBuilderAtEnd(cg->builder, trap_bb);
-            {
-                LLVMTypeRef trap_type = LLVMFunctionType(LLVMVoidTypeInContext(cg->ctx), Null, 0, 0);
-                LLVMValueRef trap_fn = LLVMGetNamedFunction(cg->module, "llvm.trap");
-                if (!trap_fn) trap_fn = LLVMAddFunction(cg->module, "llvm.trap", trap_type);
-                LLVMBuildCall2(cg->builder, trap_type, trap_fn, Null, 0, "");
-                LLVMBuildUnreachable(cg->builder);
-            }
-            LLVMPositionBuilderAtEnd(cg->builder, ok_bb);
-            return val;
-        }
+        case TokPlusBang: case TokMinusBang: case TokStarBang:
+            scalar_error(node, "checked arithmetic requires a resolved integer type");
+            return left;
 
         /* bitwise */
         case TokAmp:   return LLVMBuildAnd(cg->builder, left, right, "and");
@@ -992,6 +1016,10 @@ static LLVMValueRef gen_binary(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
+    uint64_t magnitude; boolean_t negative;
+    if (scalar_literal(node, &magnitude, &negative))
+        return scalar_emit_literal(cg, node, scalar_literal_type(node, scalar_expected(cg, node)));
+
     if (node->as.unary.op == TokPlusPlus || node->as.unary.op == TokMinusMinus) {
         node_t *operand = node->as.unary.operand;
         if (operand->kind == NodeSelfMemberExpr) {
@@ -1072,7 +1100,8 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         return result;
     }
     if (node->as.unary.op == TokMinus) {
-        LLVMValueRef operand = gen_expr(cg, node->as.unary.operand);
+        type_info_t t = scalar_expr_type(cg, node, scalar_expected(cg, node));
+        LLVMValueRef operand = gen_scalar_as(cg, node->as.unary.operand, t);
         if (llvm_is_float(LLVMTypeOf(operand)))
             return LLVMBuildFNeg(cg->builder, operand, "fneg");
         return LLVMBuildNeg(cg->builder, operand, "neg");
@@ -1083,7 +1112,8 @@ static LLVMValueRef gen_unary_prefix(cg_t *cg, node_t *node) {
         return LLVMBuildNot(cg->builder, operand, "not");
     }
     if (node->as.unary.op == TokTilde) {
-        LLVMValueRef operand = gen_expr(cg, node->as.unary.operand);
+        type_info_t t = scalar_expr_type(cg, node, scalar_expected(cg, node));
+        LLVMValueRef operand = gen_scalar_as(cg, node->as.unary.operand, t);
         return LLVMBuildNot(cg->builder, operand, "bnot");
     }
     /* pointer dereference: *ptr — load the value the pointer points to.
@@ -1453,6 +1483,8 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     /* ── save outer codegen state ── */
     LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(cg->builder);
     LLVMValueRef saved_fn = cg->current_fn;
+    type_info_t *saved_returns = cg->current_return_types;
+    usize_t saved_return_count = cg->current_return_count;
     char *saved_struct = cg->current_struct_name;
     boolean_t saved_inline_method = cg->current_fn_is_inline_method;
     boolean_t saved_entry_main = cg->current_fn_is_entry_main;
@@ -1461,6 +1493,14 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     LLVMBasicBlockRef saved_cont  = cg->continue_target;
     symtab_t saved_locals = cg->locals;     /* full symtab snapshot */
     usize_t saved_dtor_depth = cg->dtor_depth;
+    dtor_scope_t *saved_dtor_stack = cg->dtor_stack;
+    heap_t saved_dtor_heap = cg->dtor_stack_heap;
+    usize_t saved_dtor_cap = cg->dtor_cap;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    boolean_t saved_emitting_defer = cg->emitting_defer;
+    sts_coro_ctx_t saved_coro = cg->cur_coro;
+    boolean_t saved_async_task = cg->current_fn_is_async_task;
 
     /* save lambda capture context so nested lambdas restore correctly */
     LLVMValueRef     saved_env_param      = cg->lambda_env_param;
@@ -1488,12 +1528,21 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     /* give lambda a fresh locals scope so it cannot corrupt outer entries */
     symtab_init(&cg->locals);
     cg->current_fn = fn;
+    cg->current_return_types = &node->as.lambda_expr.ret_type;
+    cg->current_return_count = 1;
     cg->current_fn_is_inline_method = False;
     cg->current_fn_is_entry_main = False;
     cg->current_struct_name = Null;
     cg->break_target = Null;
     cg->continue_target = Null;
     cg->dtor_depth = 0;
+    cg->dtor_stack = Null;
+    cg->dtor_stack_heap = NullHeap;
+    cg->dtor_cap = 0;
+    cg->break_cleanup_depth = cg->continue_cleanup_depth = 0;
+    cg->emitting_defer = False;
+    memset(&cg->cur_coro, 0, sizeof(cg->cur_coro));
+    cg->current_fn_is_async_task = False;
 
     /* set active capture context for gen_ident */
     if (cap_count > 0) {
@@ -1544,8 +1593,19 @@ static LLVMValueRef gen_lambda(cg_t *cg, node_t *node) {
     cg->lambda_blocked_count  = saved_blocked_count;
     symtab_free(&cg->locals);           /* free lambda's own locals */
     cg->locals                = saved_locals;  /* restore outer symtab */
-    cg->dtor_depth            = saved_dtor_depth;
+    if (cg->dtor_stack_heap.pointer) deallocate(cg->dtor_stack_heap);
+    cg->dtor_stack = saved_dtor_stack;
+    cg->dtor_stack_heap = saved_dtor_heap;
+    cg->dtor_cap = saved_dtor_cap;
+    cg->dtor_depth = saved_dtor_depth;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
+    cg->emitting_defer = saved_emitting_defer;
+    cg->cur_coro = saved_coro;
+    cg->current_fn_is_async_task = saved_async_task;
     cg->current_fn            = saved_fn;
+    cg->current_return_types = saved_returns;
+    cg->current_return_count = saved_return_count;
     cg->current_struct_name   = saved_struct;
     cg->current_fn_is_inline_method = saved_inline_method;
     cg->current_fn_is_entry_main    = saved_entry_main;
@@ -1617,7 +1677,7 @@ static LLVMValueRef gen_lambda_call(cg_t *cg, node_t *node) {
     heap_t args_heap = allocate(argc > 0 ? argc : 1, sizeof(LLVMValueRef));
     LLVMValueRef *args = args_heap.pointer;
     for (usize_t i = 0; i < user_argc; i++)
-        args[i] = gen_expr(cg, node->as.lambda_call.args.items[i]);
+        args[i] = gen_scalar_as(cg, node->as.lambda_call.args.items[i], scalar_param_type(cg, node, i));
     if (has_env) args[user_argc] = env_ptr;
 
     LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_ptr,
@@ -1716,7 +1776,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
         heap_t clo_args_heap = allocate(clo_argc, sizeof(LLVMValueRef));
         LLVMValueRef *clo_args = clo_args_heap.pointer;
         for (usize_t i = 0; i < user_argc; i++)
-            clo_args[i] = gen_expr(cg, node->as.call.args.items[i]);
+            clo_args[i] = gen_scalar_as(cg, node->as.call.args.items[i], scalar_param_type(cg, node, i));
         clo_args[user_argc] = env_ptr;
 
         LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_val,
@@ -1785,7 +1845,7 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
             offset = 1;
         }
         for (usize_t i = 0; i < user_argc; i++)
-            args[offset + i] = gen_expr(cg, node->as.call.args.items[i]);
+            args[offset + i] = gen_scalar_as(cg, node->as.call.args.items[i], scalar_param_type(cg, node, i));
     }
 
     /* coerce arguments to the declared parameter types (e.g. i32 literal → f32).
@@ -1827,6 +1887,19 @@ static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
             }
         }
         deallocate(pt_heap);
+    }
+
+    /* C default argument promotions preserve unsigned narrow values. */
+    if (LLVMIsFunctionVarArg(fn_type)) {
+        usize_t offset = prepend_this ? 1 : 0;
+        for (usize_t i = n_params; i < argc; ++i) {
+            node_t *arg = node->as.call.args.items[i - offset];
+            type_info_t at = scalar_expr_type(cg, arg, NO_TYPE);
+            if (scalar_integer(at) && scalar_bits(at) < 32)
+                args[i] = scalar_coerce(cg, args[i], at, scalar_type(TypeI32), arg, False);
+            else if (at.base == TypeF32 && !at.is_pointer)
+                args[i] = scalar_coerce(cg, args[i], at, scalar_type(TypeF64), arg, False);
+        }
     }
 
     /* Tier 2 typed variadic: interleave type tags for ...typed callee.
@@ -1886,7 +1959,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     if (er->variants[i].has_payload &&
                             node->as.method_call.args.count > 0) {
                         LLVMValueRef payload_val =
-                            gen_expr(cg, node->as.method_call.args.items[0]);
+                            gen_scalar_as(cg, node->as.method_call.args.items[0], er->variants[i].payload_type);
                         LLVMTypeRef payload_lltype =
                             get_llvm_type(cg, er->variants[i].payload_type);
                         payload_val = coerce_int(cg, payload_val, payload_lltype);
@@ -1922,7 +1995,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                         args_heap = allocate(argc, sizeof(LLVMValueRef));
                         args = args_heap.pointer;
                         for (usize_t i = 0; i < user_argc; i++)
-                            args[i] = gen_expr(cg, node->as.method_call.args.items[i]);
+                            args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
                     }
                     /* coerce args to declared param types */
                     if (argc > 0 && n_params > 0) {
@@ -1949,7 +2022,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     args_heap = allocate(argc, sizeof(LLVMValueRef));
                     args = args_heap.pointer;
                     for (usize_t i = 0; i < argc; i++)
-                        args[i] = gen_expr(cg, node->as.method_call.args.items[i]);
+                        args[i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
                 }
 
                 symbol_t *fn_sym = cg_lookup(cg, method);
@@ -2014,6 +2087,17 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 }
 
                 LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
+                if (LLVMIsFunctionVarArg(fn_type)) {
+                    unsigned fixed = LLVMCountParamTypes(fn_type);
+                    for (usize_t i = fixed; i < argc; ++i) {
+                        node_t *arg = node->as.method_call.args.items[i];
+                        type_info_t at = scalar_expr_type(cg, arg, NO_TYPE);
+                        if (scalar_integer(at) && scalar_bits(at) < 32)
+                            args[i] = scalar_coerce(cg, args[i], at, scalar_type(TypeI32), arg, False);
+                        else if (at.base == TypeF32 && !at.is_pointer)
+                            args[i] = scalar_coerce(cg, args[i], at, scalar_type(TypeF64), arg, False);
+                    }
+                }
 
                 /* ── breadcrumb: record last C lib call site for crash reports ── */
                 if (!cg->crash_protection_disabled && !cg->crash_tracking_disabled) {
@@ -2093,7 +2177,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     offset = 1;
                 }
                 for (usize_t i = 0; i < user_argc; i++)
-                    args[offset + i] = gen_expr(cg, node->as.method_call.args.items[i]);
+                    args[offset + i] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
             }
             /* coerce args */
             if (argc > 0 && n_params > 0) {
@@ -2144,7 +2228,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                             ? LLVMBuildLoad2(cg->builder, ptr_t, outer_sym->value, "obj_ptr")
                             : outer_sym->value;
                         for (usize_t i = 0; i < node->as.method_call.args.count; i++)
-                            args[i + 1] = gen_expr(cg, node->as.method_call.args.items[i]);
+                            args[i + 1] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
                         LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
                         LLVMValueRef ret = LLVMBuildCall2(cg->builder, fn_type, fn_sym->value,
                                                            args, (unsigned)argc, "");
@@ -2247,7 +2331,7 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                     args[0] = obj_sym->value; /* alloca = pointer to struct */
                 }
                 for (usize_t i = 0; i < node->as.method_call.args.count; i++)
-                    args[i + 1] = gen_expr(cg, node->as.method_call.args.items[i]);
+                    args[i + 1] = gen_scalar_as(cg, node->as.method_call.args.items[i], scalar_param_type(cg, node, i));
                 LLVMTypeRef fn_type = LLVMGlobalGetValueType(fn_sym->value);
                 /* coerce args to declared param types (including interface fat-ptr coercion) */
                 unsigned n_params_mc = LLVMCountParamTypes(fn_type);
@@ -2394,7 +2478,7 @@ static thr_wrapper_t *get_or_create_thread_wrapper(cg_t *cg,
             if (cg->di_data_layout && ret_llvm_type)
                 result_size = (usize_t)LLVMABISizeOfType(cg->di_data_layout, ret_llvm_type);
             else
-                result_size = payload_type_size(rti);
+                result_size = payload_type_size(cg, rti);
         }
     }
 
@@ -2535,7 +2619,8 @@ static LLVMValueRef gen_dispatch_to_pool(cg_t *cg, node_t *diag_node,
         args_ptr = LLVMBuildCall2(cg->builder, cg->malloc_type,
                                    cg->malloc_fn, malloc_args, 1, "thr_args");
         for (usize_t i = 0; i < argc; i++) {
-            LLVMValueRef val = gen_expr(cg, args->items[i]);
+            type_info_t pti = i < fn_decl->as.fn_decl.params.count ? fn_decl->as.fn_decl.params.items[i]->as.var_decl.type : (type_info_t)NO_TYPE;
+            LLVMValueRef val = gen_scalar_as(cg, args->items[i], pti);
             LLVMValueRef gep = LLVMBuildStructGEP2(cg->builder, w->args_struct_type,
                                                     args_ptr, (unsigned)i, "af");
             LLVMBuildStore(cg->builder, val, gep);
@@ -3523,6 +3608,52 @@ static LLVMValueRef gen_va_op(cg_t *cg, node_t *node) {
     }
 }
 
+/* Address a real aggregate lvalue without copying it into a temporary. This
+ * helper is deliberately conservative; unsupported bases diagnose at the caller.
+ * Packed storage is normalized to alignment one by the target layout pass. */
+static LLVMValueRef scalar_member_address(cg_t *cg, node_t *node,
+                                          LLVMTypeRef *type, symbol_t **root) {
+    if (node->kind == NodeIdentExpr) {
+        symbol_t *sym = scalar_symbol(cg, node->as.ident.name);
+        if (!sym || !sym->type || LLVMIsAFunction(sym->value)) return Null;
+        if (root) *root = sym;
+        *type = sym->type;
+        if (sym->flags & SymHeapVar)
+            return LLVMBuildLoad2(cg->builder, LLVMPointerTypeInContext(cg->ctx, 0), sym->value, "member.heap");
+        return sym->value;
+    }
+    if (node->kind == NodeUnaryPrefixExpr && node->as.unary.op == TokStar) {
+        type_info_t value = scalar_expr_type(cg, node, NO_TYPE);
+        *type = get_llvm_type(cg, value);
+        return gen_expr(cg, node->as.unary.operand);
+    }
+    if (node->kind != NodeMemberExpr) return Null;
+    node_t *object = node->as.member_expr.object;
+    type_info_t source = scalar_resolve(cg, scalar_expr_type(cg, object, NO_TYPE));
+    if (source.base != TypeUser || !source.user_name) return Null;
+    struct_reg_t *sr = find_struct(cg, source.user_name);
+    if (!sr) return Null;
+    LLVMValueRef base;
+    LLVMTypeRef unused;
+    if (source.is_pointer) {
+        if (!(source.ptr_perm & PtrWrite)) {
+            scalar_error(node, "compound assignment requires a writable pointer"); return Null;
+        }
+        base = gen_expr(cg, object);
+    } else base = scalar_member_address(cg, object, &unused, root);
+    if (!base) return Null;
+    for (usize_t i = 0; i < sr->field_count; ++i) {
+        field_info_t *field = &sr->fields[i];
+        if (strcmp(field->name, node->as.member_expr.field)) continue;
+        if (field->bit_width) {
+            scalar_error(node, "compound assignment to bitfields is not supported"); return Null;
+        }
+        *type = field->llvm_type ? field->llvm_type : get_llvm_type(cg, field->type);
+        return LLVMBuildStructGEP2(cg->builder, sr->llvm_type, base, (unsigned)field->index, "member.address");
+    }
+    return Null;
+}
+
 static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
     node_t *target = node->as.compound_assign.target;
 
@@ -3581,6 +3712,13 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
                 store_type = elem_type;
             }
         }
+    } else if (target->kind == NodeMemberExpr) {
+        store_ptr = scalar_member_address(cg, target, &store_type, &sym);
+        if (!store_ptr) {
+            scalar_error(target, "compound assignment target must be an addressable field");
+            return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+        }
+        atomic = sym && (sym->flags & SymAtomic);
     } else if (target->kind == NodeSelfMemberExpr) {
         symbol_t *this_sym = cg_lookup(cg, "this");
         if (this_sym) {
@@ -3635,8 +3773,16 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
 
     if (!store_ptr) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
 
-    LLVMValueRef rhs = gen_expr(cg, node->as.compound_assign.value);
-    rhs = coerce_int(cg, rhs, store_type);
+    type_info_t target_ti = scalar_expr_type(cg, target, NO_TYPE);
+    if (!scalar_numeric(target_ti) && llvm_is_int(store_type)) {
+        if (cg->kernel_profile) scalar_error(node, "kernel assignment requires a resolved source scalar type");
+        else target_ti = llvm_type_to_ti(store_type);
+    }
+    boolean_t shift_assign = node->as.compound_assign.op == TokLtLtEq || node->as.compound_assign.op == TokGtGtEq;
+    LLVMValueRef rhs = shift_assign && scalar_integer(target_ti)
+        ? scalar_shift_count(cg, node->as.compound_assign.value, target_ti)
+        : gen_scalar_as(cg, node->as.compound_assign.value, target_ti);
+    if (LLVMTypeOf(rhs) != store_type) rhs = coerce_int(cg, rhs, store_type);
 
     if (atomic && (node->as.compound_assign.op == TokPlusEq
                 || node->as.compound_assign.op == TokMinusEq)) {
@@ -3650,6 +3796,20 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
     boolean_t is_fp = llvm_is_float(store_type);
     LLVMValueRef result;
 
+    if (scalar_integer(target_ti)) {
+        token_kind_t op;
+        switch (node->as.compound_assign.op) {
+        case TokPlusEq: op = TokPlus; break; case TokMinusEq: op = TokMinus; break;
+        case TokStarEq: op = TokStar; break; case TokSlashEq: op = TokSlash; break;
+        case TokPercentEq: op = TokPercent; break; case TokAmpEq: op = TokAmp; break;
+        case TokPipeEq: op = TokPipe; break; case TokCaretEq: op = TokCaret; break;
+        case TokLtLtEq: op = TokLtLt; break; case TokGtGtEq: op = TokGtGt; break;
+        default: op = TokPlus; break;
+        }
+        result = scalar_integer_op(cg, op, lhs, rhs, target_ti);
+        LLVMBuildStore(cg->builder, result, store_ptr);
+        return result;
+    }
     switch (node->as.compound_assign.op) {
         case TokPlusEq:
             result = is_fp ? LLVMBuildFAdd(cg->builder, lhs, rhs, "fadd")
@@ -3764,8 +3924,7 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         else
             sym->flags &= ~SymNil;
 
-        LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
-        rhs = coerce_int(cg, rhs, sym->type);
+        LLVMValueRef rhs = gen_scalar_as(cg, node->as.assign.value, sym->stype);
         if (sym->flags & SymHeapVar) {
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(cg->ctx, 0);
             LLVMValueRef heap_ptr = LLVMBuildLoad2(cg->builder, ptr_ty,
@@ -3777,7 +3936,8 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
         return rhs;
     }
 
-    LLVMValueRef rhs = gen_expr(cg, node->as.assign.value);
+    LLVMValueRef rhs = gen_scalar_as(cg, node->as.assign.value,
+                                           scalar_expr_type(cg, target, NO_TYPE));
 
     if (target->kind == NodeIndexExpr) {
         node_t *obj      = target->as.index_expr.object;
@@ -4154,10 +4314,10 @@ static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
             boolean_t skip_check = (cg->in_unsafe > 0);
             /* static elimination: constant index within known-constant length */
             if (!skip_check && node->as.index_expr.index->kind == NodeIntLitExpr) {
-                long ci = node->as.index_expr.index->as.int_lit.value;
+                uint64_t ci = node->as.index_expr.index->as.int_lit.value;
                 /* If we have a compile-time known len from sym->array_size, use it.
                  * For slices, sym->array_size stores the declared length if from make.() */
-                if (sym->array_size >= 0 && ci >= 0 && ci < sym->array_size)
+                if (sym->array_size >= 0 && ci < (uint64_t)sym->array_size)
                     skip_check = True;
             }
             if (!skip_check) {
@@ -4523,7 +4683,7 @@ static LLVMValueRef gen_self_method_call(cg_t *cg, node_t *node) {
             offset = 1;
         }
         for (usize_t i = 0; i < user_argc; i++)
-            args[offset + i] = gen_expr(cg, node->as.self_method_call.args.items[i]);
+            args[offset + i] = gen_scalar_as(cg, node->as.self_method_call.args.items[i], scalar_param_type(cg, node, i));
     }
 
     /* coerce args to declared parameter types */
@@ -4597,10 +4757,15 @@ static LLVMValueRef gen_self_member(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_ternary(cg_t *cg, node_t *node) {
+    type_info_t result_ti = scalar_expr_type(cg, node, scalar_expected(cg, node));
+    type_info_t then_ti = scalar_expr_type(cg, node->as.ternary.then_expr, NO_TYPE);
+    type_info_t else_ti = scalar_expr_type(cg, node->as.ternary.else_expr, NO_TYPE);
+    if (scalar_integer(then_ti) && scalar_integer(else_ti) && !scalar_integer(result_ti)) {
+        scalar_error(node, "conditional branches with mixed signedness require an explicit cast");
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    }
     LLVMValueRef cond = gen_expr(cg, node->as.ternary.cond);
-    if (LLVMTypeOf(cond) != LLVMInt1TypeInContext(cg->ctx))
-        cond = LLVMBuildICmp(cg->builder, LLVMIntNE, cond,
-                             LLVMConstInt(LLVMTypeOf(cond), 0, 0), "tobool");
+    cond = llvm_to_bool(cg, cond);
 
     LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "tern.then");
     LLVMBasicBlockRef else_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "tern.else");
@@ -4608,18 +4773,17 @@ static LLVMValueRef gen_ternary(cg_t *cg, node_t *node) {
     LLVMBuildCondBr(cg->builder, cond, then_bb, else_bb);
 
     LLVMPositionBuilderAtEnd(cg->builder, then_bb);
-    LLVMValueRef then_val = gen_expr(cg, node->as.ternary.then_expr);
+    LLVMValueRef then_val = gen_scalar_as(cg, node->as.ternary.then_expr, result_ti);
     LLVMBuildBr(cg->builder, merge_bb);
     then_bb = LLVMGetInsertBlock(cg->builder);
 
     LLVMPositionBuilderAtEnd(cg->builder, else_bb);
-    LLVMValueRef else_val = gen_expr(cg, node->as.ternary.else_expr);
+    LLVMValueRef else_val = gen_scalar_as(cg, node->as.ternary.else_expr, result_ti);
     LLVMBuildBr(cg->builder, merge_bb);
     else_bb = LLVMGetInsertBlock(cg->builder);
 
     LLVMPositionBuilderAtEnd(cg->builder, merge_bb);
     LLVMTypeRef result_type = LLVMTypeOf(then_val);
-    else_val = coerce_int(cg, else_val, result_type);
     LLVMValueRef phi = LLVMBuildPhi(cg->builder, result_type, "ternary");
     LLVMValueRef vals[2] = { then_val, else_val };
     LLVMBasicBlockRef bbs[2] = { then_bb, else_bb };
@@ -4643,7 +4807,8 @@ static LLVMValueRef gen_cast(cg_t *cg, node_t *node) {
     if (llvm_is_ptr(src) && llvm_is_ptr(target))
         return val; /* opaque pointers, no-op */
 
-    return coerce_int(cg, val, target);
+    return scalar_coerce(cg, val, scalar_expr_type(cg, node->as.cast_expr.expr, NO_TYPE),
+                         node->as.cast_expr.target, node, True);
 }
 
 static LLVMValueRef gen_new(cg_t *cg, node_t *node) {
@@ -4984,15 +5149,17 @@ static LLVMValueRef gen_equ(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_sizeof(cg_t *cg, node_t *node) {
     type_info_t ti = node->as.sizeof_expr.type;
-    /* If the "type" is a bare user name with no pointer qualifier, check whether
-       it is actually a variable — if so, use the variable's LLVM type instead.
-       This makes sizeof.(my_var) work alongside sizeof.(MyStruct). */
+    uint64_t size = 0;
     if (ti.base == TypeUser && !ti.is_pointer && ti.user_name) {
-        symbol_t *sym = cg_lookup(cg, ti.user_name);
-        if (sym) return LLVMSizeOf(sym->type);
+        symbol_t *sym = scalar_symbol(cg, ti.user_name);
+        if (sym) {
+            if (!LLVMTypeIsSized(sym->type)) scalar_error(node, "sizeof requires a complete, sized type");
+            else size = LLVMABISizeOfType(LLVMGetModuleDataLayout(cg->module), sym->type);
+            return LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), size, 0);
+        }
     }
-    LLVMTypeRef ty = get_llvm_type(cg, ti);
-    return LLVMSizeOf(ty);
+    cg_layout_query(cg, ti, Null, node->line, &size, Null, Null);
+    return LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), size, 0);
 }
 
 static LLVMValueRef gen_nil(cg_t *cg) {
@@ -5590,19 +5757,17 @@ static struct_reg_t *try_instantiate_any(cg_t *cg, const char *name) {
     }
     if (type_count == 0) return Null;
 
-    /* map to type_info_t and find max size */
+    /* Keep payload storage aligned and sized for every actual target type. */
     type_info_t variants[16];
-    usize_t max_size = 1;
+    LLVMTypeRef payload_types[16];
     for (usize_t i = 0; i < type_count; i++) {
         variants[i] = type_info_from_name(type_names[i]);
-        usize_t sz = type_size_bytes(cg, variants[i]);
-        if (sz > max_size) max_size = sz;
+        if (!cg_layout_require_type(cg, variants[i], 0)) return Null;
+        payload_types[i] = get_llvm_type(cg, variants[i]);
     }
-
-    /* build LLVM struct: { i32 tag; [max_size x i8] data } */
-    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
-    LLVMTypeRef i8_ty   = LLVMInt8TypeInContext(cg->ctx);
-    LLVMTypeRef data_ty = LLVMArrayType2(i8_ty, (unsigned long long)max_size);
+    LLVMTypeRef data_ty = cg_layout_storage(cg, payload_types, type_count, False);
+    if (!data_ty) return Null;
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef field_tys[2] = { i32_ty, data_ty };
     LLVMTypeRef struct_ty = LLVMStructTypeInContext(cg->ctx, field_tys, 2, 0);
 
@@ -5617,6 +5782,10 @@ static struct_reg_t *try_instantiate_any(cg_t *cg, const char *name) {
     struct_add_field(sr, "tag",  tag_ti, 0, LinkageNone, StorageStack);
     type_info_t data_ti = NO_TYPE; data_ti.base = TypeU8;
     struct_add_field(sr, "data", data_ti, 1, LinkageNone, StorageStack);
+    sr->fields[0].llvm_type = i32_ty;
+    sr->fields[1].llvm_type = data_ty;
+    sr->size_bytes = LLVMABISizeOfType(cg->di_data_layout, struct_ty);
+    sr->abi_alignment = LLVMABIAlignmentOfType(cg->di_data_layout, struct_ty);
 
     /* store any-type metadata */
     sr->is_any_type = True;
@@ -5717,7 +5886,7 @@ static LLVMValueRef gen_constructor_call(cg_t *cg, node_t *node) {
         args_heap = allocate(argc, sizeof(LLVMValueRef));
         args = args_heap.pointer;
         for (usize_t i = 0; i < argc; i++)
-            args[i] = gen_expr(cg, node->as.ctor_call.args.items[i]);
+            args[i] = gen_scalar_as(cg, node->as.ctor_call.args.items[i], scalar_param_type(cg, node, i));
     }
     /* coerce to param types */
     if (argc > 0 && n_params > 0) {
@@ -5761,7 +5930,7 @@ static LLVMValueRef gen_err_prop_call(cg_t *cg, node_t *node) {
         args_heap = allocate(user_argc, sizeof(LLVMValueRef));
         args = args_heap.pointer;
         for (usize_t i = 0; i < user_argc; i++)
-            args[i] = gen_expr(cg, node->as.err_prop_call.args.items[i]);
+            args[i] = gen_scalar_as(cg, node->as.err_prop_call.args.items[i], scalar_param_type(cg, node, i));
         if (n_params > 0) {
             heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
             LLVMTypeRef *ptypes = pt_heap.pointer;
@@ -5959,18 +6128,10 @@ static boolean_t item_is_const_scalar(node_t *it) {
 }
 
 /* Build an LLVMConstant of elem_ty from a const-scalar AST node. */
-static LLVMValueRef const_from_scalar(cg_t *cg, LLVMTypeRef elem_ty, node_t *it) {
+static LLVMValueRef const_from_scalar(cg_t *cg, LLVMTypeRef elem_ty, type_info_t elem_ti, node_t *it) {
     LLVMTypeKind tk = LLVMGetTypeKind(elem_ty);
-    if (tk == LLVMIntegerTypeKind) {
-        long long v = 0;
-        if (it->kind == NodeIntLitExpr) v = (long long)it->as.int_lit.value;
-        else if (it->kind == NodeCharLitExpr) v = (long long)(unsigned char)it->as.char_lit.value;
-        else if (it->kind == NodeBoolLitExpr) v = it->as.bool_lit.value ? 1 : 0;
-        else if (it->kind == NodeUnaryPrefixExpr && it->as.unary.operand
-                && it->as.unary.operand->kind == NodeIntLitExpr)
-            v = -(long long)it->as.unary.operand->as.int_lit.value;
-        return LLVMConstInt(elem_ty, (unsigned long long)v, 1);
-    }
+    if (tk == LLVMIntegerTypeKind)
+        return scalar_global_initializer(cg, it, elem_ti);
     if (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind) {
         double d = 0.0;
         if (it->kind == NodeFloatLitExpr) d = it->as.float_lit.value;
@@ -6118,7 +6279,7 @@ static LLVMValueRef gen_make_init_runtime(cg_t *cg, node_t *node, type_info_t el
             LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &off, 1, "init.idx");
             LLVMTypeRef saved = cg->hint_ret_type;
             cg->hint_ret_type = elem_ty;
-            LLVMValueRef val = gen_expr(cg, it->as.init_index.value);
+            LLVMValueRef val = gen_scalar_as(cg, it->as.init_index.value, elem_ti);
             cg->hint_ret_type = saved;
             if (LLVMTypeOf(val) != elem_ty) val = coerce_int(cg, val, elem_ty);
             LLVMBuildStore(cg->builder, val, gep);
@@ -6147,7 +6308,7 @@ static LLVMValueRef gen_make_init_runtime(cg_t *cg, node_t *node, type_info_t el
         LLVMValueRef gep = LLVMBuildGEP2(cg->builder, elem_ty, base_ptr, &cur, 1, "init.pos");
         LLVMTypeRef saved = cg->hint_ret_type;
         cg->hint_ret_type = elem_ty;
-        LLVMValueRef val = gen_expr(cg, it);
+        LLVMValueRef val = gen_scalar_as(cg, it, elem_ti);
         cg->hint_ret_type = saved;
         if (LLVMTypeOf(val) != elem_ty) val = coerce_int(cg, val, elem_ty);
         LLVMBuildStore(cg->builder, val, gep);
@@ -6267,7 +6428,7 @@ static LLVMValueRef gen_make_init(cg_t *cg, node_t *node) {
             heap_t vals_h = allocate((usize_t)n, sizeof(LLVMValueRef));
             LLVMValueRef *vals = (LLVMValueRef *)vals_h.pointer;
             for (long i = 0; i < n; i++)
-                vals[i] = const_from_scalar(cg, elem_ty, init->as.compound_init.items.items[(usize_t)i]);
+                vals[i] = const_from_scalar(cg, elem_ty, elem_ti, init->as.compound_init.items.items[(usize_t)i]);
             LLVMTypeRef arr_ty = LLVMArrayType2(elem_ty, (unsigned long long)n);
             LLVMValueRef arr_init = LLVMConstArray2(elem_ty, vals, (unsigned long long)n);
             deallocate(vals_h);
@@ -6589,7 +6750,7 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
             offset = 1;
         }
         for (usize_t i = 0; i < argc; i++)
-            args[i + offset] = gen_expr(cg, node->as.colon_call.args.items[i]);
+            args[i + offset] = gen_scalar_as(cg, node->as.colon_call.args.items[i], scalar_param_type(cg, node, i));
     }
     if (total_args > 0 && n_params > 0) {
         heap_t pt_heap = allocate(n_params, sizeof(LLVMTypeRef));
@@ -6647,9 +6808,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
         case NodeExpectExpr: {
             /* expect.(expr) — if !expr, print failure and increment fail count */
             LLVMValueRef val = gen_expr(cg, node->as.expect_expr.expr);
-            if (LLVMTypeOf(val) != LLVMInt1TypeInContext(cg->ctx))
-                val = LLVMBuildICmp(cg->builder, LLVMIntNE, val,
-                    LLVMConstInt(LLVMTypeOf(val), 0, 0), "tobool");
+            val = llvm_to_bool(cg, val);
             LLVMBasicBlockRef pass_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expect.pass");
             LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expect.fail");
             LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expect.end");
@@ -6679,9 +6838,10 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         case NodeExpectEqExpr: {
-            LLVMValueRef left = gen_expr(cg, node->as.expect_eq.left);
-            LLVMValueRef right = gen_expr(cg, node->as.expect_eq.right);
-            right = coerce_int(cg, right, LLVMTypeOf(left));
+            type_info_t common = scalar_common(cg, node->as.expect_eq.left, node->as.expect_eq.right, NO_TYPE);
+            LLVMValueRef left = gen_scalar_as(cg, node->as.expect_eq.left, common);
+            LLVMValueRef right = gen_scalar_as(cg, node->as.expect_eq.right, common);
+            if (LLVMTypeOf(right) != LLVMTypeOf(left)) right = coerce_int(cg, right, LLVMTypeOf(left));
             LLVMValueRef eq = llvm_is_float(LLVMTypeOf(left))
                 ? LLVMBuildFCmp(cg->builder, LLVMRealOEQ, left, right, "feq")
                 : LLVMBuildICmp(cg->builder, LLVMIntEQ, left, right, "eq");
@@ -6718,7 +6878,7 @@ static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
             LLVMValueRef right = gen_expr(cg, node->as.expect_neq.right);
             right = coerce_int(cg, right, LLVMTypeOf(left));
             LLVMValueRef neq = llvm_is_float(LLVMTypeOf(left))
-                ? LLVMBuildFCmp(cg->builder, LLVMRealONE, left, right, "fne")
+                ? LLVMBuildFCmp(cg->builder, LLVMRealUNE, left, right, "fne")
                 : LLVMBuildICmp(cg->builder, LLVMIntNE, left, right, "ne");
             LLVMBasicBlockRef pass_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expneq.pass");
             LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(cg->ctx, cg->current_fn, "expneq.fail");

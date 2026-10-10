@@ -1,0 +1,32 @@
+mod cleanup_aggregate_branch_join;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn choose(stack bool first): Tracked {
+    stack Tracked candidate = .{ .id = 1 };
+    defer print.('choose.defer\n');
+    if (first) { ret candidate; }
+    print.('joined\n');
+    stack Tracked other = .{ .id = 2 };
+    ret other;
+}
+
+fn main(void): i32 {
+    stack i32 total = 0;
+    {
+        stack Tracked result = choose(true);
+        print.('result {}\n', result.id);
+        total = total + result.id;
+    }
+    {
+        stack Tracked result = choose(false);
+        print.('result {}\n', result.id);
+        total = total + result.id;
+    }
+    if (total != 3) { ret 1; }
+    print.('aggregate_branch_join: ok\n');
+    ret 0;
+}

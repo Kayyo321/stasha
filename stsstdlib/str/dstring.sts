@@ -9,7 +9,8 @@ type dstring_t: struct {
     int i32 len, cap;
 
     int fn make_space_for(u32 add): void {
-        final i32 needed = this.len + add + 1; // +1 for null terminator
+        if (this.len < 0 || add > (u32)(2147483646 - this.len)) { quit.(1); }
+        final i32 needed = this.len + (i32)add + 1; // +1 for null terminator
 
         if (needed <= this.cap) { ret; }
 
@@ -17,7 +18,10 @@ type dstring_t: struct {
 
         new_cap = (new_cap <= 0) ? 8 : new_cap;
 
-        while (new_cap < needed) { new_cap <<= 1; }
+        while (new_cap < needed) {
+            if (new_cap > 1073741823) { new_cap = needed; }
+            else { new_cap <<= 1; }
+        }
 
         this.chars = mov.(this.chars, new_cap);
         this.cap = new_cap;
@@ -33,12 +37,12 @@ type dstring_t: struct {
     ext fn append_cstr(stack i8 *r txt): void {
         final i32 txt_len = byte_cnt_till_term(txt);
 
-        this.make_space_for(txt_len);
+        this.make_space_for((u32)txt_len);
 
         cpy_str_from(
             this.chars + this.len,
             txt,
-            txt_len
+            (u32)txt_len
         );
 
         this.len += txt_len;
@@ -121,11 +125,11 @@ type dstring_t: struct {
     }
 
     ext fn insert_ch(i8 ch, u32 pos): void {
-        if (pos > this.len) { pos = this.len; }
+        if (pos > (u32)this.len) { pos = (u32)this.len; }
 
         this.make_space_for(1);
 
-        for (i32 i = this.len; i >= pos; --i) {
+        for (i32 i = this.len; i >= (i32)pos; --i) {
             this.chars[i + 1] =
                 this.chars[i];
         }
@@ -141,7 +145,7 @@ type dstring_t: struct {
     }
 
     ext fn length(void): u32 {
-        return this.len;
+        return (u32)this.len;
     }
 
     ext fn characters(void): heap i8 *r {
@@ -199,9 +203,9 @@ ext fn dstring_t.new(void): dstring_t {
 ext fn dstring_t.from_str(stack i8 *r txt): dstring_t {
     final i32 len = byte_cnt_till_term(txt);
 
-    heap i8 *rw buf = new.(sizeof.(i8) * (len + 1));
+    heap i8 *rw buf = new.(sizeof.(i8) * (u64)(len + 1));
 
-    cpy_str_from(buf, txt, len);
+    cpy_str_from(buf, txt, (u32)len);
     buf[len] = 0;
 
     ret dstring_t{
@@ -215,7 +219,7 @@ ext fn dstring_t.from_str(stack i8 *r txt): dstring_t {
 int fn byte_cnt_till_term(stack i8 *r bs): i32 {
     i32 i = 0;
 
-    for (; bs && *bs != 0; ++bs) { ++i; }
+    for (; bs && *bs != 0; ++bs) { if (i == 2147483646) { quit.(1); } ++i; }
 
     ret i;
 }

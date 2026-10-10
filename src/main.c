@@ -15,21 +15,26 @@
 extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #endif
 
+#include "common/output_transaction.h"
 #include "common/common.h"
+#include "common/abi.h"
 #include "parser/parser.h"
 #include "preprocessor/preprocessor.h"
 #include "analysis/coroutines.h"
+#include "analysis/kernel.h"
 #include "codegen/codegen.h"
 #include "linker/linker.h"
 #include "tooling/editor.h"
 #include "cinterop/cheader.h"
 #include "cinterop/cheader.c"
 
-#define STASHA_VERSION "0.1.9_006"
+#define STASHA_VERSION "0.2.0-dev"
 
 /* ── binary directory (for stdlib resolution) ── */
 
 static char bin_dir[512] = {0};
+static sts_target_spec driver_target;
+static boolean_t driver_target_ready = False;
 
 /* cheader companion .c files discovered during process_cheader_decls */
 static char cheader_c_srcs[64][2048];
@@ -338,6 +343,26 @@ static void mod_name_to_rel_path(const char *mod_name, char *out, usize_t out_si
         if (*c == '.') *c = '/';
 }
 
+/* A source-backed Stasha archive carries an explicit target/ABI contract.
+ * Explicit C libraries without Stasha imports remain the caller's FFI boundary. */
+static boolean_t check_stasha_archive_abi(node_t *decl, const char *path) {
+    char metadata[1536];
+    int n = snprintf(metadata, sizeof(metadata), "%s.stasha-abi", path);
+    if (n < 0 || (size_t)n >= sizeof(metadata)) return False;
+    FILE *f = fopen(metadata, "r");
+    char magic[32] = {0}, target[256] = {0};
+    unsigned version = 0;
+    int fields = f ? fscanf(f, "%31s %u\nTARGET %255s", magic, &version, target) : 0;
+    if (f) fclose(f);
+    if (fields == 3 && !strcmp(magic, STASHA_ABI_MAGIC) && version == STASHA_ABI_VERSION &&
+        !strcmp(target, driver_target.triple)) return True;
+    diag_begin_error("Stasha archive '%s' has missing or incompatible ABI metadata", path);
+    diag_span(DIAG_NODE(decl), True, "rebuild this source-backed library with the current compiler and target");
+    diag_note("required ABI %u for target %s", STASHA_ABI_VERSION, driver_target.triple);
+    diag_finish();
+    return False;
+}
+
 /*
  * resolve_imports — walk every NodeImpDecl in `ast`, find the corresponding
  * "<dir>/<mod/path>.sts" file, parse it, and splice all of its declarations
@@ -354,6 +379,7 @@ static void mod_name_to_rel_path(const char *mod_name, char *out, usize_t out_si
  * generation and lets the linker resolve symbols from the archive instead.
  */
 static void resolve_imports(node_t *ast, const char *input_path) {
+    stdlib_arc_path_cnt = 0;
     /* derive the directory of the primary file */
     char dir[512];
     strncpy(dir, input_path, sizeof(dir) - 1);
@@ -384,6 +410,21 @@ static void resolve_imports(node_t *ast, const char *input_path) {
         snprintf(mod_path, sizeof(mod_path), "%s/%s.sts", dir, mod_rel);
 
         boolean_t lib_backed = is_lib_backed(ast, mod_name);
+        if (lib_backed) {
+            const char *archive = find_lib_archive_path(ast, mod_name);
+            char resolved_archive[1024];
+            if (!archive) {
+                diag_begin_error("source-backed library '%s' has no archive path", mod_name);
+                diag_span(DIAG_NODE(decl), True, "provide an archive and rebuild it");
+                diag_finish();
+                continue;
+            }
+            if (archive[0] == '/' || (archive[0] && archive[1] == ':'))
+                snprintf(resolved_archive, sizeof(resolved_archive), "%s", archive);
+            else snprintf(resolved_archive, sizeof(resolved_archive), "%s/%s", dir, archive);
+            if (!check_stasha_archive_abi(decl, resolved_archive)) continue;
+        }
+
 
         log_msg("importing '%s'%s", mod_path,
                 lib_backed ? " (library-backed)" : "");
@@ -562,15 +603,14 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
     }
 
     if (ct->kind == CTypeTypedefRef && ct->name) {
-        if (strcmp(ct->name, "size_t") == 0
-                || strcmp(ct->name, "uint64_t") == 0
-                || strcmp(ct->name, "uintptr_t") == 0) {
-            out->base = TypeU64; return True;
+        if (strcmp(ct->name, "uint64_t") == 0) { out->base = TypeU64; return True; }
+        if (strcmp(ct->name, "int64_t") == 0) { out->base = TypeI64; return True; }
+        if (strcmp(ct->name, "size_t") == 0 || strcmp(ct->name, "uintptr_t") == 0) {
+            out->base = driver_target.pointer_bits == 32 ? TypeU32 : TypeU64; return True;
         }
         if (strcmp(ct->name, "ssize_t") == 0
-                || strcmp(ct->name, "ptrdiff_t") == 0
-                || strcmp(ct->name, "int64_t") == 0) {
-            out->base = TypeI64; return True;
+                || strcmp(ct->name, "ptrdiff_t") == 0 || strcmp(ct->name, "intptr_t") == 0) {
+            out->base = driver_target.pointer_bits == 32 ? TypeI32 : TypeI64; return True;
         }
         if (strcmp(ct->name, "int32_t") == 0) { out->base = TypeI32; return True; }
         if (strcmp(ct->name, "uint32_t") == 0) { out->base = TypeU32; return True; }
@@ -595,9 +635,9 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
         case CTypeUShort:    out->base = TypeU16; return True;
         case CTypeInt:       out->base = TypeI32; return True;
         case CTypeUInt:      out->base = TypeU32; return True;
-        case CTypeLong:
+        case CTypeLong: out->base = driver_target.c_long_bits == 32 ? TypeI32 : TypeI64; return True;
         case CTypeLongLong:  out->base = TypeI64; return True;
-        case CTypeULong:
+        case CTypeULong: out->base = driver_target.c_long_bits == 32 ? TypeU32 : TypeU64; return True;
         case CTypeULongLong: out->base = TypeU64; return True;
         case CTypeFloat:     out->base = TypeF32; return True;
         case CTypeDouble:    out->base = TypeF64; return True;
@@ -635,16 +675,53 @@ static boolean_t map_c_type(node_t *src_node, cheader_result_t *r,
     return False;
 }
 
-static node_t *make_cheader_int_lit(node_t *src_node, long value) {
+static node_t *make_cheader_integer(node_t *src_node, uint64_t magnitude, boolean_t negative) {
     node_t *n = make_node(NodeIntLitExpr, src_node->line);
     n->col = src_node->col;
     n->source_file = src_node->source_file;
-    n->as.int_lit.value = value;
+    n->as.int_lit.value = magnitude;
+    if (negative) {
+        node_t *neg = make_node(NodeUnaryPrefixExpr, src_node->line);
+        neg->col = src_node->col;
+        neg->source_file = src_node->source_file;
+        neg->as.unary.op = TokMinus;
+        neg->as.unary.operand = n;
+        return neg;
+    }
     return n;
+}
+
+static node_t *make_cheader_int_lit(node_t *src_node, long value) {
+    /* Negating in the unsigned domain also handles LONG_MIN safely. */
+    uint64_t magnitude = value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+    return make_cheader_integer(src_node, magnitude, value < 0);
 }
 
 static void process_cheader_decls(node_t *ast, const char *input_path) {
     cheader_c_src_count = 0;
+    if (!driver_target_ready) {
+        if (codegen_resolve_target(Null, &driver_target) != Ok) return;
+        driver_target_ready = True;
+    }
+
+    boolean_t has_c_header = False;
+    for (usize_t i = 0; i < ast->as.module.decls.count; ++i)
+        if (ast->as.module.decls.items[i]->kind == NodeCHeader) has_c_header = True;
+    if (!has_c_header) return;
+    sts_target_spec native_target;
+    if (codegen_resolve_target(Null, &native_target) != Ok) return;
+    boolean_t foreign_c_environment =
+        strcmp(driver_target.arch, native_target.arch) != 0 ||
+        strcmp(driver_target.os, native_target.os) != 0 ||
+        driver_target.pointer_bits != native_target.pointer_bits ||
+        driver_target.c_long_bits != native_target.c_long_bits;
+    /* Normalized triples contain architecture-vendor-OS-environment.
+     * Vendor spelling does not change a C ABI, but the complete OS/ABI
+     * suffix must match: GNU and musl (or versioned OS ABIs) cannot share
+     * compiler-host headers merely because their pointer sizes match. */
+    const char *requested_os_abi = strchr(strchr(driver_target.triple, '-') + 1, '-') + 1;
+    const char *native_os_abi = strchr(strchr(native_target.triple, '-') + 1, '-') + 1;
+    if (strcmp(requested_os_abi, native_os_abi) != 0) foreign_c_environment = True;
 
     node_list_t generated;
     node_list_init(&generated);
@@ -652,6 +729,12 @@ static void process_cheader_decls(node_t *ast, const char *input_path) {
     for (usize_t i = 0; i < ast->as.module.decls.count; i++) {
         node_t *decl = ast->as.module.decls.items[i];
         if (decl->kind != NodeCHeader) continue;
+        if (foreign_c_environment) {
+            diag_begin_error("C header imports for target '%s' require a target sysroot; cross-target header import is not yet supported", driver_target.triple);
+            diag_span(DIAG_NODE(decl), True, "cannot use compiler-host headers for this target");
+            diag_finish();
+            continue;
+        }
 
         cheader_result_t result;
         char resolved[2048];
@@ -767,6 +850,15 @@ next_struct:
         for (usize_t j = 0; j < result.enum_count; j++) {
             c_enum_t *en = &result.enums[j];
             if (!en->name || !en->name[0]) continue;
+            if (en->unsupported_values) {
+                if (en->from_user_header) {
+                    diag_begin_error("C enum '%s' contains unsupported constant values", en->name);
+                    diag_span(DIAG_NODE(decl), True,
+                              "C enum values must be literal constants representable as i32");
+                    diag_finish();
+                }
+                continue;
+            }
             node_t *tn = make_node(NodeTypeDecl, decl->line);
             tn->col = decl->col;
             tn->source_file = decl->source_file;
@@ -859,15 +951,25 @@ skip_fn_decl:
 
         for (usize_t j = 0; j < result.const_count; j++) {
             c_const_t *cn = &result.consts[j];
+            if (cn->invalid) {
+                if (cn->from_user_header) {
+                    diag_begin_error("C macro '%s' contains an out-of-range integer literal", cn->name);
+                    diag_span(DIAG_NODE(decl), True, "integer macro values must fit a supported C integer type");
+                    diag_finish();
+                }
+                continue;
+            }
             node_t *vd = make_node(NodeVarDecl, decl->line);
             vd->col = decl->col;
             vd->source_file = decl->source_file;
             vd->is_c_extern = True;
             vd->as.var_decl.name = ast_strdup(cn->name, strlen(cn->name));
-            vd->as.var_decl.type.base = TypeI64;
+            c_type_t ct = ch_type_make(cn->type);
+            if (!map_c_type(decl, &result, cn->name, &ct, &vd->as.var_decl.type, Null,
+                            cn->from_user_header)) continue;
             vd->as.var_decl.storage = StorageStack;
             vd->as.var_decl.flags |= VdeclConst;
-            vd->as.var_decl.init = make_cheader_int_lit(decl, cn->value);
+            vd->as.var_decl.init = make_cheader_integer(decl, cn->magnitude, cn->negative);
             node_list_push(&generated, vd);
         }
 
@@ -1241,12 +1343,14 @@ typedef enum {
     EmitLib,   /* stasha lib    — archive into .a        */
     EmitDylib, /* stasha dylib  — link into .so/.dylib   */
     EmitTest,  /* stasha test   — executable in test mode */
+    EmitObj,   /* stasha obj    — relocatable target object */
+    EmitIR,    /* stasha ir     — verified optimized LLVM IR */
 } emit_mode_t;
 
 static void print_editor_help(void);
 
 static void print_version(void) {
-    printf("stasha %s\n", STASHA_VERSION);
+    printf("stasha %s (ABI %u)\n", STASHA_VERSION, STASHA_ABI_VERSION);
 }
 
 static void print_help(void) {
@@ -1258,6 +1362,8 @@ static void print_help(void) {
         "  stasha lib     <file.sts> [-o <output>]   Compile to static library\n"
         "  stasha dylib   <file.sts> [-o <output>]   Compile to dynamic library\n"
         "  stasha test    <file.sts> [-o <output>]   Compile and run tests\n"
+        "  stasha obj     <file.sts> [-o <output>]   Emit a relocatable object only\n"
+        "  stasha ir      <file.sts> [-o <output>]   Emit verified LLVM IR only\n"
         "  stasha check   <file.sts>                 Parse and type-check; emit JSON diagnostics\n"
         "  stasha tokens  <file.sts>                 Lex source; emit JSON token stream\n"
         "  stasha symbols <file.sts>                 Parse source; emit JSON symbols\n"
@@ -1273,6 +1379,7 @@ static void print_help(void) {
         "                       Default: 2 (LLVM default)\n"
         "  -g                 Emit DWARF debug info (enables source-level debugging)\n"
         "  --target <triple>  Cross-compile for the given target triple\n"
+        "  --kernel           Enforce experimental x86-64 ELF K0 profile\n"
         "  --stdin            Read source from stdin instead of the filesystem\n"
         "  --path <path>      Virtual path to use with --stdin\n"
         "  --line <n>         Zero-based line for editor commands\n"
@@ -1420,7 +1527,7 @@ static result_t run_editor_check(const char *source, const char *input_path) {
         snprintf(obj_path, sizeof(obj_path), "%s/stasha-check-%d.o", tmp, (int)getpid());
     }
 #endif
-    if (codegen(ast, obj_path, False, Null, input_path, False, 0) == Ok)
+    if (codegen(ast, obj_path, False, driver_target.triple, input_path, False, 0, False) == Ok)
         remove(obj_path);
 
     editor_print_diagnostics_json();
@@ -1573,6 +1680,7 @@ typedef struct {
     emit_mode_t      mode;
     boolean_t        debug_mode;
     int              opt_level;      /* LLVM optimisation level 0-3 */
+    boolean_t        kernel_profile;
     const char      *target_triple;  /* NULL = host target */
     const char     **extra_lib_paths;
     usize_t          extra_lib_count;
@@ -1588,7 +1696,13 @@ typedef struct {
  * Leaves no temporary .o files behind on success or failure.
  * Returns Ok on success, Err on any failure.
  */
-static result_t compile_file(const cfile_params_t *p) {
+static result_t compile_file_staged(const cfile_params_t *p) {
+    usize_t errors_before = get_error_count();
+    const char *effective_target = p->target_triple;
+    if (p->kernel_profile && (!effective_target || !effective_target[0]))
+        effective_target = "x86_64-unknown-none-elf";
+    if (codegen_resolve_target(effective_target, &driver_target) != Ok) return Err;
+    driver_target_ready = True;
     /* ── read source (from file or caller-supplied buffer) ── */
     char *source;
     if (p->source_override) {
@@ -1610,10 +1724,17 @@ static result_t compile_file(const cfile_params_t *p) {
     pp_stream_free(pp);
     free_pp_imp_streams();
 
-    if (!ast) {
+    if (!ast || get_error_count() > errors_before) {
         log_err("parsing failed");
         compile_cleanup();
         return Err;
+    }
+
+    if (p->kernel_profile) {
+        ast->as.module.kernel_profile = True;
+        ast->as.module.freestanding = True;
+        ast->as.module.crash_protection_disabled = True;
+        ast->as.module.crash_tracking_disabled = True;
     }
 
     /* When building a library, propagate the module's own name to root
@@ -1639,25 +1760,49 @@ static result_t compile_file(const cfile_params_t *p) {
 
     resolve_imports(ast, p->input_path);
     process_cheader_decls(ast, p->input_path);
-    if (analyze_coroutines(ast) != Ok) {
+    if (get_error_count() > errors_before || analyze_coroutines(ast) != Ok) {
         free_imp_sources();
         compile_cleanup();
         return Err;
     }
     free_imp_sources();
+    if (p->kernel_profile) {
+        if (p->mode != EmitObj && p->mode != EmitIR && p->mode != EmitLib) {
+            log_err("experimental kernel profile supports obj, ir, and lib only; link objects with an audited kernel linker script");
+            compile_cleanup();
+            return Err;
+        }
+        if (analyze_kernel_profile(ast, &driver_target) != Ok) {
+            compile_cleanup();
+            return Err;
+        }
+    }
 
     /* ── codegen ── */
     char obj_path[512];
-    snprintf(obj_path, sizeof(obj_path), "%s.o", p->output_path);
+    boolean_t emit_only = p->mode == EmitObj || p->mode == EmitIR;
+    snprintf(obj_path, sizeof(obj_path), "%s%s", p->output_path, emit_only ? "" : ".o");
 
     boolean_t test_mode = (p->mode == EmitTest) ? True : False;
     log_msg("generating code%s%s", test_mode ? " (test mode)" : "",
             p->debug_mode ? " (debug)" : "");
-    if (codegen(ast, obj_path, test_mode, p->target_triple, p->input_path,
-                p->debug_mode, p->opt_level) != Ok) {
+    if (codegen(ast, obj_path, test_mode, driver_target.triple, p->input_path,
+                p->debug_mode, p->opt_level, p->mode == EmitIR) != Ok) {
         log_err("code generation failed");
+        remove(obj_path);
         compile_cleanup();
         return Err;
+    }
+
+    if (p->kernel_profile && p->mode != EmitIR && audit_kernel_object(obj_path) != Ok) {
+        remove(obj_path);
+        compile_cleanup();
+        return Err;
+    }
+
+    if (emit_only) {
+        compile_cleanup();
+        return Ok;
     }
 
     /* ── derive directory of input for relative lib resolution ── */
@@ -1758,6 +1903,14 @@ static result_t compile_file(const cfile_params_t *p) {
         }
     }
 
+    if (p->mode != EmitLib && cheader_obj_count != cheader_c_src_count) {
+        log_err("C companion compilation failed");
+        remove(obj_path);
+        for (usize_t i = 0; i < cheader_obj_count; i++) remove(cheader_obj_paths[i]);
+        compile_cleanup();
+        return Err;
+    }
+
     /* ── build final library list: cheader objs + AST libs + caller-supplied extras ── */
     const char *all_libs[512];
     usize_t     all_lib_count = 0;
@@ -1788,20 +1941,6 @@ static result_t compile_file(const cfile_params_t *p) {
         link_result = link_dynamic(obj_path, p->output_path,
                                    all_lib_count > 0 ? all_libs : Null);
         if (link_result != Ok) log_err("dynamic linking failed");
-#if defined(__APPLE__)
-        if (link_result == Ok && p->debug_mode) {
-            char dsym_path[600];
-            snprintf(dsym_path, sizeof(dsym_path), "%s.dSYM", p->output_path);
-            log_msg("extracting debug info -> '%s'", dsym_path);
-            pid_t pid = fork();
-            if (pid == 0) {
-                execlp("dsymutil", "dsymutil", p->output_path, "-o", dsym_path, (char *)Null);
-                _exit(1);
-            } else if (pid > 0) {
-                int status; waitpid(pid, &status, 0);
-            }
-        }
-#endif
 
     } else {
         boolean_t freestanding = ast->as.module.freestanding;
@@ -1832,23 +1971,31 @@ static result_t compile_file(const cfile_params_t *p) {
                                                    all_lib_count > 0 ? all_libs : Null);
         else
             link_result = link_object(obj_path, p->output_path,
-                                      all_lib_count > 0 ? all_libs : Null);
+                                      all_lib_count > 0 ? all_libs : Null, driver_target.triple);
         if (link_result != Ok) log_err("linking failed");
-#if defined(__APPLE__)
-        if (link_result == Ok && p->debug_mode) {
-            char dsym_path[600];
-            snprintf(dsym_path, sizeof(dsym_path), "%s.dSYM", p->output_path);
-            log_msg("extracting debug info -> '%s'", dsym_path);
-            pid_t pid = fork();
-            if (pid == 0) {
-                execlp("dsymutil", "dsymutil", p->output_path, "-o", dsym_path, (char *)Null);
-                _exit(1);
-            } else if (pid > 0) {
-                int status; waitpid(pid, &status, 0);
-            }
-        }
-#endif
     }
+
+#if defined(__APPLE__)
+    /* dsymutil needs the original object while consuming the linker debug map. */
+    if (link_result == Ok && p->debug_mode && p->mode != EmitLib) {
+        char dsym_path[600];
+        snprintf(dsym_path, sizeof(dsym_path), "%s.dSYM", p->output_path);
+        pid_t pid = fork();
+        if (pid == 0) {
+            execlp("dsymutil", "dsymutil", p->output_path, "-o", dsym_path, (char *)NULL);
+            _exit(1);
+        } else if (pid > 0) {
+            int status;
+            if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                log_err("debug symbol extraction failed for '%s'", p->output_path);
+                link_result = Err;
+            }
+        } else {
+            log_err("could not start debug symbol extraction");
+            link_result = Err;
+        }
+    }
+#endif
 
     remove(obj_path);
     for (usize_t i = 0; i < cheader_obj_count; i++)
@@ -1857,8 +2004,86 @@ static result_t compile_file(const cfile_params_t *p) {
 
     if (link_result != Ok) return Err;
 
-    log_msg("compiled '%s' -> '%s'", p->input_path, p->output_path);
     return Ok;
+}
+
+/* On Linux publish only completed artifacts. A failed build invalidates the previous
+ * destination; callers must not mistake yesterday's executable for this build. */
+static result_t compile_file(const cfile_params_t *p) {
+#if defined(__linux__)
+    sts_output_transaction tx;
+    if (sts_output_begin(&tx, p->input_path, p->output_path) != 0) {
+        log_err("cannot prepare output '%s': %s", p->output_path, strerror(errno));
+        return Err;
+    }
+    cfile_params_t staged = *p;
+    staged.output_path = tx.staged;
+    result_t result = compile_file_staged(&staged);
+    int publication = sts_output_finish(&tx, result == Ok);
+    if (publication < 0) {
+        log_err("cannot publish output '%s': %s", p->output_path, strerror(errno));
+        result = Err;
+    } else if (publication > 0) {
+        log_warn("could not remove temporary directory '%s'", tx.directory);
+    }
+#else
+    /* Native debug/link sidecars (Mach-O dSYM and COFF PDB/import libraries)
+     * are not yet a qualified atomic bundle. Keep native output names while
+     * invalidating stale primary results and deleting failed partial outputs.
+     * Full native transactional publication remains a release gate. */
+    struct stat output_stat;
+    if (sts_output_same_file(p->input_path, p->output_path) ||
+        (stat(p->output_path, &output_stat) == 0 &&
+         (output_stat.st_mode & S_IFMT) != S_IFREG)) {
+        log_err("output must be a regular file distinct from the input");
+        return Err;
+    }
+    if (remove(p->output_path) != 0 && errno != ENOENT) {
+        log_err("cannot invalidate output '%s': %s", p->output_path, strerror(errno));
+        return Err;
+    }
+#ifdef _WIN32
+    char pdb_path[600];
+    snprintf(pdb_path, sizeof(pdb_path), "%s.pdb", p->output_path);
+    if (remove(pdb_path) != 0 && errno != ENOENT) {
+        log_err("cannot invalidate debug output '%s': %s", pdb_path, strerror(errno));
+        return Err;
+    }
+#endif
+    result_t result = compile_file_staged(p);
+    if (result != Ok) {
+        remove(p->output_path);
+#ifdef _WIN32
+        remove(pdb_path);
+#endif
+    }
+#endif
+    if (p->mode == EmitLib) {
+        char metadata[640];
+        snprintf(metadata, sizeof(metadata), "%s.stasha-abi", p->output_path);
+        if (result == Ok) {
+            sts_output_transaction metadata_tx;
+            boolean_t written = False;
+            if (sts_output_begin(&metadata_tx, p->input_path, metadata) == 0) {
+                FILE *f = fopen(metadata_tx.staged, "w");
+                if (f) {
+                    int bytes = fprintf(f, "%s %u\nTARGET %s\n", STASHA_ABI_MAGIC,
+                                        STASHA_ABI_VERSION, driver_target.triple);
+                    int closed = fclose(f);
+                    written = bytes > 0 && closed == 0;
+                }
+                if (sts_output_finish(&metadata_tx, written) < 0) written = False;
+            }
+            if (!written) {
+                log_err("cannot publish archive ABI metadata '%s'", metadata);
+                remove(p->output_path);
+                result = Err;
+            }
+        }
+        if (result != Ok) remove(metadata);
+    }
+    if (result == Ok) log_msg("compiled '%s' -> '%s'", p->input_path, p->output_path);
+    return result;
 }
 
 /* ── project-mode test runner ── */
@@ -2055,6 +2280,10 @@ int main(int argc, char **argv) {
         }
     } else if (strcmp(argv[1], "lib") == 0) {
         mode = EmitLib;   file_arg = 2;
+    } else if (strcmp(argv[1], "obj") == 0) {
+        mode = EmitObj; file_arg = 2;
+    } else if (strcmp(argv[1], "ir") == 0) {
+        mode = EmitIR; file_arg = 2;
     } else if (strcmp(argv[1], "dylib") == 0) {
         mode = EmitDylib; file_arg = 2;
     } else if (strcmp(argv[1], "test") == 0) {
@@ -2098,6 +2327,7 @@ int main(int argc, char **argv) {
     /* ── parse CLI flags ── */
     const char *target_triple     = Null;
     boolean_t   debug_mode        = False;
+    boolean_t   kernel_profile     = False;
     int         optimization_level = 2;   /* LLVM default */
     char        lib_name_buf[300];
     const char *output_path       = Null;
@@ -2131,6 +2361,8 @@ int main(int argc, char **argv) {
             else { log_err("invalid optimization level '%s' (expected -o=0..3)", level); quit(Err); }
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_path = argv[++i];
+        } else if (strcmp(argv[i], "--kernel") == 0) {
+            kernel_profile = True;
         } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
             target_triple = argv[++i];
         } else if (strcmp(argv[i], "-g") == 0) {
@@ -2146,6 +2378,14 @@ int main(int argc, char **argv) {
             cfg.enabled = WarnAll;
             diag_set_config(cfg);
         }
+    }
+
+    if (kernel_profile && editor_mode != EditorModeNone) {
+        diag_clear_captured();
+        diag_begin_error("--kernel currently requires obj, ir, or lib; editor/check modes do not qualify kernel code");
+        diag_finish();
+        editor_print_diagnostics_json();
+        quit(Err);
     }
 
     /* ── project file: load sts.sproj when no explicit file is given ── */
@@ -2315,6 +2555,8 @@ int main(int argc, char **argv) {
             output_path = proj_output_buf;
         } else {
             switch (mode) {
+                case EmitObj: output_path = "a.o"; break;
+                case EmitIR: output_path = "a.ll"; break;
                 case EmitLib:
                     derive_lib_name(input_path, lib_name_buf, sizeof(lib_name_buf));
                     output_path = lib_name_buf;
@@ -2346,10 +2588,16 @@ int main(int argc, char **argv) {
         optimization_level = 0;
     }
 
+    if (editor_mode != EditorModeNone) {
+        if (codegen_resolve_target(target_triple, &driver_target) != Ok) quit(Err);
+        driver_target_ready = True;
+    }
+
     /* ── editor modes — read source then dispatch, no code generation ── */
-    char *source = use_stdin ? editor_read_stdin() : read_file(input_path);
+    char *source = use_stdin ? editor_read_stdin() :
+                   editor_mode != EditorModeNone ? read_file(input_path) : Null;
     char *stdin_buffer = use_stdin ? source : Null;
-    if (!source) {
+    if (!source && (use_stdin || editor_mode != EditorModeNone)) {
         if (editor_mode != EditorModeNone) {
             diag_clear_captured();
             diag_begin_error("could not open file '%s'", input_path);
@@ -2445,6 +2693,7 @@ int main(int argc, char **argv) {
         .mode            = mode,
         .debug_mode      = debug_mode,
         .opt_level       = optimization_level,
+        .kernel_profile  = kernel_profile,
         .target_triple   = target_triple,
         .extra_lib_paths = extra_lib_paths,
         .extra_lib_count = extra_lib_count,

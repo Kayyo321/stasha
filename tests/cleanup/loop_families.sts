@@ -1,0 +1,47 @@
+mod cleanup_loop_families;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn main(void): i32 {
+    stack i32 visits = 0;
+    {
+        stack Tracked _outer = .{ .id = 90 };
+        stack i32 numbers[3] = .{1, 2, 3};
+        stack []i32 view = numbers[:];
+        foreach value in view {
+            stack Tracked _body = .{ .id = 10 + value };
+            defer print.('foreach.defer {}\n', value);
+            visits = visits + 1;
+            if (value == 1) { continue; }
+            if (value == 3) { break; }
+            print.('foreach.body {}\n', value);
+        }
+        print.('after.foreach\n');
+        stack i32 count = 0;
+        do {
+            stack Tracked _body = .{ .id = 20 + count };
+            defer print.('do.defer {}\n', count);
+            count = count + 1;
+            if (count == 1) { continue; }
+            break;
+        } while (count < 3);
+        print.('after.do {}\n', count);
+        visits = visits + count;
+        count = 0;
+        inf {
+            stack Tracked _body = .{ .id = 30 + count };
+            defer print.('inf.defer {}\n', count);
+            count = count + 1;
+            if (count == 1) { continue; }
+            break;
+        }
+        print.('after.inf {}\n', count);
+        visits = visits + count;
+    }
+    if (visits != 7) { ret 1; }
+    print.('loop_families: ok\n');
+    ret 0;
+}

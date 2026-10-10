@@ -1,0 +1,40 @@
+mod cleanup_nested_switch;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn main(void): i32 {
+    stack i32 visits = 0;
+    for (stack Tracked cursor = .{ .id = 0 }; cursor.id < 2; cursor.id = cursor.id + 1) {
+        stack Tracked _body = .{ .id = 10 + cursor.id };
+        defer print.('loop.defer {}\n', cursor.id);
+        visits = visits + 1;
+        switch (cursor.id) {
+            case 0: {
+                stack Tracked _branch = .{ .id = 20 };
+                defer print.('case.zero.defer\n');
+                switch (cursor.id) {
+                    case 0: {
+                        stack Tracked _nested = .{ .id = 30 };
+                        defer print.('nested.case.defer\n');
+                        break;
+                    }
+                    default: { print.('unexpected.nested.default\n'); }
+                }
+                print.('after.nested.switch\n');
+                break;
+            }
+            default: {
+                stack Tracked _branch = .{ .id = 21 };
+                defer print.('case.default.defer\n');
+                continue;
+            }
+        }
+        print.('after.switch {}\n', cursor.id);
+    }
+    if (visits != 2) { ret 1; }
+    print.('nested_switch: ok\n');
+    ret 0;
+}

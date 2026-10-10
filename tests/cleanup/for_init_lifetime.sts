@@ -1,0 +1,46 @@
+mod cleanup_for_init_lifetime;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn return_from_loop(void): i32 {
+    for (stack Tracked cursor = .{ .id = 60 }; cursor.id < 61; cursor.id = cursor.id + 1) {
+        stack Tracked _body = .{ .id = 61 };
+        defer print.('return.body.defer\n');
+        ret 6;
+    }
+    ret 0;
+}
+
+fn main(void): i32 {
+    stack i32 visits = 0;
+    {
+        stack Tracked _outer = .{ .id = 90 };
+        for (stack Tracked cursor = .{ .id = 0 }; cursor.id < 2; cursor.id = cursor.id + 1) {
+            stack Tracked _body = .{ .id = 10 + cursor.id };
+            defer print.('normal.body.defer {}\n', cursor.id);
+            visits = visits + 1;
+            if (cursor.id == 0) { continue; }
+            print.('normal.body {}\n', cursor.id);
+        }
+        print.('after.normal\n');
+        for (stack Tracked cursor = .{ .id = 40 }; cursor.id < 40; cursor.id = cursor.id + 1) {
+            print.('unexpected.zero.body\n');
+        }
+        print.('after.zero\n');
+        for (stack Tracked cursor = .{ .id = 50 }; cursor.id < 51; cursor.id = cursor.id + 1) {
+            stack Tracked _body = .{ .id = 51 };
+            defer print.('break.body.defer\n');
+            break;
+        }
+        print.('after.break\n');
+        stack i32 result = return_from_loop();
+        print.('return.result {}\n', result);
+        if (result != 6) { ret 1; }
+    }
+    if (visits != 2) { ret 1; }
+    print.('for_init_lifetime: ok\n');
+    ret 0;
+}

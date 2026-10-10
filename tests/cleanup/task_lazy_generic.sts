@@ -1,0 +1,24 @@
+mod cleanup_task_lazy_generic;
+
+fn @comptime[T] identity(stack T value): T {
+    defer { value = 99; print.('generic.defer {}\n', value); }
+    print.('generic.body {}\n', value);
+    ret value;
+}
+
+async fn task(void): i32 {
+    stack i32 outer = 4;
+    defer { outer = 90; print.('task.defer {}\n', outer); }
+    // This is the first and only instantiation: lower it inside task context.
+    stack i32 result = identity.[i32](7);
+    print.('task.body {}\n', result);
+    ret outer + result;
+}
+
+fn main(void): i32 {
+    stack i32 result = await.(task());
+    print.('result {}\n', result);
+    if (result != 11) { ret 1; }
+    print.('task_lazy_generic: ok\n');
+    ret 0;
+}

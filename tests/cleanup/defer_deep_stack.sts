@@ -1,0 +1,114 @@
+mod cleanup_defer_deep_stack;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn main(void): i32 {
+    stack i32 reached = 0;
+    {
+        stack Tracked _item1 = .{ .id = 1 };
+        stack Tracked _item2 = .{ .id = 2 };
+        stack Tracked _item3 = .{ .id = 3 };
+        stack Tracked _item4 = .{ .id = 4 };
+        stack Tracked _item5 = .{ .id = 5 };
+        stack Tracked _item6 = .{ .id = 6 };
+        stack Tracked _item7 = .{ .id = 7 };
+        defer print.('outer.defer 0\n');
+        defer print.('outer.defer 1\n');
+        defer print.('outer.defer 2\n');
+        defer print.('outer.defer 3\n');
+        defer print.('outer.defer 4\n');
+        defer {
+            {
+                {
+                    {
+                        {
+                            {
+                                {
+                                    {
+                                        {
+                                            {
+                                                {
+                                                    {
+                                                        {
+                                                            {
+                                                                {
+                                                                    {
+                                                                        {
+                                                                            {
+                                                                                {
+                                                                                    {
+                                                                                        {
+                                                                                            {
+                                                                                                {
+                                                                                                    {
+                                                                                                        {
+                                                                                                            {
+                                                                                                                {
+                                                                                                                    {
+                                                                                                                        {
+                                                                                                                            {
+                                                                                                                                {
+                                                                                                                                    {
+                                                                                                                                        {
+                                                                                                                                            {
+                                                                                                                                                {
+                                                                                                                                                    {
+                                                                                                                                                        {
+                                                                                                                                                            {
+                                                                                                                                                                {
+                                                                                                                                                                    {
+                                                                                                                                                                        {
+                                                                                                                                                                            stack Tracked _deepest = .{ .id = 99 };
+                                                                                                                                                                            defer print.('deep.defer\n');
+                                                                                                                                                                            print.('deep.body\n');
+                                                                                                                                                                            reached = reached + 1;
+                                                                                                                                                                        }
+                                                                                                                                                                    }
+                                                                                                                                                                }
+                                                                                                                                                            }
+                                                                                                                                                        }
+                                                                                                                                                    }
+                                                                                                                                                }
+                                                                                                                                            }
+                                                                                                                                        }
+                                                                                                                                    }
+                                                                                                                                }
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        print.('body\n');
+    }
+    if (reached != 1) { ret 1; }
+    print.('defer_deep_stack: ok\n');
+    ret 0;
+}

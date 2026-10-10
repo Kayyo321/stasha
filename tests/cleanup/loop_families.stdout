@@ -1,0 +1,20 @@
+foreach.defer 1
+drop 11
+foreach.body 2
+foreach.defer 2
+drop 12
+foreach.defer 3
+drop 13
+after.foreach
+do.defer 1
+drop 20
+do.defer 2
+drop 21
+after.do 2
+inf.defer 1
+drop 30
+inf.defer 2
+drop 31
+after.inf 2
+drop 90
+loop_families: ok

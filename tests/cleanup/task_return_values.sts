@@ -1,0 +1,20 @@
+mod cleanup_task_return_values;
+
+fn read_value(stack i32 value): i32 {
+    print.('call {}\n', value);
+    ret value;
+}
+
+async fn task(void): i32 {
+    stack i32 value = 7;
+    defer { value = 99; print.('task.defer {}\n', value); }
+    ret read_value(value);
+}
+
+fn main(void): i32 {
+    stack i32 result = await.(task());
+    print.('result {}\n', result);
+    if (result != 7) { ret 1; }
+    print.('task_return_values: ok\n');
+    ret 0;
+}

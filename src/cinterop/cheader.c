@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include "cheader.h"
 
 typedef struct {
@@ -89,6 +91,29 @@ static void ch_track_heap(heap_t h) {
         ch_active_result->owned_heap_cap = new_cap;
     }
     ch_active_result->owned_heaps[ch_active_result->owned_heap_count++] = h;
+}
+
+/* Parser-owned arrays can be discarded before a declaration reaches the
+ * result (duplicate prototypes, unsupported declarators, anonymous tags).
+ * Track them at allocation, rather than relying on accepted declarations
+ * to own their disposal. Keep the tracked handle current after growth. */
+static heap_t ch_owned_allocate(usize_t count, usize_t size) {
+    heap_t h = allocate(count, size);
+    ch_track_heap(h);
+    return h;
+}
+
+static heap_t ch_owned_reallocate(heap_t h, usize_t size) {
+    h = reallocate(h, size);
+    if (ch_active_result) {
+        for (usize_t i = 0; i < ch_active_result->owned_heap_count; i++) {
+            if (ch_active_result->owned_heaps[i].priv == h.priv) {
+                ch_active_result->owned_heaps[i] = h;
+                break;
+            }
+        }
+    }
+    return h;
 }
 
 static char *ch_strdup(const char *s, usize_t len) {
@@ -243,7 +268,7 @@ static boolean_t ch_resolve_header(ch_ctx_t *ctx, const char *cur_file,
 static long ch_parse_int_literal(const char *text, boolean_t *ok) {
     char buf[128];
     usize_t len = strlen(text);
-    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    if (len >= sizeof(buf)) { *ok = False; return 0; }
     memcpy(buf, text, len);
     buf[len] = '\0';
 
@@ -258,10 +283,105 @@ static long ch_parse_int_literal(const char *text, boolean_t *ok) {
 
     if (*s == '\0') { *ok = False; return 0; }
     char *parse_end = Null;
+    errno = 0;
     long v = strtol(s, &parse_end, 0);
     while (parse_end && (*parse_end == ' ' || *parse_end == '\t')) parse_end++;
-    *ok = (parse_end && *parse_end == '\0');
+    *ok = (errno != ERANGE && parse_end && parse_end != s && *parse_end == '\0');
     return v;
+}
+
+static uint64_t ch_integer_type_limit(c_type_kind_t type) {
+    switch (type) {
+        case CTypeInt: return INT_MAX;
+        case CTypeUInt: return UINT_MAX;
+        case CTypeLong: return LONG_MAX;
+        case CTypeULong: return ULONG_MAX;
+        case CTypeLongLong: return INT64_MAX;
+        case CTypeULongLong: return UINT64_MAX;
+        default: return 0;
+    }
+}
+
+static boolean_t ch_integer_type_unsigned(c_type_kind_t type) {
+    return type == CTypeUInt || type == CTypeULong || type == CTypeULongLong;
+}
+
+/* Import a single C integer literal, with an optional unary sign and outer
+ * parentheses. Preserve C suffix/base type selection, including unsigned
+ * negation at the selected width. Other macro expressions are not evaluated.
+ * A recognizable literal that exceeds its C type is retained as invalid so
+ * a user header receives a diagnostic rather than a saturated host long. */
+static boolean_t ch_parse_macro_integer(const char *text, c_const_t *out) {
+    const char *s = text;
+    const char *end = text + strlen(text);
+    while (s < end && isspace((unsigned char)*s)) s++;
+    while (end > s && isspace((unsigned char)end[-1])) end--;
+    while (s < end && *s == '(' && end[-1] == ')') {
+        s++;
+        end--;
+        while (s < end && isspace((unsigned char)*s)) s++;
+        while (end > s && isspace((unsigned char)end[-1])) end--;
+    }
+    boolean_t negative = False;
+    if (s < end && (*s == '-' || *s == '+')) {
+        negative = *s++ == '-';
+        while (s < end && isspace((unsigned char)*s)) s++;
+    }
+    if (s == end || !isdigit((unsigned char)*s)) return False;
+    boolean_t decimal = *s != '0';
+    errno = 0;
+    char *digits_end;
+    unsigned long long parsed = strtoull(s, &digits_end, 0);
+    boolean_t overflow = errno == ERANGE;
+    if (digits_end == s || digits_end > end) return False;
+    const char *suffix = digits_end;
+    boolean_t is_unsigned = False;
+    int long_count = 0;
+    if (suffix < end && (*suffix == 'u' || *suffix == 'U')) {
+        is_unsigned = True;
+        suffix++;
+    }
+    if (suffix < end && (*suffix == 'l' || *suffix == 'L')) {
+        char first = *suffix++;
+        long_count = 1;
+        if (suffix < end && *suffix == first) { suffix++; long_count++; }
+    }
+    if (!is_unsigned && suffix < end && (*suffix == 'u' || *suffix == 'U')) {
+        is_unsigned = True;
+        suffix++;
+    }
+    while (suffix < end && isspace((unsigned char)*suffix)) suffix++;
+    if (suffix != end) return False;
+
+    c_type_kind_t candidates[6];
+    usize_t count = 0;
+    if (long_count == 0) {
+        if (!is_unsigned) candidates[count++] = CTypeInt;
+        if (is_unsigned || !decimal) candidates[count++] = CTypeUInt;
+    }
+    if (long_count < 2) {
+        if (!is_unsigned) candidates[count++] = CTypeLong;
+        if (is_unsigned || !decimal) candidates[count++] = CTypeULong;
+    }
+    if (!is_unsigned) candidates[count++] = CTypeLongLong;
+    if (is_unsigned || !decimal) candidates[count++] = CTypeULongLong;
+    uint64_t magnitude = (uint64_t)parsed;
+    out->invalid = overflow;
+    out->type = CTypeUnsupported;
+    for (usize_t i = 0; i < count && !overflow; i++) {
+        if (magnitude <= ch_integer_type_limit(candidates[i])) {
+            out->type = candidates[i];
+            break;
+        }
+    }
+    if (out->type == CTypeUnsupported) out->invalid = True;
+    out->magnitude = magnitude;
+    out->negative = negative && magnitude != 0;
+    if (!out->invalid && negative && ch_integer_type_unsigned(out->type)) {
+        out->magnitude = (UINT64_C(0) - magnitude) & ch_integer_type_limit(out->type);
+        out->negative = False;
+    }
+    return True;
 }
 
 static boolean_t ch_result_has_fn(cheader_result_t *r, const char *name) {
@@ -344,6 +464,7 @@ static void ch_push_typedef(cheader_result_t *r, c_typedef_t td) {
 
 static void ch_push_enum(cheader_result_t *r, c_enum_t en) {
     if (!en.name || ch_result_has_enum(r, en.name)) return;
+    en.from_user_header = ch_at_top_file;
     if (r->enum_count == 0) {
         r->enums_heap = allocate(8, sizeof(c_enum_t));
         r->enums = r->enums_heap.pointer;
@@ -357,6 +478,7 @@ static void ch_push_enum(cheader_result_t *r, c_enum_t en) {
 
 static void ch_push_const(cheader_result_t *r, c_const_t cn) {
     if (!cn.name || ch_result_has_const(r, cn.name)) return;
+    cn.from_user_header = ch_at_top_file;
     if (r->const_count == 0) {
         r->consts_heap = allocate(8, sizeof(c_const_t));
         r->consts = r->consts_heap.pointer;
@@ -645,6 +767,7 @@ static c_type_t ch_parse_type_name(ch_ctx_t *ctx, ch_tok_stream_t *ts) {
 
 static void ch_parse_enum_body(ch_tok_stream_t *ts, c_enum_t *out) {
     long next_val = 0;
+    boolean_t next_valid = True;
     if (!ch_match(ts, CHTokLBrace)) return;
     while (ch_peek(ts)->kind != CHTokRBrace && ch_peek(ts)->kind != CHTokEof) {
         if (ch_peek(ts)->kind != CHTokIdent) { ts->pos++; continue; }
@@ -653,28 +776,37 @@ static void ch_parse_enum_body(ch_tok_stream_t *ts, c_enum_t *out) {
         var.name = ch_strdup(ch_peek(ts)->text, strlen(ch_peek(ts)->text));
         ts->pos++;
         var.value = next_val;
+        boolean_t value_valid = next_valid;
         if (ch_match(ts, CHTokAssign)) {
             if (ch_peek(ts)->kind == CHTokNumber) {
                 boolean_t ok = False;
                 var.value = ch_parse_int_literal(ch_peek(ts)->text, &ok);
-                if (ok) next_val = var.value;
+                value_valid = ok;
                 ts->pos++;
             } else {
-                while (ch_peek(ts)->kind != CHTokComma && ch_peek(ts)->kind != CHTokRBrace
-                        && ch_peek(ts)->kind != CHTokEof)
-                    ts->pos++;
+                value_valid = False;
             }
         }
+        if (ch_peek(ts)->kind != CHTokComma && ch_peek(ts)->kind != CHTokRBrace
+                && ch_peek(ts)->kind != CHTokEof) value_valid = False;
+        while (ch_peek(ts)->kind != CHTokComma && ch_peek(ts)->kind != CHTokRBrace
+                && ch_peek(ts)->kind != CHTokEof) ts->pos++;
+        /* Imported enums currently use the Stasha i32 enum ABI. Reject
+         * wider values and unevaluated expressions instead of truncating
+         * them or accidentally interpreting expression names as variants. */
+        if (!value_valid || var.value < INT32_MIN || var.value > INT32_MAX)
+            out->unsupported_values = True;
         if (out->variant_count == 0) {
-            out->variants_heap = allocate(8, sizeof(c_enum_variant_t));
+            out->variants_heap = ch_owned_allocate(8, sizeof(c_enum_variant_t));
             out->variants = out->variants_heap.pointer;
         } else if ((out->variant_count & (out->variant_count - 1)) == 0) {
             usize_t cap = out->variant_count < 8 ? 8 : out->variant_count;
-            out->variants_heap = reallocate(out->variants_heap, (cap * 2) * sizeof(c_enum_variant_t));
+            out->variants_heap = ch_owned_reallocate(out->variants_heap, (cap * 2) * sizeof(c_enum_variant_t));
             out->variants = out->variants_heap.pointer;
         }
         out->variants[out->variant_count++] = var;
-        next_val = var.value + 1;
+        next_valid = value_valid && var.value < LONG_MAX;
+        next_val = next_valid ? var.value + 1 : var.value;
         ch_match(ts, CHTokComma);
     }
     ch_match(ts, CHTokRBrace);
@@ -688,11 +820,11 @@ static void ch_parse_struct_body(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_struct_t 
         c_field_t f = ch_parse_field(ctx, ts);
         if (f.name) {
             if (out->field_count == 0) {
-                out->fields_heap = allocate(8, sizeof(c_field_t));
+                out->fields_heap = ch_owned_allocate(8, sizeof(c_field_t));
                 out->fields = out->fields_heap.pointer;
             } else if ((out->field_count & (out->field_count - 1)) == 0) {
                 usize_t cap = out->field_count < 8 ? 8 : out->field_count;
-                out->fields_heap = reallocate(out->fields_heap, (cap * 2) * sizeof(c_field_t));
+                out->fields_heap = ch_owned_reallocate(out->fields_heap, (cap * 2) * sizeof(c_field_t));
                 out->fields = out->fields_heap.pointer;
             }
             out->fields[out->field_count++] = f;
@@ -749,6 +881,7 @@ static c_type_t ch_parse_declspec(ch_ctx_t *ctx, ch_tok_stream_t *ts,
             continue;
         }
         if (strcmp(s, "int") == 0) {
+            if (t.kind == CTypeShort || t.kind == CTypeUShort) { ts->pos++; continue; }
             if (long_count >= 2) t.kind = seen_unsigned ? CTypeULongLong : CTypeLongLong;
             else if (long_count == 1) t.kind = seen_unsigned ? CTypeULong : CTypeLong;
             else t.kind = seen_unsigned ? CTypeUInt : CTypeInt;
@@ -815,8 +948,30 @@ static c_type_t ch_parse_declspec(ch_ctx_t *ctx, ch_tok_stream_t *ts,
         break;
     }
 
-    if (t.kind == CTypeUnsupported && long_count > 0)
-        t.kind = seen_unsigned ? CTypeULong : CTypeLong;
+    /* C permits omitted `int` and reordered integer specifiers. Select
+     * from the complete specifier sequence rather than the last token:
+     * `long long`, `short int`, `int long`, and bare `unsigned` must not
+     * silently acquire the wrong ABI width or become unsupported. */
+    if (t.kind == CTypeUnsupported && (long_count > 0 || seen_signed || seen_unsigned))
+        t.kind = CTypeInt;
+    switch (t.kind) {
+        case CTypeInt: case CTypeUInt: case CTypeLong: case CTypeULong:
+        case CTypeLongLong: case CTypeULongLong:
+            t.kind = long_count >= 2 ? (seen_unsigned ? CTypeULongLong : CTypeLongLong) :
+                     long_count == 1 ? (seen_unsigned ? CTypeULong : CTypeLong) :
+                                       (seen_unsigned ? CTypeUInt : CTypeInt);
+            break;
+        case CTypeShort: case CTypeUShort:
+            t.kind = seen_unsigned ? CTypeUShort : CTypeShort;
+            break;
+        case CTypeChar: case CTypeSChar: case CTypeUChar:
+            t.kind = seen_unsigned ? CTypeUChar : seen_signed ? CTypeSChar : CTypeChar;
+            break;
+        case CTypeDouble:
+            if (long_count > 0) t.kind = CTypeLongDouble;
+            break;
+        default: break;
+    }
     t.is_const = *is_const;
     return t;
 }
@@ -921,11 +1076,11 @@ static ch_decl_t ch_parse_declarator(ch_ctx_t *ctx, ch_tok_stream_t *ts, c_type_
                 ch_decl_t pd = ch_parse_declarator(ctx, ts, pbase);
                 if (pd.name || pd.type.kind != CTypeUnsupported) {
                     if (d.param_count == 0) {
-                        d.params_heap = allocate(8, sizeof(c_param_t));
+                        d.params_heap = ch_owned_allocate(8, sizeof(c_param_t));
                         d.params = d.params_heap.pointer;
                     } else if ((d.param_count & (d.param_count - 1)) == 0) {
                         usize_t cap = d.param_count < 8 ? 8 : d.param_count;
-                        d.params_heap = reallocate(d.params_heap, (cap * 2) * sizeof(c_param_t));
+                        d.params_heap = ch_owned_reallocate(d.params_heap, (cap * 2) * sizeof(c_param_t));
                         d.params = d.params_heap.pointer;
                     }
                     d.params[d.param_count].name = pd.name ? pd.name : ch_strdup("arg", 3);
@@ -1124,6 +1279,8 @@ static void ch_extract_define(cheader_result_t *out, const char *line) {
         if (*p == '/' && (p[1] == '/' || p[1] == '*')) break;
         value_buf[vlen++] = *p++;
     }
+    /* Do not interpret a truncated macro body as a complete literal. */
+    if (*p && !(*p == '/' && (p[1] == '/' || p[1] == '*'))) return;
     value_buf[vlen] = '\0';
     /* Trim trailing whitespace on the captured slice. */
     while (vlen > 0 && (value_buf[vlen - 1] == ' '
@@ -1132,12 +1289,10 @@ static void ch_extract_define(cheader_result_t *out, const char *line) {
         value_buf[--vlen] = '\0';
     }
     if (vlen == 0) return;
-    boolean_t ok = False;
-    long value = ch_parse_int_literal(value_buf, &ok);
-    if (!ok) return;
     c_const_t cn;
+    memset(&cn, 0, sizeof(cn));
+    if (!ch_parse_macro_integer(value_buf, &cn)) return;
     cn.name = name;
-    cn.value = value;
     ch_push_const(out, cn);
 }
 
@@ -1266,8 +1421,14 @@ static boolean_t parse_cheader_file(const char *header_path,
 
     char resolved[2048];
     if (!ch_resolve_header(&ctx, input_path, header_path,
-                           header_path[0] != '<', resolved, sizeof(resolved)))
+                           header_path[0] != '<', resolved, sizeof(resolved))) {
+        if (ctx.seen_files.heap.pointer) deallocate(ctx.seen_files.heap);
+        if (ctx.type_names.heap.pointer) deallocate(ctx.type_names.heap);
+        if (ctx.search_dirs.heap.pointer) deallocate(ctx.search_dirs.heap);
+        ch_active_result = Null;
+        free_cheader_result(out);
         return False;
+    }
 
     if (resolved_path_out && resolved_path_cap > 0)
         snprintf(resolved_path_out, resolved_path_cap, "%s", resolved);
@@ -1283,22 +1444,15 @@ static void free_cheader_result(cheader_result_t *result) {
     if (!result) return;
     for (usize_t i = 0; i < result->fn_count; i++) {
         c_fn_t *fn = &result->fns[i];
-        if (fn->params_heap.pointer)
-            deallocate(fn->params_heap);
         ch_type_free(&fn->ret);
     }
     for (usize_t i = 0; i < result->struct_count; i++) {
         c_struct_t *st = &result->structs[i];
         for (usize_t j = 0; j < st->field_count; j++)
             ch_type_free(&st->fields[j].type);
-        if (st->fields_heap.pointer)
-            deallocate(st->fields_heap);
     }
     for (usize_t i = 0; i < result->tdef_count; i++)
         ch_type_free(&result->tdefs[i].actual);
-    for (usize_t i = 0; i < result->enum_count; i++)
-        if (result->enums[i].variants_heap.pointer)
-            deallocate(result->enums[i].variants_heap);
     for (usize_t i = 0; i < result->global_count; i++)
         ch_type_free(&result->globals[i].type);
     if (result->fns_heap.pointer) deallocate(result->fns_heap);

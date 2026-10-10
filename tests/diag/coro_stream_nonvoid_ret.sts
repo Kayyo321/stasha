@@ -1,6 +1,14 @@
 mod coro_stream_nonvoid_ret;
-
-async fn bad(void): stream.[i64] {
-    yield 1;
+// Stream final returns are supported; keep this historical fixture positive.
+async fn values(void): stream.[i32] {
+    yield (i32)1;
     ret 2;
+}
+fn main(void): i32 {
+    stack stream.[i32] s = values();
+    stack i32 first = await.next.(s);
+    await.next.(s);
+    stack i32 final_value = stream.final.(s);
+    stream.drop.(s);
+    ret (first - 1) + (final_value - 2);
 }

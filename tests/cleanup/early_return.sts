@@ -1,0 +1,34 @@
+mod cleanup_early_return;
+
+type Tracked: struct {
+    ext i32 id;
+    fn rem(void): void { print.('drop {}\n', this.id); }
+};
+
+fn choose(stack bool early): i32 {
+    stack Tracked _outer = .{ .id = 1 };
+    defer print.('outer.defer\n');
+    {
+        stack Tracked _inner = .{ .id = 2 };
+        defer print.('inner.defer\n');
+        if (early) {
+            stack Tracked _branch = .{ .id = 3 };
+            defer print.('branch.defer\n');
+            print.('early\n');
+            ret 17;
+        }
+        print.('normal.inner\n');
+    }
+    print.('normal.outer\n');
+    ret 29;
+}
+
+fn main(void): i32 {
+    stack i32 early = choose(true);
+    print.('result {}\n', early);
+    stack i32 normal = choose(false);
+    print.('result {}\n', normal);
+    if (early != 17 || normal != 29) { ret 1; }
+    print.('early_return: ok\n');
+    ret 0;
+}

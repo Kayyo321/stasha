@@ -1,0 +1,8 @@
+call 7
+scalar.defer 99
+scalar.result 7
+call 11
+call 22
+pair.defer 101 202
+pair.result 11 22
+return_values: ok

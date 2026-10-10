@@ -1,0 +1,11 @@
+body
+inner.defer 2
+inner.defer 1
+drop 4
+drop 3
+outer.resume
+outer.defer 2
+outer.defer 1
+drop 2
+drop 1
+normal_order: ok

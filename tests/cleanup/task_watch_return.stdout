@@ -1,0 +1,9 @@
+handler.body 7
+handler.defer 7
+after.return
+handler.body 8
+handler.defer 8
+after.break
+task.defer 90
+result 12 handled 2
+task_watch_return: ok

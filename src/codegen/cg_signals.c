@@ -532,8 +532,19 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     LLVMValueRef      saved_fn       = cg->current_fn;
     LLVMBasicBlockRef saved_break    = cg->break_target;
     LLVMBasicBlockRef saved_continue = cg->continue_target;
+    usize_t saved_break_depth = cg->break_cleanup_depth;
+    usize_t saved_continue_depth = cg->continue_cleanup_depth;
+    boolean_t saved_emitting_defer = cg->emitting_defer;
+    boolean_t saved_entry_main = cg->current_fn_is_entry_main;
+    boolean_t saved_async_task = cg->current_fn_is_async_task;
+    sts_coro_ctx_t saved_coro = cg->cur_coro;
+    type_info_t *saved_return_types = cg->current_return_types;
+    usize_t saved_return_count = cg->current_return_count;
     symtab_t          saved_locals   = cg->locals;
     usize_t           saved_dtor     = cg->dtor_depth;
+    dtor_scope_t *saved_dtor_stack = cg->dtor_stack;
+    usize_t saved_dtor_cap = cg->dtor_cap;
+    heap_t saved_dtor_heap = cg->dtor_stack_heap;
 
     /* save and set lambda capture context so gen_ident can load from env */
     LLVMValueRef     saved_env_param     = cg->lambda_env_param;
@@ -543,8 +554,17 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     LLVMTypeRef     *saved_cap_types     = cg->lambda_cap_types;
 
     cg->current_fn = hfn;
+    cg->current_fn_is_entry_main = False;
+    cg->current_fn_is_async_task = False;
+    memset(&cg->cur_coro, 0, sizeof(cg->cur_coro));
+    cg->current_return_types = Null;
+    cg->current_return_count = 0;
+    cg->emitting_defer = False;
     symtab_init(&cg->locals);
     cg->dtor_depth = 0;
+    cg->dtor_stack = Null;
+    cg->dtor_cap = 0;
+    cg->dtor_stack_heap = NullHeap;
 
     LLVMBasicBlockRef entry    = LLVMAppendBasicBlockInContext(cg->ctx, hfn, "entry");
     LLVMBasicBlockRef dereg_bb = LLVMAppendBasicBlockInContext(cg->ctx, hfn, "watch.dereg");
@@ -604,6 +624,8 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
 
     cg->break_target    = dereg_bb;
     cg->continue_target = Null;
+    cg->break_cleanup_depth = 0;
+    cg->continue_cleanup_depth = 0;
 
     gen_block(cg, node->as.watch_stmt.body);
 
@@ -627,8 +649,20 @@ static void gen_watch_stmt(cg_t *cg, node_t *node) {
     cg->current_fn      = saved_fn;
     cg->break_target    = saved_break;
     cg->continue_target = saved_continue;
+    cg->break_cleanup_depth = saved_break_depth;
+    cg->continue_cleanup_depth = saved_continue_depth;
+    cg->emitting_defer = saved_emitting_defer;
+    cg->current_fn_is_entry_main = saved_entry_main;
+    cg->current_fn_is_async_task = saved_async_task;
+    cg->cur_coro = saved_coro;
+    cg->current_return_types = saved_return_types;
+    cg->current_return_count = saved_return_count;
     symtab_free(&cg->locals);
     cg->locals          = saved_locals;
+    if (cg->dtor_stack_heap.pointer) deallocate(cg->dtor_stack_heap);
+    cg->dtor_stack = saved_dtor_stack;
+    cg->dtor_cap = saved_dtor_cap;
+    cg->dtor_stack_heap = saved_dtor_heap;
     cg->dtor_depth      = saved_dtor;
     if (saved_bb) LLVMPositionBuilderAtEnd(cg->builder, saved_bb);
 

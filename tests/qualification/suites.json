@@ -6,9 +6,10 @@
     {
       "id": "frontend",
       "scope": "parser-only",
-      "status": "runner-in-progress",
+      "status": "available",
       "owner": "compiler",
-      "gate": "P0/P1/P10"
+      "gate": "P0/P1/P10",
+      "qualification": "parser-only: 1529 checks, 256 deterministic mutations; not codegen"
     },
     {
       "id": "harness-selftests",
@@ -157,22 +158,37 @@
     },
     {
       "id": "cleanup-memory",
-      "scope": "hosted/freestanding",
-      "status": "not-implemented",
+      "scope": "cleanup-control-flow; general memory analysis pending",
+      "status": "runner-available-not-qualified",
       "owner": "compiler",
-      "gate": "P3"
+      "gate": "P3",
+      "command": [
+        "python3",
+        "tests/cleanup/run.py",
+        "--compiler",
+        "./bin/stasha",
+        "--opt",
+        "0,1,2,3",
+        "--zone-probe"
+      ]
     },
     {
       "id": "kernel-machine-policy",
       "scope": "freestanding",
-      "status": "not-implemented",
+      "status": "runner-available-not-qualified",
       "owner": "compiler",
-      "gate": "P4"
+      "gate": "P4",
+      "command": [
+        "python3",
+        "tests/driver/run.py",
+        "--compiler",
+        "./bin/stasha"
+      ]
     },
     {
       "id": "kernel-component",
       "scope": "freestanding",
-      "status": "not-implemented",
+      "status": "in-progress",
       "owner": "compiler",
       "gate": "P5/P8"
     },
@@ -199,60 +215,5 @@
     }
   ],
   "policy": "No skips qualify as passes. Entries without runners block their declared gate. Platform xfails require explicit exact failure signatures in their runner.",
-  "unclassified_fixtures": [
-    {
-      "source": "tests/diag/error_bad_type.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_break_outside_loop.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_missing_semicolon.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_pointer_safety.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_ptr_arith_no_permission.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_unexpected_token.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_unknown_function.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/error_unknown_variable.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    },
-    {
-      "source": "tests/diag/warn_unused_variable.sts",
-      "reason": "Legacy diagnostic fixture was not in the original runner; diagnostic contract requires review",
-      "owner": "compiler",
-      "blocks": "P0 completion"
-    }
-  ]
+  "unclassified_fixtures": []
 }

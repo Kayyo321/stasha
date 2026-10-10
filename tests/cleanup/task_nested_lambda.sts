@@ -1,0 +1,22 @@
+mod cleanup_task_nested_lambda;
+
+async fn task(void): i32 {
+    stack i32 outer = 10;
+    defer { outer = 90; print.('task.defer {}\n', outer); }
+    stack fn*(stack i32): i32 local = lam.(stack i32 value): i32 {
+        defer { value = 99; print.('lambda.defer {}\n', value); }
+        print.('lambda.body {}\n', value);
+        ret value + 1;
+    };
+    stack i32 result = local(6);
+    print.('task.body {}\n', result);
+    ret outer + result;
+}
+
+fn main(void): i32 {
+    stack i32 result = await.(task());
+    print.('result {}\n', result);
+    if (result != 17) { ret 1; }
+    print.('task_nested_lambda: ok\n');
+    ret 0;
+}
