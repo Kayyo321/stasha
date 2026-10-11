@@ -61,9 +61,21 @@ jobs:
       - name: Verify pinned source and build identity
         run: python3 scripts/verify_llvm_toolchain.py --llvm-build "$LLVM_BUILD" --require-clang --output build/qualification/toolchain.json
       - name: Build compiler
-        run: make -j2 STASHA_NO_OPENSSL=1 all tests/cinterop/build/libcinterop_support.a
+        run: |
+          llvm_build="$(cd -- "$LLVM_BUILD" && pwd -P)"
+          cc="$llvm_build/bin/clang"
+          cxx="$llvm_build/bin/clang++"
+          [[ -x "$cc" && -x "$cxx" && "$cxx" -ef "$cc" ]] || { echo 'Pinned clang/clang++ driver pair is missing or inconsistent' >&2; exit 1; }
+          printf 'Stasha build CC=%s CXX=%s\n' "$cc" "$cxx"
+          make -j2 CC="$cc" CXX="$cxx" STASHA_NO_OPENSSL=1 all tests/cinterop/build/libcinterop_support.a
       - name: Run strict hosted compiler qualification
-        run: bash scripts/qualify_linux.sh ./bin/stasha build/qualification
+        run: |
+          llvm_build="$(cd -- "$LLVM_BUILD" && pwd -P)"
+          cc="$llvm_build/bin/clang"
+          cxx="$llvm_build/bin/clang++"
+          [[ -x "$cc" && -x "$cxx" && "$cxx" -ef "$cc" ]] || { echo 'Pinned clang/clang++ driver pair is missing or inconsistent' >&2; exit 1; }
+          printf 'Hosted qualification CC=%s CXX=%s HOST_CC=gcc\n' "$cc" "$cxx"
+          CC="$cc" CXX="$cxx" HOST_CC=gcc bash scripts/qualify_linux.sh ./bin/stasha build/qualification
       - name: Retain qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
