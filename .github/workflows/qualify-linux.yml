@@ -51,7 +51,8 @@ jobs:
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: make llvm LLVM_BUILD_JOBS=2 LLVM_LINK_JOBS=1
       - name: Ensure pinned Clang and resource headers
-        # Also repair/validate warm caches; the bootstrap intentionally builds LLD only.
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        # Cache misses need Clang; every run verifies the pinned toolchain below.
         run: |
           cmake -S extlib/llvm/llvm -B "$LLVM_BUILD" -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" -DLLVM_APPEND_VC_REV=ON -DLLVM_PARALLEL_LINK_JOBS=1
           cmake --build "$LLVM_BUILD" --target clang --parallel 2
