@@ -332,6 +332,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "test": "node --test tests/definitionProvider.test.js",
     "watch": "tsc -watch -p ./",
     "package": "vsce package",
     "vscode:prepublish": "npm run compile"

@@ -31,6 +31,8 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - name: Run VS Code definition decoder regressions
+        run: npm --prefix vscode-stasha test
       - name: Install official Ubuntu build dependencies
         run: |
           sudo apt-get update -q

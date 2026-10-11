@@ -37,6 +37,18 @@ exports.StashaDefinitionProvider = void 0;
 const vscode = __importStar(require("vscode"));
 const child_process_1 = require("child_process");
 const compilerPath_1 = require("./compilerPath");
+function isRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function isDefResult(value) {
+    if (!isRecord(value))
+        return false;
+    return typeof value.path === 'string' && value.path.length > 0 && !value.path.includes('\0')
+        && typeof value.line === 'number' && Number.isSafeInteger(value.line) && value.line >= 0
+        && typeof value.col === 'number' && Number.isSafeInteger(value.col) && value.col >= 0
+        && typeof value.name === 'string' && value.name.length > 0 && !value.name.includes('\0')
+        && Number.isSafeInteger(value.col + value.name.length);
+}
 class StashaDefinitionProvider {
     provideDefinition(doc, pos) {
         const bin = (0, compilerPath_1.getCompilerPath)();
@@ -48,11 +60,16 @@ class StashaDefinitionProvider {
         if (result.error || result.status !== 0)
             return undefined;
         try {
-            const def = JSON.parse(result.stdout.trim());
-            if (!def.file)
+            const response = JSON.parse(result.stdout.trim());
+            if (!isRecord(response) || !isDefResult(response.definition))
                 return undefined;
-            const range = new vscode.Range(Math.max(0, def.line), Math.max(0, def.col), Math.max(0, def.line), Math.max(0, def.col) + Math.max(1, def.len));
-            return new vscode.Location(vscode.Uri.file(def.file), range);
+            const def = response.definition;
+            // The CLI uses byte columns; VS Code uses UTF-16 units. This decoder
+            // preserves the existing request/response columns, so non-ASCII text
+            // before either position remains unsupported. name.length supplies
+            // a UTF-16 span, not a full token extent for dollar-quoted names.
+            const range = new vscode.Range(def.line, def.col, def.line, def.col + def.name.length);
+            return new vscode.Location(vscode.Uri.file(def.path), range);
         }
         catch {
             return undefined;
