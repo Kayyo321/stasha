@@ -459,3 +459,146 @@ failure. Native macOS/Windows sidecar bundles are not transactionally or
 release-qualified. The original planning baseline and earlier checkpoint evidence
 remain in the implementation plan and historical receipts; their old blockers and
 counts are not the current status summary above.
+
+## 2026-10-11: current-binary object/IR-only checkpoint
+
+**Bounded artifact PASS; no K0/K1/K2 or P6 milestone advancement.** The additive
+`--objects-only` lane compiled and inspected the unchanged existing component in
+six requested configurations. It does not transfer historical execution or boot
+evidence to this compiler. The default full archive/host/image workflow remains
+available and retains its mandatory gates; its compatibility was checked with
+isolated mocks, not a fresh full run. See [the lane documentation](../tests/kernel/k0/README.md).
+
+### Exact source, compiler and tool identity
+
+- Run `b1eb9eb81a3d424684d687d8a714191e`, 11 October 2026,
+  22:14:16.392922–22:14:19.330727 UTC; runner exit **0**.
+- Published source commit `350c72c4dc0f378432b24858dd73c174f44e3a8d`, tree
+  `8e02d07819a8a7bfae6afd6f99fdee0ba7a67e2c`. Local HEAD was the older
+  `ab792ab0dfce803171ddcfa7af1397906b58fcb4`; the published-tree binding was verified
+  against all 12,759 published source blobs/symlink targets rather than inferred
+  from that HEAD. The three frozen K0 runner/doc edits and three separately
+  authorized frozen CI-only edits were explicitly identified. The CI edits are
+  unrelated runner/configuration inputs, not K0 or compiler-build evidence.
+- Frozen `bin/stasha-float-precision-r1` SHA-256:
+  `8411f7a3d5c1961f44ab733f7fa20c42ef989552338e248a466f36e5cea396a7`.
+  This is the existing precision-r1 compiler; no Stasha rebuild occurred for this
+  checkpoint. The new runner-only source does not claim to be its build source.
+- Reviewed runner SHA-256:
+  `81daf539eb486eb892be51d7ec392185a3fa1282714f0f3efc36c15a8e08df8e`;
+  self-test SHA-256:
+  `25ad5312c65a383ac83443b7571fe15e7b3f4a9c836168b5929036a03e2afde6`;
+  README SHA-256:
+  `63dbf3583ebbfa62279fb72228451ed673abed9912e6c8ed173d7d3ca23e20f3`.
+  The candidate-file patch at execution, before this result-only status append,
+  had SHA-256 `e2d9032ee3384fc702e47ac57bbc389d6f2153f474e96f6ac38950850667666a`.
+- Unchanged component SHA-256:
+  `eab151859c54a86e822107d4de98c86e59f3349ec37509d4e84a6291bbd76578`;
+  unchanged policy SHA-256:
+  `971fd21c27f2c57054177f86bc95e3ac8b8069965c1b44839928059b14eee705`.
+- LLVM source revision `348061d58dfe5e59027a0d6d51f916197cdd8d68`, version
+  `23.0.0git`; configured cache SHA-256
+  `42eda509da5564c00059b8f80b9e36317ac852e0a41a56b7e30956607e076d79`.
+  The unchanged source/build verifier SHA-256 was
+  `e7065ec2989917751743d81c9bf897719517ff622f9987be8c6badb9d21df861`;
+  its run receipt SHA-256 was
+  `3a02495783dda6ea287f53eb0313afd3ee3cd9ccf692772b609fdd908099b14b`.
+- The independently reviewed four-utility restoration receipt SHA-256 is
+  `0dc83dccbd66335e289e2196033fb00922d6202153e4df7fe65c6195aa75fbb5`.
+  Its separately approved configured-build command was
+  `cmake --build build/llvm --target opt llvm-nm llvm-objdump llvm-readobj --parallel 1`,
+  with the exact reviewed dependency closure and no replacement of protected
+  pre-existing artifacts. This provisioning phase was separate from component
+  qualification and did not rebuild Stasha.
+
+| Selected utility in `build/llvm/bin` | SHA-256 |
+|---|---|
+| `opt` | `fcb51fcb430b5de576dee24621218f3ce17b695e7925c29d5e4a0216b66d4eb8` |
+| `llvm-nm` | `6891049bf8497b5122ac6d4d87ad793c380a14d674c3e0d5f2db88c9f84e8321` |
+| `llvm-objdump` | `3ae7e69459dc49894404ae44632adf48359d623e33b02f8569eae4fd5b86bdce` |
+| `llvm-readobj` | `e616d9c954e5afbd1e1612021c3364027ac509e89a8411907b60f53bd9a95390` |
+
+All utility paths were explicit regular executables contained in the selected
+build. Their complete version output and pre/post hashes were checked. The plain
+`23.0.0git` banners do not include the full commit; exact-source/build provenance
+is bound by the reviewed restoration receipt and these four hashes, not by a
+version substring. Original inputs, copied snapshot, compiler, selected tools,
+verifier, cache and inspected outputs remained unchanged through final checks.
+
+### Requested and effective matrix
+
+| Requested variant | Effective optimization | Actual undefined imports | Result |
+|---|---|---|---|
+| O0 nondebug | O0 | panic only | PASS |
+| O0 debug | O0 | panic only | PASS |
+| O2 nondebug | O2 | panic + memcpy/memmove/memset | PASS |
+| O2 debug | O0 | panic only | PASS |
+| O3 nondebug | O3 | panic + memcpy/memmove/memset | PASS |
+| O3 debug | O0 | panic only | PASS |
+
+Here “panic” is `__stasha_panic`. The driver explicitly forces O0 under `-g`;
+receipts retain the requested `-o=2 -g` and `-o=3 -g` commands. These debug variants
+do not establish genuinely optimized-debug execution. `full_default_matrix=true`
+means exact six-variant artifact coverage; `full_k0_readiness=false` remains fixed.
+
+All six passed the unchanged 22-function inventory, required IR machine-policy
+attributes, target/live-call/FP-vector restrictions, LLVM verifier, exact import
+and helper-lowering expectations, ELF64 x86-64 relocatable policy, complete object
+metadata, and nonempty disassembly/machine-policy checks. Debug objects contain
+both required DWARF sections. Compiler and inspection commands had normal zero
+exits, no warning/error diagnostics, and no timeout/signal/spawn failure.
+
+The exact runner options were `--objects-only --compiler bin/stasha-float-precision-r1
+--llvm-bin build/llvm/bin --source-tree 8e02d07819a8a7bfae6afd6f99fdee0ba7a67e2c
+--opt 0,2,3 --debug both`, with a new unique external artifact directory.
+There were 46 recorded runner invocations: four utility versions, two unchanged
+Python source/build-verifier invocations, four Git identity/patch reads, and these
+six commands for each requested variant:
+
+```text
+stasha-float-precision-r1 obj SNAPSHOT/component.sts --kernel --target x86_64-unknown-none-elf -o=LEVEL [-g] -o VARIANT/component.o
+stasha-float-precision-r1 ir  SNAPSHOT/component.sts --kernel --target x86_64-unknown-none-elf -o=LEVEL [-g] -o VARIANT/component.ll
+opt -passes=verify -disable-output VARIANT/component.ll
+llvm-nm --undefined-only VARIANT/component.o
+llvm-readobj --file-headers --sections --relocations --symbols VARIANT/component.o
+llvm-objdump --no-debuginfod -dr VARIANT/component.o
+```
+
+Each verifier also performed eight disclosed Git/llvm-config identity reads.
+The Git patch commands disabled external diff and textconv helpers. Command
+receipts retain absolute argv/cwd, bounded timeouts, raw stdout/stderr, exit category
+and timing. The no-debuginfod flag makes disassembly independent of network lookup.
+
+### Retained evidence and excluded work
+
+- Machine-readable run summary SHA-256:
+  `c2d1a03d2aac1e83eba0dd158f8361f3ebd23fa6d665dd3aa16d721cd96609ae`.
+- Pre/post provenance and complete 172-file run-manifest receipt SHA-256:
+  `27eff70ff90b8dc4c4ce725f378982ede4e34b47f785875acac14e92fc820964`.
+- Twelve-output object/IR manifest SHA-256:
+  `ccad7a15eb88d4698bd705c3c363bf720d962b7fce007a78b34b66c50fafdb82`.
+- Independent actual-result review receipt SHA-256:
+  `75e41221f3eae803dd5ad5666496afc46803e8dfb0c79f44142569a38e4444ba`.
+- Pre-qualification published-source/tool identity receipt SHA-256:
+  `3c4b49d1b80c08cebbffa16bea2db38afb498bbb3924dedf2bfbc8d7ce05cd08`.
+
+The immutable receipts retain raw logs and artifacts outside the repository.
+This is a self-contained identity/result summary, not a public link to those local
+files. Independent review accepted the source/mocks and utility provenance before
+execution and checked the actual six artifact/receipt sets before this append.
+The harness passed 30 isolated self-tests plus seven independent adversarial tests;
+those mocks are harness evidence, separate from the actual compiler result above.
+
+Explicit **NOT_RUN** in every objects-only receipt: archive validation and member
+checks; compiled prelink-negative fixtures; host execution and ABI; memory-shim
+execution and host/boot counters; missing-panic/helper links; code-model negative
+links; low/high final images; boot; debugger; hardware. No library/archive emission,
+C/assembly compilation, external linking, runtime program, QEMU or network operation
+occurred in component qualification. No archive/descriptor/indirect-control-flow
+experiment was reactivated.
+
+This checkpoint establishes only the recorded component's obj/IR artifact gates.
+Host semantics, runtime counters, archive behavior, final-image properties,
+debugger usability, interrupts/MMIO/SMP, page protections, physical hardware,
+ownership/lifetime and general language/kernel readiness remain unestablished by
+this lane. Historical evidence and all existing milestone limits remain intact.

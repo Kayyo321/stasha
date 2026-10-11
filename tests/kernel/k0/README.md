@@ -41,6 +41,82 @@ linker scripts/maps, executable disassembly, QEMU configuration, and machine-rea
 `FAIL` summary is not a passing result. Archive failures are retained and make the
 overall run fail while independent object/boot work continues.
 
+## Explicit object/IR-only lane
+
+```sh
+python3 tests/kernel/k0/run.py --objects-only \
+  --compiler ./bin/stasha-VERSION --llvm-bin /path/to/pinned/llvm-build/bin
+```
+
+This additive mode emits only `obj` and `ir` for the unchanged component. It uses
+one shared set of the full runner's IR, import, relocatable, DWARF and machine-code
+checks. It never falls back from a failed full run. Omitting `--objects-only`
+retains the full archive/host/image workflow described above.
+
+The required inspection utilities are `opt`, `llvm-nm`, `llvm-readobj`, and
+`llvm-objdump`, all explicitly inside the selected configured build's `bin`.
+The unchanged `scripts/verify_llvm_toolchain.py` also requires the selected
+`llvm-config`, CMake cache, clean pinned LLVM source and existing configured LLD
+libraries. The runner does not provision or rebuild any prerequisite. Utility
+restoration is a separate reviewed operation, limited to those four targets and
+its approved dependency closure; there is no PATH fallback to another LLVM.
+
+Each utility must be a regular, nonempty executable, resolve inside the selected
+`bin`, and report exactly `LLVM version 23.0.0git`, without diagnostics. Its supplied
+and resolved paths, symlink identity, mode, size, hash and full version output are
+retained. These plain version banners do not attest the exact LLVM commit. For a
+checkpoint claim, independently bind their pre/post SHA-256 values to a reviewed
+exact-source/configuration/dependency/build receipt. The generic source/build
+verifier and runner hashes are not reproducible-build attestation.
+
+Default requested order is O0 nondebug/debug, O2 nondebug/debug, and O3
+nondebug/debug. The current driver forces effective O0 for every `-g` command;
+receipts retain both requested and effective optimization, including the actual
+`-o=2 -g` and `-o=3 -g` arguments. Only nondebug O2/O3 establish the existing
+three-helper import expectation. `--opt 2 --debug no` can pass that exact subset,
+with `full_default_matrix=false`; it does not establish the default six variants.
+Empty, duplicate, malformed and unsupported optimization lists are rejected before
+creating output. All explicit QEMU/firmware/machine/boot-repeat options conflict
+with this lane, including explicit values equal to full-mode defaults.
+
+Permitted processes in this lane are the selected compiler's `obj`/`ir` emissions,
+selected utility versions and inspections, Python's existing source/build verifier,
+and disclosed Git/llvm-config identity reads. Inspections include
+`opt -passes=verify -disable-output`, `llvm-nm --undefined-only`,
+`llvm-readobj --file-headers --sections --relocations --symbols`, and
+`llvm-objdump --no-debuginfod -dr`. No library/archive emission, host compiler,
+assembler, linker, objcopy, executable, emulator, debugger or network operation is
+part of component qualification. Verifier subprocess reads are listed in the
+receipt; they read Git identities/status and llvm-config's version, targets,
+assertion mode, RTTI and host target.
+
+The optional `--source-tree TREE` resolves a real Git tree for the candidate-file
+patch receipt; its default is local HEAD, which is reported separately. The patch
+covers only this runner, its self-tests, this README and the readiness-status page.
+It is not a reconstruction of unrelated untracked overlays. Selected K0 source and
+current compiler-source hashes are recorded separately. A restored publication
+with an older local HEAD needs an independently verified published-tree binding.
+Current source identities do not claim that a runner-only edit rebuilt the frozen
+compiler; its original build provenance remains separate.
+
+A fresh unique run retains exact argv/cwd/timeouts, raw stdout/stderr, exits and
+signal/timeout/spawn categories, fresh nonempty outputs, per-stage states, and
+partial failure evidence. LLVM inspections must have valid non-vacuous structure,
+not just zero exits or format words. The copied snapshot, original inputs, selected
+tools, compiler, verifier, cache, source patch and inspected outputs are checked
+again before success. A terminal receipt write failure returns failure. Mock
+self-tests exercise these failure paths and the full default workflow without
+running the actual full workflow.
+
+A terminal `OBJECT/IR PASS` requires every requested variant and shared gate, plus
+final identity checks and a retained summary. All excluded stages are explicitly
+`NOT_RUN`: archive validation/member checks, prelink-negative fixtures, host
+execution/ABI, memory-shim execution and runtime counters, missing-panic/helper
+links, code-model negative links, low/high final images, boot, debugger and hardware.
+`full_k0_readiness` stays false on success and failure. Debug section presence is
+not debugger usability; this lane establishes no execution, ownership/lifetime,
+boot or general kernel-readiness result and advances no K-level.
+
 ## Component and oracle
 
 `component.sts` implements an allocation-free 64-slot resource bitmap and a
