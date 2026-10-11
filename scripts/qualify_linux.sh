@@ -17,6 +17,7 @@ sha256sum "$compiler" > "$artifacts/compiler.sha256"
 "$compiler" --version > "$artifacts/compiler-version.txt"
 bash scripts/test_harness_selftest.sh
 python3 -m unittest discover -s tests/driver -p 'test_project_cli.py'
+python3 -m unittest discover -s tests/driver -p 'test_editor_coordinates.py'
 python3 tests/harness/compiler_suites.py diag "$compiler" --artifacts "$artifacts/diag" --keep-artifacts
 python3 tests/harness/compiler_suites.py signals "$compiler" --artifacts "$artifacts/signals" --keep-artifacts
 python3 tests/harness/compiler_suites.py cinterop "$compiler" --llvm-config "$llvm_build/bin/llvm-config" --require-prerequisites --artifacts "$artifacts/cinterop" --keep-artifacts
@@ -41,6 +42,7 @@ python3 tests/abi/run_member_pointers.py --compiler "$compiler" --cc "${CC:-clan
 python3 tests/cleanup/run.py --compiler "$compiler" --opt 0,2 --zone-probe --artifacts "$artifacts/cleanup"
 python3 tests/driver/run.py --compiler "$compiler" --artifacts "$artifacts/driver"
 python3 tests/driver/project_cli.py --compiler "$compiler" --artifacts "$artifacts/project-cli"
+python3 tests/driver/editor_coordinates.py --compiler "$compiler" --artifacts "$artifacts/editor-coordinates"
 python3 tests/driver/global_initializers.py --compiler "$compiler" --artifacts "$artifacts/globals"
 sha256sum --check "$artifacts/compiler.sha256"
 printf 'PASS source=%s\n' "$(git rev-parse HEAD)" > "$artifacts/STATUS.txt"

@@ -86,6 +86,21 @@ class QualificationShellTests(unittest.TestCase):
         self.assertEqual(self.status,'FAIL exit=86\n')
         self.assertEqual(self.commands[-1],'python3 -m unittest discover -s tests/driver -p test_project_cli.py')
         self.assertFalse(any('tests/harness/compiler_suites.py' in command for command in self.commands))
+    def test_editor_coordinate_failure_blocks_receipt_and_later_stages(self):
+        result,receipt=self.invoke(87,stale=True,fail_match='tests/driver/editor_coordinates.py')
+        self.assertEqual(result.returncode,87,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=87\n')
+        self.assertTrue(self.commands[-1].startswith('python3 tests/driver/editor_coordinates.py --compiler '))
+        self.assertIn(' --artifacts ',self.commands[-1])
+        self.assertTrue(self.commands[-1].endswith('/editor-coordinates'))
+        self.assertFalse(any('tests/driver/global_initializers.py' in command for command in self.commands))
+    def test_editor_coordinate_mock_control_failure_stops_real_suites(self):
+        result,receipt=self.invoke(88,stale=True,match_args=True,
+                                   fail_match="'-m unittest discover -s tests/driver -p test_editor_coordinates.py'")
+        self.assertEqual(result.returncode,88,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=88\n')
+        self.assertEqual(self.commands[-1],'python3 -m unittest discover -s tests/driver -p test_editor_coordinates.py')
+        self.assertFalse(any('tests/harness/compiler_suites.py' in command for command in self.commands))
     def test_all_mock_stages_reach_explicit_bounded_receipt(self):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -94,6 +109,9 @@ class QualificationShellTests(unittest.TestCase):
         self.assertEqual(self.commands[1],'compiler --version')
         self.assertIn('python3 -m unittest discover -s tests/driver -p test_project_cli.py',self.commands)
         self.assertEqual(sum(command.startswith('python3 tests/driver/project_cli.py --compiler ')
+                             for command in self.commands),1)
+        self.assertIn('python3 -m unittest discover -s tests/driver -p test_editor_coordinates.py',self.commands)
+        self.assertEqual(sum(command.startswith('python3 tests/driver/editor_coordinates.py --compiler ')
                              for command in self.commands),1)
 
 if __name__=='__main__': unittest.main()

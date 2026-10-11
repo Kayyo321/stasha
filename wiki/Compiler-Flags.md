@@ -54,9 +54,19 @@ These are used by IDE integrations, not normally invoked by hand:
 | `stasha symbols <file>` | List all symbols in the file |
 | `stasha definition <file>` | Find definition at a position |
 | `--path <path>` | Virtual file path (for stdin-based usage) |
-| `--line <n>` | Editor cursor line |
-| `--col <n>` | Editor cursor column |
+| `--line <n>` | Zero-based editor cursor line |
+| `--col <n>` | Zero-based editor cursor column |
 | `--stdin` | Read source from stdin |
+
+`--line` and `--col` require a nonempty sequence of ASCII decimal digits in
+the range `0` through `ULONG_MAX - 1` for the compiler host (`18446744073709551614`
+on 64-bit Linux). The upper limit reserves room for the editor's internal
+one-based position conversion. Leading zeros are accepted; signs, whitespace,
+suffixes, and overflowing values are rejected before source input is read.
+Missing or invalid operands return exit status 1 and a JSON diagnostic for
+editor commands. Repeated valid options use the last value. `definition`
+requires both options; existing default coordinates for other commands are
+unchanged. An in-range position may lie outside the source file.
 
 ---
 

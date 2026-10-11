@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #if defined(__APPLE__) || defined(__linux__)
 #  include <unistd.h>
 #  include <sys/wait.h>
@@ -2386,6 +2387,42 @@ static int run_project_tests(sproj_t *proj, const char *proj_dir) {
     return fail > 0 ? 1 : 0;
 }
 
+/* Editor APIs use usize_t (unsigned long) and convert to one-based positions. */
+static boolean_t parse_editor_coordinate(const char *text, usize_t *out) {
+    const usize_t maximum = ULONG_MAX - 1;
+    usize_t value = 0;
+    if (!text || !text[0]) return False;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '9') return False;
+        usize_t digit = (usize_t)(*p - '0');
+        if (value > (maximum - digit) / 10) return False;
+        value = value * 10 + digit;
+    }
+    *out = value;
+    return True;
+}
+
+static void editor_coordinate_error(editor_mode_t mode, const char *flag,
+                                    boolean_t missing) {
+    char message[192];
+    if (missing)
+        snprintf(message, sizeof(message),
+                 "missing operand for %s (expected a zero-based decimal coordinate)", flag);
+    else
+        snprintf(message, sizeof(message),
+                 "invalid operand for %s (expected decimal digits in range 0..%lu)",
+                 flag, ULONG_MAX - 1);
+    if (mode != EditorModeNone) {
+        diag_clear_captured();
+        diag_begin_error("%s", message);
+        diag_finish();
+        editor_print_diagnostics_json();
+    } else {
+        log_err("%s", message);
+    }
+    quit(Err);
+}
+
 int main(int argc, char **argv) {
     init_bin_dir(argv[0]);
 
@@ -2498,11 +2535,17 @@ int main(int argc, char **argv) {
             use_stdin = True;
         } else if (strcmp(argv[i], "--path") == 0 && i + 1 < argc) {
             virtual_path = argv[++i];
-        } else if (strcmp(argv[i], "--line") == 0 && i + 1 < argc) {
-            editor_line = (usize_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--line") == 0) {
+            if (i + 1 >= argc)
+                editor_coordinate_error(editor_mode, "--line", True);
+            if (!parse_editor_coordinate(argv[++i], &editor_line))
+                editor_coordinate_error(editor_mode, "--line", False);
             has_editor_line = True;
-        } else if (strcmp(argv[i], "--col") == 0 && i + 1 < argc) {
-            editor_col = (usize_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--col") == 0) {
+            if (i + 1 >= argc)
+                editor_coordinate_error(editor_mode, "--col", True);
+            if (!parse_editor_coordinate(argv[++i], &editor_col))
+                editor_coordinate_error(editor_mode, "--col", False);
             has_editor_col = True;
         } else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
             editor_new_name = argv[++i];
