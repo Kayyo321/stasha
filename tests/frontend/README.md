@@ -25,6 +25,17 @@ Lexical errors are rejected before macro scanning/expansion, so unused internal
 or exported function, bare-function, and let macros cannot hide them. Each
 lexical error retains its original file/line/column and is reported once.
 
+Ordinary syntax errors at EOF retain the original file and exact 1-based
+line/column in both parser modes, including empty input, missing module
+semicolons or closing braces, and trailing whitespace or completed comments.
+Valid counterparts remain accepted. The preprocessed stream ends with exactly
+one original lexer EOF token, with a zero-length span at the source terminator
+and no macro expansion origin. Source text and file paths remain caller-owned
+through parsing and stream cleanup. Per-file parser tests also switch from a
+caller to imported-file context and check that captured diagnostics survive
+AST/stream cleanup and release of those caller buffers; they do not run import
+resolution or generated programs.
+
 ## Integer literal contract
 
 - Decimal and `0x`/`0X` hexadecimal literals contain an unsigned magnitude in

@@ -1026,14 +1026,10 @@ pp_stream_t *pp_process(const char *source, const char *file_path,
                   local_ms, imported_sets, import_count,
                   stream, NULL);
 
-    /* Emit EOF. */
-    {
-        pp_token_t eof;
-        memset(&eof, 0, sizeof(eof));
-        eof.tok.kind = TokEof;
-        eof.tok.file = file_path;
-        stream_push_raw(stream, eof);
-    }
+    /* Keep the lexer's EOF position, including trailing whitespace/comments.
+       Copy before freeing raw; its source/path remain caller-owned through
+       parsing, just like the other literal tokens in the output stream. */
+    emit_token(stream, raw.toks[raw.count - 1], NULL);
 
     ra_free(&raw);
 

@@ -245,6 +245,122 @@ static void test_comments(void) {
     CHECK(next_token(&lex).kind == TokEof);
 }
 
+static void check_eof_token(const char *source, const char *file,
+                            usize_t line, usize_t col) {
+    CHECK(stream && stream->count > 0);
+    for (int i = 0; i < stream->count - 1; i++)
+        CHECK(stream->tokens[i].tok.kind != TokEof);
+    const pp_token_t *eof = &stream->tokens[stream->count - 1];
+    CHECK(eof->tok.kind == TokEof);
+    CHECK(eof->tok.start == source + strlen(source));
+    CHECK(eof->tok.length == 0);
+    CHECK(eof->tok.file == file);
+    CHECK(eof->tok.line == line);
+    CHECK(eof->tok.col == col);
+    CHECK(eof->expansion == NULL);
+}
+
+static void check_eof_diagnostic(const char *file, const char *expected,
+                                 usize_t line, usize_t col) {
+    CHECK(get_error_count() == 1);
+    CHECK(diag_get_captured_count() == 1);
+    const captured_diag_t *d = diag_get_captured(0);
+    CHECK(d && strcmp(d->filename, file) == 0);
+    char message[128];
+    snprintf(message, sizeof(message), "unexpected end of file, expected %s", expected);
+    CHECK(strcmp(d->diag.message, message) == 0);
+    CHECK(d->diag.label_count == 1);
+    CHECK(d->diag.labels[0].loc.line == line);
+    CHECK(d->diag.labels[0].loc.col == col);
+    CHECK(d->diag.labels[0].loc.len == 1);
+}
+
+static void test_eof_locations(void) {
+    const struct {
+        const char *name, *source, *expected;
+        usize_t line, col;
+    } cases[] = {
+        {"empty source EOF", "", "'mod'", 1, 1},
+        {"newline-only EOF", "\n", "'mod'", 2, 1},
+        {"whitespace-only EOF", " \t\n  ", "'mod'", 2, 3},
+        {"line-comment-only EOF", "// done", "'mod'", 1, 8},
+        {"block-comment-only EOF", "/* done */\n", "'mod'", 2, 1},
+        {"module semicolon EOF", "mod t", "';'", 1, 6},
+        {"module semicolon after newline", "mod t\n", "';'", 2, 1},
+        {"module semicolon after whitespace", "mod t \t", "';'", 1, 8},
+        {"module semicolon after line comment", "mod t // done", "';'", 1, 14},
+        {"module semicolon after block comment", "mod t /* done */\n  ", "';'", 2, 3},
+        {"closing brace EOF", "mod t;\nfn f(void): void {\n    ret;\n", "'}'", 4, 1},
+        {"closing brace after comment", "mod t;\nfn f(void): void {\n    ret;\n  /* done */  ", "'}'", 4, 15},
+        {"complete module EOF", "mod t;", NULL, 1, 7},
+        {"complete module newline EOF", "mod t;\n", NULL, 2, 1},
+        {"complete module whitespace EOF", "mod t; \t", NULL, 1, 9},
+        {"complete module line-comment EOF", "mod t; // done", NULL, 1, 15},
+        {"complete module block-comment EOF", "mod t; /* done */\n  ", NULL, 2, 3},
+        {"complete function EOF", "mod t;\nfn f(void): void {\n    ret;\n}\n", NULL, 5, 1},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        case_name = cases[i].name;
+        for (int mode = 0; mode < 2; mode++) {
+            node_t *module = parse_case(cases[i].source, (boolean_t)mode);
+            if (cases[i].expected) {
+                CHECK(module == NULL);
+                check_eof_diagnostic(test_file, cases[i].expected,
+                                     cases[i].line, cases[i].col);
+            } else {
+                CHECK(module != NULL);
+                CHECK(get_error_count() == 0);
+                CHECK(diag_get_captured_count() == 0);
+            }
+            if (mode)
+                check_eof_token(cases[i].source, test_file, cases[i].line, cases[i].col);
+            finish_case();
+        }
+    }
+}
+
+static void test_eof_file_ownership(void) {
+    /* Exercise the per-file parser entry used by source imports. The stream
+       borrows its source/path through parsing; captured diagnostics must still
+       own their filename and coordinates after those buffers are released. */
+    const struct { const char *file, *source, *expected; usize_t line; } cases[] = {
+        {"imported/empty.sts", "", "'mod'", 1},
+        {"imported/module.sts", "mod imported.module\n", "';'", 2},
+    };
+    case_name = "EOF imported-file diagnostic ownership";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        for (int mode = 0; mode < 2; mode++) {
+            char *file = strdup(cases[i].file);
+            char *source = strdup(cases[i].source);
+            CHECK(file && source);
+            restore_diagnostic_counts(0, 0);
+            diag_clear_captured();
+            diag_set_render_enabled(False);
+            diag_register_source(test_file, "mod caller;\n");
+            diag_set_file(test_file);
+            stream = mode ? pp_process(source, file, NULL, 0) : NULL;
+            if (mode) {
+                CHECK(stream);
+                CHECK(parse_from_stream(stream) == NULL);
+                check_eof_token(source, file, cases[i].line, 1);
+            } else {
+                diag_set_file(file);
+                CHECK(parse(source) == NULL);
+            }
+            check_eof_diagnostic(file, cases[i].expected, cases[i].line, 1);
+            finish_case();
+            memset(file, 'x', strlen(file));
+            memset(source, 'x', strlen(source));
+            free(file);
+            free(source);
+            diag_clear_sources();
+            CHECK(strcmp(diag_get_file(), cases[i].file) == 0);
+            check_eof_diagnostic(cases[i].file, cases[i].expected, cases[i].line, 1);
+            diag_set_file(test_file);
+        }
+    }
+}
+
 /* Generate resource-limit cases without checking enormous source fixtures in. */
 static char *nested_source(const char *prefix, const char *open,
                            const char *middle, const char *close,
@@ -307,6 +423,8 @@ static void test_resource_limits(void) {
 int main(void) {
     test_literals();
     test_comments();
+    test_eof_locations();
+    test_eof_file_ownership();
     test_discarded_lexer_errors();
     test_resource_limits();
     expect_accepted("typed variadic dispatch dotted syntax",
