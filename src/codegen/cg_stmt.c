@@ -1,4 +1,5 @@
 /* ── statements ── */
+#include "format_spec.h"
 
 /* Returns True if type_info is a primitive (non-struct, non-enum) that can be heap-allocated */
 static boolean_t is_primitive_type(type_info_t ti) {
@@ -939,55 +940,15 @@ static void print_emit_scalar(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, type_i
    Flags and modifiers compose: {:+#08x}, {:<+8}, etc.
    Anything unrecognised falls back to the auto format. */
 
-/* Parsed representation of a format spec (the part after ':'). */
-typedef struct {
-    boolean_t left_align;   /* '<' flag                          */
-    boolean_t force_sign;   /* '+' flag                          */
-    boolean_t alt_form;     /* '#' flag (0x/0X/0b/0 prefixes)   */
-    boolean_t zero_pad;     /* '0' flag                          */
-    usize_t   width;        /* field width; 0 = unset            */
-    usize_t   prec;         /* float precision; (usize_t)-1 = unset */
-    char      base;         /* 'x','X','b','o','d'; 0 = auto     */
-} print_spec_t;
-
-static print_spec_t parse_print_spec(const char *s, usize_t len) {
-    print_spec_t sp = { False, False, False, False, 0, (usize_t)-1, 0 };
-    usize_t i = 0;
-
-    /* flags: any of + < # 0 in any order before width/precision/base.
-       '0' is always the zero-pad flag here; width digits come after. */
-    while (i < len) {
-        if      (s[i] == '<') { sp.left_align = True; i++; }
-        else if (s[i] == '+') { sp.force_sign = True; i++; }
-        else if (s[i] == '#') { sp.alt_form   = True; i++; }
-        else if (s[i] == '0') { sp.zero_pad   = True; i++; }
-        else break;
-    }
-
-    /* width */
-    while (i < len && s[i] >= '0' && s[i] <= '9')
-        sp.width = sp.width * 10 + (usize_t)(s[i++] - '0');
-
-    /* precision */
-    if (i < len && s[i] == '.') {
-        i++;
-        sp.prec = 0;
-        while (i < len && s[i] >= '0' && s[i] <= '9')
-            sp.prec = sp.prec * 10 + (usize_t)(s[i++] - '0');
-    }
-
-    /* base specifier */
-    if (i < len && (s[i]=='x'||s[i]=='X'||s[i]=='b'||s[i]=='o'||s[i]=='d'))
-        sp.base = s[i];
-
-    return sp;
-}
-
 static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, type_info_t source,
-                                   const char *spec, usize_t slen, boolean_t to_stderr) {
+                                   const char *spec, usize_t slen, boolean_t to_stderr, node_t *anchor) {
     if (slen == 0) { print_emit_scalar(cg, val, ty, source, to_stderr); return; }
 
-    print_spec_t sp = parse_print_spec(spec, slen);
+    stash_format_spec_t sp = stash_format_parse(spec, slen);
+    if (sp.status != STASH_FORMAT_OK) {
+        cg_format_error(anchor, cg_format_status_message(sp.status));
+        return;
+    }
 
     /* ── binary: custom helper (printf has no portable %b) ── */
     if (sp.base == 'b') {
@@ -1017,7 +978,7 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, t
 } while (0)
 
     /* ── float ── */
-    if (llvm_is_float(ty) || (sp.base == 0 && sp.prec != (usize_t)-1)) {
+    if (llvm_is_float(ty) || (sp.base == 0 && sp.has_precision)) {
         LLVMValueRef dval = val;
         if (llvm_is_float(ty) && ty == LLVMFloatTypeInContext(cg->ctx))
             dval = LLVMBuildFPExt(cg->builder, val,
@@ -1025,19 +986,14 @@ static void print_emit_scalar_spec(cg_t *cg, LLVMValueRef val, LLVMTypeRef ty, t
         else if (llvm_is_int(ty))
             dval = scalar_coerce(cg, val, source, scalar_type(TypeF64), Null, True);
 
-        /* build: %[flags][width][.prec]g */
+        /* Shared builder preserves existing bytes and surrounding IR order. */
         char pfmt[32];
-        usize_t n = 0;
-        pfmt[n++] = '%';
-        if (sp.left_align) pfmt[n++] = '-';
-        if (sp.force_sign) pfmt[n++] = '+';
-        if (sp.zero_pad && !sp.left_align) pfmt[n++] = '0';
-        if (sp.width > 0)
-            n += (usize_t)snprintf(pfmt + n, sizeof(pfmt) - n, "%zu", sp.width);
-        if (sp.prec != (usize_t)-1)
-            n += (usize_t)snprintf(pfmt + n, sizeof(pfmt) - n, ".%zu", sp.prec);
-        pfmt[n++] = (sp.prec != (usize_t)-1) ? 'f' : 'g';
-        pfmt[n] = '\0';
+        unsigned long needed;
+        stash_format_status_t status = stash_format_float_conversion(&sp, pfmt, sizeof(pfmt), &needed);
+        if (status != STASH_FORMAT_OK) {
+            cg_format_error(anchor, cg_format_status_message(status));
+            return;
+        }
 
         EMIT_FMT1(pfmt, dval);
 #undef EMIT_FMT1
@@ -1148,7 +1104,7 @@ static void print_emit_arg(cg_t *cg, node_t *arg, const char *spec, usize_t slen
             }
         }
     } else {
-        print_emit_scalar_spec(cg, val, ty, scalar_expr_type(cg, arg, NO_TYPE), spec, slen, to_stderr);
+        print_emit_scalar_spec(cg, val, ty, scalar_expr_type(cg, arg, NO_TYPE), spec, slen, to_stderr, arg);
     }
 }
 

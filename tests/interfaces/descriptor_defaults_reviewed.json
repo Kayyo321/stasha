@@ -271,7 +271,7 @@
     "src/codegen/cg_coro.c": "53c8c47f2a9877d8fa280adae3829b526dda118ec5a48f462c1404440dbb2181",
     "src/codegen/cg_debug.c": "78e8fed7120bfe315ad0381f61ba92885b5a86e190a18179f9b862d77b04dbc1",
     "src/codegen/cg_dtors.c": "bad1fc4402ceb4fd503a9fa209cadc3d1b2920636d0b80920ce7221d350493b9",
-    "src/codegen/cg_expr.c": "9d8062621b072829a63948219cb2380d272a298339f4d5f064e73b55f4a0d350",
+    "src/codegen/cg_expr.c": "bcff61df6eaaa9f044618088b9ad43c0b903639b13dd438de82f2bea02f10477",
     "src/codegen/cg_fileheaders.c": "1f0d1b1fd1dedaee659108277655846c2882dbc8a4e0da555db9d9aaf25a0da7",
     "src/codegen/cg_generics.c": "dd884d77ed17462f2f10bb700daa8624d03fff6bc27261b6f6e9a91620df3147",
     "src/codegen/cg_global_const.c": "9d14d17e8764c2f9bae204b618c3bd706b03d96d801e767726686df657f818bf",
@@ -289,7 +289,7 @@
     "src/codegen/cg_scalar_const.c": "2c34eaf213c5dd41ea3808631a082b9f474ec5404e42e4234db929a710e1480f",
     "src/codegen/cg_signals.c": "44f406e06247a837b86a7834671509de9383a632a224d4f52e9552418b32d987",
     "src/codegen/cg_signatures.c": "768798ac78691acb9f2c5d485d4a455ca7120471bad3da07c36d669cb25d2d91",
-    "src/codegen/cg_stmt.c": "b1828605a107c132f4ef383a1d13dc0d93757a9cbaa0905c0ecf81e1e7c3c90a",
+    "src/codegen/cg_stmt.c": "2cd8fe1a5eaa496e9126f13b9797a542a3e72d0156e4609ae21ab1da7de9e815",
     "src/codegen/cg_symtab.c": "fe4b47a7ea9130975e8d14890c881423494cc25e4c542ddbf31b669a20fda173",
     "src/codegen/cg_types.c": "0212074082d575e0b21f9bb1c2f808eba913de208164920ae431ecd72493937b",
     "src/codegen/codegen.c": "9f1bdb45acbaad48d9ed06ab099e4960b4f1380c64848b5db75a4ae1624b497d",
@@ -329,7 +329,8 @@
     "src/runtime/zone_runtime.h": "92ac95c2b65aa7e17911c0f767874ad801eb99bf0a5d710bb26ee516aab9e131",
     "src/target/target.h": "bc0c644db2dabe13beb5a70f18de1370013352c77f3ef271e803b88e08ab5b35",
     "src/tooling/editor.c": "9904b2ac6c773513e9eb028e580bd422967062bb84ffe4542b52942cb70f70f7",
-    "src/tooling/editor.h": "6a8fc0ae37bb41d101fc80956d0e0db6092be953eb8ab989f962430b11cf8724"
+    "src/tooling/editor.h": "6a8fc0ae37bb41d101fc80956d0e0db6092be953eb8ab989f962430b11cf8724",
+    "src/codegen/format_spec.h": "c98f0d8fe78692acbad5d8135207a589ab5a0a49646fdc3700d79702d24a46c6"
   },
   "review_basis_binary_sha256": "495d1dfdb60176ef7e5ac24d465e0966d53b265c59d3db57b5753119c3d0edfe",
   "compiler_trust": "The coordinator/CI must supply its same-source pinned-toolchain build. Source hashes and selected emitted IR are not attestation of an arbitrary supplied executable. Invocation captures binary identity and checks it before each generated-program run."

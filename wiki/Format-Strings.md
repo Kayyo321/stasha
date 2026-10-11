@@ -142,11 +142,39 @@ The same selection applies to chained calls such as
 `greeter:Builder:company()`. Expressions are evaluated once, left to right.
 Literal escapes remain raw until rendering, so `\{` cannot become a slot.
 
-Standalone formatting still uses a separate renderer: `.N` precision,
-width-only/sign-only specs, wide-integer spec conversions, and general spec
-validation are not supported by this checkpoint. Do not assume the inline
-`print.()` examples above establish standalone parity. Output-size checking and
-portable binary rendering also remain separate limitations.
+Standalone formatting uses a separate renderer. Actual `f32`/`f64` values
+(including resolved aliases and call results) support completely consumed `.N`
+specs, with optional `<`, `+`, `#`, `0` flags and decimal width before the dot:
+
+```stasha
+stack f64 value = 3.125;
+stack i8 *rw text = @'{value:.4}|{value:+08.2}|{value:<+08.2}|{value:#.0}';
+print.('{}\n', text);  // 3.1250|+0003.12|+3.12   |3
+```
+
+Precision counts digits after the radix point. Width is a minimum; `<` wins
+over zero padding. As in inline float formatting, `#` is parsed but ignored,
+so `#.0` does not force a radix point. Stored `f32` values are promoted once
+for C varargs; promotion does not recover their lost precision. Rounding and
+non-finite spellings follow the target libc and current floating environment.
+Without a spec, standalone floats retain `%g` default formatting.
+
+For this precision path the fixed allocation accounts for the largest finite
+binary64 value, sign, precision, literal bytes and final NUL. Its completeness
+qualification is Linux x86-64 LP64 with IEEE binary32/binary64 and the runtime
+C numeric locale; compact glibc `nan`/`inf` controls are separately qualified.
+The compiler does not change locale or rounding. Width/precision fields over
+2147483647 and calculated output bounds over 2147483647 bytes are compile-time
+errors. Representable sizes do not guarantee allocation success, and existing
+snprintf error-result handling is unchanged.
+
+This does not establish general standalone/inline parity. Width-only/sign-only
+standalone specs, non-float precision conversions, wide-integer spec conversions,
+general spec validation and portable binary rendering remain outside this
+correction. Legacy pointer-width estimates and other raw-spec paths do not gain
+a complete-output guarantee. New precision selection requires a dot, at least
+one precision digit and no trailing suffix; it does not expand supported syntax
+for other spec spellings.
 
 ### Raw Strings
 
@@ -185,13 +213,16 @@ Both forms validate at compile time:
 
 - The **placeholder count** must match the number of trailing arguments (classic form).
 - Each `{expr}` in `@'...'` must reference a name in scope.
-- Each format spec is parsed; invalid specs produce a compile error pointing at the offending `{...}`.
+- Placeholder expressions must be fully consumed; trailing expression tokens are rejected.
+- Reached width/precision numeric fields above 2147483647 are rejected before
+  arithmetic or raw-spec fallback, and standalone calculated output bounds
+  above 2147483647 bytes are rejected. These codegen diagnostics use the
+  available outer expression/argument anchor, rather than inventing a raw-slot offset.
 
-```
-error: format spec ':08q' is not recognised (valid: x, X, b, o, .N, <N, N, 0N, +, #)
-```
-
-Runtime panics for format mismatch are impossible — every issue surfaces at compile time.
+These are bounded checks, not general format-spec validation. Unsupported or
+legacy spec paths retain their limitations; parser success alone does not prove
+that an arbitrary raw backend format is valid, that every output is complete,
+or that allocation and runtime formatting cannot fail.
 
 ---
 
@@ -203,7 +234,9 @@ Runtime panics for format mismatch are impossible — every issue surfaces at co
 print.(@'set = {struct_t{.a=1, .b=2}.a}\n');   // → set = 1
 ```
 
-**Multi-line interpolation** — A single `@'...'` may not span multiple lines (no implicit string concatenation). Use the classic form with `\n`:
+**Multi-line interpolation** — Physical lines are retained in an `@'...'`
+literal, as covered by the [frontend literal/template tests](../tests/frontend/README.md#complete-format-placeholder-expressions).
+For an explicit newline escape, either form can use `\n`:
 
 ```stasha
 print.('first line\nsecond line: {}\n', val);

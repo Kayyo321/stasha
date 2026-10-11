@@ -1,0 +1,7 @@
+mod precision_bound;
+fn main(void): i32 {
+    stack f64 value = 3.125;
+    stack i8 *rw result = @'{value:.2147483336}';
+    print.('{}\n', result);
+    ret 0;
+}

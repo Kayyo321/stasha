@@ -1,0 +1,88 @@
+mod float_precision_native;
+type Decimal: f64;
+@[[abi: c]] ext fn fp_environment_ok(void): i32;
+@[[abi: c]] ext fn fp_max64(void): f64;
+@[[abi: c]] ext fn fp_max32(void): f32;
+@[[abi: c]] ext fn fp_sub64(void): f64;
+@[[abi: c]] ext fn fp_sub32(void): f32;
+@[[abi: c]] ext fn fp_negzero64(void): f64;
+@[[abi: c]] ext fn fp_negzero32(void): f32;
+@[[abi: c]] ext fn fp_nan64(void): f64;
+@[[abi: c]] ext fn fp_nan32(void): f32;
+@[[abi: c]] ext fn fp_inf64(void): f64;
+@[[abi: c]] ext fn fp_inf32(void): f32;
+int mod helpers {
+    ext fn small(void): f32 { ret 3.125; }
+    ext fn large(void): f64 { ret 3.125; }
+    ext fn x(void): i32 { ret 255; }
+}
+int mod chain {
+    ext type Builder: struct { ext i32 unused; }
+    ext fn Builder.value(void): f64 { ret 3.125; }
+}
+fn first(stack i32 *rw trace): f32 { trace[0] = trace[0] * 10 + 1; ret 1.25; }
+fn second(stack i32 *rw trace): f64 { trace[0] = trace[0] * 10 + 2; ret 2.5; }
+fn third(stack i32 *rw trace): Decimal { trace[0] = trace[0] * 10 + 3; ret 3.75; }
+fn promote_once(stack f32 value): void {
+    stack i8 *rw result = @'promote={value:.9}';
+    print.('{}\n', result);
+}
+fn direct_f64(stack f64 value): void {
+    stack i8 *rw result = @'direct={value:.9}';
+    print.('{}\n', result);
+}
+fn returned(stack f64 value): heap i8 *rw { ret heap @'returned={value:.4}'; }
+fn main(void): i32 {
+    if (fp_environment_ok() != 1) { ret 90; }
+    stack f32 small = 3.125;
+    stack f64 large = 3.125;
+    stack Decimal alias = 3.125;
+    stack f32 tenth32 = 0.1;
+    stack f64 tenth64 = 0.1;
+    promote_once(tenth32); direct_f64(tenth64);
+    stack i8 *rw a = @'f32={small:.0}|{small:.2}|{small:.4}|{-small:.2}';
+    print.('{}\n', a);
+    heap i8 *rw b = heap @'f64={large:.0}|{large:.2}|{large:.4}|{-large:.2}';
+    print.('{}\n', b); rem.(b);
+    stack i8 *rw flags = @'flags=[{large:8.2}][{large:08.2}][{large:+08.2}][{large:<8.2}][{large:<+08.2}][{large:#.0}][{large:0008.02}]';
+    print.('{}\n', flags);
+    heap i8 *rw heap_flags = heap @'flags=[{large:8.2}][{large:08.2}][{large:+08.2}][{large:<8.2}][{large:<+08.2}][{large:#.0}][{large:0008.02}]';
+    print.('{}\n', heap_flags); rem.(heap_flags);
+    stack i8 *rw rounding = @'round={2.5:.0}|{3.5:.0}|{1.25:.1}|{9.5:.0}|{-2.5:.0}|{-0.125:.2}|{0.0:.4}';
+    print.('{}\n', rounding);
+    stack i8 *rw calls = @'calls={helpers:small():.4}|{helpers:large():.4}|{chain:Builder:value():.4}|{alias:.4}';
+    print.('{}\n', calls);
+    stack i32 trace = 0;
+    stack i8 *rw order = @'order={first(&trace):.2}|{second(&trace):.2}|{third(&trace):.2}';
+    print.('{}\n', order); print.('trace={}\n', trace);
+    trace = 0;
+    heap i8 *rw heap_order = heap @'order={first(&trace):.2}|{second(&trace):.2}|{third(&trace):.2}';
+    print.('{}\n', heap_order); print.('trace={}\n', trace); rem.(heap_order);
+    stack f64 max64 = fp_max64(); stack f32 max32 = fp_max32();
+    stack i8 *rw extrema64 = @'max64={max64:.0}|{max64:.2}|{-max64:.0}|{-max64:.2}';
+    print.('{}\n', extrema64);
+    heap i8 *rw extrema32 = heap @'max32={max32:.0}|{max32:.2}|{-max32:.0}|{-max32:.2}';
+    print.('{}\n', extrema32); rem.(extrema32);
+    stack f64 sub64 = fp_sub64(); stack f32 sub32 = fp_sub32();
+    stack f64 negzero64 = fp_negzero64(); stack f32 negzero32 = fp_negzero32();
+    stack i8 *rw tiny = @'tiny={sub64:.20}|{-sub64:.20}|{sub32:.20}|{-sub32:.20}|{negzero64:.2}|{negzero32:+08.2}';
+    print.('{}\n', tiny);
+    stack f64 nan64 = fp_nan64(); stack f32 nan32 = fp_nan32();
+    stack f64 inf64 = fp_inf64(); stack f32 inf32 = fp_inf32();
+    heap i8 *rw special = heap @'special={nan64:.2}|{nan32:.2}|{inf64:.2}|{-inf64:.2}|{inf32:+8.2}|{-inf32:<8.2}';
+    print.('{}\n', special); rem.(special);
+    stack i8 *rw mixed = @'mixed={large:.2}|{42}|{helpers:x():08x}|{small}|{large}';
+    print.('{}\n', mixed);
+    stack i8 *rw literal = @'\{raw\} \\ \' \" % \% {large:.2}\n\t\0\q';
+    print.('[{}]\n', literal);
+    heap i8 *rw heap_literal = heap @'\{raw\} \\ \' \" % \% {large:.2}\n\t\0\q';
+    print.('[{}]\n', heap_literal); rem.(heap_literal);
+    stack i8 *rw lines = @'lines
+{small:.2}\
+{large:.4}';
+    print.('{}\n', lines);
+    stack i8 *rw empty = @''; print.('[{}]\n', empty);
+    heap i8 *rw heap_empty = heap @''; print.('[{}]\n', heap_empty); rem.(heap_empty);
+    heap i8 *rw result = returned(large); print.('{}\n', result); rem.(result);
+    ret 0;
+}

@@ -98,9 +98,13 @@ and survival of caller/preprocessor storage release and shallow AST copies while
 the arena remains alive. Selected raw spec delimiters are preserved in parser-only
 controls, never executed as malformed native conversions.
 
-This is not a general spec validator or standalone/inline formatting parity:
-standalone `.N` precision, width-only/sign-only specs, checked output sizing,
-wide-integer spec conversion and binary portability remain separate work.
+This is not a general spec validator or standalone/inline formatting parity.
+The separate fixed tests in `tests/format/` cover actual f32/f64 standalone `.N`
+lowering and its checked numeric/output bounds on qualified Linux x86-64 LP64
+hosts. That codegen contract does not change these parser templates or source
+positions. Width-only/sign-only standalone specs, general legacy-path output
+completeness, wide-integer spec conversion and binary portability remain
+separate work.
 
 ## Integer literal contract
 

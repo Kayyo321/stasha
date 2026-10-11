@@ -5,6 +5,7 @@ static ptr_perm_t access_address_permissions(cg_t *, node_t *);
 #include "cg_scalar_const.c"
 #include "cg_abi.c"
 #include <math.h>
+#include "format_spec.h"
 
 /* forward declaration — defined in cg_generics.c */
 static type_info_t subst_type_info(cg_t *cg, type_info_t ti);
@@ -4991,6 +4992,23 @@ static LLVMValueRef invalid_comptime_fmt_template(cg_t *cg) {
     return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
 }
 
+/* Numeric failures are compile-time errors anchored at an actual AST node;
+ * canonical slots no longer retain a trustworthy raw subexpression offset. */
+static void cg_format_error(node_t *node, const char *message) {
+    diag_begin_error("%s", message);
+    diag_span(SRC_LOC(node->line, node->col, 0), True, "format expression here");
+    diag_finish();
+}
+
+static const char *cg_format_status_message(stash_format_status_t status) {
+    switch (status) {
+        case STASH_FORMAT_WIDTH_RANGE: return "format width exceeds 2147483647";
+        case STASH_FORMAT_PRECISION_RANGE: return "format precision exceeds 2147483647";
+        case STASH_FORMAT_CAPACITY: return "internal compiler error: floating format conversion buffer is too small";
+        default: return "comptime format output bound exceeds 2147483647 bytes";
+    }
+}
+
 static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     const char  *fmt     = node->as.comptime_fmt.template_fmt;
     usize_t      flen    = node->as.comptime_fmt.template_len;
@@ -5000,9 +5018,15 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     if (!fmt || flen > node->as.comptime_fmt.fmt_len || fmt[flen] != '\0')
         return invalid_comptime_fmt_template(cg);
 
+    unsigned long scratch_size;
+    if (!stash_format_add(flen, 1, STASH_FORMAT_HOST_MAX, &scratch_size)) {
+        cg_format_error(node, "comptime format scratch size is not representable");
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    }
+
     /* Fast path: no args + stack → global string pointer, zero runtime cost. */
     if (args->count == 0 && !on_heap) {
-        heap_t bh = allocate(flen + 1, 1);
+        heap_t bh = allocate(scratch_size, 1);
         char *buf = bh.pointer;
         usize_t blen = 0;
         for (usize_t i = 0; i < flen; ) {
@@ -5025,38 +5049,62 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     }
 
     usize_t argc = args->count;
+    unsigned long values_size, sn_argc, sn_args_size;
+    if (!stash_format_add(argc, 3, UINT_MAX, &sn_argc)
+        || !stash_format_mul(argc, sizeof(LLVMValueRef), STASH_FORMAT_HOST_MAX, &values_size)
+        || !stash_format_mul(sn_argc, sizeof(LLVMValueRef), STASH_FORMAT_HOST_MAX, &sn_args_size)) {
+        cg_format_error(node, "comptime format argument count is not representable");
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    }
+    if (!stash_format_mul(flen, 4, STASH_FORMAT_HOST_MAX, &scratch_size)
+        || !stash_format_add(scratch_size, 64, STASH_FORMAT_HOST_MAX, &scratch_size)) {
+        cg_format_error(node, "comptime format scratch size is not representable");
+        return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+    }
 
     /* Evaluate all arg expressions up front. */
-    heap_t vh = argc ? allocate(argc, sizeof(LLVMValueRef)) : NullHeap;
+    heap_t vh = argc ? allocate(values_size, 1) : NullHeap;
     LLVMValueRef *vals = argc ? vh.pointer : Null;
     for (usize_t i = 0; i < argc; i++)
         vals[i] = gen_expr(cg, args->items[i]);
 
-    /* Walk the parser's still-raw template once to build the C printf format
-     * and retain the existing compile-time buffer bound. No expression text
-     * remains here. Literal expansion is at most 2x; {} emits at most %lld.
-     * The existing scratch allocation below therefore still suffices.
-     * (This does not establish checked size arithmetic or spec validity.) */
-    heap_t fh = allocate(flen * 4 + 64, 1);
+    /* Walk the canonical raw-byte template once. Every append reserves NUL;
+     * selected floating conversions use the same metadata for text and bound.
+     * Legacy slot contributions retain their narrower existing guarantees. */
+    heap_t fh = allocate(scratch_size, 1);
     char *cfmt = fh.pointer;
     usize_t cfmt_len = 0;
     usize_t arg_idx = 0;
     usize_t buf_bound = 1; /* null terminator */
+    const char *failure = Null;
+
+#define CFMT_APPEND(text, count) do { \
+    if (!stash_format_append(cfmt, scratch_size, &cfmt_len, (text), (count))) { \
+        failure = "comptime format scratch size is not representable"; \
+        goto format_failure; \
+    } \
+} while (0)
+#define CFMT_BOUND(count) do { \
+    if (!stash_format_add(buf_bound, (count), STASH_FORMAT_INT_MAX, &buf_bound)) { \
+        failure = "comptime format output bound exceeds 2147483647 bytes"; \
+        goto format_failure; \
+    } \
+} while (0)
 
     for (usize_t i = 0; i < flen; ) {
         if (fmt[i] == '\\' && i + 1 < flen) {
             char ec = fmt[i + 1];
-            if (ec == '{' || ec == '}') { cfmt[cfmt_len++] = ec; buf_bound++; }
-            else if (ec == '%')         { cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%'; buf_bound++; }
+            if (ec == '{' || ec == '}') { CFMT_APPEND(&ec, 1); CFMT_BOUND(1); }
+            else if (ec == '%')         { CFMT_APPEND("%%", 2); CFMT_BOUND(1); }
             else {
                 char d = error_decode_esc(ec);
-                if (d != '\0') { cfmt[cfmt_len++] = d; buf_bound++; }
+                if (d != '\0') { CFMT_APPEND(&d, 1); CFMT_BOUND(1); }
             }
             i += 2; continue;
         }
         if (fmt[i] == '%') {
-            cfmt[cfmt_len++] = '%'; cfmt[cfmt_len++] = '%';
-            buf_bound++;
+            CFMT_APPEND("%%", 2);
+            CFMT_BOUND(1);
             i++; continue;
         }
         if (fmt[i] == '{') {
@@ -5085,30 +5133,27 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
                 slen = j - (i + 2);
             }
 
-            /* Extract numeric width from spec (for buffer sizing). */
-            usize_t width = 0;
-            if (slen > 0) {
-                usize_t k = 0;
-                while (k < slen && (spec[k] == '+' || spec[k] == '-'
-                        || spec[k] == '#' || spec[k] == ' ')) k++;
-                if (k < slen && spec[k] == '0'
-                        && k + 1 < slen && spec[k + 1] >= '0' && spec[k + 1] <= '9') k++;
-                while (k < slen && spec[k] >= '0' && spec[k] <= '9') {
-                    width = width * 10 + (spec[k] - '0'); k++;
-                }
-                if (k < slen && spec[k] == '.') {
-                    k++;
-                    usize_t prec = 0;
-                    while (k < slen && spec[k] >= '0' && spec[k] <= '9') {
-                        prec = prec * 10 + (spec[k] - '0'); k++;
-                    }
-                    if (prec + 20 > width) width = prec + 20;
-                }
+            /* Range errors outrank nonselection in both recognized scanners. */
+            stash_format_spec_t sp = stash_format_parse(spec, slen);
+            unsigned long width = 0;
+            stash_format_status_t status = sp.status;
+            if (status == STASH_FORMAT_OK)
+                status = stash_format_legacy_width(spec, slen, &width);
+            if (status != STASH_FORMAT_OK) {
+                failure = cg_format_status_message(status);
+                goto format_failure;
             }
-
             LLVMTypeRef ty = LLVMTypeOf(vals[arg_idx]);
+            boolean_t selected_float = llvm_is_float(ty)
+                && stash_format_select_precision(&sp, slen);
             usize_t arg_bound;
-            if (llvm_is_ptr(ty)) {
+            if (selected_float) {
+                status = stash_format_float_bound(&sp, &arg_bound);
+                if (status != STASH_FORMAT_OK) {
+                    failure = cg_format_status_message(status);
+                    goto format_failure;
+                }
+            } else if (llvm_is_ptr(ty)) {
                 if (width == 0 && !on_heap) {
                     diag_begin_error("comptime format of pointer requires an explicit width, e.g. {p:64}");
                     diag_set_category(ErrCatPointerSafety);
@@ -5135,12 +5180,23 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
             } else {
                 arg_bound = width > 32 ? width : 32;
             }
-            buf_bound += arg_bound;
+            CFMT_BOUND(arg_bound);
 
             /* Emit %spec or type-default (mirrors gen_error_expr mapping). */
-            cfmt[cfmt_len++] = '%';
+            if (selected_float) {
+                char conversion[32];
+                unsigned long needed;
+                status = stash_format_float_conversion(&sp, conversion, sizeof(conversion), &needed);
+                if (status != STASH_FORMAT_OK) {
+                    failure = cg_format_status_message(status);
+                    goto format_failure;
+                }
+                CFMT_APPEND(conversion, needed - 1);
+            } else {
+                CFMT_APPEND("%", 1);
+                if (slen > 0) CFMT_APPEND(spec, slen);
+            }
             if (slen > 0) {
-                for (usize_t k = 0; k < slen; k++) cfmt[cfmt_len++] = spec[k];
                 /* widen scalars as printf ABI requires */
                 if (llvm_is_float(ty) && ty == LLVMFloatTypeInContext(cg->ctx))
                     vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
@@ -5155,24 +5211,24 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
                     vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
                                                    LLVMInt32TypeInContext(cg->ctx), "iext");
             } else if (llvm_is_ptr(ty)) {
-                cfmt[cfmt_len++] = 's';
+                CFMT_APPEND("s", 1);
             } else if (llvm_is_float(ty)) {
-                cfmt[cfmt_len++] = 'g';
+                CFMT_APPEND("g", 1);
                 if (ty == LLVMFloatTypeInContext(cg->ctx))
                     vals[arg_idx] = LLVMBuildFPExt(cg->builder, vals[arg_idx],
                                                     LLVMDoubleTypeInContext(cg->ctx), "fpext");
             } else if (ty == LLVMInt64TypeInContext(cg->ctx)) {
-                cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'l'; cfmt[cfmt_len++] = 'd';
+                CFMT_APPEND("lld", 3);
             } else if (ty == LLVMInt8TypeInContext(cg->ctx)) {
-                cfmt[cfmt_len++] = 'c';
+                CFMT_APPEND("c", 1);
                 vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
                                                LLVMInt32TypeInContext(cg->ctx), "cext");
             } else if (ty == LLVMInt1TypeInContext(cg->ctx)) {
-                cfmt[cfmt_len++] = 'd';
+                CFMT_APPEND("d", 1);
                 vals[arg_idx] = LLVMBuildZExt(cg->builder, vals[arg_idx],
                                                LLVMInt32TypeInContext(cg->ctx), "bext");
             } else {
-                cfmt[cfmt_len++] = 'd';
+                CFMT_APPEND("d", 1);
                 if (ty != LLVMInt32TypeInContext(cg->ctx))
                     vals[arg_idx] = LLVMBuildSExt(cg->builder, vals[arg_idx],
                                                    LLVMInt32TypeInContext(cg->ctx), "iext");
@@ -5181,10 +5237,12 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
             i = j + 1;
             continue;
         }
-        cfmt[cfmt_len++] = fmt[i++]; buf_bound++;
+        CFMT_APPEND(fmt + i, 1); i++; CFMT_BOUND(1);
     }
     if (arg_idx != argc) goto invalid_template;
     cfmt[cfmt_len] = '\0';
+#undef CFMT_APPEND
+#undef CFMT_BOUND
 
     /* Declare snprintf once per module. */
     LLVMValueRef snprintf_fn = LLVMGetNamedFunction(cg->module, "snprintf");
@@ -5199,8 +5257,11 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     LLVMTypeRef snprintf_type = LLVMGlobalGetValueType(snprintf_fn);
 
     /* Allocate buffer — alloca for stack, malloc for heap. */
-    usize_t final_size = on_heap ? (buf_bound > 512 ? buf_bound : 512) : buf_bound;
-    if (final_size < 16) final_size = 16;
+    unsigned long final_size;
+    if (!stash_format_final_size(buf_bound, on_heap, &final_size)) {
+        failure = "comptime format output bound exceeds 2147483647 bytes";
+        goto format_failure;
+    }
     LLVMValueRef buf_size_v = LLVMConstInt(LLVMInt64TypeInContext(cg->ctx), final_size, 0);
     LLVMValueRef buf;
     if (on_heap) {
@@ -5213,8 +5274,7 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     }
 
     /* snprintf(buf, size, cfmt, args...) */
-    usize_t sn_argc = 3 + arg_idx;
-    heap_t sah = allocate(sn_argc, sizeof(LLVMValueRef));
+    heap_t sah = allocate(sn_args_size, 1);
     LLVMValueRef *sn_args = sah.pointer;
     sn_args[0] = buf;
     sn_args[1] = buf_size_v;
@@ -5229,6 +5289,12 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     if (argc) deallocate(vh);
 
     return buf;
+
+format_failure:
+    deallocate(fh);
+    if (argc) deallocate(vh);
+    cg_format_error(node, failure);
+    return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
 
 invalid_template:
     deallocate(fh);
