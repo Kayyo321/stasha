@@ -7,7 +7,7 @@ This page covers all the ways to build Stasha programs and libraries.
 ## Single-File Programs
 
 ```bash
-stasha hello.sts              # compile + link → ./hello
+stasha hello.sts              # compile + link → ./a.out
 stasha hello.sts -o greet     # specify output name
 ```
 

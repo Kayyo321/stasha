@@ -64,7 +64,7 @@ Compile and run it:
 
 ```bash
 stasha hello.sts
-./hello
+./a.out
 Hello, World!
 ```
 

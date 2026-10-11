@@ -75,7 +75,7 @@ These are used by IDE integrations, not normally invoked by hand:
 
 ```bash
 # Build and run quickly:
-stasha hello.sts && ./hello
+stasha hello.sts && ./a.out
 
 # Debug build:
 stasha app.sts -g -o=0 -o bin/debug_app
