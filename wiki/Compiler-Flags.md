@@ -42,6 +42,56 @@ stasha app.sts --target x86_64-pc-windows-msvc        # Windows x86_64
 stasha app.sts --target wasm32-unknown-wasi            # WebAssembly
 ```
 
+### Target operands, defaults, and errors
+
+The supported spelling is `--target <triple>`, with a separate, nonempty operand
+that does not begin with `-`. A missing, empty, or option-like operand returns
+exit status 1 with this fixed diagnostic:
+
+```text
+invalid --target argument (expected --target <triple> with a nonempty, non-option operand)
+```
+
+The exact `--target=` prefix is rejected, with or without a value:
+
+```text
+unsupported --target= spelling (use --target <triple>)
+```
+
+Omitting `--target` retains the native/default target. With `--kernel`, omission
+retains the existing `x86_64-unknown-none-elf` default. `native` is not a new
+literal target spelling. Nonempty, non-option operands continue through the
+existing LLVM normalization and target resolver; this argument check adds no
+supported targets. An unknown nonempty triple retains its existing resolver
+error and compilation-failure output invalidation, rather than the early
+argument-error behavior below.
+
+Repeated valid target options use the last value. Every malformed occurrence
+actually parsed by the common option loop fails immediately, even if another
+valid target follows. An earlier nonempty unknown triple may still be replaced
+by a later valid triple before resolution. Tokens consumed as another option's
+operand (for example, by `-o` or `--path`) are not rescanned as target options.
+Existing command/file/option positioning rules are unchanged.
+
+The first `--help`, `-h`, or `--version` encountered in the global early scan
+still exits successfully before ordinary option parsing, including when it
+appears where a target operand would be. Otherwise, common-loop order determines
+the first error: an earlier malformed editor coordinate can precede a malformed
+target; a parsed malformed target precedes the later kernel/editor restriction
+and missing-coordinate checks.
+
+Early target-argument rejection occurs before project loading, stdin or source
+reading, target resolution, code generation, output invalidation, and linking.
+Ordinary commands have empty stdout and one actionable target error on stderr;
+the existing logger prefix and abort summary may accompany it. Editor commands
+return exactly one diagnostics JSON document with one error and empty stderr.
+
+For these early argument errors, pre-existing compiler output bytes, modes,
+symlinks, and directories are preserved, and no new compiler output or sidecar
+is created. This guarantee excludes paths and aliases in the logger-owned
+namespace: ordinary logger initialization happens before option parsing and
+can create or rotate logs. It is not a promise of zero filesystem writes.
+
 ---
 
 ## Editor / Tooling Flags

@@ -41,11 +41,68 @@ class QualificationShellTests(unittest.TestCase):
             env.pop('MOCK_FAIL_MATCH',None)
             if fail_match is not None:env['MOCK_FAIL_MATCH']=fail_match.strip("'\"")
             env.update(compiler_env or {})
+            self.mock_root=root
+            self.mock_cc=env.get('CC') or 'clang'
+            self.mock_host_cc=env.get('HOST_CC') or 'gcc'
             result=subprocess.run(['bash',str(ROOT/'scripts/qualify_linux.sh'),str(compiler),str(output)],env=env,capture_output=True,text=True,timeout=20)
             self.commands=trace.read_text().splitlines() if trace.exists() else []
             self.command_records=[json.loads(line) for line in environment_trace.read_text().splitlines()] if environment_trace.exists() else []
             self.status=(output/'STATUS.txt').read_text() if (output/'STATUS.txt').exists() else None
             return result,(output/'RESULT.txt').read_text() if (output/'RESULT.txt').exists() else None
+
+    def expected_python_inventory(self):
+        """Exact argv order; these are mocked stages, not compiler evidence."""
+        compiler=str(self.mock_root/'compiler')
+        artifacts=self.mock_root/'evidence'
+        cc=self.mock_cc
+        def driver(script,destination):
+            return [script,'--compiler',compiler,'--artifacts',str(artifacts/destination)]
+        return [
+            ['scripts/verify_llvm_toolchain.py','--llvm-build',str(self.mock_root),
+             '--require-clang','--output',str(artifacts/'toolchain.json')],
+            ['-m','unittest','discover','-s',str(ROOT/'tests/harness'),'-p','test_*.py'],
+            ['-m','unittest','discover','-s','tests/driver','-p','test_project_cli.py'],
+            ['-m','unittest','discover','-s','tests/driver','-p','test_editor_coordinates.py'],
+            ['-m','unittest','discover','-s','tests/driver','-p','test_target_cli.py'],
+            ['-m','unittest','discover','-s','tests/format','-p','test_run_format_tests.py'],
+            ['tests/harness/compiler_suites.py','diag',compiler,'--artifacts',str(artifacts/'diag'),'--keep-artifacts'],
+            ['tests/harness/compiler_suites.py','signals',compiler,'--artifacts',str(artifacts/'signals'),'--keep-artifacts'],
+            ['tests/harness/compiler_suites.py','cinterop',compiler,'--llvm-config',str(self.mock_root/'bin/llvm-config'),
+             '--require-prerequisites','--artifacts',str(artifacts/'cinterop'),'--keep-artifacts'],
+            ['tests/scalars/run.py','--compiler',compiler,'--opt','0,1,2,3','--build-trap-hook',
+             '--require-trap-reasons','--artifacts',str(artifacts/'scalars')],
+            ['tests/memory/run_bounds_a1.py','--compiler',compiler,'--cc',cc,'--opt','0,1,2,3','--artifacts',str(artifacts/'bounds-a1')],
+            ['tests/memory/run_make_b1.py','--compiler',compiler,'--cc',cc,'--opt','0,1,2,3','--artifacts',str(artifacts/'make-b1')],
+            ['tests/memory/run_array_queries.py','--compiler',compiler,'--opt','0,1,2,3','--artifacts',str(artifacts/'array-queries')],
+            driver('tests/interfaces/run_i0.py','interfaces-i0'),
+            driver('tests/interfaces/run_i1a.py','interfaces-i1a'),
+            driver('tests/interfaces/run_i1b.py','interfaces-i1b1'),
+            driver('tests/interfaces/i1b2_run.py','interfaces-i1b2'),
+            driver('tests/interfaces/i1b3a_run.py','interfaces-i1b3a'),
+            ['tests/interfaces/factory_result_run.py','--compiler',compiler,'--phase','gate-b',
+             '--artifacts',str(artifacts/'interfaces-factory-results')],
+            driver('tests/interfaces/descriptor_defaults_run.py','interfaces-descriptor-defaults'),
+            ['tests/format/run_format_tests.py','--compiler',compiler,'--cc',cc,'--helper-cc',self.mock_host_cc,
+             '--phase','all','--artifacts',str(artifacts/'format-precision')],
+            ['tests/layout/run_layout_tests.py','--compiler',compiler,'--cc',cc],
+            ['tests/abi/run_sysv_aggregates.py',compiler,'--cc',cc,'--out',str(artifacts/'abi')],
+            ['tests/abi/run_c_callbacks.py',compiler,'--cc',cc,'--out',str(artifacts/'callbacks')],
+            ['tests/abi/run_c_callback_parameters.py',compiler,'--cc',cc,'--out',str(artifacts/'callback-parameters')],
+            ['tests/abi/run_member_pointers.py','--compiler',compiler,'--cc',cc,'--artifacts',str(artifacts/'members')],
+            ['tests/cleanup/run.py','--compiler',compiler,'--opt','0,2','--zone-probe','--artifacts',str(artifacts/'cleanup')],
+            driver('tests/driver/run.py','driver'),
+            driver('tests/driver/project_cli.py','project-cli'),
+            driver('tests/driver/editor_coordinates.py','editor-coordinates'),
+            driver('tests/driver/target_cli.py','target-cli'),
+            driver('tests/driver/global_initializers.py','globals'),
+        ]
+
+    def assert_exact_inventory(self,expected):
+        self.assertEqual([record['args'] for record in self.command_records],expected)
+        trace=['python3 '+' '.join(args) for args in expected]
+        trace.insert(1,'compiler --version')
+        self.assertEqual(self.commands,trace)
+
     def test_clang_preflight_failure_stops_before_compiler_or_suites(self):
         result,receipt=self.invoke(84,stale=True,fail_match='scripts/verify_llvm_toolchain.py')
         self.assertEqual(result.returncode,84,result.stderr);self.assertIsNone(receipt)
@@ -119,6 +176,20 @@ class QualificationShellTests(unittest.TestCase):
         self.assertEqual(self.status,'FAIL exit=88\n')
         self.assertEqual(self.commands[-1],'python3 -m unittest discover -s tests/driver -p test_editor_coordinates.py')
         self.assertFalse(any('tests/harness/compiler_suites.py' in command for command in self.commands))
+    def test_target_cli_mock_failure_stops_all_later_stages_and_removes_stale_pass(self):
+        stage=['-m','unittest','discover','-s','tests/driver','-p','test_target_cli.py']
+        result,receipt=self.invoke(91,stale=True,match_args=True,fail_match=' '.join(stage))
+        self.assertEqual(result.returncode,91,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=91\n')
+        expected=self.expected_python_inventory()
+        self.assert_exact_inventory(expected[:expected.index(stage)+1])
+    def test_target_cli_failure_stops_all_later_stages_and_removes_stale_pass(self):
+        result,receipt=self.invoke(92,stale=True,fail_match='tests/driver/target_cli.py')
+        self.assertEqual(result.returncode,92,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=92\n')
+        expected=self.expected_python_inventory()
+        index=next(i for i,args in enumerate(expected) if args[0]=='tests/driver/target_cli.py')
+        self.assert_exact_inventory(expected[:index+1])
     def test_format_precision_failure_blocks_receipt_and_later_stages(self):
         result,receipt=self.invoke(89,stale=True,fail_match='tests/format/run_format_tests.py')
         self.assertEqual(result.returncode,89,result.stderr); self.assertIsNone(receipt)
@@ -139,6 +210,17 @@ class QualificationShellTests(unittest.TestCase):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('bounded Linux hosted compiler qualification',receipt)
+        self.assert_exact_inventory(self.expected_python_inventory())
+        target_mock='python3 -m unittest discover -s tests/driver -p test_target_cli.py'
+        self.assertEqual(self.commands.count(target_mock),1)
+        first_suite=next(i for i,command in enumerate(self.commands)
+                         if command.startswith('python3 tests/harness/compiler_suites.py '))
+        self.assertLess(self.commands.index(target_mock),first_suite)
+        target_steps=[i for i,command in enumerate(self.commands)
+                      if command.startswith('python3 tests/driver/target_cli.py --compiler ')]
+        self.assertEqual(len(target_steps),1)
+        self.assertTrue(self.commands[target_steps[0]-1].startswith('python3 tests/driver/editor_coordinates.py '))
+        self.assertTrue(self.commands[target_steps[0]+1].startswith('python3 tests/driver/global_initializers.py '))
         self.assertIn('python3 -m unittest discover -s tests/format -p test_run_format_tests.py',self.commands)
         format_steps=[i for i,command in enumerate(self.commands)
                       if command.startswith('python3 tests/format/run_format_tests.py --compiler ')]
@@ -163,6 +245,7 @@ class QualificationShellTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(receipt,'PASS: bounded Linux hosted compiler qualification; see native/kernel qualification limits.\n')
         self.assertTrue(self.status.startswith('PASS source='),self.status)
+        self.assert_exact_inventory(self.expected_python_inventory())
         self.assertEqual(self.command_records[0]['args'][0],'scripts/verify_llvm_toolchain.py')
         self.assertIn('--require-clang',self.command_records[0]['args'])
         self.assertEqual(self.commands[1],'compiler --version')

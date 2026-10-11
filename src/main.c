@@ -2423,6 +2423,22 @@ static void editor_coordinate_error(editor_mode_t mode, const char *flag,
     quit(Err);
 }
 
+/* Reject malformed target intent before input or output transactions begin. */
+static void target_argument_error(editor_mode_t mode, boolean_t equals_form) {
+    const char *message = equals_form
+        ? "unsupported --target= spelling (use --target <triple>)"
+        : "invalid --target argument (expected --target <triple> with a nonempty, non-option operand)";
+    if (mode != EditorModeNone) {
+        diag_clear_captured();
+        diag_begin_error("%s", message);
+        diag_finish();
+        editor_print_diagnostics_json();
+    } else {
+        log_err("%s", message);
+    }
+    quit(Err);
+}
+
 int main(int argc, char **argv) {
     init_bin_dir(argv[0]);
 
@@ -2558,8 +2574,12 @@ int main(int argc, char **argv) {
             output_path = argv[++i];
         } else if (strcmp(argv[i], "--kernel") == 0) {
             kernel_profile = True;
-        } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
+        } else if (strcmp(argv[i], "--target") == 0) {
+            if (i + 1 >= argc || !argv[i + 1][0] || argv[i + 1][0] == '-')
+                target_argument_error(editor_mode, False);
             target_triple = argv[++i];
+        } else if (strncmp(argv[i], "--target=", 9) == 0) {
+            target_argument_error(editor_mode, True);
         } else if (strcmp(argv[i], "-g") == 0) {
             debug_mode = True;
         } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && cli_extra_lib_count < 256) {

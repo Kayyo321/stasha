@@ -309,7 +309,7 @@
     "src/lexer/lexer.h": "13876d8eaed0dbfd7c67ac257e7af7f41500f2c6fc4354dfe8c239ede760e5bf",
     "src/linker/linker.cpp": "ebdf6e8943319e2a331dc91e0c83fb7f557f5e77c8ec1ecd0bda0f869d5b9c7c",
     "src/linker/linker.h": "36ae261f7957dad19cb6f88ca3ee3011f9d6259345cd1984a66ea501978726a1",
-    "src/main.c": "e3f8012409aa701cf1a335cbc32ba983bb5f1901dfcbbfe1079fd5ef16daef64",
+    "src/main.c": "d73475f0e2c477acfac3748986a179ca4f669a8987bad5e477b7a4478ab0fb85",
     "src/parser/parse_decls.c": "5cede7a82abb882e3b7ba44bdce093c9d6dc3611dd579b75ec6bf5d68fb8cc37",
     "src/parser/parse_expr.c": "468249591b3d5674141ccdd034d27943c260e739ee9232c74d8309ce9363e676",
     "src/parser/parse_stmt.c": "6c78fe3953b9f7380b91426266a2aa3c29cd2cb2268f53625ba655b763922e17",
