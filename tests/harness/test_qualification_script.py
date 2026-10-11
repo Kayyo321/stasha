@@ -9,7 +9,7 @@ import unittest
 ROOT=Path(__file__).resolve().parents[2]
 @unittest.skipUnless(platform.system()=='Linux' and platform.machine()=='x86_64','Linux qualification shell control-flow tests')
 class QualificationShellTests(unittest.TestCase):
-    def invoke(self, code, stale=False, fail_match=None):
+    def invoke(self, code, stale=False, fail_match=None, match_args=False):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); tools=root/'tools';tools.mkdir(); output=root/'evidence'
             if stale:
@@ -20,7 +20,8 @@ class QualificationShellTests(unittest.TestCase):
             preamble='#!/bin/sh\nprintf "python3 %s\\n" "$*" >> "$MOCK_TRACE"\n'
             body=preamble+f'exit {code}\n'
             if fail_match is not None:
-                body=preamble+f'case "$1" in {fail_match}) exit {code};; esac\nexit 0\n'
+                match_value='"$*"' if match_args else '"$1"'
+                body=preamble+f'case {match_value} in {fail_match}) exit {code};; esac\nexit 0\n'
             python.write_text(body);python.chmod(0o755)
             env=dict(os.environ,PATH=str(tools)+os.pathsep+os.environ['PATH'],PYTHON=str(python),LLVM_BUILD=str(root),MOCK_TRACE=str(trace))
             result=subprocess.run(['bash',str(ROOT/'scripts/qualify_linux.sh'),str(compiler),str(output)],env=env,capture_output=True,text=True,timeout=20)
@@ -70,11 +71,29 @@ class QualificationShellTests(unittest.TestCase):
     def test_descriptor_default_failure_blocks_receipt(self):
         result,receipt=self.invoke(83,stale=True,fail_match='tests/interfaces/descriptor_defaults_run.py')
         self.assertEqual(result.returncode,83,result.stderr); self.assertIsNone(receipt)
+    def test_project_cli_failure_blocks_receipt_and_later_stages(self):
+        result,receipt=self.invoke(85,stale=True,fail_match='tests/driver/project_cli.py')
+        self.assertEqual(result.returncode,85,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=85\n')
+        self.assertTrue(self.commands[-1].startswith('python3 tests/driver/project_cli.py --compiler '))
+        self.assertIn(' --artifacts ',self.commands[-1])
+        self.assertTrue(self.commands[-1].endswith('/project-cli'))
+        self.assertFalse(any('tests/driver/global_initializers.py' in command for command in self.commands))
+    def test_project_cli_mock_control_failure_stops_real_suites(self):
+        result,receipt=self.invoke(86,stale=True,match_args=True,
+                                   fail_match="'-m unittest discover -s tests/driver -p test_project_cli.py'")
+        self.assertEqual(result.returncode,86,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=86\n')
+        self.assertEqual(self.commands[-1],'python3 -m unittest discover -s tests/driver -p test_project_cli.py')
+        self.assertFalse(any('tests/harness/compiler_suites.py' in command for command in self.commands))
     def test_all_mock_stages_reach_explicit_bounded_receipt(self):
         result,receipt=self.invoke(0)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('bounded Linux hosted compiler qualification',receipt)
         self.assertIn(' --require-clang --output ',self.commands[0])
         self.assertEqual(self.commands[1],'compiler --version')
+        self.assertIn('python3 -m unittest discover -s tests/driver -p test_project_cli.py',self.commands)
+        self.assertEqual(sum(command.startswith('python3 tests/driver/project_cli.py --compiler ')
+                             for command in self.commands),1)
 
 if __name__=='__main__': unittest.main()

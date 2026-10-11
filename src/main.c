@@ -2401,15 +2401,12 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (argc < 2) {
-        print_help();
-        quit(Err);
-    }
-
     /* ── subcommand detection ── */
     emit_mode_t   mode        = EmitExe;
     editor_mode_t editor_mode = EditorModeNone;
     int           file_arg    = 1;
+    /* No command leaves the defaults intact and reaches project resolution. */
+    const char   *command     = argc > 1 ? argv[1] : "";
 
     /*
      * Module name from `stasha build <modname>`.  Empty string when not given.
@@ -2418,7 +2415,7 @@ int main(int argc, char **argv) {
      */
     static char selected_mod_name[64] = {0};
 
-    if (strcmp(argv[1], "build") == 0) {
+    if (strcmp(command, "build") == 0) {
         mode = EmitExe; file_arg = 2;
         /* Peek at argv[2]: if it looks like a module name, consume it now. */
         if (argc >= 3 && argv[2][0] != '-') {
@@ -2433,36 +2430,36 @@ int main(int argc, char **argv) {
                 file_arg = 3; /* module name consumed */
             }
         }
-    } else if (strcmp(argv[1], "lib") == 0) {
+    } else if (strcmp(command, "lib") == 0) {
         mode = EmitLib;   file_arg = 2;
-    } else if (strcmp(argv[1], "obj") == 0) {
+    } else if (strcmp(command, "obj") == 0) {
         mode = EmitObj; file_arg = 2;
-    } else if (strcmp(argv[1], "ir") == 0) {
+    } else if (strcmp(command, "ir") == 0) {
         mode = EmitIR; file_arg = 2;
-    } else if (strcmp(argv[1], "dylib") == 0) {
+    } else if (strcmp(command, "dylib") == 0) {
         mode = EmitDylib; file_arg = 2;
-    } else if (strcmp(argv[1], "test") == 0) {
+    } else if (strcmp(command, "test") == 0) {
         mode = EmitTest;  file_arg = 2;
-    } else if (strcmp(argv[1], "check") == 0) {
+    } else if (strcmp(command, "check") == 0) {
         editor_mode = EditorModeCheck;      file_arg = 2;
-    } else if (strcmp(argv[1], "tokens") == 0) {
+    } else if (strcmp(command, "tokens") == 0) {
         editor_mode = EditorModeTokens;     file_arg = 2;
-    } else if (strcmp(argv[1], "symbols") == 0) {
+    } else if (strcmp(command, "symbols") == 0) {
         editor_mode = EditorModeSymbols;    file_arg = 2;
-    } else if (strcmp(argv[1], "definition") == 0) {
+    } else if (strcmp(command, "definition") == 0) {
         editor_mode = EditorModeDefinition; file_arg = 2;
-    } else if (strcmp(argv[1], "complete") == 0) {
+    } else if (strcmp(command, "complete") == 0) {
         editor_mode = EditorModeComplete;   file_arg = 2;
-    } else if (strcmp(argv[1], "hints") == 0) {
+    } else if (strcmp(command, "hints") == 0) {
         editor_mode = EditorModeHints;      file_arg = 2;
-    } else if (strcmp(argv[1], "format") == 0 || strcmp(argv[1], "fmt") == 0) {
+    } else if (strcmp(command, "format") == 0 || strcmp(command, "fmt") == 0) {
         editor_mode = EditorModeFormat;     file_arg = 2;
-    } else if (strcmp(argv[1], "refs") == 0) {
+    } else if (strcmp(command, "refs") == 0) {
         editor_mode = EditorModeRefs;       file_arg = 2;
-    } else if (strcmp(argv[1], "rename") == 0) {
+    } else if (strcmp(command, "rename") == 0) {
         editor_mode = EditorModeRename;     file_arg = 2;
     }
-    /* else: argv[1] is the file — default EmitExe */
+    /* else: an explicit first argument is the file — default EmitExe */
 
     boolean_t  use_stdin    = False;
     const char *virtual_path = Null;
