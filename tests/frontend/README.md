@@ -86,9 +86,21 @@ suffixes, and cannot replace a spec already found by the original splitter.
 Beyond that bounded terminal-spec correction, quote/comment-aware splitting,
 nested-brace grammar, general colon ambiguity, nested interpolation, older
 child-parser error remapping, and the two paths' different nesting setup remain
-outside this regression contract. Standalone code generation's existing
-first-colon interpretation is also unchanged; combined static-access/spec tests
-assert parsing and inline rewriting rather than promise new standalone output.
+outside this regression contract.
+
+Standalone formats now retain both original raw source bytes and an immutable,
+arena-owned canonical rendering template. The parser selects each `{}` or
+`{:spec}` slot after consuming its expression; code generation consumes that
+selection without reinterpreting static-access colons. Both quote delimiters,
+stack/explicit heap formats, literal escape pairs and physical lines retain their
+raw spelling. Tests check argument order, exact template bytes and termination,
+and survival of caller/preprocessor storage release and shallow AST copies while
+the arena remains alive. Selected raw spec delimiters are preserved in parser-only
+controls, never executed as malformed native conversions.
+
+This is not a general spec validator or standalone/inline formatting parity:
+standalone `.N` precision, width-only/sign-only specs, checked output sizing,
+wide-integer spec conversion and binary portability remain separate work.
 
 ## Integer literal contract
 

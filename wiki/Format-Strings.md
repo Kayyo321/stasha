@@ -129,6 +129,25 @@ stack i8 *rw banner = @'== {title} ==';
 
 (Where the slice is alloca-backed and lives until the end of the enclosing function.)
 
+Standalone stack and explicit heap strings use the parser's selected slots, so
+static access is retained as part of the expression. For an `i32`-returning
+`helpers:x()` call, these forms produce `255`, `ff`, `FF`, and `000000ff`:
+
+```stasha
+stack i8 *rw values = @'{helpers:x()} {helpers:x():x} {helpers:x():X} {helpers:x():08x}';
+print.('{}\n', values);
+```
+
+The same selection applies to chained calls such as
+`greeter:Builder:company()`. Expressions are evaluated once, left to right.
+Literal escapes remain raw until rendering, so `\{` cannot become a slot.
+
+Standalone formatting still uses a separate renderer: `.N` precision,
+width-only/sign-only specs, wide-integer spec conversions, and general spec
+validation are not supported by this checkpoint. Do not assume the inline
+`print.()` examples above establish standalone parity. Output-size checking and
+portable binary rendering also remain separate limitations.
+
 ### Raw Strings
 
 To print a string variable that **already contains** `{}` characters without interpolating them, use the classic form with a single `{}`:

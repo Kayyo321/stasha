@@ -736,6 +736,147 @@ static void test_format_trailing_tokens(void) {
     }
 }
 
+/* The template is a separate arena string, not a view into the raw spelling. */
+static void check_canonical_format(node_t *n, const char *raw, const char *canonical,
+                                   usize_t argc, boolean_t on_heap) {
+    CHECK(n && n->kind == NodeComptimeFmt);
+    CHECK(n->as.comptime_fmt.fmt && n->as.comptime_fmt.template_fmt);
+    CHECK(n->as.comptime_fmt.fmt != n->as.comptime_fmt.template_fmt);
+    CHECK(n->as.comptime_fmt.fmt_len == strlen(raw));
+    CHECK(memcmp(n->as.comptime_fmt.fmt, raw, strlen(raw) + 1) == 0);
+    CHECK(n->as.comptime_fmt.template_len == strlen(canonical));
+    CHECK(n->as.comptime_fmt.template_len <= n->as.comptime_fmt.fmt_len);
+    CHECK(memcmp(n->as.comptime_fmt.template_fmt, canonical, strlen(canonical) + 1) == 0);
+    CHECK(n->as.comptime_fmt.args.count == argc);
+    CHECK(n->as.comptime_fmt.on_heap == on_heap);
+}
+
+static void test_format_canonical_templates(void) {
+    const struct { const char *raw, *canonical; usize_t argc; } cases[] = {
+        {"", "", 0},
+        {"plain % \\% \\{literal\\} \\\\ \\' \\\" \\n\\t\\0\\q",
+         "plain % \\% \\{literal\\} \\\\ \\' \\\" \\n\\t\\0\\q", 0},
+        {"line\nline\r\nline\\\nline\\\r\nend", "line\nline\r\nline\\\nline\\\r\nend", 0},
+        {"{helpers:x()}|{helpers:x():x}|{helpers:x():X}|{helpers:x():08x}",
+         "{}|{:x}|{:X}|{:08x}", 4},
+        {"{greeter:Builder:company()}|{greeter:Builder:company():x}|"
+         "{greeter:Builder:company():X}|{greeter:Builder:company():08x}",
+         "{}|{:x}|{:X}|{:08x}", 4},
+        {"\\{kept\\}%{1}\\n{2}\\t{3}\\\\{4}\\0{5}\\q{6}",
+         "\\{kept\\}%{}\\n{}\\t{}\\\\{}\\0{}\\q{}", 6},
+        {"first\n{1}\r\n{2}\\\n{3}\\\r\n{4}end", "first\n{}\r\n{}\\\n{}\\\r\n{}end", 4},
+        /* Delimiter preservation only: these raw specs are not validated C
+           conversions and must never be executed as native format probes. */
+        {"{1:0\\}8x}|{2:0(})8x}|{3:0[}]8x}", "{:0\\}8x}|{:0(})8x}|{:0[}]8x}", 3},
+    };
+    case_name = "canonical template preserves raw bytes, selected slots and storage";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        for (int quote = 0; quote < 2; quote++) {
+            for (int storage = 0; storage < 2; storage++) {
+                char source[1024];
+                snprintf(source, sizeof(source), "mod t; stack i8 *rw value = %s@%c%s%c;",
+                         storage ? "heap " : "", quote ? '"' : '\'', cases[i].raw,
+                         quote ? '"' : '\'');
+                for (int mode = 0; mode < 2; mode++) {
+                    node_t *m = parse_case(source, (boolean_t)mode);
+                    CHECK(m && !get_error_count());
+                    node_t *n = m->as.module.decls.items[0]->as.var_decl.init;
+                    check_canonical_format(n, cases[i].raw, cases[i].canonical,
+                                           cases[i].argc, (boolean_t)storage);
+                    for (usize_t arg = 0; arg < cases[i].argc; arg++) {
+                        node_t *a = n->as.comptime_fmt.args.items[arg];
+                        if (i == 3 || i == 4) {
+                            CHECK(a->kind == NodeColonCall && a->as.colon_call.args.count == 0);
+                            CHECK(strcmp(a->as.colon_call.module_name, i == 3 ? "helpers" : "greeter") == 0);
+                            CHECK(strcmp(a->as.colon_call.method_name, i == 3 ? "x" : "company") == 0);
+                            if (i == 3) CHECK(a->as.colon_call.type_name == NULL);
+                            else CHECK(strcmp(a->as.colon_call.type_name, "Builder") == 0);
+                        } else {
+                            CHECK(a->kind == NodeIntLitExpr && a->as.int_lit.value == arg + 1);
+                        }
+                    }
+                    finish_case();
+                }
+            }
+            char inline_source[1024];
+            make_format_source(inline_source, sizeof(inline_source), cases[i].raw,
+                               quote ? '"' : '\'', 1);
+            for (int mode = 0; mode < 2; mode++) {
+                node_t *m = parse_case(inline_source, (boolean_t)mode);
+                CHECK(m && !get_error_count());
+                node_t *n = m->as.module.decls.items[0]->as.fn_decl.body->as.block.stmts.items[0];
+                CHECK(n->kind == NodePrintStmt);
+                CHECK(n->as.print_stmt.fmt_len == strlen(cases[i].canonical));
+                CHECK(strcmp(n->as.print_stmt.fmt, cases[i].canonical) == 0);
+                CHECK(n->as.print_stmt.args.count == cases[i].argc);
+                finish_case();
+            }
+        }
+    }
+}
+
+static void test_format_template_ownership(void) {
+    const char *raw = "\\{kept\\}%{helpers:x():08x}|{42}\\n";
+    const char *canonical = "\\{kept\\}%{:08x}|{}\\n";
+    case_name = "canonical and raw format strings survive caller and stream release";
+    for (int storage = 0; storage < 2; storage++) {
+        for (int mode = 0; mode < 2; mode++) {
+            char source_buf[256];
+            snprintf(source_buf, sizeof(source_buf), "mod t; stack i8 *rw value = %s@'%s';",
+                     storage ? "heap " : "", raw);
+            char *source = strdup(source_buf);
+            CHECK(source);
+            node_t *m = parse_case(source, (boolean_t)mode);
+            CHECK(m && !get_error_count());
+            node_t *n = m->as.module.decls.items[0]->as.var_decl.init;
+            node_t copied = *n;
+            CHECK(copied.as.comptime_fmt.fmt == n->as.comptime_fmt.fmt);
+            CHECK(copied.as.comptime_fmt.template_fmt == n->as.comptime_fmt.template_fmt);
+            CHECK(copied.as.comptime_fmt.args.items == n->as.comptime_fmt.args.items);
+            if (stream) { pp_stream_free(stream); stream = NULL; }
+            memset(source, 'x', strlen(source));
+            free(source);
+            diag_clear_sources();
+            check_canonical_format(n, raw, canonical, 2, (boolean_t)storage);
+            check_canonical_format(&copied, raw, canonical, 2, (boolean_t)storage);
+            CHECK(strcmp(copied.as.comptime_fmt.args.items[0]->as.colon_call.module_name, "helpers") == 0);
+            CHECK(strcmp(copied.as.comptime_fmt.args.items[0]->as.colon_call.method_name, "x") == 0);
+            CHECK(copied.as.comptime_fmt.args.items[1]->as.int_lit.value == 42);
+            finish_case();
+        }
+    }
+
+    case_name = "canonical macro format owns bytes after definition and expansion release";
+    char *file = strdup("imported/canonical.sts");
+    char *source = strdup("mod imported.canonical; ext macro let shared! = @'\\{kept\\}%{helpers:x():08x}|{42}\\n';");
+    char *caller = strdup("mod caller; stack i8 *rw value = shared.!;");
+    CHECK(file && source && caller);
+    restore_diagnostic_counts(0, 0);
+    diag_clear_captured();
+    diag_set_render_enabled(False);
+    pp_stream_t *definition = pp_process(source, file, NULL, 0);
+    CHECK(definition && !get_error_count());
+    pp_macro_set_t *imports[] = {pp_get_exports(definition)};
+    CHECK(imports[0] && imports[0]->let_count == 1);
+    stream = pp_process(caller, test_file, imports, 1);
+    CHECK(stream && !get_error_count());
+    node_t *m = parse_from_stream(stream);
+    CHECK(m && !get_error_count());
+    node_t copied = *m->as.module.decls.items[0]->as.var_decl.init;
+    pp_stream_free(stream); stream = NULL;
+    pp_stream_free(definition);
+    memset(file, 'x', strlen(file)); memset(source, 'x', strlen(source));
+    memset(caller, 'x', strlen(caller));
+    free(file); free(source); free(caller);
+    diag_clear_sources();
+    diag_set_file(test_file);
+    check_canonical_format(&copied, raw, canonical, 2, False);
+    CHECK(strcmp(copied.as.comptime_fmt.args.items[0]->as.colon_call.module_name, "helpers") == 0);
+    CHECK(strcmp(copied.as.comptime_fmt.args.items[0]->as.colon_call.method_name, "x") == 0);
+    CHECK(copied.as.comptime_fmt.args.items[1]->as.int_lit.value == 42);
+    finish_case();
+}
+
 static void test_format_valid_expressions(void) {
     const char *raw = "\\{literal\\}\\n{1 + (2 * 3)} {f(1, 2)} {p.x} "
                       "{greeter:Builder:company()} {value:08x} {3.14159:.4} "
@@ -758,6 +899,7 @@ static void test_format_valid_expressions(void) {
                 usize_t fmt_len = path ? n->as.print_stmt.fmt_len : n->as.comptime_fmt.fmt_len;
                 CHECK(fmt_len == strlen(path ? rewritten : raw));
                 CHECK(strcmp(fmt, path ? rewritten : raw) == 0);
+                if (!path) check_canonical_format(n, raw, rewritten, 11, False);
                 node_list_t args = path ? n->as.print_stmt.args : n->as.comptime_fmt.args;
                 CHECK(args.count == 11);
                 CHECK(args.items[0]->kind == NodeBinaryExpr && args.items[0]->as.binary.op == TokPlus);
@@ -803,6 +945,7 @@ static void test_format_alphabetic_specs(void) {
                 usize_t len = path ? n->as.print_stmt.fmt_len : n->as.comptime_fmt.fmt_len;
                 CHECK(strcmp(fmt, path ? rewritten : raw) == 0);
                 CHECK(len == strlen(path ? rewritten : raw));
+                if (!path) check_canonical_format(n, raw, rewritten, 8, False);
                 node_list_t args = path ? n->as.print_stmt.args : n->as.comptime_fmt.args;
                 CHECK(args.count == 8);
                 for (int i = 0; i < 4; i++) {
@@ -977,6 +1120,8 @@ int main(void) {
     test_format_trailing_tokens();
     test_format_valid_expressions();
     test_format_alphabetic_specs();
+    test_format_canonical_templates();
+    test_format_template_ownership();
     test_format_file_ownership();
     test_format_macro_ownership();
     test_discarded_lexer_errors();

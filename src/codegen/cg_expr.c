@@ -4985,11 +4985,20 @@ static LLVMValueRef gen_error_expr(cg_t *cg, node_t *node) {
  * Produces an i8 * pointing to a freshly-formatted string.
  *   on_heap=False: buffer is alloca'd in the current frame (no cleanup).
  *   on_heap=True:  buffer is malloc'd; caller must rem.(). */
+static LLVMValueRef invalid_comptime_fmt_template(cg_t *cg) {
+    diag_begin_error("internal compiler error: invalid canonical comptime format template");
+    diag_finish();
+    return LLVMConstNull(LLVMPointerTypeInContext(cg->ctx, 0));
+}
+
 static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
-    const char  *fmt     = node->as.comptime_fmt.fmt;
-    usize_t      flen    = node->as.comptime_fmt.fmt_len;
+    const char  *fmt     = node->as.comptime_fmt.template_fmt;
+    usize_t      flen    = node->as.comptime_fmt.template_len;
     node_list_t *args    = &node->as.comptime_fmt.args;
     boolean_t    on_heap = node->as.comptime_fmt.on_heap;
+
+    if (!fmt || flen > node->as.comptime_fmt.fmt_len || fmt[flen] != '\0')
+        return invalid_comptime_fmt_template(cg);
 
     /* Fast path: no args + stack → global string pointer, zero runtime cost. */
     if (args->count == 0 && !on_heap) {
@@ -5002,6 +5011,10 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
                 if (d != '\0') buf[blen++] = d;
                 i += 2;
             } else {
+                if (fmt[i] == '{') {
+                    deallocate(bh);
+                    return invalid_comptime_fmt_template(cg);
+                }
                 buf[blen++] = fmt[i++];
             }
         }
@@ -5019,8 +5032,11 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     for (usize_t i = 0; i < argc; i++)
         vals[i] = gen_expr(cg, args->items[i]);
 
-    /* Walk the raw fmt once to: (a) build the C printf format,
-     * (b) accumulate the compile-time buffer bound. */
+    /* Walk the parser's still-raw template once to build the C printf format
+     * and retain the existing compile-time buffer bound. No expression text
+     * remains here. Literal expansion is at most 2x; {} emits at most %lld.
+     * The existing scratch allocation below therefore still suffices.
+     * (This does not establish checked size arithmetic or spec validity.) */
     heap_t fh = allocate(flen * 4 + 64, 1);
     char *cfmt = fh.pointer;
     usize_t cfmt_len = 0;
@@ -5043,27 +5059,30 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
             buf_bound++;
             i++; continue;
         }
-        if (fmt[i] == '{' && arg_idx < argc) {
-            /* scan to matching '}' respecting ()/[] nesting */
-            usize_t j = i + 1;
+        if (fmt[i] == '{') {
+            /* Canonical slots are {} or {:spec}. The parser already selected
+               the colon. Only delimit its raw spec, preserving escape/depth
+               handling; never rediscover a colon inside expression spelling. */
+            if (arg_idx >= argc || i + 1 >= flen
+                || (fmt[i + 1] != '}' && fmt[i + 1] != ':'))
+                goto invalid_template;
+            boolean_t has_colon = fmt[i + 1] == ':';
+            usize_t j = i + 1 + (has_colon ? 1 : 0);
             int depth = 0;
-            usize_t colon_pos = 0;
-            boolean_t has_colon = False;
             while (j < flen) {
                 char c = fmt[j];
                 if (c == '\\' && j + 1 < flen) { j += 2; continue; }
                 if (c == '(' || c == '[') { depth++; j++; continue; }
                 if (c == ')' || c == ']') { if (depth > 0) depth--; j++; continue; }
                 if (c == '}' && depth == 0) break;
-                if (c == ':' && depth == 0 && !has_colon) { colon_pos = j; has_colon = True; }
                 j++;
             }
-            if (j >= flen) { cfmt[cfmt_len++] = fmt[i++]; buf_bound++; continue; }
+            if (j >= flen) goto invalid_template;
 
             const char *spec = Null; usize_t slen = 0;
             if (has_colon) {
-                spec = fmt + colon_pos + 1;
-                slen = j - (colon_pos + 1);
+                spec = fmt + i + 2;
+                slen = j - (i + 2);
             }
 
             /* Extract numeric width from spec (for buffer sizing). */
@@ -5164,6 +5183,7 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
         }
         cfmt[cfmt_len++] = fmt[i++]; buf_bound++;
     }
+    if (arg_idx != argc) goto invalid_template;
     cfmt[cfmt_len] = '\0';
 
     /* Declare snprintf once per module. */
@@ -5209,6 +5229,11 @@ static LLVMValueRef gen_comptime_fmt(cg_t *cg, node_t *node) {
     if (argc) deallocate(vh);
 
     return buf;
+
+invalid_template:
+    deallocate(fh);
+    if (argc) deallocate(vh);
+    return invalid_comptime_fmt_template(cg);
 }
 
 /* ── any type helpers ── */

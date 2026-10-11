@@ -292,14 +292,7 @@ static node_t *parse_print_stmt(parser_t *p) {
                 node_list_push(&n->as.print_stmt.args, expr_node);
             }
 
-            out[out_len++] = '{';
-            if (has_colon) {
-                /* copy ':spec' verbatim — colon_pos points at the ':' */
-                usize_t spec_len = j - colon_pos;
-                memcpy(out + out_len, raw + colon_pos, spec_len);
-                out_len += spec_len;
-            }
-            out[out_len++] = '}';
+            out_len = append_format_slot(out, out_len, raw, j, has_colon, colon_pos);
             i = j + 1;
         }
 

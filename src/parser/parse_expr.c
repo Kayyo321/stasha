@@ -226,6 +226,23 @@ static void finish_format_placeholder(parser_t *p, const parser_t *sub,
     diag_set_file(resume_file);
 }
 
+/* Append only the already-selected slot, never expression spelling. Both
+   callers reserve raw_len + 1 bytes: removing an expression cannot grow it.
+   Keep the completed prefix terminated, including on later parser errors. */
+static usize_t append_format_slot(char *out, usize_t out_len, const char *raw,
+                                  usize_t end, boolean_t has_colon,
+                                  usize_t colon_pos) {
+    out[out_len++] = '{';
+    if (has_colon) {
+        usize_t spec_len = end - colon_pos;
+        memcpy(out + out_len, raw + colon_pos, spec_len);
+        out_len += spec_len;
+    }
+    out[out_len++] = '}';
+    out[out_len] = '\0';
+    return out_len;
+}
+
 /* ── comptime format string: @'...' / heap @'...' ──
  * Called with `@` already consumed. Current token must be TokStackStr/TokHeapStr.
  * Each {expr} / {expr:spec} span in the format is sub-parsed as a Stasha
@@ -244,9 +261,24 @@ static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usiz
     n->as.comptime_fmt.on_heap = on_heap;
     node_list_init(&n->as.comptime_fmt.args);
 
+    char *out = ast_strdup(fmt, fmt_len);
+    usize_t *out_len = &n->as.comptime_fmt.template_len;
+    n->as.comptime_fmt.template_fmt = out;
+    *out_len = 0;
+    out[0] = '\0';
+
     for (usize_t i = 0; i < fmt_len; ) {
-        if (fmt[i] == '\\' && i + 1 < fmt_len) { i += 2; continue; }
-        if (fmt[i] != '{') { i++; continue; }
+        if (fmt[i] == '\\' && i + 1 < fmt_len) {
+            out[(*out_len)++] = fmt[i++];
+            out[(*out_len)++] = fmt[i++];
+            out[*out_len] = '\0';
+            continue;
+        }
+        if (fmt[i] != '{') {
+            out[(*out_len)++] = fmt[i++];
+            out[*out_len] = '\0';
+            continue;
+        }
 
         usize_t expr_start = i + 1;
         usize_t j = expr_start;
@@ -312,6 +344,7 @@ static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usiz
                                   expr_start, expr_src, expr_len, &has_colon, &colon_pos);
 
         node_list_push(&n->as.comptime_fmt.args, expr_node);
+        *out_len = append_format_slot(out, *out_len, fmt, j, has_colon, colon_pos);
 
         i = j + 1;
     }

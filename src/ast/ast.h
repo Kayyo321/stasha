@@ -651,9 +651,17 @@ struct node {
         /* NodeLenExpr / NodeCapExpr — reuse len_expr for both */
         struct { node_t *operand; } len_expr;
 
-        /* NodeComptimeFmt: @'...' / heap @'...' — raw fmt stored with
-           unexpanded escapes; each {expr}/{expr:spec} span pre-parsed into args */
-        struct { char *fmt; usize_t fmt_len; node_list_t args; boolean_t on_heap; } comptime_fmt;
+        /* NodeComptimeFmt: both strings are immutable, terminated arena-owned
+           bytes with unexpanded escapes. fmt preserves source spelling;
+           template_fmt contains only literals and parser-selected {}/{:spec}
+           slots, one per arg. Its length never exceeds fmt_len. Failed parses
+           may retain a terminated completed prefix. Shallow AST copies share
+           these strings until ast_free_all; consumers must not mutate/free. */
+        struct {
+            char *fmt; usize_t fmt_len;
+            const char *template_fmt; usize_t template_len;
+            node_list_t args; boolean_t on_heap;
+        } comptime_fmt;
 
         /* NodeWatchStmt: watch.(T name) => { body } */
         struct {
