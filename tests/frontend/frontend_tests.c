@@ -643,6 +643,268 @@ static void test_literal_macro_ownership(void) {
     diag_set_file(test_file);
 }
 
+static const char *format_trailing_message =
+    "unexpected trailing token in format placeholder expression";
+
+/* Independent oracle walks the complete original file, not a token or child
+   parser coordinate. The marker names the exact first unconsumed raw token. */
+static src_loc_t format_marker_loc(const char *source, const char *marker, usize_t len) {
+    const char *at = strstr(source, marker);
+    CHECK(at);
+    src_loc_t loc = SRC_LOC(1, 1, len);
+    for (const char *s = source; s < at; s++) {
+        if (*s == '\n') { loc.line++; loc.col = 1; }
+        else loc.col++;
+    }
+    return loc;
+}
+
+static void check_format_diagnostic(const char *file, src_loc_t loc) {
+    CHECK(get_error_count() == 1 && diag_get_captured_count() == 1);
+    const captured_diag_t *d = diag_get_captured(0);
+    CHECK(d && strcmp(d->filename, file) == 0);
+    CHECK(strcmp(d->diag.message, format_trailing_message) == 0);
+    CHECK(d->diag.label_count == 1);
+    CHECK(d->diag.labels[0].loc.line == loc.line);
+    CHECK(d->diag.labels[0].loc.col == loc.col);
+    CHECK(d->diag.labels[0].loc.len == loc.len);
+}
+
+static void make_format_source(char *out, size_t size, const char *raw,
+                               char quote, int print_path) {
+    if (print_path)
+        snprintf(out, size, "mod t;\nfn main(void): void { print.(@%c%s%c); }",
+                 quote, raw, quote);
+    else
+        snprintf(out, size, "mod t;\nstack i8 *rw value = @%c%s%c;", quote, raw, quote);
+}
+
+static void test_format_trailing_tokens(void) {
+    const struct { const char *raw, *marker; usize_t len; } cases[] = {
+        {"{1 2}", "2}", 1}, {"{1, 2}", ", 2}", 1},
+        {"{1; 2}", "; 2}", 1}, {"{1)}", ")}", 1},
+        {"{1 trailing}", "trailing", 8},
+        {"{1 /* completed */ trailing}", "trailing", 8},
+        {"{1 // completed\n trailing}", "trailing", 8},
+        {"{1\n trailing}", "trailing", 8},
+        {"before\n\t\xc3\xa9{1 trailing}", "trailing", 8},
+        {"before\r\n\t\xc3\xa9{1 trailing}", "trailing", 8},
+        {"before\\\n\t\xc3\xa9{1 trailing}", "trailing", 8},
+        {"before\\\r\n\t\xc3\xa9{1 trailing}", "trailing", 8},
+        {"\t\xc3\xa9\r{1 trailing}", "trailing", 8},
+        {"{1 trailing:08x}", "trailing", 8},
+        {"ok={3} bad={1 trailing} end={4}", "trailing", 8},
+        {"{1:q}", ":q", 1}, {"{1:xx}", ":xx", 1},
+        {"{1:x + 1}", ":x", 1}, {"{1:x()}", ":x", 1},
+        {"{1:x 2}", ":x", 1}, {"{1:x:x}", ":x", 1},
+        {"{1:x:08x}", ":x", 1}, {"{1:x:.4}", ":x", 1},
+        {"{1:x }", ":x", 1}, {"{1:x /* done */}", ":x", 1},
+        {"{helpers:x():q}", ":q", 1},
+        {"{helpers:x():x:08x}", ":x:08x", 1},
+    };
+    case_name = "format placeholders reject trailing tokens at original byte spans";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        for (int path = 0; path < 2; path++) {
+            for (int quote = 0; quote < 2; quote++) {
+                char source[512];
+                make_format_source(source, sizeof(source), cases[i].raw, quote ? '"' : '\'', path);
+                src_loc_t loc = format_marker_loc(source, cases[i].marker, cases[i].len);
+                for (int mode = 0; mode < 2; mode++) {
+                    CHECK(parse_case(source, (boolean_t)mode) == NULL);
+                    check_format_diagnostic(test_file, loc);
+                    finish_case();
+                }
+            }
+        }
+    }
+
+    /* These children already fail, sometimes with an unconsumed token. The
+       caller must propagate that failure without adding its own diagnostic. */
+    const char *child_errors[] = {"{1 + }", "{1 + ; 2}", "{1 /*}"};
+    case_name = "format placeholder child errors are not duplicated";
+    for (size_t i = 0; i < sizeof(child_errors) / sizeof(child_errors[0]); i++) {
+        for (int path = 0; path < 2; path++) {
+            char source[256];
+            make_format_source(source, sizeof(source), child_errors[i], '\'', path);
+            for (int mode = 0; mode < 2; mode++) {
+                CHECK(parse_case(source, (boolean_t)mode) == NULL);
+                CHECK(get_error_count() == 1 && diag_get_captured_count() == 1);
+                CHECK(strcmp(diag_get_captured(0)->diag.message, format_trailing_message) != 0);
+                finish_case();
+            }
+        }
+    }
+}
+
+static void test_format_valid_expressions(void) {
+    const char *raw = "\\{literal\\}\\n{1 + (2 * 3)} {f(1, 2)} {p.x} "
+                      "{greeter:Builder:company()} {value:08x} {3.14159:.4} "
+                      "{ 7 /* nested /* ok */ comment */ } {8 // completed\n} "
+                      "{value = 9} {5 |> double} {(true ? 1 : 2)}";
+    const char *rewritten = "\\{literal\\}\\n{} {} {} {} {:08x} {:.4} {} {} {} {} {}";
+    case_name = "complete format expressions preserve AST, comments, specs and static colon";
+    for (int path = 0; path < 2; path++) {
+        for (int quote = 0; quote < 2; quote++) {
+            char source[1024];
+            make_format_source(source, sizeof(source), raw, quote ? '"' : '\'', path);
+            for (int mode = 0; mode < 2; mode++) {
+                node_t *m = parse_case(source, (boolean_t)mode);
+                CHECK(m && !get_error_count());
+                node_t *decl = m->as.module.decls.items[0];
+                node_t *n = path ? decl->as.fn_decl.body->as.block.stmts.items[0]
+                                 : decl->as.var_decl.init;
+                CHECK(n->kind == (path ? NodePrintStmt : NodeComptimeFmt));
+                const char *fmt = path ? n->as.print_stmt.fmt : n->as.comptime_fmt.fmt;
+                usize_t fmt_len = path ? n->as.print_stmt.fmt_len : n->as.comptime_fmt.fmt_len;
+                CHECK(fmt_len == strlen(path ? rewritten : raw));
+                CHECK(strcmp(fmt, path ? rewritten : raw) == 0);
+                node_list_t args = path ? n->as.print_stmt.args : n->as.comptime_fmt.args;
+                CHECK(args.count == 11);
+                CHECK(args.items[0]->kind == NodeBinaryExpr && args.items[0]->as.binary.op == TokPlus);
+                CHECK(args.items[0]->as.binary.right->kind == NodeBinaryExpr);
+                CHECK(args.items[0]->as.binary.right->as.binary.op == TokStar);
+                CHECK(args.items[1]->kind == NodeCallExpr && args.items[1]->as.call.args.count == 2);
+                CHECK(strcmp(args.items[1]->as.call.callee, "f") == 0);
+                CHECK(args.items[2]->kind == NodeMemberExpr && strcmp(args.items[2]->as.member_expr.field, "x") == 0);
+                CHECK(args.items[3]->kind == NodeColonCall);
+                CHECK(strcmp(args.items[3]->as.colon_call.module_name, "greeter") == 0);
+                CHECK(strcmp(args.items[3]->as.colon_call.type_name, "Builder") == 0);
+                CHECK(strcmp(args.items[3]->as.colon_call.method_name, "company") == 0);
+                CHECK(args.items[4]->kind == NodeIdentExpr && strcmp(args.items[4]->as.ident.name, "value") == 0);
+                CHECK(args.items[5]->kind == NodeFloatLitExpr);
+                CHECK(args.items[6]->kind == NodeIntLitExpr && args.items[6]->as.int_lit.value == 7);
+                CHECK(args.items[7]->kind == NodeIntLitExpr && args.items[7]->as.int_lit.value == 8);
+                CHECK(args.items[8]->kind == NodeAssignExpr && args.items[8]->as.assign.value->as.int_lit.value == 9);
+                CHECK(args.items[9]->kind == NodeCallExpr && strcmp(args.items[9]->as.call.callee, "double") == 0);
+                CHECK(args.items[9]->as.call.args.count == 1 && args.items[9]->as.call.args.items[0]->as.int_lit.value == 5);
+                CHECK(args.items[10]->kind == NodeTernaryExpr);
+                finish_case();
+            }
+        }
+    }
+}
+
+static void test_format_alphabetic_specs(void) {
+    const char *raw = "{255:x}|{255:X}|{7:b}|{7:o}|{value:x}|{helpers:x()}|"
+                      "{helpers:x():x}|{greeter:Builder:company():X}";
+    const char *rewritten = "{:x}|{:X}|{:b}|{:o}|{:x}|{}|{:x}|{:X}";
+    case_name = "terminal alphabetic specs preserve complete static access first";
+    for (int path = 0; path < 2; path++) {
+        for (int quote = 0; quote < 2; quote++) {
+            char source[512];
+            make_format_source(source, sizeof(source), raw, quote ? '"' : '\'', path);
+            for (int mode = 0; mode < 2; mode++) {
+                node_t *m = parse_case(source, (boolean_t)mode);
+                CHECK(m && !get_error_count());
+                node_t *decl = m->as.module.decls.items[0];
+                node_t *n = path ? decl->as.fn_decl.body->as.block.stmts.items[0]
+                                 : decl->as.var_decl.init;
+                const char *fmt = path ? n->as.print_stmt.fmt : n->as.comptime_fmt.fmt;
+                usize_t len = path ? n->as.print_stmt.fmt_len : n->as.comptime_fmt.fmt_len;
+                CHECK(strcmp(fmt, path ? rewritten : raw) == 0);
+                CHECK(len == strlen(path ? rewritten : raw));
+                node_list_t args = path ? n->as.print_stmt.args : n->as.comptime_fmt.args;
+                CHECK(args.count == 8);
+                for (int i = 0; i < 4; i++) {
+                    CHECK(args.items[i]->kind == NodeIntLitExpr);
+                    CHECK(args.items[i]->as.int_lit.value == (i < 2 ? 255 : 7));
+                }
+                CHECK(args.items[4]->kind == NodeIdentExpr && strcmp(args.items[4]->as.ident.name, "value") == 0);
+                for (int i = 5; i < 8; i++) {
+                    CHECK(args.items[i]->kind == NodeColonCall);
+                    CHECK(args.items[i]->as.colon_call.args.count == 0);
+                    CHECK(strcmp(args.items[i]->as.colon_call.module_name, i < 7 ? "helpers" : "greeter") == 0);
+                    CHECK(strcmp(args.items[i]->as.colon_call.method_name, i < 7 ? "x" : "company") == 0);
+                }
+                CHECK(args.items[5]->as.colon_call.type_name == NULL);
+                CHECK(args.items[6]->as.colon_call.type_name == NULL);
+                CHECK(strcmp(args.items[7]->as.colon_call.type_name, "Builder") == 0);
+                finish_case();
+            }
+        }
+    }
+    expect_accepted("heap format terminal spec", "mod t; fn f(void): void { heap i8 *rw s = heap @'{255:x}'; }");
+}
+
+static void test_format_file_ownership(void) {
+    case_name = "format trailing diagnostic owns imported-file path and byte span";
+    for (int path = 0; path < 2; path++) {
+        for (int mode = 0; mode < 2; mode++) {
+            char *file = strdup("imported/format.sts");
+            char source_buf[256];
+            make_format_source(source_buf, sizeof(source_buf), "first\\\r\n\t\xc3\xa9{1 trailing}", '\'', path);
+            char *source = strdup(source_buf);
+            CHECK(file && source);
+            src_loc_t loc = format_marker_loc(source, "trailing", 8);
+            restore_diagnostic_counts(0, 0);
+            diag_clear_captured();
+            diag_set_render_enabled(False);
+            diag_register_source(test_file, "mod caller;\n");
+            diag_set_file(test_file);
+            stream = mode ? pp_process(source, file, NULL, 0) : NULL;
+            if (mode) {
+                CHECK(stream && parse_from_stream(stream) == NULL);
+            } else {
+                diag_set_file(file);
+                CHECK(parse(source) == NULL);
+            }
+            check_format_diagnostic(file, loc);
+            finish_case();
+            memset(file, 'x', strlen(file));
+            memset(source, 'x', strlen(source));
+            free(file);
+            free(source);
+            diag_clear_sources();
+            check_format_diagnostic("imported/format.sts", loc);
+            diag_set_file(test_file);
+        }
+    }
+}
+
+static void test_format_macro_ownership(void) {
+    case_name = "format macro trailing token uses owned definition-file diagnostic";
+    for (int path = 0; path < 2; path++) {
+        char *file = strdup("imported/format_macro.sts");
+        char *source = strdup("mod imported.format_macro;\next macro let shared! = @'first\\\n\t\xc3\xa9{1 trailing}';\n");
+        const char *caller = path ? "mod caller;\nfn main(void): void { print.(shared.!); }\n"
+                                  : "mod caller;\nstack i8 *rw value = shared.!;\n";
+        CHECK(file && source);
+        src_loc_t loc = format_marker_loc(source, "trailing", 8);
+        restore_diagnostic_counts(0, 0);
+        diag_clear_captured();
+        diag_set_render_enabled(False);
+        pp_stream_t *definition = pp_process(source, file, NULL, 0);
+        CHECK(definition && !get_error_count());
+        pp_macro_set_t *imports[] = {pp_get_exports(definition)};
+        CHECK(imports[0] && imports[0]->let_count == 1);
+        stream = pp_process(caller, test_file, imports, 1);
+        CHECK(stream && !get_error_count());
+        boolean_t found = False;
+        for (int i = 0; i < stream->count; i++) {
+            const pp_token_t *pt = &stream->tokens[i];
+            if (pt->tok.kind != TokStackStr) continue;
+            CHECK(!found);
+            found = True;
+            CHECK(pt->tok.file == file && pt->tok.start != strstr(source, "'first"));
+            CHECK(pt->tok.length == strlen("'first\\\n\t\xc3\xa9{1 trailing}'"));
+            CHECK(memcmp(pt->tok.start, "'first\\\n\t\xc3\xa9{1 trailing}'", pt->tok.length) == 0);
+            CHECK(pt->expansion && strcmp(pt->expansion->call_file, test_file) == 0);
+        }
+        CHECK(found && parse_from_stream(stream) == NULL);
+        check_format_diagnostic(file, loc);
+        CHECK(strcmp(diag_get_file(), test_file) == 0);
+        finish_case();
+        pp_stream_free(definition);
+        memset(file, 'x', strlen(file));
+        memset(source, 'x', strlen(source));
+        free(file);
+        free(source);
+        diag_clear_sources();
+        check_format_diagnostic("imported/format_macro.sts", loc);
+        CHECK(strcmp(diag_get_file(), test_file) == 0);
+    }
+}
+
 /* Generate resource-limit cases without checking enormous source fixtures in. */
 static char *nested_source(const char *prefix, const char *open,
                            const char *middle, const char *close,
@@ -712,6 +974,11 @@ int main(void) {
     test_unterminated_literal_locations();
     test_literal_continuation_diagnostics();
     test_literal_macro_ownership();
+    test_format_trailing_tokens();
+    test_format_valid_expressions();
+    test_format_alphabetic_specs();
+    test_format_file_ownership();
+    test_format_macro_ownership();
     test_discarded_lexer_errors();
     test_resource_limits();
     expect_accepted("typed variadic dispatch dotted syntax",

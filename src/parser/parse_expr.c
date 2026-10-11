@@ -172,12 +172,67 @@ static node_t *parse_compound_init(parser_t *p, usize_t line) {
     return n;
 }
 
+/* A placeholder owns its whole copied expression, unlike ordinary callers of
+   parse_expr which own surrounding delimiters. Only diagnose trailing tokens
+   when the child has not already failed. The successful legacy lexer token
+   points into expr_src, so its raw offset also locates the original spelling,
+   including pool-copied macro literals with definition-site coordinates. */
+static void finish_format_placeholder(parser_t *p, const parser_t *sub,
+                                      token_t fmt_tok, const char *fmt_file,
+                                      usize_t expr_start, const char *expr_src,
+                                      usize_t expr_len, boolean_t *has_colon,
+                                      usize_t *colon_pos) {
+    if (sub->had_error) {
+        p->had_error = True;
+        return;
+    }
+    if (sub->current.kind == TokEof) return;
+
+    usize_t offset = (usize_t)(sub->current.start - expr_src);
+    usize_t len = sub->current.length;
+    boolean_t valid_span = fmt_tok.length >= 2 && expr_start <= fmt_tok.length - 2
+        && expr_len <= fmt_tok.length - 2 - expr_start
+        && offset < expr_len && len > 0 && len <= expr_len - offset;
+
+    /* Give valid static access to the expression parser first. The splitter
+       deliberately leaves alphabetic colons there; only an exact remaining
+       :x/:X/:b/:o is a supported terminal spec, not discarded expression text.
+       Do not reinterpret another suffix when a spec was already split off. */
+    if (valid_span && !*has_colon && sub->current.kind == TokColon && len == 1
+        && expr_len - offset == 2 && strchr("xXbo", expr_src[offset + 1])) {
+        *has_colon = True;
+        *colon_pos = expr_start + offset;
+        return;
+    }
+
+    p->had_error = True;
+    const char *resume_file = diag_get_file();
+    diag_set_file(fmt_file);
+    diag_begin_error("unexpected trailing token in format placeholder expression");
+
+    /* Bound the mapping by both copied ranges. Never invent an outer span if
+       the substring/token invariant is broken. Count bytes, not decoded text. */
+    if (valid_span) {
+        usize_t raw_offset = 1 + expr_start + offset;
+        usize_t line = fmt_tok.line, col = fmt_tok.col;
+        for (usize_t i = 0; i < raw_offset; i++) {
+            if (fmt_tok.start[i] == '\n') { line++; col = 1; }
+            else col++;
+        }
+        diag_span(SRC_LOC(line, col, len), True,
+                  "expected the end of the expression here");
+    }
+    diag_finish();
+    diag_set_file(resume_file);
+}
+
 /* ── comptime format string: @'...' / heap @'...' ──
  * Called with `@` already consumed. Current token must be TokStackStr/TokHeapStr.
  * Each {expr} / {expr:spec} span in the format is sub-parsed as a Stasha
  * expression using a fresh legacy-mode parser over the substring. */
 static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usize_t line) {
     token_t fmt_tok = p->current;
+    const char *fmt_file = fmt_tok.file ? fmt_tok.file : diag_get_file();
     advance_parser(p); /* consume the string literal */
 
     usize_t fmt_len = fmt_tok.length - 2;
@@ -253,7 +308,8 @@ static node_t *parse_comptime_fmt_at_string(parser_t *p, boolean_t on_heap, usiz
         init_lexer(&sub.lexer, expr_src);
         advance_parser(&sub);
         node_t *expr_node = parse_expr(&sub);
-        if (sub.had_error) p->had_error = True;
+        finish_format_placeholder(p, &sub, fmt_tok, fmt_file,
+                                  expr_start, expr_src, expr_len, &has_colon, &colon_pos);
 
         node_list_push(&n->as.comptime_fmt.args, expr_node);
 

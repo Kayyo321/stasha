@@ -59,6 +59,37 @@ positions, invocation-site expansion positions, copied expansion text, and
 caller-owned file paths through parsing. These are front-end tests, not
 end-to-end import resolution or generated-program execution.
 
+## Complete format-placeholder expressions
+
+Both inline `print.(@'...')` placeholders and standalone `@'...'` expressions
+must consume the entire expression portion of each slot. An otherwise valid
+expression followed by another token, such as `{1 2}`, `{1, 2}`, `{1; 2}`, or
+`{1)}`, is rejected rather than silently discarding that token. Existing child
+parser errors propagate without an additional trailing-token diagnostic.
+
+The new diagnostic identifies the first unconsumed token in the outer literal,
+using its full raw-byte span, physical LF lines, and byte columns. Both parser
+modes cover multiline literals, CRLF, escaped physical LF, tabs, UTF-8 bytes,
+and imported-file path ownership after cleanup. Exported macros retain their
+definition-file location even when expansion copies the literal text and the
+parser has returned to the caller's file context.
+
+Valid arithmetic, calls, fields, assignments, pipelines, parenthesized ternaries,
+whitespace, completed comments, format specifications, and colon static access
+retain their AST structure. After the expression parser has consumed valid
+static access, an exact remaining `:x`, `:X`, `:b`, or `:o` is recognized as a
+terminal format specification. This preserves standalone formatting and fixes
+inline printing, which previously dropped these alphabetic specs. Recognition
+does not accept additional text, trivia, unsupported letters, or duplicate
+suffixes, and cannot replace a spec already found by the original splitter.
+
+Beyond that bounded terminal-spec correction, quote/comment-aware splitting,
+nested-brace grammar, general colon ambiguity, nested interpolation, older
+child-parser error remapping, and the two paths' different nesting setup remain
+outside this regression contract. Standalone code generation's existing
+first-colon interpretation is also unchanged; combined static-access/spec tests
+assert parsing and inline rewriting rather than promise new standalone output.
+
 ## Integer literal contract
 
 - Decimal and `0x`/`0X` hexadecimal literals contain an unsigned magnitude in

@@ -201,6 +201,7 @@ static node_t *parse_print_stmt(parser_t *p) {
     }
 
     token_t fmt_tok = p->current;
+    const char *fmt_file = fmt_tok.file ? fmt_tok.file : diag_get_file();
     advance_parser(p);
 
     usize_t raw_len = fmt_tok.length - 2;
@@ -286,7 +287,8 @@ static node_t *parse_print_stmt(parser_t *p) {
                 init_lexer(&sub.lexer, expr_src);
                 advance_parser(&sub);
                 node_t *expr_node = parse_expr(&sub);
-                if (sub.had_error) p->had_error = True;
+                finish_format_placeholder(p, &sub, fmt_tok, fmt_file,
+                                          expr_start, expr_src, expr_len, &has_colon, &colon_pos);
                 node_list_push(&n->as.print_stmt.args, expr_node);
             }
 
