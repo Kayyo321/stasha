@@ -361,6 +361,288 @@ static void test_eof_file_ownership(void) {
     }
 }
 
+/* Literal byte spelling and decoding are unchanged by position tracking. The
+   end coordinates below are independent expectations after a "\r\n \t" prefix. */
+static const struct literal_case {
+    const char *name, *raw, *value;
+    token_kind_t kind;
+    usize_t end_line, end_col;
+} literal_cases[] = {
+    {"double quoted raw LF", "\"a\nb\"", "a\nb", TokStackStr, 3, 3},
+    {"single quoted raw LF", "'a\nb'", "a\nb", TokStackStr, 3, 3},
+    {"double quoted escaped physical LF", "\"a\\\nb\"", "a\nb", TokStackStr, 3, 3},
+    {"single quoted escaped physical LF", "'a\\\nb'", "a\nb", TokStackStr, 3, 3},
+    {"double quoted raw CRLF", "\"a\r\nb\"", "a\r\nb", TokStackStr, 3, 3},
+    {"single quoted raw CRLF", "'a\r\nb'", "a\r\nb", TokStackStr, 3, 3},
+    {"double quoted escaped CRLF", "\"a\\\r\nb\"", "a\r\nb", TokStackStr, 3, 3},
+    {"single quoted escaped CRLF", "'a\\\r\nb'", "a\r\nb", TokStackStr, 3, 3},
+    {"mixed multiple physical lines", "\"a\n\tb\\\n\tc\r\nd\"", "a\n\tb\n\tc\r\nd", TokStackStr, 5, 3},
+    {"string lone CR", "\"a\rb\"", "a\rb", TokStackStr, 2, 8},
+    {"string escaped lone CR", "\"a\\\rb\"", "a\rb", TokStackStr, 2, 9},
+    {"string tab byte column", "\"a\tb\"", "a\tb", TokStackStr, 2, 8},
+    {"string UTF-8 byte column", "\"\xc3\xa9\"", "\xc3\xa9", TokStackStr, 2, 7},
+    {"textual newline escape", "\"a\\nb\"", "a\nb", TokStackStr, 2, 9},
+    {"escaped double quote", "\"a\\\"b\"", "a\"b", TokStackStr, 2, 9},
+    {"escaped single quote", "'a\\'b'", "a'b", TokStackStr, 2, 9},
+    {"backtick raw LF", "`\n`", "\n", TokCharLit, 3, 2},
+    {"backtick escaped physical LF", "`\\\n`", "\n", TokCharLit, 3, 2},
+    {"backtick raw CR", "`\r`", "\r", TokCharLit, 2, 6},
+    {"backtick escaped physical CR", "`\\\r`", "\r", TokCharLit, 2, 7},
+    {"backtick textual newline escape", "`\\n`", "\n", TokCharLit, 2, 7},
+    {"backtick escaped delimiter", "`\\``", "`", TokCharLit, 2, 7},
+    {"dollar double raw LF", "$\"a\nb\"", "a\nb", TokDollarStr, 3, 3},
+    {"dollar single raw LF", "$'a\nb'", "a\nb", TokDollarStr, 3, 3},
+    {"dollar double escaped physical LF", "$\"a\\\nb\"", "a\\\nb", TokDollarStr, 3, 3},
+    {"dollar single escaped physical LF", "$'a\\\nb'", "a\\\nb", TokDollarStr, 3, 3},
+    {"dollar double raw CRLF", "$\"a\r\nb\"", "a\r\nb", TokDollarStr, 3, 3},
+    {"dollar single raw CRLF", "$'a\r\nb'", "a\r\nb", TokDollarStr, 3, 3},
+    {"dollar double escaped CRLF", "$\"a\\\r\nb\"", "a\\\r\nb", TokDollarStr, 3, 3},
+    {"dollar single escaped CRLF", "$'a\\\r\nb'", "a\\\r\nb", TokDollarStr, 3, 3},
+    {"dollar multiple physical lines", "$'a\n\tb\\\n\tc'", "a\n\tb\\\n\tc", TokDollarStr, 4, 4},
+    {"dollar lone CR", "$'a\rb'", "a\rb", TokDollarStr, 2, 9},
+};
+
+static void test_literal_tokens(void) {
+    for (size_t i = 0; i < sizeof(literal_cases) / sizeof(literal_cases[0]); i++) {
+        const struct literal_case *c = &literal_cases[i];
+        case_name = c->name;
+        for (int following = 0; following < 2; following++) {
+            char source[256];
+            snprintf(source, sizeof(source), "\r\n \t%s%s", c->raw,
+                     following ? "\tmark" : "");
+            lexer_t lex;
+            init_lexer(&lex, source);
+            token_t t = next_token(&lex);
+            CHECK(t.kind == c->kind);
+            CHECK(t.start == source + 4);
+            CHECK(t.length == strlen(c->raw));
+            CHECK(memcmp(t.start, c->raw, t.length) == 0);
+            CHECK(t.line == 2 && t.col == 3 && t.file == NULL);
+            CHECK(lex.line == c->end_line);
+            CHECK((usize_t)(lex.current - lex.line_start) + 1 == c->end_col);
+            if (following) {
+                t = next_token(&lex);
+                CHECK(t.kind == TokIdent && t.length == 4);
+                CHECK(t.start == source + 4 + strlen(c->raw) + 1);
+                CHECK(memcmp(t.start, "mark", 4) == 0);
+                CHECK(t.line == c->end_line && t.col == c->end_col + 1);
+            }
+            for (int repeat = 0; repeat < 2; repeat++) {
+                t = next_token(&lex);
+                CHECK(t.kind == TokEof && t.length == 0);
+                CHECK(t.start == source + strlen(source));
+                CHECK(t.line == c->end_line);
+                CHECK(t.col == c->end_col + (following ? 5 : 0));
+            }
+        }
+    }
+
+    case_name = "physical LF counted once across comments and literals";
+    const char *source = "\r\n \t/* outer\n /* nested\r\n */ done */\r\n"
+                         "\t\"a\\\nb\" // tail\r\n\t`\\\n`\n\r x";
+    lexer_t lex;
+    init_lexer(&lex, source);
+    token_t t = next_token(&lex);
+    CHECK(t.kind == TokStackStr && t.line == 5 && t.col == 2);
+    t = next_token(&lex);
+    CHECK(t.kind == TokCharLit && t.line == 7 && t.col == 2);
+    t = next_token(&lex);
+    CHECK(t.kind == TokIdent && t.line == 9 && t.col == 3);
+    t = next_token(&lex);
+    CHECK(t.kind == TokEof && t.line == 9 && t.col == 4);
+}
+
+static void test_literal_values(void) {
+    for (size_t i = 0; i < sizeof(literal_cases) / sizeof(literal_cases[0]); i++) {
+        const struct literal_case *c = &literal_cases[i];
+        char source[256];
+        case_name = c->name;
+        /* Parentheses force the parser to save and restore the full lexer
+           while distinguishing grouped expressions from casts. */
+        for (int wrapped = 0; wrapped < 2; wrapped++) {
+            snprintf(source, sizeof(source), "mod t;\n\tstack i32 value = %s%s%s;",
+                     wrapped ? "(" : "", c->raw, wrapped ? ")" : "");
+            for (int mode = 0; mode < 2; mode++) {
+                node_t *m = parse_case(source, (boolean_t)mode);
+                CHECK(m && !get_error_count());
+                CHECK(m->as.module.decls.count == 1);
+                node_t *n = m->as.module.decls.items[0]->as.var_decl.init;
+                CHECK(n && n->line == 2);
+                if (c->kind == TokStackStr) {
+                    CHECK(n->kind == NodeStrLitExpr && !n->as.str_lit.is_heap);
+                    CHECK(n->as.str_lit.len == strlen(c->value));
+                    CHECK(memcmp(n->as.str_lit.value, c->value, strlen(c->value) + 1) == 0);
+                } else if (c->kind == TokCharLit) {
+                    CHECK(n->kind == NodeCharLitExpr);
+                    CHECK(n->as.char_lit.value == c->value[0]);
+                } else {
+                    CHECK(n->kind == NodeIdentExpr);
+                    CHECK(strcmp(n->as.ident.name, c->value) == 0);
+                    CHECK(n->col == 20 + (usize_t)wrapped && n->len == strlen(c->raw));
+                }
+                finish_case();
+            }
+        }
+    }
+}
+
+static void test_unterminated_literal_locations(void) {
+    const struct {
+        const char *raw, *message;
+        usize_t line, col;
+    } cases[] = {
+        {"\"a\nb", "unterminated string", 3, 2},
+        {"'a\\\nb", "unterminated string", 3, 2},
+        {"$\"a\\\r\nb", "unterminated string", 3, 2},
+        {"\"a\\", "unterminated string", 2, 6},
+        {"`\n", "unterminated char literal", 3, 1},
+        {"`\\\n", "unterminated char literal", 3, 1},
+        {"`\\", "unterminated char literal", 2, 5},
+    };
+    case_name = "unterminated literals retain physical cursor anchor";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char source[128];
+        snprintf(source, sizeof(source), "\r\n \t%s", cases[i].raw);
+        lexer_t lex;
+        init_lexer(&lex, source);
+        token_t t = next_token(&lex);
+        CHECK(t.kind == TokError && strcmp(t.start, cases[i].message) == 0);
+        CHECK(t.length == strlen(cases[i].message));
+        CHECK(t.line == cases[i].line && t.col == cases[i].col);
+        t = next_token(&lex);
+        CHECK(t.kind == TokEof && t.start == source + strlen(source));
+        CHECK(t.line == cases[i].line && t.col == cases[i].col);
+    }
+    /* CRLF is two character bytes, so it remains invalid in a backtick
+       literal. The cursor is still on LF when the missing-close error occurs. */
+    const char *crlf[] = {"`\r\n`", "`\\\r\n`"};
+    for (size_t i = 0; i < 2; i++) {
+        lexer_t lex;
+        init_lexer(&lex, crlf[i]);
+        token_t t = next_token(&lex);
+        CHECK(t.kind == TokError && strcmp(t.start, "unterminated char literal") == 0);
+        CHECK(t.line == 1 && t.col == 3 + i);
+        CHECK(*lex.current == '\n');
+    }
+}
+
+static void check_expression_diagnostic(const char *file, usize_t line, usize_t col) {
+    CHECK(get_error_count() == 1 && diag_get_captured_count() == 1);
+    const captured_diag_t *d = diag_get_captured(0);
+    CHECK(d && strcmp(d->filename, file) == 0);
+    CHECK(strcmp(d->diag.message, "expected an expression, found ';'") == 0);
+    CHECK(d->diag.label_count == 1);
+    CHECK(d->diag.labels[0].loc.line == line);
+    CHECK(d->diag.labels[0].loc.col == col);
+    CHECK(d->diag.labels[0].loc.len == 1);
+}
+
+static void test_literal_continuation_diagnostics(void) {
+    const struct { const char *raw; usize_t line, col; } cases[] = {
+        {"\"a\nb\"", 3, 6}, {"'a\\\nb'", 3, 6},
+        {"\"a\\\r\nb\"", 3, 6}, {"`\n`", 3, 5},
+        {"`\\\n`", 3, 5}, {"$'a\\\nb'", 3, 6},
+    };
+    case_name = "ordinary expression error on literal continuation line";
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char source[256];
+        snprintf(source, sizeof(source), "mod t;\nstack i32 value = %s + ;", cases[i].raw);
+        for (int mode = 0; mode < 2; mode++) {
+            CHECK(parse_case(source, (boolean_t)mode) == NULL);
+            check_expression_diagnostic(test_file, cases[i].line, cases[i].col);
+            finish_case();
+        }
+    }
+
+    /* The per-file entry used for imports must not keep the caller's file.
+       Captured diagnostics own their path/coordinates after input cleanup. */
+    for (int mode = 0; mode < 2; mode++) {
+        char *file = strdup("imported/literal.sts");
+        char *source = strdup("mod imported.literal;\nstack i32 value = \"a\\\nb\" + ;");
+        CHECK(file && source);
+        restore_diagnostic_counts(0, 0);
+        diag_clear_captured();
+        diag_set_render_enabled(False);
+        diag_register_source(test_file, "mod caller;\n");
+        diag_set_file(test_file);
+        stream = mode ? pp_process(source, file, NULL, 0) : NULL;
+        if (mode) {
+            CHECK(stream);
+            boolean_t found = False;
+            for (int i = 0; i < stream->count; i++) {
+                const pp_token_t *pt = &stream->tokens[i];
+                if (pt->tok.kind != TokStackStr) continue;
+                CHECK(!found);
+                found = True;
+                CHECK(pt->tok.file == file && pt->tok.start == strstr(source, "\"a"));
+                CHECK(pt->tok.line == 2 && pt->tok.col == 19 && pt->tok.length == 6);
+                CHECK(pt->expansion == NULL);
+            }
+            CHECK(found);
+            CHECK(parse_from_stream(stream) == NULL);
+        } else {
+            diag_set_file(file);
+            CHECK(parse(source) == NULL);
+        }
+        check_expression_diagnostic(file, 3, 6);
+        finish_case();
+        memset(file, 'x', strlen(file));
+        memset(source, 'x', strlen(source));
+        free(file);
+        free(source);
+        diag_clear_sources();
+        check_expression_diagnostic("imported/literal.sts", 3, 6);
+        diag_set_file(test_file);
+    }
+}
+
+static void test_literal_macro_ownership(void) {
+    case_name = "imported macro literal definition and invocation locations";
+    char *file = strdup("imported/values.sts");
+    char *source = strdup("mod imported.values;\next macro let shared! = \"A\\\nB\";\n");
+    const char *caller = "mod caller;\nstack i32 value = shared.!;\n";
+    CHECK(file && source);
+    restore_diagnostic_counts(0, 0);
+    diag_clear_captured();
+    diag_set_render_enabled(False);
+    pp_stream_t *definition = pp_process(source, file, NULL, 0);
+    CHECK(definition && !get_error_count());
+    pp_macro_set_t *imports[] = {pp_get_exports(definition)};
+    CHECK(imports[0] && imports[0]->let_count == 1);
+    const macro_tok_t *stored = &imports[0]->lets[0].tokens[0];
+    CHECK(stored->kind == TokStackStr && stored->text == strstr(source, "\"A"));
+    CHECK(stored->file == file && stored->line == 2 && stored->col == 25);
+    stream = pp_process(caller, test_file, imports, 1);
+    CHECK(stream && !get_error_count());
+    boolean_t found = False;
+    for (int i = 0; i < stream->count; i++) {
+        const pp_token_t *pt = &stream->tokens[i];
+        if (pt->tok.kind != TokStackStr) continue;
+        CHECK(!found);
+        found = True;
+        CHECK(pt->tok.start != stored->text);
+        CHECK(pt->tok.length == 6 && memcmp(pt->tok.start, "\"A\\\nB\"", 6) == 0);
+        CHECK(pt->tok.file == file && pt->tok.line == 2 && pt->tok.col == 25);
+        CHECK(pt->expansion && strcmp(pt->expansion->macro_name, "shared") == 0);
+        CHECK(pt->expansion->call_file == test_file);
+        CHECK(pt->expansion->call_line == 2 && pt->expansion->call_col == 19);
+        CHECK(pt->expansion->parent == NULL);
+    }
+    CHECK(found);
+    check_eof_token(caller, test_file, 3, 1);
+    node_t *m = parse_from_stream(stream);
+    CHECK(m && !get_error_count());
+    node_t *n = m->as.module.decls.items[0]->as.var_decl.init;
+    CHECK(n && n->kind == NodeStrLitExpr && n->line == 2);
+    CHECK(n->as.str_lit.len == 3 && memcmp(n->as.str_lit.value, "A\nB", 4) == 0);
+    finish_case();
+    pp_stream_free(definition);
+    free(file);
+    free(source);
+    diag_clear_sources();
+    diag_set_file(test_file);
+}
+
 /* Generate resource-limit cases without checking enormous source fixtures in. */
 static char *nested_source(const char *prefix, const char *open,
                            const char *middle, const char *close,
@@ -425,6 +707,11 @@ int main(void) {
     test_comments();
     test_eof_locations();
     test_eof_file_ownership();
+    test_literal_tokens();
+    test_literal_values();
+    test_unterminated_literal_locations();
+    test_literal_continuation_diagnostics();
+    test_literal_macro_ownership();
     test_discarded_lexer_errors();
     test_resource_limits();
     expect_accepted("typed variadic dispatch dotted syntax",

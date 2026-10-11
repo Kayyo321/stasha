@@ -225,15 +225,17 @@ typedef struct {
     const char  *start;
     usize_t      length;
     usize_t      line;
-    usize_t      col;   /* 1-based column of the first character of this token */
+    usize_t      col;   /* 1-based byte column of the first character of this token */
     const char  *file;  /* source file path; NULL = set by caller after lexing */
 } token_t;
 
 typedef struct {
-    const char *start;       /* beginning of entire source buffer            */
+    const char *start;       /* beginning of the token currently being scanned */
     const char *current;     /* current scan position                        */
     const char *line_start;  /* pointer to first char of the current line    */
-    usize_t line;
+    usize_t line;           /* current physical line; only LF advances it   */
+    usize_t start_line;     /* token-start location, captured after whitespace */
+    usize_t start_col;
 } lexer_t;
 
 void init_lexer(lexer_t *lex, const char *source);

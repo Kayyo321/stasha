@@ -22,7 +22,14 @@ static boolean_t is_at_end(lexer_t *lex) {
 }
 
 static char advance(lexer_t *lex) {
-    return *lex->current++;
+    char c = *lex->current++;
+    /* Count physical LF bytes on every scanning path, including escapes.
+       CR and tabs remain ordinary bytes; CRLF therefore counts only once. */
+    if (c == '\n') {
+        lex->line++;
+        lex->line_start = lex->current;
+    }
+    return c;
 }
 
 static char peek(lexer_t *lex) {
@@ -36,7 +43,7 @@ static char peek_next(lexer_t *lex) {
 
 static boolean_t match(lexer_t *lex, char expected) {
     if (is_at_end(lex) || *lex->current != expected) return False;
-    lex->current++;
+    advance(lex);
     return True;
 }
 
@@ -45,8 +52,8 @@ static token_t make_token(lexer_t *lex, token_kind_t kind) {
     tok.kind   = kind;
     tok.start  = lex->start;
     tok.length = (usize_t)(lex->current - lex->start);
-    tok.line   = lex->line;
-    tok.col    = (usize_t)(lex->start - lex->line_start) + 1;
+    tok.line   = lex->start_line;
+    tok.col    = lex->start_col;
     tok.file   = Null;  /* caller fills this in after lexing */
     return tok;
 }
@@ -70,12 +77,8 @@ static boolean_t skip_whitespace(lexer_t *lex, token_t *error) {
             case ' ':
             case '\r':
             case '\t':
-                advance(lex);
-                break;
             case '\n':
-                lex->line++;
                 advance(lex);
-                lex->line_start = lex->current;
                 break;
             case '/':
                 if (peek_next(lex) == '/') {
@@ -100,12 +103,7 @@ static boolean_t skip_whitespace(lexer_t *lex, token_t *error) {
                             advance(lex); advance(lex);
                             depth--;
                         } else {
-                            char ch = peek(lex);
                             advance(lex);
-                            if (ch == '\n') {
-                                lex->line++;
-                                lex->line_start = lex->current;
-                            }
                         }
                     }
                     if (depth != 0) {
@@ -268,12 +266,6 @@ static token_t scan_string(lexer_t *lex, char quote) {
             if (!is_at_end(lex)) advance(lex); /* skip escaped char */
             continue;
         }
-        if (peek(lex) == '\n') {
-            lex->line++;
-            advance(lex);
-            lex->line_start = lex->current;
-            continue;
-        }
         advance(lex);
     }
     if (is_at_end(lex)) return error_token(lex, "unterminated string");
@@ -300,12 +292,16 @@ void init_lexer(lexer_t *lex, const char *source) {
     lex->current    = source;
     lex->line_start = source;
     lex->line       = 1;
+    lex->start_line = 1;
+    lex->start_col  = 1;
 }
 
 token_t next_token(lexer_t *lex) {
     token_t error;
     if (!skip_whitespace(lex, &error)) return error;
     lex->start = lex->current;
+    lex->start_line = lex->line;
+    lex->start_col = (usize_t)(lex->current - lex->line_start) + 1;
 
     if (is_at_end(lex)) return make_token(lex, TokEof);
 

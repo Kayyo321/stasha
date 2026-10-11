@@ -36,6 +36,29 @@ caller to imported-file context and check that captured diagnostics survive
 AST/stream cleanup and release of those caller buffers; they do not run import
 resolution or generated programs.
 
+## Literal source positions
+
+Tokens begin at their opening quote, backtick, or dollar prefix, even when their
+spelling spans physical lines. Lines count LF bytes exactly once, including
+LF after a backslash and LF in CRLF. Columns are 1-based byte offsets: tabs are
+one byte, UTF-8 bytes are counted individually, and a lone CR is not a newline.
+Whitespace and nested comments use the same physical-line accounting.
+
+These checks preserve existing literal syntax, token kinds, raw byte spans, and
+decoded AST values in both parser modes. A backslash followed by physical LF
+still decodes to LF in strings and characters; it is not line splicing.
+Dollar-quoted identifier contents retain their existing raw spelling. CRLF
+remains two bytes and therefore is not a single accepted backtick character.
+Unterminated literal errors retain their current-cursor anchor; unterminated
+block comments retain their opening-comment anchor.
+
+Regressions assert exact token, following-token, and EOF positions; ordinary
+expression errors on continuation lines; and imported-file diagnostics after
+source/path cleanup. An exported macro case checks definition-site literal
+positions, invocation-site expansion positions, copied expansion text, and
+caller-owned file paths through parsing. These are front-end tests, not
+end-to-end import resolution or generated-program execution.
+
 ## Integer literal contract
 
 - Decimal and `0x`/`0X` hexadecimal literals contain an unsigned magnitude in
