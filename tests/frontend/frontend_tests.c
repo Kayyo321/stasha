@@ -1243,7 +1243,111 @@ static void test_observed_declaration_boundaries(void) {
     finish_case();
 }
 
+static void check_query_origin_nodes(node_t*m,uint32_t file_id,const char*file) {
+    /* These coordinates come from the literal source below, not token lookup
+     * or parser-generated spans. Repeated and nested keywords must each own
+     * their particular opening keyword and final closing parenthesis. */
+    static const struct { node_kind_t kind; uint32_t line,col,end_line,end_col; } spans[] = {
+        {NodeLenExpr,5,5,5,18}, {NodeCapExpr,6,5,6,18},
+        {NodeLenExpr,7,5,7,18}, {NodeLenExpr,7,21,7,34},
+        {NodeCapExpr,7,37,7,50}, {NodeCapExpr,7,53,7,66},
+        {NodeLenExpr,8,23,8,36}, {NodeCapExpr,8,40,8,53},
+        {NodeLenExpr,9,5,13,5}, {NodeCapExpr,11,13,11,26},
+        {NodeLenExpr,11,30,11,43}, {NodeCapExpr,14,9,14,42},
+        {NodeCapExpr,14,23,14,36}
+    };
+    CHECK(m && m->as.module.decls.count==1);
+    node_t*f=m->as.module.decls.items[0];
+    CHECK(f->kind==NodeFnDecl && !strcmp(f->as.fn_decl.name,"measure"));
+    node_list_t b=f->as.fn_decl.body->as.block.stmts;
+    CHECK(b.count==11);
+    CHECK(b.items[0]->kind==NodeVarDecl && !strcmp(b.items[0]->as.var_decl.name,"len_rows"));
+    CHECK(b.items[1]->kind==NodeVarDecl && !strcmp(b.items[1]->as.var_decl.name,"cap_rows"));
+    CHECK(b.items[8]->kind==NodeVarDecl && b.items[8]->as.var_decl.init->kind==NodeBinaryExpr);
+    CHECK(b.items[10]->kind==NodeRetStmt && b.items[10]->as.ret_stmt.values.count==1);
+    node_t*sum=b.items[8]->as.var_decl.init;
+    node_t*multi=b.items[9]->as.expr_stmt.expr;
+    node_t*ret=b.items[10]->as.ret_stmt.values.items[0];
+    CHECK(multi->kind==NodeLenExpr && multi->as.len_expr.operand->kind==NodeIndexExpr);
+    CHECK(ret->kind==NodeCapExpr && ret->as.len_expr.operand->kind==NodeIndexExpr);
+    node_t*multi_index=multi->as.len_expr.operand->as.index_expr.index;
+    node_t*ret_index=ret->as.len_expr.operand->as.index_expr.index;
+    CHECK(multi_index->kind==NodeBinaryExpr && ret_index->kind==NodeBinaryExpr);
+    node_t*queries[]={
+        b.items[2]->as.expr_stmt.expr,b.items[3]->as.expr_stmt.expr,
+        b.items[4]->as.expr_stmt.expr,b.items[5]->as.expr_stmt.expr,
+        b.items[6]->as.expr_stmt.expr,b.items[7]->as.expr_stmt.expr,
+        sum->as.binary.left,sum->as.binary.right,multi,
+        multi_index->as.binary.left,multi_index->as.binary.right,
+        ret,ret_index->as.binary.left
+    };
+    CHECK(sizeof(queries)/sizeof(queries[0])==sizeof(spans)/sizeof(spans[0]));
+    for(size_t i=0;i<sizeof(queries)/sizeof(queries[0]);++i) {
+        node_t*q=queries[i];
+        CHECK(q && q->kind==spans[i].kind);
+        CHECK(q->line==spans[i].line && q->col==0 && q->len==0);
+        CHECK(q->observation_file_id_plus_one==file_id);
+        CHECK(q->observation_line==spans[i].line && q->observation_end_line==spans[i].end_line);
+        CHECK(!q->observation_hit_id && !q->observation_site_id && !q->observation_target_decl_id_plus_one);
+        if(file_id) {
+            CHECK(q->observation_col==spans[i].col && q->observation_end_col==spans[i].end_col);
+            CHECK(q->observation_file && !strcmp(q->observation_file,file));
+        } else {
+            CHECK(q->observation_col==0 && q->observation_end_col==0);
+        }
+    }
+    if(file_id) {
+        CHECK(b.items[2]->observation_line==5 && b.items[2]->observation_col==5);
+        CHECK(b.items[2]->observation_end_line==5 && b.items[2]->observation_end_col==19);
+        CHECK(b.items[8]->observation_line==8 && b.items[8]->observation_col==5);
+        CHECK(b.items[8]->observation_end_line==8 && b.items[8]->observation_end_col==54);
+        CHECK(b.items[9]->observation_line==9 && b.items[9]->observation_col==5);
+        CHECK(b.items[9]->observation_end_line==13 && b.items[9]->observation_end_col==6);
+        CHECK(b.items[10]->observation_line==14 && b.items[10]->observation_col==5);
+        CHECK(b.items[10]->observation_end_line==14 && b.items[10]->observation_end_col==43);
+    }
+}
+
+static void test_observed_query_origins(void) {
+    const char*literal="mod query.origins;\n"
+        "fn measure(void): i32 {\n"
+        "    stack i32 len_rows[2][3] = .{};\n"
+        "    stack i32 cap_rows[1] = .{};\n"
+        "    len.(len_rows);\n"
+        "    cap.(cap_rows);\n"
+        "    len.(len_rows); len.(cap_rows); cap.(len_rows); cap.(cap_rows);\n"
+        "    stack i32 count = len.(len_rows) + cap.(cap_rows);\n"
+        "    len.(\n"
+        "        len_rows[\n"
+        "            cap.(cap_rows) - len.(cap_rows)\n"
+        "        ]\n"
+        "    );\n"
+        "    ret cap.(len_rows[cap.(cap_rows) - 1]);\n"
+        "}\n";
+    case_name="owned literal query spans in both graph files";
+    for(uint32_t id=1;id<=2;++id) {
+        const char*expected=id==1?"/owned/root.sts":"/owned/query.sts";
+        char*source=strdup(literal),*file=strdup(expected);CHECK(source && file);
+        restore_diagnostic_counts(0,0);diag_clear_captured();diag_set_render_enabled(False);
+        diag_register_source(file,source);diag_set_file(file);diag_set_source(source);
+        stream=pp_process(source,file,NULL,0);CHECK(stream);
+        node_t*m=parse_observed_from_stream(stream,id,16);
+        CHECK(m && !get_error_count());
+        pp_stream_free(stream);stream=NULL;
+        memset(source,'x',strlen(source));memset(file,'y',strlen(file));free(source);free(file);
+        check_query_origin_nodes(m,id,expected);
+        finish_case();
+    }
+    case_name="query AST and ordinary origin behavior remain unchanged";
+    for(int mode=0;mode<2;++mode) {
+        node_t*m=parse_case(literal,(boolean_t)mode);CHECK(m && !get_error_count());
+        check_query_origin_nodes(m,0,NULL);
+        finish_case();
+    }
+}
+
 int main(void) {
+    test_observed_query_origins();
     test_observed_declaration_boundaries();
     test_observed_owned_origins();
     test_literals();

@@ -92,6 +92,7 @@ proof of correct lowering or observation.
 | Scalars, pointers, arrays, variables and ordinary control | Qualify the admitted subset; extend storage/type combinations, atomic/volatile/TLS/restrict, aliases/inference, comparison chains, `with`, foreach and multi-return/destructuring. Preserve evaluation order, diagnostics and cleanup on every exit. |
 | Functions and source names | Expression bodies, recursion, quoted/long names, linkage and exports need stable resolved identities and collision-safe hooks; application `main` needs an explicit execution policy. |
 | Structs, unions, enums, inline tagged values and interfaces | Cover layout/attributes/bitfields, members, methods, constructors, pattern bindings, dispatch, nested fields and destructors. Interface/provider integration remains an open qualification dependency. |
+| Fixed primitive-array len/cap queries | Bounded identifier and remaining-rank indexed-subarray implementation has an exact third-family qualification gate. Admission policy `closed-direct-source-fixed-array-queries-v3`; source/IR acceptance, ordinary/adapted positives, literal 8/10 oracle and final aggregate are required before this row closes. General pointer/slice/member/alias/parameter/unsafe queries remain open. |
 | Initializers, slices and views | Cover compound/designated initialization, spread/range/merge, `make`, append/growth, copy and queries. Track actual backing storage; pointer/descriptor copies and interior views are not new allocations or proof of ownership. |
 | Errors, formatting and generated helpers | Classify heap versus stack/static buffers, propagation cleanup, hash/equality, type queries and rich assertions. Generated allocations need source attribution and matching release events. |
 | Generics, lambdas and variadics | Preserve template/specialization/instantiation origins; lifted and captured bodies; function pointers, callbacks, pipelines/trailing closures; raw/typed variadic ABI and state. Track actual environment storage, not an assumed heap allocation for every capture. |
@@ -207,3 +208,16 @@ Default activation requires all of the following:
 
 **Coverage minimums remain explicit-only after activation.** Full language
 compatibility never implies complete path execution or a static leak-freedom proof.
+
+### Fixed-array query evidence boundary
+
+The bounded query increment preserves ABI/report schema 2 and allocation/line
+metrics 1/2. The permanent family retains ten exact ordinary sources and their
+single-main-rename adapters, six independently frozen fixtures, strict runtime
+identity checks, and no-launch-only negative controls. Its central 8/10 `ff00`
+oracle has five assertions and two successful balanced 8-byte helper allocations;
+auxiliary cases cover index/control anchors, retained 13-byte helper storage,
+later-test cleanup and distinct root/import source owners. Source/IR or pure-only
+results are preparation evidence, not successful native qualification. Close only
+this bounded row after all required gates on the same final candidate; all other
+query/storage/provider/target rows and default activation remain open.

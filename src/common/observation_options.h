@@ -26,7 +26,7 @@
 #define STS_OBS_LOOKUP_POLICY "requested-entry-directory-v1"
 #define STS_OBS_DUPLICATE_POLICY "reject-v1"
 #define STS_OBS_ALIAS_POLICY "global-unique-exported-target-v1"
-#define STS_OBS_ADMISSION_POLICY "closed-direct-source-scalar-v2"
+#define STS_OBS_ADMISSION_POLICY "closed-direct-source-fixed-array-queries-v3"
 #define STS_OBS_RESOURCE_POLICY "direct-source-bounds-v2"
 enum { STS_OBS_ROOT = 0, STS_OBS_IMPORT = 1 };
 typedef struct {

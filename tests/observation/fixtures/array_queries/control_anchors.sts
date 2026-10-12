@@ -1,0 +1,28 @@
+mod observation_array_query_controls;
+fn exercise(void): i32 {
+    stack i32 rows[2][3] = .{};
+    stack i32 empty[0] = .{};
+    stack i32 selector[1] = .{0};
+    stack i32 total = 0;
+    len.(
+        rows
+    );
+    cap.(rows); len.(empty);
+    if (len.(rows)) {
+        total += 1;
+    }
+    total += len.(rows[false &&
+        true ?
+        0 :
+        1]);
+    total += cap.(rows[true ?
+        0 :
+        1]);
+    total += len.(rows[len.(selector) - 1]);
+    expect_eq.(cap.(empty), 0);
+    ret total;
+}
+test 'query anchors and once' {
+    print.('OBSERVATION_ONCE\n');
+    expect_eq.(exercise(), 10);
+}

@@ -1,0 +1,16 @@
+mod observation_array_query_imports;
+imp util.query;
+stack i32 rows[2] = .{};
+fn measure(void): i32 {
+    expect_eq.(len.(rows), 2);
+    {
+        stack i32 rows[3] = .{};
+        expect_eq.(cap.(rows), 3);
+    }
+    ret len.(rows);
+}
+test 'root query and once' {
+    print.('OBSERVATION_ONCE\n');
+    expect_eq.(measure(), 2);
+    expect_eq.(query.measure(), 4);
+}

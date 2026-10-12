@@ -6542,6 +6542,15 @@ static LLVMValueRef gen_array_query(cg_t *cg, node_t *node, unsigned descriptor_
         }
         return LLVMConstInt(i32_ty, extent, 0);
     }
+    if (cg->observation_config) {
+        const char *saved = diag_get_file();
+        diag_set_file(node->observation_file);
+        diag_begin_error("observed fixed-array query requires eligible readable array storage");
+        diag_span(SRC_LOC(node->observation_line, node->observation_col, 3), True, "query keyword");
+        diag_finish();
+        if (saved) diag_set_file(saved);
+        return LLVMConstInt(i32_ty, 0, 0);
+    }
     /* Preserve slices and the existing non-array compatibility route. A raw
      * pointer or decayed array does not acquire an inferred extent. */
     LLVMValueRef val = gen_expr(cg, operand);

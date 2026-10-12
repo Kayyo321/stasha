@@ -228,6 +228,22 @@ static obs_binding *obs_binding_lookup(obs_walk*w,const char*name) {
     return Null;
 }
 static boolean_t obs_bound(obs_walk*w,const char*name) {return obs_binding_lookup(w,name)!=Null;}
+
+/* Shape admission is separate from pointer-like expression typing. Consume at
+ * most seven ordinary indexes: an admitted rank is at most eight, and a query
+ * must leave a dimension. Concrete named/inferred extents belong to lowering. */
+static unsigned obs_array_query_rank(obs_walk*w,node_t*n) {
+    unsigned indexed=0;
+    while(n && n->kind==NodeIndexExpr) {
+        if(++indexed>=8)return 0;
+        n=n->as.index_expr.object;
+    }
+    if(!n || n->kind!=NodeIdentExpr)return 0;
+    obs_binding*b=obs_binding_lookup(w,n->as.ident.name);
+    if(!b || b->type.is_pointer || b->array_rank>8 || b->array_rank<=indexed)return 0;
+    return b->array_rank-indexed;
+}
+
 static node_t *obs_selected_function(obs_walk*w,node_t*n) {
     node_t*d=Null;
     if(n->kind==NodeCallExpr) {
@@ -308,6 +324,7 @@ static type_info_t obs_expr_type(obs_walk *w, node_t *n, unsigned depth) {
             t=NO_TYPE;t.base=TypeI64;return t;
         case NodeBoolLitExpr:t.base=TypeBool;return t;
         case NodeFloatLitExpr:t.base=TypeF64;return t;
+        case NodeLenExpr:case NodeCapExpr:t.base=TypeI32;return t;
         case NodeIntLitExpr:case NodeCharLitExpr:case NodeSizeofExpr:t.base=TypeI64;return t;
         default:return t;
     }
@@ -540,6 +557,12 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
         case NodeStrLitExpr:
             return n->as.str_lit.is_heap ? obs_error(n,"implicit heap string allocation") : True;
         case NodeIndexExpr: ON(n->as.index_expr.object); ON(n->as.index_expr.index); return True;
+        case NodeLenExpr: case NodeCapExpr:
+            if(!obs_array_query_rank(w,n->as.len_expr.operand))
+                return obs_error(n,"fixed-array query requires an admitted array with a remaining dimension");
+            /* The bounded shape classifier cannot replace the complete walk:
+             * nested calls, arms and effects retain their ordinary inventory. */
+            ON(n->as.len_expr.operand); return True;
         case NodeTernaryExpr:
             OA(n->as.ternary.cond); OA(n->as.ternary.then_expr); OA(n->as.ternary.else_expr); return True;
         case NodeCastExpr:

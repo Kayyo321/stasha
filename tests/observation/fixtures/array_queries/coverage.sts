@@ -1,0 +1,23 @@
+mod observation_array_queries;
+stack i32 calls = 0;
+fn index(void): i32 {
+    heap u8 *rw p = new.(8);
+    expect.(p != nil);
+    rem.(p);
+    calls += 1;
+    ret 0;
+}
+fn measure(void): void {
+    stack i32 rows[2][3] = .{};
+    expect_eq.(len.(rows[index()]), 3);
+    expect_eq.(cap.(rows[index()]), 3);
+}
+fn never(void): i32 {
+    stack i32 empty[0] = .{};
+    ret len.(empty);
+}
+test 'fixed-array queries and once' {
+    print.('OBSERVATION_ONCE\n');
+    measure();
+    expect_eq.(calls, 2);
+}

@@ -113,6 +113,17 @@ def pure_components(qualification, cc):
         qualification.command(name + "-run", [str(exe)])
 
 
+def expected_array_cases(levels):
+    # Parent-owned literal case inventory; never accept the child's receipt as
+    # an oracle and never enumerate other ordinary array-query RuntimeCases.
+    ordinary = ("direct", "named_extent", "inferred_extent", "empty_extent", "empty_inferred",
+                "const_array", "final_array", "matrix", "deep_rank", "global_array")
+    fixed = ("coverage80", "coverage81", "coverage-only", "allocation-only", "control-anchors",
+             "retained13", "retained12", "suite-cleanup", "imports")
+    return {"ordinary_native": [f"ordinary-{name}-O{opt}" for opt in levels for name in ordinary],
+            "observed_native": [f"{name}-O{opt}" for opt in levels for name in (*fixed, *("adapter-" + n for n in ordinary))]}
+
+
 def validate_family_receipt(qualification, destination, family, runner, expected, levels):
     # A child cannot choose an older or external successful receipt via LATEST.
     latest = (destination / "LATEST").read_text().strip()
@@ -126,7 +137,13 @@ def validate_family_receipt(qualification, destination, family, runner, expected
     assert data["compiler_sha256"] == qualification.compiler_hash
     assert data["runner_sha256"] == qualification.source_manifest[runner]
     assert data["optimization_levels"] == levels
-    if family == "observed-source-imports": assert data["runtime_sha256"] == qualification.runtime_hash
+    identities = {
+        "ordinary-imported-tests": ("tests/scalars/test_imported_tests.py", False),
+        "observed-source-imports": ("tests/observation/test_source_imports.py", True),
+        "observed-array-queries": ("tests/observation/test_array_queries.py", True),
+    }
+    assert family in identities and runner == identities[family][0]
+    if identities[family][1]: assert data["runtime_sha256"] == qualification.runtime_hash
     assert data["source_manifest"] == qualification.source_manifest
     assert data["source_manifest_sha256"] == sha(result_dir / "source-manifest.json")
     assert json.loads((result_dir / "source-manifest.json").read_text()) == qualification.source_manifest
@@ -163,6 +180,8 @@ def dispatch_required_families(qualification, levels, cc):
          {"ordinary_native": ordinary.expected_cases(levels)}, []),
         ("observed-source-imports", "tests/observation/test_source_imports.py",
          observed.expected_cases(levels), ["--cc", cc]),
+        ("observed-array-queries", "tests/observation/test_array_queries.py",
+         expected_array_cases(levels), ["--cc", cc]),
     ]:
         destination = qualification.artifacts / family
         argv = [sys.executable, "-B", str(ROOT / runner), "--compiler", str(qualification.compiler),
@@ -170,7 +189,7 @@ def dispatch_required_families(qualification, levels, cc):
         qualification.command(family, argv, timeout=1800)
         receipt = validate_family_receipt(qualification, destination, family, runner, expected, levels)
         qualification.family_receipts.append(receipt)
-    assert len(qualification.family_receipts) == 2
+    assert len(qualification.family_receipts) == 3
 
 
 class Qualification:
@@ -203,7 +222,7 @@ class Qualification:
     def receipt(self):
         (self.artifacts / "result.json").write_text(json.dumps({"status": self.status, "failure": self.failure,
             "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
-            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
+            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source and bounded array-query positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
 
     def command(self, name: str, argv: list[str], *, env=None, expected=0, cwd=None, timeout=60):
         dest = self.artifacts / name
@@ -396,7 +415,7 @@ class Qualification:
         }.items():
             self.command("reject-option-" + name, [str(self.compiler), "test", str(FIXTURES / "coverage.sts"), *flags], expected=1)
         self.verify_inputs()
-        assert len(self.family_receipts) == 2 and self.enrollment_selftest is not None
+        assert len(self.family_receipts) == 3 and self.enrollment_selftest is not None
         assert sha(Path(self.enrollment_selftest["receipt"])) == self.enrollment_selftest["receipt_sha256"]
         assert all(record["status"] == "pass" for record in self.records)
         for child in self.family_receipts:

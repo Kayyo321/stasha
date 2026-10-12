@@ -32,7 +32,14 @@ BASIC_HASHES = {"root.sts": "d96b7a0bcd97e1e90a2420e768d5348fa4b063cde8e35be3a56
                 "util/calc.sts": "b7dca2e313dc1f404c3923027aa17f5656f17acc9645324092ebd9009e87566b"}
 BASIC_LINES = [(0, 4), (1, 3), (1, 5), (1, 6), (1, 7), (1, 8), (1, 9), (1, 12)]
 BASIC_HITS = BASIC_LINES[:-1]
-MANDATORY_INPUTS = ["tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py",
+FAMILY_IDENTITIES = {
+    "ordinary-imported-tests": ("tests/scalars/test_imported_tests.py", False),
+    "observed-source-imports": ("tests/observation/test_source_imports.py", True),
+    "observed-array-queries": ("tests/observation/test_array_queries.py", True),
+}
+MANDATORY_INPUTS = ["tests/observation/test_array_queries.py",
+    "tests/memory/run_array_queries.py", "tests/memory/run_access_contracts.py",
+    "tests/scalars/generate.py", "tests/scalars/reference.py", "tests/scalars/run.py", "tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py",
     "tests/observation/test_observation.py", "tests/observation/test_source_graph.c",
     "tests/observation/test_driver.c", "tests/observation/runtime_ledger_tests.c",
     "src/common/observation_sources.h", "src/common/observation_options.h",
@@ -72,8 +79,10 @@ def input_manifest():
 
 
 class FamilySession:
-    """Fail-closed recorder shared by the two required families."""
+    """Fail-closed recorder with explicit runner/runtime identity for all three families."""
     def __init__(self, family, compiler, artifacts, levels, *, runtime):
+        assert family in FAMILY_IDENTITIES, "unknown qualification family"
+        assert runtime == FAMILY_IDENTITIES[family][1], "wrong family runtime requirement"
         self.family, self.levels = family, levels
         artifacts = artifacts.resolve(); artifacts.mkdir(parents=True, exist_ok=True)
         self.artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=artifacts))
@@ -146,16 +155,18 @@ class FamilySession:
         self.status = "pass"
 
     def receipt(self):
+        nonlaunch = getattr(self, "nonlaunch_required", None)
+        if nonlaunch is None: nonlaunch = compile_only_inventory(self.levels)["compile_only"]
         data = {"schema": 2, "family": self.family, "status": self.status, "failure": self.failure,
                 "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
-                "runner_sha256": self.source_manifest["tests/scalars/test_imported_tests.py" if self.family == "ordinary-imported-tests" else "tests/observation/test_source_imports.py"],
+                "runner_sha256": self.source_manifest[FAMILY_IDENTITIES[self.family][0]],
                 "optimization_levels": self.levels, "source_manifest": self.source_manifest,
                 "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"),
                 "generated_manifest": self.generated, "generated_resolutions": self.generated_resolutions,
                 "ir_compiler_sha256": getattr(self, "ir_compiler_hash", None),
                 "separate_no_launch_controls": {"status": "NOT_RUN" if "compile_only" not in self.inventory else self.status,
-                    "required": compile_only_inventory(self.levels)["compile_only"],
-                    "required_count": len(compile_only_inventory(self.levels)["compile_only"]),
+                    "required": nonlaunch,
+                    "required_count": len(nonlaunch),
                     "executed_count": sum(case["stage"] == "compile_only" for case in self.cases)},
                 "inventory": self.inventory,
                 "counts": {stage: sum(case["stage"] == stage for case in self.cases) for stage in self.inventory},
@@ -409,7 +420,7 @@ def validate_driver(data, report, session, binary, entry, *, expected, pairs, hi
     else:
         assert data["coverage_metric"] == "disabled"
     maximum = data["max_leaked_bytes"]
-    assert data["allocation_metric"] == ("pass" if maximum is None or byte_count <= maximum else "fail")
+    assert data["allocation_metric"] == ("disabled" if not data["enabled"] & 1 else "pass" if maximum is None or byte_count <= maximum else "fail")
     files = data["files"]
     assert [item["id"] for item in files] == list(range(len(files)))
     assert [item["role"] for item in files] == [0] + [1] * (len(files) - 1)
@@ -641,16 +652,18 @@ def enrollment_selftest(artifacts):
     """Exercise real parent dispatch/receipt code; every command is a Python mock."""
     wrapper = load_module("enrollment_wrapper", ROOT / "tests/observation/test_observation.py")
     ordinary = load_module("enrollment_ordinary", ROOT / "tests/scalars/test_imported_tests.py")
+    arrays = load_module("enrollment_array_queries", ROOT / "tests/observation/test_array_queries.py")
     levels = [0, 2, 3]
     expected_by_family = {"ordinary-imported-tests": {"ordinary_native": ordinary.expected_cases(levels)},
-                          "observed-source-imports": expected_cases(levels)}
+                          "observed-source-imports": expected_cases(levels),
+                          "observed-array-queries": arrays.expected_cases(levels)}
 
     class FakeQualification:
         def __init__(self, work, mutation=None, affected="ordinary-imported-tests"):
             self.artifacts = work; self.compiler = work / "exact-stasha"
             self.compiler_hash = "a" * 64; self.runtime_hash = "b" * 64
             self.source_manifest = {name: sha(ROOT / name) for name in [
-                "tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py", "tests/observation/test_observation.py"]}
+                "tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py", "tests/observation/test_observation.py", "tests/observation/test_array_queries.py"]}
             self.family_receipts, self.records = [], []
             self.status = "running"
             self.mutation, self.affected = mutation, affected
@@ -669,7 +682,7 @@ def enrollment_selftest(artifacts):
             (destination / "LATEST").write_text(str(result) + "\n")
             if mutation == "missing-receipt": return
             inventory = expected_by_family[name]
-            runner = "tests/scalars/test_imported_tests.py" if name == "ordinary-imported-tests" else "tests/observation/test_source_imports.py"
+            runner = FAMILY_IDENTITIES[name][0]
             manifest_path = result / "source-manifest.json"
             manifest_path.write_text(json.dumps(self.source_manifest))
             source_path = result / "mock.sts"; source_path.write_text("mod mock;\n")
@@ -711,16 +724,17 @@ def enrollment_selftest(artifacts):
                 wrapper.dispatch_required_families(q, levels, "selected-clang --target=native")
                 names = [name for name, _ in q.records]
                 self.assertEqual(names, ["runtime-unit-build", "runtime-unit-run", "driver-unit-build", "driver-unit-run",
-                                         "source-graph-unit-build", "source-graph-unit-run", "ordinary-imported-tests", "observed-source-imports"])
+                                         "source-graph-unit-build", "source-graph-unit-run", "ordinary-imported-tests", "observed-source-imports", "observed-array-queries"])
                 graph = q.records[4][1]
                 self.assertEqual(graph[:2], ["selected-clang", "--target=native"])
                 self.assertIn(str(ROOT / "tests/observation/test_source_graph.c"), graph)
                 self.assertEqual(q.records[5][1], [str(q.artifacts / "source-graph-unit")])
-                for family, argv in q.records[-2:]:
+                for family, argv in q.records[-3:]:
                     self.assertEqual(argv[argv.index("--compiler") + 1], str(q.compiler))
                     self.assertEqual(argv[argv.index("--opt") + 1], "0,2,3")
                 self.assertEqual(q.records[-1][1][-2:], ["--cc", "selected-clang --target=native"])
-                self.assertEqual(len(q.family_receipts), 2)
+                self.assertEqual(len(q.family_receipts), 3)
+                self.assertEqual(wrapper.expected_array_cases(levels), arrays.expected_cases(levels))
         def test_graph_build_failure(self):
             self._graph_failure("source-graph-unit-build")
         def test_graph_run_failure(self):
@@ -813,6 +827,23 @@ def enrollment_selftest(artifacts):
             self.assertEqual(set(REJECTIONS), set(BENIGN_REJECTIONS) | NO_LAUNCH_NAMES)
             self.assertFalse(set(BENIGN_REJECTIONS) & NO_LAUNCH_NAMES)
             self.assertNotIn("compile_only", expected_cases(levels))
+        def test_all_array_dependencies_mandatory(self):
+            for missing_name in ["tests/observation/test_array_queries.py", *arrays.DEPENDENCY_HASHES]:
+                def missing(path):
+                    if path == ROOT / missing_name: raise FileNotFoundError(path)
+                    return b"mock frozen input"
+                with self.subTest(path=missing_name), mock.patch.object(Path, "read_bytes", missing):
+                    self.assertRaises(FileNotFoundError, input_manifest)
+        def test_unknown_family_identity_rejected(self):
+            with tempfile.TemporaryDirectory() as temp:
+                self.assertRaises(AssertionError, FamilySession, "unknown", None, Path(temp), levels, runtime=False)
+        def test_observed_runtime_required(self):
+            for family in ("observed-source-imports", "observed-array-queries"):
+                with tempfile.TemporaryDirectory() as temp:
+                    self.assertRaises(AssertionError, FamilySession, family, None, Path(temp), levels, runtime=False)
+        def test_array_pure_components(self):
+            with tempfile.TemporaryDirectory() as temp:
+                self.assertEqual(arrays.selftest(Path(temp)), 0)
         def test_missing_mandatory_runner_fails(self):
             original = Path.read_bytes
             def missing(path):
@@ -837,7 +868,7 @@ def enrollment_selftest(artifacts):
     mutations = ["nonzero", "timeout", "exception", "missing-latest", "missing-receipt", "malformed", "running", "fail", "skipped",
                  "compiler", "runner", "optimizations", "source", "missing-case", "duplicate-case", "skipped-case", "count", "run-status", "zero-executions", "outside-receipt", "missing-generated", "changed-generated"]
     for family in expected_by_family:
-        for mutation in mutations + (["runtime"] if family == "observed-source-imports" else []):
+        for mutation in mutations + (["runtime"] if FAMILY_IDENTITIES[family][1] else []):
             setattr(EnrollmentTests, "test_" + family.replace("-", "_") + "_" + mutation.replace("-", "_"), failure_test(mutation, family))
     with mock.patch("subprocess.run", side_effect=AssertionError("selftests may not spawn processes")):
         result = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromTestCase(EnrollmentTests))

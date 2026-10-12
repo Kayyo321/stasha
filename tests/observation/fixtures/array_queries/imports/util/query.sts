@@ -1,0 +1,22 @@
+mod util.query;
+stack i32 rows[4] = .{};
+fn index(void): i32 {
+    heap u8 *rw p = new.(8);
+    expect.(p != nil);
+    rem.(p);
+    ret 0;
+}
+ext fn measure(void): i32 {
+    expect_eq.(len.(rows), 4);
+    {
+        stack i32 rows[2][3] = .{};
+        expect_eq.(len.(rows[index()]), 3);
+        expect_eq.(cap.(rows[0]), 3);
+    }
+    ret cap.(rows);
+}
+test 'leaf query' {
+    stack i32 rows[1] = .{};
+    expect_eq.(len.(rows), 1);
+    expect_eq.(measure(), 4);
+}

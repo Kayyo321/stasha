@@ -33,9 +33,14 @@ static void encoding_vectors(void) {
     CHECK(e.size==544);CHECK(!strcmp(digest,"6134956c38d24a31674d40d1d65308619b177cb3168a23bfa059d097267d126a"));
     g.files[1].declared_module=NULL;CHECK(sts_observation_graph_freeze(&g,error,sizeof(error))!=0);CHECK(g.failed&&!g.frozen&&!g.input_graph_id[0]);
 
+    /* Independent Python struct.pack/SHA-256 schema reconstruction. Only the
+     * admission-policy field changes: scalar-v2 (472 bytes, bac9c071...) to
+     * fixed-array-queries-v3 (485 bytes, b3ceb27b...). Wire ABI/report remain 2,
+     * allocation/line metrics 1/2; graph and explicit map vectors stay fixed. */
+    CHECK(!strcmp(STS_OBS_ADMISSION_POLICY,"closed-direct-source-fixed-array-queries-v3"));
     sts_observation_config kat={.warn_memleak=1,.has_max_bytes=1,.max_bytes=8,.has_min_coverage=1,.min_coverage=90,.enabled_mask=3,.compiler_id="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"};
     CHECK(!sts_observation_config_digest(&kat,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","x86_64-unknown-linux-gnu",2,0));
-    CHECK(!strcmp(kat.config_id,"bac9c0710c372aa6ccf949ce3def394ca04953638c22b915b0772279c4873e53"));
+    CHECK(!strcmp(kat.config_id,"b3ceb27bd1814a1f71e560649fd6354ec718310490ae23a4d9b072479d2d30bf"));
     CHECK(sts_observation_config_digest(&kat,"bad","x86_64-unknown-linux-gnu",2,0)!=0);
     CHECK(sts_observation_config_digest(&kat,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","x86_64-unknown-linux-gnu",4,0)!=0);
     sts_observation_config c={.input_graph_id="000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",.config_id="202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"};

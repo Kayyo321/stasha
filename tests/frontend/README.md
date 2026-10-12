@@ -36,6 +36,17 @@ caller to imported-file context and check that captured diagnostics survive
 AST/stream cleanup and release of those caller buffers; they do not run import
 resolution or generated programs.
 
+## Observed fixed-array query positions
+
+Graph-issued parser checks cover literal `len`/`cap` keyword-to-closing-token
+spans for single, repeated same-line, mixed, nested and multiline queries,
+including keyword-like array names. Both file IDs 1 and 2 retain owned paths
+after the caller's source, path and token stream are released. Declaration,
+return and expression-statement spans keep their existing enclosing anchors.
+The same source preserves ordinary AST kinds and legacy diagnostic coordinates
+in both parser modes without acquiring graph IDs or observed columns. These
+parser-only checks do not qualify query admission or generated execution.
+
 ## Literal source positions
 
 Tokens begin at their opening quote, backtick, or dollar prefix, even when their
