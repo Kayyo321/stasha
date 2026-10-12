@@ -1,0 +1,3 @@
+mod observation_unsupported;
+fn never_called(void): void { malloc(8); }
+test 'must not run' { print.('UNSUPPORTED_RAN\n'); }

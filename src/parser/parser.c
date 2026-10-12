@@ -30,11 +30,26 @@ typedef struct {
        nesting works correctly. */
     int no_trailing_closure;
 
+    /* A uniform, verified token-stream identity. Never borrowed by AST nodes. */
+    const char *observation_origin;
+    boolean_t observation_expanded;
+
     /* Bound recursive productions before adversarial nesting exhausts the
        compiler's C stack. This budget is shared by types and expressions. */
     unsigned nesting_depth;
     boolean_t nesting_limit_hit;
 } parser_t;
+
+static node_t *parser_make_node(parser_t *p, node_kind_t kind, usize_t line) {
+    node_t *node = make_node(kind, line);
+    ast_set_observation_origin(node, p->observation_origin, line, p->previous.line);
+    node->observation_expanded = p->observation_expanded;
+    return node;
+}
+
+/* Every grammar-created node gets owned provenance, including nodes whose
+ * legacy diagnostic location is intentionally just an operator/name. */
+#define make_node(kind, line) parser_make_node(p, (kind), (line))
 
 /* ── save / restore for speculative parsing (casts) ── */
 
@@ -927,9 +942,20 @@ node_t *parse_from_stream(const pp_stream_t *stream) {
     p.stream       = stream->tokens;
     p.stream_count = stream->count;
     p.stream_idx   = 0;
+    p.observation_origin = stream->tokens[0].tok.file;
+    for (int i = 0; i < stream->count; ++i) {
+        const pp_token_t *token = &stream->tokens[i];
+        if (token->expansion) p.observation_expanded = True;
+        if (token->tok.kind == TokEof) continue;
+        if (!token->tok.file || !p.observation_origin ||
+            strcmp(token->tok.file, p.observation_origin))
+            p.observation_origin = Null;
+    }
     p.had_error    = False;
     advance_parser(&p);
     if (p.had_error) return Null; /* lexical failure; avoid unrelated syntax errors */
 
     return run_parse(&p);
 }
+
+#undef make_node

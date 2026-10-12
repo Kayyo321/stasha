@@ -363,6 +363,7 @@ static void gen_for(cg_t *cg, node_t *node) {
     push_dtor_scope(cg);
 
     if (node->as.for_stmt.init) {
+        cg_observation_hit(cg, node->as.for_stmt.init);
         if (node->as.for_stmt.init->kind == NodeVarDecl)
             gen_local_var(cg, node->as.for_stmt.init);
         else
@@ -598,6 +599,7 @@ static void gen_inf_loop(cg_t *cg, node_t *node) {
 }
 
 static void gen_if(cg_t *cg, node_t *node) {
+    cg_observation_hit(cg, node); /* else-if lowers directly, bypassing gen_stmt */
     LLVMValueRef cond = gen_expr(cg, node->as.if_stmt.cond);
     cond = llvm_to_bool(cg, cond);
 
@@ -1936,6 +1938,7 @@ static void gen_with_stmt(cg_t *cg, node_t *node) {
 static void gen_stmt(cg_t *cg, node_t *node) {
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg->builder)))
         return;
+    cg_observation_hit(cg, node);
 
     /* Attach source-line location to every instruction emitted for this
        statement.  Skipped for declarations handled by gen_local_var (which

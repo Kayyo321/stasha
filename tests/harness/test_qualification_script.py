@@ -95,6 +95,7 @@ class QualificationShellTests(unittest.TestCase):
             driver('tests/driver/editor_coordinates.py','editor-coordinates'),
             driver('tests/driver/target_cli.py','target-cli'),
             driver('tests/driver/global_initializers.py','globals'),
+            ['tests/observation/test_observation.py','--compiler',compiler,'--cc',cc,'--opt','0,1,2,3','--artifacts',str(artifacts/'observation')],
         ]
 
     def assert_exact_inventory(self,expected):
@@ -146,6 +147,13 @@ class QualificationShellTests(unittest.TestCase):
     def test_descriptor_default_failure_blocks_receipt(self):
         result,receipt=self.invoke(83,stale=True,fail_match='tests/interfaces/descriptor_defaults_run.py')
         self.assertEqual(result.returncode,83,result.stderr); self.assertIsNone(receipt)
+    def test_observation_failure_blocks_receipt(self):
+        result,receipt=self.invoke(89,stale=True,fail_match='tests/observation/test_observation.py')
+        self.assertEqual(result.returncode,89,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=89\n')
+        self.assertTrue(self.commands[-1].startswith('python3 tests/observation/test_observation.py --compiler '))
+        self.assertIn(' --opt 0,1,2,3 ',self.commands[-1])
+
     def test_project_cli_failure_blocks_receipt_and_later_stages(self):
         result,receipt=self.invoke(85,stale=True,fail_match='tests/driver/project_cli.py')
         self.assertEqual(result.returncode,85,result.stderr); self.assertIsNone(receipt)

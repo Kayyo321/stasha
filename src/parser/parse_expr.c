@@ -2005,6 +2005,8 @@ static node_t *parse_multiplication(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = op;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2025,6 +2027,8 @@ static node_t *parse_addition(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = op;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2060,6 +2064,8 @@ static node_t *parse_shift(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = op;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2078,6 +2084,8 @@ static node_t *parse_relational(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = op;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2102,6 +2110,8 @@ static node_t *parse_equality(parser_t *p) {
             node_t *n = make_node(NodeBinaryExpr, line);
             n->as.binary.op = op;
             n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
             n->as.binary.right = right;
             left = n;
         }
@@ -2226,6 +2236,8 @@ static node_t *parse_bitwise_and(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = TokAmp;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2243,6 +2255,8 @@ static node_t *parse_bitwise_xor(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = TokCaret;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2260,6 +2274,8 @@ static node_t *parse_bitwise_or(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = TokPipe;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2277,6 +2293,8 @@ static node_t *parse_logical_and(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = TokAmpAmp;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2294,6 +2312,8 @@ static node_t *parse_logical_or(parser_t *p) {
         node_t *n = make_node(NodeBinaryExpr, line);
         n->as.binary.op = TokPipePipe;
         n->as.binary.left = left;
+        ast_set_observation_origin(n, left->observation_file,
+                                   left->observation_line, p->previous.line);
         n->as.binary.right = right;
         left = n;
     }
@@ -2306,7 +2326,9 @@ static node_t *parse_ternary_impl(parser_t *p);
 
 static node_t *parse_ternary(parser_t *p) {
     if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
+    usize_t line = p->current.line;
     node_t *result = parse_ternary_impl(p);
+    ast_set_observation_origin(result, p->observation_origin, line, p->previous.line);
     p->nesting_depth--;
     return result;
 }
@@ -2467,5 +2489,8 @@ static node_t *parse_assignment_impl(parser_t *p) {
 }
 
 static node_t *parse_expr(parser_t *p) {
-    return parse_assignment(p);
+    usize_t line = p->current.line;
+    node_t *node = parse_assignment(p);
+    ast_set_observation_origin(node, p->observation_origin, line, p->previous.line);
+    return node;
 }

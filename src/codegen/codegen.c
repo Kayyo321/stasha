@@ -417,6 +417,10 @@ typedef struct {
     usize_t        thr_wrap_cap;
     heap_t         thr_wrap_heap;
 
+    const sts_observation_config *observation_config;
+    sts_observation_manifest *observation_manifest;
+    LLVMValueRef observation_fns[8], observation_pass, observation_fail;
+    uint8_t *observation_emitted;
     boolean_t test_mode;            /* True when compiling in test mode */
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
@@ -590,6 +594,14 @@ static boolean_t is_generic_template(cg_t *cg, const char *name) {
     return False;
 }
 
+enum { ObsInit, ObsBegin, ObsEnd, ObsHit, ObsNew, ObsMov, ObsRem, ObsFinish, ObsFunctionCount };
+static void cg_observation_hit(cg_t *cg, node_t *node);
+static LLVMValueRef cg_observation_site_arg(cg_t *cg, node_t *node);
+static LLVMValueRef cg_observation_call(cg_t *cg, unsigned op, LLVMValueRef *args, unsigned count);
+static void cg_observation_assertion(cg_t *cg, boolean_t passed);
+static boolean_t cg_observation_call_guard(cg_t *cg, node_t *node);
+static boolean_t cg_observation_expr_guard(cg_t *cg, node_t *node);
+
 /* gen_stmt forward declaration (emit_dtor_calls calls it for deferred stmts) */
 static void gen_stmt(cg_t *cg, node_t *node);
 
@@ -685,12 +697,14 @@ static int iface_immediate_original(cg_t *cg,node_t *node,node_t **owner) {
 #include "cg_debug.c"
 #include "cg_fileheaders.c"
 #include "cg_signals.c"
+#include "cg_observation.c"
 
 /* ── top-level codegen ── */
 
-result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
+result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mode,
                  const char *target_triple, const char *source_file,
-                 boolean_t debug_mode, int optimization_level, boolean_t emit_ir) {
+                 boolean_t debug_mode, int optimization_level, boolean_t emit_ir,
+                 const sts_observation_config *config, sts_observation_manifest *manifest) {
     usize_t errors_before = get_error_count();
     result_t emit_result = Ok;
     if (ast && ast->kind == NodeModule && ast->as.module.has_org) {
@@ -702,6 +716,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
     cg_t cg;
     memset(&cg, 0, sizeof(cg));
+    cg.observation_config = config;
+    cg.observation_manifest = manifest;
     cg.ast         = ast;
     cg.root_ast    = ast;
     cg.test_mode   = test_mode;
@@ -715,6 +731,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.crash_protection_disabled     = ast->as.module.crash_protection_disabled;
         cg.crash_tracking_disabled       = ast->as.module.crash_tracking_disabled;
     }
+    if (!cg_observation_prepare(&cg)) { (free)(cg.observation_emitted); return Err; }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorError, "stasha.abi", 10,
@@ -963,6 +980,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         cg.error_type = LLVMStructTypeInContext(cg.ctx, err_fields, 2, 0);
     }
 
+    cg_observation_declare(&cg);
+
     /* test mode: create global pass/fail counters */
     if (cg.test_mode) {
         cg.test_pass_count = LLVMAddGlobal(cg.module, LLVMInt32TypeInContext(cg.ctx), "__test_pass");
@@ -1203,6 +1222,10 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             /* fileheader: section/align/weak/hidden */
             cg_fh_apply_to_global(&cg, global, decl->headers);
+            /* Observed leaf images cannot export source bindings that interpose
+             * observer/libc/crash-runtime dependencies. The ordinary app stage
+             * and original AST linkage remain unchanged. Apply after attrs. */
+            if (cg.observation_config) LLVMSetLinkage(global, LLVMInternalLinkage);
 
             /* const/final globals are LLVM-constant */
             if (decl->as.var_decl.flags & (VdeclConst | VdeclFinal))
@@ -1444,6 +1467,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
             /* fileheader-based fn attributes: section/align/weak/target/features */
             cg_fh_apply_to_fn(&cg, fn, decl->headers);
+            if (cg.observation_config) LLVMSetLinkage(fn, LLVMInternalLinkage);
 
             /* restrict pointer params → noalias attribute */
             for (usize_t j = 0; j < pc; j++) {
@@ -2134,20 +2158,31 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             ti++;
         }
 
+        if (!cg_observation_seal(&cg)) {
+            if (test_count > 0) { deallocate(tf_heap); deallocate(tn_heap); }
+            goto cg_cleanup;
+        }
         /* generate test main: calls each test, prints results */
         {
             LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), Null, 0, 0);
             LLVMValueRef main_fn = LLVMAddFunction(cg.module, "main", main_type);
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, main_fn, "entry");
             LLVMPositionBuilderAtEnd(cg.builder, entry);
+            cg.current_fn = main_fn;
+            cg_observation_init_main(&cg);
 
             for (usize_t t = 0; t < test_count; t++) {
                 /* print test name */
                 char banner[256];
                 snprintf(banner, sizeof(banner), "test '%s' ... ", test_names[t]);
                 LLVMValueRef bstr = LLVMBuildGlobalStringPtr(cg.builder, banner, "tbanner");
-                LLVMValueRef bargs[1] = { bstr };
-                LLVMBuildCall2(cg.builder, cg.printf_type, cg.printf_fn, bargs, 1, "");
+                LLVMValueRef bargs[2] = { bstr, bstr };
+                unsigned banner_argc = 1;
+                if (cg.observation_config) {
+                    bargs[0] = LLVMBuildGlobalStringPtr(cg.builder, "%s", "obs.banner.format");
+                    banner_argc = 2;
+                }
+                LLVMBuildCall2(cg.builder, cg.printf_type, cg.printf_fn, bargs, banner_argc, "");
 
                 /* save fail count before test */
                 LLVMValueRef pre_fail = LLVMBuildLoad2(cg.builder,
@@ -2155,7 +2190,9 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
 
                 /* call test function */
                 LLVMTypeRef test_ft = LLVMFunctionType(LLVMVoidTypeInContext(cg.ctx), Null, 0, 0);
+                cg_observation_test_event(&cg, (uint32_t)t, False);
                 LLVMBuildCall2(cg.builder, test_ft, test_fns[t], Null, 0, "");
+                cg_observation_test_event(&cg, (uint32_t)t, True);
 
                 /* check if fail count increased */
                 LLVMValueRef post_fail = LLVMBuildLoad2(cg.builder,
@@ -2194,6 +2231,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
             /* return fail count (0 = success) */
             LLVMValueRef exit_code = LLVMBuildICmp(cg.builder, LLVMIntNE, final_fail,
                 LLVMConstInt(LLVMInt32TypeInContext(cg.ctx), 0, 0), "hasf");
+            exit_code = cg_observation_finish(&cg, exit_code);
             LLVMValueRef ret = LLVMBuildZExt(cg.builder, exit_code,
                 LLVMInt32TypeInContext(cg.ctx), "ec");
             LLVMBuildRet(cg.builder, ret);
@@ -2244,6 +2282,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     if (get_error_count() > errors_before) goto cg_cleanup;
 
     if (!iface_factory_seal(&cg)) goto cg_cleanup;
+    if (!cg_observation_audit(&cg)) goto cg_cleanup;
 
     if (getenv("STS_DUMP_IR_PRE")) {
         /* Dump IR before the coroutine pass pipeline runs. Useful when
@@ -2303,6 +2342,8 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
         }
     }
 
+    if (!cg_observation_audit(&cg)) goto cg_cleanup;
+
     /* debug: dump IR if STS_DUMP_IR env var is set */
     if (getenv("STS_DUMP_IR")) {
         char *ir_str = LLVMPrintModuleToString(cg.module);
@@ -2338,6 +2379,7 @@ result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
     }
 
 cg_cleanup:
+    (free)(cg.observation_emitted);
     iface_factory_dispose(&cg);
     /* Failed compilation must never leave an object that looks current. */
     if (emit_result != Ok || get_error_count() > errors_before) remove(obj_output);
@@ -2378,6 +2420,13 @@ cg_cleanup:
 
     if (emit_result != Ok) return Err;
     return get_error_count() > errors_before ? Err : Ok;
+}
+
+result_t codegen(node_t *ast, const char *obj_output, boolean_t test_mode,
+                 const char *target_triple, const char *source_file,
+                 boolean_t debug_mode, int optimization_level, boolean_t emit_ir) {
+    return codegen_observed(ast,obj_output,test_mode,target_triple,source_file,
+                            debug_mode,optimization_level,emit_ir,Null,Null);
 }
 
 /* Do not leak the canonical constructor wrapper into including test TUs. */

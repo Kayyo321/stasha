@@ -398,6 +398,12 @@ struct node {
     usize_t col;         /* 1-based source column (0 = unknown) */
     usize_t len;         /* token span in bytes (0 = unknown)   */
     char *source_file;   /* source file that produced this node */
+    /* Owned parse-time observation origins, independent of diagnostic anchors.
+     * IDs are assigned only by the opt-in source inventory; zero means no site. */
+    char *observation_file;
+    usize_t observation_line, observation_end_line;
+    uint32_t observation_hit_id, observation_site_id;
+    boolean_t observation_expanded;
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */
     boolean_t is_c_extern;        /* True if symbol must not be mangled (C library symbol) */
@@ -759,6 +765,7 @@ struct node {
 
 node_t *make_node(node_kind_t kind, usize_t line);
 void ast_set_loc(node_t *node, token_t tok);
+void ast_set_observation_origin(node_t *node, const char *file, usize_t line, usize_t end_line);
 char *copy_token_text(token_t tok);
 char *copy_name_text(token_t tok);
 char *ast_strdup(const char *src, usize_t len);

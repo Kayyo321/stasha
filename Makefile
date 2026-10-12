@@ -159,6 +159,19 @@ CRASH_RUNTIME_SRC = src/runtime/crash_runtime.c
 CRASH_RUNTIME_OBJ = build/obj/runtime/crash_runtime.o
 CRASH_RUNTIME_LIB = bin/crash_runtime.a
 
+# Opt-in native test observation runtime. Override paths for isolated qualification.
+OBSERVATION_RUNTIME_OBJ ?= build/obj/runtime/observation_runtime.o
+OBSERVATION_RUNTIME_LIB ?= bin/observation_runtime.a
+OBSERVATION_TEST_DIR ?= build/observation
+# Other hosts keep ordinary build/install behavior; this profile is Linux x86-64.
+ifeq ($(UNAME_S)-$(UNAME_M),Linux-x86_64)
+OBSERVATION_DEFAULT = observation-runtime
+OBSERVATION_INSTALL_LIB = $(OBSERVATION_RUNTIME_LIB)
+else
+OBSERVATION_DEFAULT =
+OBSERVATION_INSTALL_LIB =
+endif
+
 # ── Thread test programs ────────────────────────────────────────────────────
 THREAD_TEST_SRCS = examples/ex_threads.sts
 
@@ -222,9 +235,9 @@ else
   endif
 endif
 
-.PHONY: all stdlib stdlib-test thread-runtime zone-runtime coro-runtime crash-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop install uninstall package
+.PHONY: observation-runtime test-observation test-observation-pure all stdlib stdlib-test thread-runtime zone-runtime coro-runtime crash-runtime clean clean-stdlib clean-llvm llvm openssl clean-openssl test-threads test-cinterop clean-cinterop install uninstall package
 
-all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime
+all: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime $(OBSERVATION_DEFAULT)
 
 # Build every .sts under stsstdlib/ into a .a alongside the source,
 # then install the .a and .sts files into bin/stdlib/, then run all tests.
@@ -521,6 +534,29 @@ $(CORO_RUNTIME_OBJ): $(CORO_RUNTIME_SRC) src/runtime/coro_runtime.h
 $(CORO_RUNTIME_LIB): $(CORO_RUNTIME_OBJ) | bin
 	$(RUNTIME_AR) rcs $@ $<
 
+observation-runtime: $(OBSERVATION_RUNTIME_LIB)
+
+$(OBSERVATION_RUNTIME_OBJ): src/runtime/observation_runtime.c src/runtime/observation_runtime.h
+	@mkdir -p $(dir $@)
+	$(RUNTIME_CC) -std=c11 -O2 -Wall -Wextra $(RUNTIME_EXTRA) -c -o $@ $<
+
+$(OBSERVATION_RUNTIME_LIB): $(OBSERVATION_RUNTIME_OBJ)
+	@mkdir -p $(dir $@)
+	$(RUNTIME_AR) rcs $@ $<
+
+# Pure bounded report/option/ledger controls, without generated Stasha execution.
+test-observation-pure:
+	@mkdir -p $(OBSERVATION_TEST_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function tests/observation/test_driver.c $(SHA256_RT_SRC) -o $(OBSERVATION_TEST_DIR)/test_driver
+	$(OBSERVATION_TEST_DIR)/test_driver
+	$(CC) -std=c11 -O2 -Wall -Wextra tests/observation/runtime_ledger_tests.c -o $(OBSERVATION_TEST_DIR)/runtime_ledger_tests
+	$(OBSERVATION_TEST_DIR)/runtime_ledger_tests
+
+# Native execution requires the independent source/IR gate described in the README.
+test-observation: $(TARGET) observation-runtime
+	python3 tests/observation/test_observation.py --compiler $(TARGET) --cc "$(CC)" --artifacts $(OBSERVATION_TEST_DIR)/native
+
+# SHA implementation is unity-included by codegen for standalone unit compatibility.
 $(TARGET): $(OBJS) $(LINKER_OBJ) | bin
 	$(CC) -o $@ $(OBJS) $(LINKER_OBJ) $(LDFLAGS)
 
@@ -588,7 +624,7 @@ build/obj/%.o: src/%.c $(HDRS) Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
-build/obj/codegen/codegen.o: $(CODEGEN_IMPLS)
+build/obj/codegen/codegen.o: $(CODEGEN_IMPLS) $(SHA256_RT_SRC) std/crypto/sha256_rt.h
 build/obj/parser/parser.o: $(PARSER_IMPLS)
 build/obj/common/common.o: $(COMMON_IMPLS)
 
@@ -663,11 +699,12 @@ clean-openssl:
 # ── install / uninstall / package ────────────────────────────
 PREFIX ?= $(HOME)/.stasha
 
-install: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime stdlib
+install: $(TARGET) thread-runtime zone-runtime coro-runtime crash-runtime $(OBSERVATION_DEFAULT) stdlib
 	install -d "$(PREFIX)/bin/stdlib"
-	install -m 755 bin/stasha$(EXE_SUFFIX) "$(PREFIX)/bin/stasha$(EXE_SUFFIX)"
+	install -m 755 "$(TARGET)" "$(PREFIX)/bin/stasha$(EXE_SUFFIX)"
 	install -m 644 bin/thread_runtime.a bin/zone_runtime.a \
 	               bin/coro_runtime.a bin/crash_runtime.a "$(PREFIX)/bin/"
+	$(if $(OBSERVATION_INSTALL_LIB),install -m 644 "$(OBSERVATION_RUNTIME_LIB)" "$(PREFIX)/bin/observation_runtime.a",:)
 	cp -r bin/stdlib/. "$(PREFIX)/bin/stdlib/"
 	@echo "stasha installed -> $(PREFIX)"
 

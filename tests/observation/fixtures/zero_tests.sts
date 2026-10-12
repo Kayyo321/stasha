@@ -1,0 +1,2 @@
+mod observation_zero_tests;
+fn value(void): i32 { ret 7; }

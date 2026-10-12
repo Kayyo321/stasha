@@ -17,6 +17,7 @@ extern int _NSGetExecutablePath(char *buf, unsigned int *bufsize);
 #endif
 
 #include "common/output_transaction.h"
+#include "common/observation_driver.h"
 #include "common/common.h"
 #include "common/abi.h"
 #include "parser/parser.h"
@@ -1517,7 +1518,7 @@ static void print_help(void) {
         "  stasha [build] <file.sts> [-o <output>]   Compile to executable\n"
         "  stasha lib     <file.sts> [-o <output>]   Compile to static library\n"
         "  stasha dylib   <file.sts> [-o <output>]   Compile to dynamic library\n"
-        "  stasha test    <file.sts> [-o <output>]   Compile and run tests\n"
+        "  stasha test    <file.sts> [-o <output>]   Compile test image (observation flags also run it)\n"
         "  stasha obj     <file.sts> [-o <output>]   Emit a relocatable object only\n"
         "  stasha ir      <file.sts> [-o <output>]   Emit verified LLVM IR only\n"
         "  stasha check   <file.sts>                 Parse and type-check; emit JSON diagnostics\n"
@@ -1535,6 +1536,9 @@ static void print_help(void) {
         "                       Default: 2 (LLVM default)\n"
         "  -g                 Emit DWARF debug info (enables source-level debugging)\n"
         "  --target <triple>  Cross-compile for the given target triple\n"
+        "  --warn-memleak    Run native leaf tests; warn on tracked allocations\n"
+        "  --max-leaked-bytes B  Run native leaf tests; require outstanding bytes <= B\n"
+        "  --min-test-coverage P Run native leaf tests; require statement/control-line coverage >= P%%\n"
         "  --kernel           Enforce experimental x86-64 ELF K0 profile\n"
         "  --stdin            Read source from stdin instead of the filesystem\n"
         "  --path <path>      Virtual path to use with --stdin\n"
@@ -1550,7 +1554,7 @@ static void print_help(void) {
         "  stasha lib   mathlib.sts                   # -> libmathlib.a\n"
         "  stasha lib   mathlib.sts -o out.a          # -> out.a\n"
         "  stasha dylib mathlib.sts                   # -> libmathlib.dylib\n"
-        "  stasha test  main.sts                      # run tests\n"
+        "  stasha test  main.sts                      # compile tests; run ./a.test\n"
         "  stasha build main.sts --target x86_64-linux-gnu\n"
         "\n"
         "Project mode (sts.sproj in current directory):\n"
@@ -1843,6 +1847,9 @@ typedef struct {
     /* When non-NULL, use this source text instead of reading input_path.
      * The caller owns and must free this buffer; compile_file() does NOT free it. */
     char            *source_override;
+    const sts_observation_config *observation;
+    sts_observation_manifest *observation_manifest;
+    int *observation_image_fd;
 } cfile_params_t;
 
 /*
@@ -1871,10 +1878,15 @@ static result_t compile_file_staged(const cfile_params_t *p) {
 
     diag_set_file(p->input_path);
 
+    /* Observation admission precedes imported macro reads and providers. */
+    if (p->observation && codegen_observation_check_source(source, p->input_path) != Ok) {
+        compile_cleanup();
+        return Err;
+    }
     /* ── preprocess ── */
     int imp_macro_count = 0;
-    pp_macro_set_t **imp_macros = gather_import_macro_sets(source, p->input_path,
-                                                           &imp_macro_count);
+    pp_macro_set_t **imp_macros = p->observation ? Null :
+        gather_import_macro_sets(source, p->input_path, &imp_macro_count);
     pp_stream_t *pp  = pp_process(source, p->input_path, imp_macros, imp_macro_count);
     node_t      *ast = pp ? parse_from_stream(pp) : Null;
     pp_stream_free(pp);
@@ -1914,6 +1926,10 @@ static result_t compile_file_staged(const cfile_params_t *p) {
         }
     }
 
+    if (p->observation && codegen_observation_check_providers(ast, p->observation) != Ok) {
+        compile_cleanup();
+        return Err;
+    }
     resolve_imports(ast, p->input_path);
     process_cheader_decls(ast, p->input_path);
     if (get_error_count() > errors_before || analyze_coroutines(ast) != Ok) {
@@ -1942,8 +1958,9 @@ static result_t compile_file_staged(const cfile_params_t *p) {
     boolean_t test_mode = (p->mode == EmitTest) ? True : False;
     log_msg("generating code%s%s", test_mode ? " (test mode)" : "",
             p->debug_mode ? " (debug)" : "");
-    if (codegen(ast, obj_path, test_mode, driver_target.triple, p->input_path,
-                p->debug_mode, p->opt_level, p->mode == EmitIR) != Ok) {
+    if (codegen_observed(ast, obj_path, test_mode, driver_target.triple, p->input_path,
+                p->debug_mode, p->opt_level, p->mode == EmitIR,
+                p->observation, p->observation_manifest) != Ok) {
         log_err("code generation failed");
         remove(obj_path);
         compile_cleanup();
@@ -2101,6 +2118,11 @@ static result_t compile_file_staged(const cfile_params_t *p) {
     } else {
         boolean_t freestanding = ast->as.module.freestanding;
 
+        if (p->observation) {
+            static char observation_rt_path[512];
+            snprintf(observation_rt_path, sizeof(observation_rt_path), "%s/observation_runtime.a", bin_dir);
+            all_libs[all_lib_count++] = observation_rt_path;
+        }
         if (!freestanding) {
             /* EmitExe / EmitTest: link the async/coroutine, thread, and zone runtimes. */
             static char async_rt_path[512];
@@ -2175,12 +2197,23 @@ static result_t compile_file(const cfile_params_t *p) {
     cfile_params_t staged = *p;
     staged.output_path = tx.staged;
     result_t result = compile_file_staged(&staged);
+    /* Retain our exact fresh image before publishing its public output name. */
+    if (result == Ok && p->observation && p->observation_image_fd) {
+        struct stat image_stat;
+        int image_fd = open(tx.staged, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (image_fd < 0 || fstat(image_fd, &image_stat) || !S_ISREG(image_stat.st_mode)) {
+            if (image_fd >= 0) close(image_fd);
+            log_err("cannot retain freshly linked observation image");
+            result = Err;
+        } else *p->observation_image_fd = image_fd;
+    }
     int publication = sts_output_finish(&tx, result == Ok);
     if (publication < 0) {
         log_err("cannot publish output '%s': %s", p->output_path, strerror(errno));
         result = Err;
     } else if (publication > 0) {
         log_warn("could not remove temporary directory '%s'", tx.directory);
+        if (p->observation) result = Err;
     }
 #else
     /* Native debug/link sidecars (Mach-O dSYM and COFF PDB/import libraries)
@@ -2439,6 +2472,30 @@ static void target_argument_error(editor_mode_t mode, boolean_t equals_form) {
     quit(Err);
 }
 
+/* Observation argument errors use the same single-document editor channel. */
+static void observation_argument_error(editor_mode_t mode, const char *message) {
+    if (mode != EditorModeNone) {
+        diag_clear_captured();
+        diag_begin_error("%s", message);
+        diag_finish();
+        editor_print_diagnostics_json();
+    } else log_err("%s", message);
+    quit(Err);
+}
+
+static int observation_native_target(const sts_target_spec *target) {
+#if defined(__linux__) && defined(__x86_64__) && defined(__LP64__) && defined(__GLIBC__)
+    const char *vendor = strchr(target->triple, '-');
+    const char *os = vendor ? strchr(vendor + 1, '-') : NULL;
+    return !strcmp(target->arch, "x86_64") && !strcmp(target->os, "linux") &&
+           target->pointer_bits == 64 && target->c_long_bits == 64 &&
+           target->format == StsFormatELF && os && !strcmp(os + 1, "linux-gnu");
+#else
+    (void)target;
+    return 0;
+#endif
+}
+
 int main(int argc, char **argv) {
     init_bin_dir(argv[0]);
 
@@ -2538,6 +2595,9 @@ int main(int argc, char **argv) {
     const char *output_path       = Null;
     const char *cli_extra_libs[256];
     usize_t     cli_extra_lib_count = 0;
+    sts_observation_config observation = {0};
+    int observation_extra_library = 0;
+    int observation_unknown_argument = 0;
 
     const char *explicit_input_path =
         (file_arg >= 0 && file_arg < argc && argv[file_arg][0] != '-')
@@ -2545,8 +2605,27 @@ int main(int argc, char **argv) {
 
     int opts_start = (file_arg < 0 || file_arg >= argc) ? (int)argc : file_arg;
     for (int i = opts_start; i < argc; i++) {
+        if (!strcmp(argv[i], "-l")) observation_extra_library = 1;
         if (explicit_input_path == Null && argv[i][0] != '-') {
             explicit_input_path = argv[i];
+        } else if (strcmp(argv[i], "--warn-memleak") == 0) {
+            observation.warn_memleak = 1;
+            observation.enabled_mask |= 1;
+        } else if (strcmp(argv[i], "--max-leaked-bytes") == 0 ||
+                   strcmp(argv[i], "--min-test-coverage") == 0) {
+            int bytes = !strcmp(argv[i], "--max-leaked-bytes");
+            const char *message = bytes
+                ? "invalid --max-leaked-bytes operand (expected unsigned decimal integer 0..18446744073709551615)"
+                : "invalid --min-test-coverage operand (expected decimal integer 0..100)";
+            uint64_t value = 0;
+            if (i + 1 >= argc || !sts_observation_parse_decimal(argv[++i], bytes ? UINT64_MAX : 100, &value))
+                observation_argument_error(editor_mode, message);
+            if (bytes) { observation.has_max_bytes = 1; observation.max_bytes = value; observation.enabled_mask |= 1; }
+            else { observation.has_min_coverage = 1; observation.min_coverage = (uint32_t)value; observation.enabled_mask |= 2; }
+        } else if (!strncmp(argv[i], "--warn-memleak=", 15) ||
+                   !strncmp(argv[i], "--max-leaked-bytes=", 19) ||
+                   !strncmp(argv[i], "--min-test-coverage=", 20)) {
+            observation_argument_error(editor_mode, "unsupported observation option spelling (use --warn-memleak or a separate decimal threshold operand)");
         } else if (strcmp(argv[i], "--stdin") == 0) {
             use_stdin = True;
         } else if (strcmp(argv[i], "--path") == 0 && i + 1 < argc) {
@@ -2592,7 +2671,25 @@ int main(int argc, char **argv) {
             diag_config_t cfg = diag_get_config();
             cfg.enabled = WarnAll;
             diag_set_config(cfg);
+        } else if (argv[i] != explicit_input_path) {
+            observation_unknown_argument = 1;
         }
+    }
+
+    /* Fail before project loading, input reads and output transactions. */
+    if (observation.enabled_mask) {
+        if (strcmp(command, "test") || mode != EmitTest || editor_mode != EditorModeNone ||
+            !explicit_input_path || selected_mod_name[0] || use_stdin || virtual_path ||
+            kernel_profile || observation_extra_library || observation_unknown_argument)
+            observation_argument_error(editor_mode, "observation flags require explicit single-file native test mode without stdin, project, provider, extra library or unsupported options");
+        size_t input_length = strlen(explicit_input_path);
+        if (input_length < 5 || strcmp(explicit_input_path + input_length - 4, ".sts"))
+            observation_argument_error(editor_mode, "observation input must be an ordinary on-disk .sts file");
+        sts_target_spec native_target, selected_target;
+        if (codegen_resolve_target(NULL, &native_target) != Ok ||
+            codegen_resolve_target(target_triple, &selected_target) != Ok) quit(Err);
+        if (!observation_native_target(&native_target) || !observation_native_target(&selected_target))
+            observation_argument_error(editor_mode, "observation profile requires native hosted Linux x86-64 GNU LP64 target");
     }
 
     if (kernel_profile && editor_mode != EditorModeNone) {
@@ -2902,6 +2999,27 @@ int main(int argc, char **argv) {
     }
 
     /* ── compile ── */
+    sts_observation_run observation_run = {.image_fd = -1};
+    sts_observation_manifest observation_manifest = {0};
+    char observation_error[256] = {0};
+    if (observation.enabled_mask) {
+#if defined(__linux__)
+        char runtime_path[512];
+        int path_len = snprintf(runtime_path, sizeof(runtime_path), "%s/observation_runtime.a", bin_dir);
+        sts_target_spec observed_target;
+        if (path_len < 0 || (size_t)path_len >= sizeof(runtime_path) ||
+            codegen_resolve_target(target_triple, &observed_target) != Ok) quit(Err);
+        if (sts_observation_prepare(&observation, &observation_run, input_path, runtime_path,
+                observed_target.triple, optimization_level, debug_mode, observation_error, sizeof(observation_error))) {
+            log_err("%s", observation_error);
+            sts_observation_run_free(&observation_run);
+            quit(Err);
+        }
+        input_path = observation.source_path;
+#else
+        observation_argument_error(editor_mode, "observation profile is unavailable on this host");
+#endif
+    }
     cfile_params_t cp = {
         .input_path      = input_path,
         .output_path     = output_path,
@@ -2912,10 +3030,58 @@ int main(int argc, char **argv) {
         .target_triple   = target_triple,
         .extra_lib_paths = extra_lib_paths,
         .extra_lib_count = extra_lib_count,
-        .source_override = stdin_compile_buf,
+        .source_override = observation.enabled_mask ? observation_run.source : stdin_compile_buf,
+        .observation = observation.enabled_mask ? &observation : NULL,
+        .observation_manifest = observation.enabled_mask ? &observation_manifest : NULL,
+        .observation_image_fd = observation.enabled_mask ? &observation_run.image_fd : NULL,
     };
 
     result_t res = compile_file(&cp);
+    observation_run.compile_link_success = res == Ok;
+    if (observation.enabled_mask) {
+#if defined(__linux__)
+        sts_observation_child child = {0};
+        /* Large bounded report lives outside the compiler stack. */
+        static sts_observation_report report;
+        int parsed = 0;
+        if (res == Ok && !sts_observation_manifest_valid(&observation, &observation_manifest)) {
+            log_err("invalid or empty observation manifest"); res = Err;
+        }
+        if (res == Ok) {
+            char current_source[129];
+            if (sts_observation_hash_file(observation.source_path, 1, current_source) ||
+                strcmp(current_source, observation.source_id)) {
+                log_err("observation source changed after compilation"); res = Err;
+            }
+        }
+        if (res == Ok) {
+            char runtime_path[512], current_runtime[129];
+            int path_len = snprintf(runtime_path, sizeof(runtime_path), "%s/observation_runtime.a", bin_dir);
+            if (path_len < 0 || (size_t)path_len >= sizeof(runtime_path) ||
+                sts_observation_hash_file(runtime_path, 1, current_runtime) ||
+                strcmp(current_runtime, observation_run.runtime_id)) {
+                log_err("observation runtime changed after compilation"); res = Err;
+            }
+        }
+        if (res == Ok) {
+            int launched = sts_observation_launch(&observation_run, output_path, &child,
+                                                   observation_error, sizeof(observation_error));
+            if (launched) log_err("%s", observation_error);
+            if (!sts_observation_read_report(&observation_run, &observation, &observation_manifest,
+                                             &report, observation_error, sizeof(observation_error))) parsed = 1;
+            else log_err("%s", observation_error);
+            res = launched || !parsed || sts_observation_status(&observation, &observation_manifest, &report, &child) ? Err : Ok;
+            sts_observation_print_summary(&observation, &observation_manifest, &report, &child, parsed);
+        }
+        if (sts_observation_write_metadata(&observation_run, &observation, &observation_manifest,
+                                             &child, &report, parsed, res != Ok)) {
+            log_err("cannot write/close observation driver evidence"); res = Err;
+        }
+        fprintf(stderr, "observation: private evidence %s\n", observation_run.directory);
+#endif
+        sts_observation_manifest_free(&observation_manifest);
+        sts_observation_run_free(&observation_run);
+    }
 
     if (stdin_compile_buf) editor_free_buffer(stdin_compile_buf);
     quit(res);

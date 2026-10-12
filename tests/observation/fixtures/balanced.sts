@@ -1,0 +1,9 @@
+mod observation_balanced;
+fn buffer(void): i32 {
+    heap u8 *rw p = new.(8);
+    defer rem.(p);
+    p = mov.(p, 16);
+    p = mov.(p, 4);
+    ret 4;
+}
+test 'balanced' { expect_eq.(buffer(), 4); }

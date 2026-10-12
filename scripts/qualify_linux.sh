@@ -48,6 +48,7 @@ python3 tests/driver/project_cli.py --compiler "$compiler" --artifacts "$artifac
 python3 tests/driver/editor_coordinates.py --compiler "$compiler" --artifacts "$artifacts/editor-coordinates"
 python3 tests/driver/target_cli.py --compiler "$compiler" --artifacts "$artifacts/target-cli"
 python3 tests/driver/global_initializers.py --compiler "$compiler" --artifacts "$artifacts/globals"
+python3 tests/observation/test_observation.py --compiler "$compiler" --cc "${CC:-clang}" --opt 0,1,2,3 --artifacts "$artifacts/observation"
 sha256sum --check "$artifacts/compiler.sha256"
 printf 'PASS source=%s\n' "$(git rev-parse HEAD)" > "$artifacts/STATUS.txt"
 printf '%s\n' 'PASS: bounded Linux hosted compiler qualification; see native/kernel qualification limits.' > "$artifacts/RESULT.txt"

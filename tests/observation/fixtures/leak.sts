@@ -1,0 +1,5 @@
+mod observation_leak;
+test 'test body allocation is tracked' {
+    heap u8 *rw p = new.(8);
+    expect.(p != nil);
+}

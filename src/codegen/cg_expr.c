@@ -1755,6 +1755,8 @@ static LLVMValueRef gen_lambda_call(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_call(cg_t *cg, node_t *node) {
+    if (!cg_observation_call_guard(cg, node))
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
     symbol_t *sym = cg_lookup(cg, node->as.call.callee);
 
     /* intra-module unqualified call: try module__callee when inside an
@@ -4389,8 +4391,12 @@ static LLVMValueRef gen_cast(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_new(cg_t *cg, node_t *node) {
     LLVMValueRef size = gen_expr(cg, node->as.new_expr.size);
     size = coerce_int(cg, size, LLVMInt64TypeInContext(cg->ctx));
-    LLVMValueRef args[1] = { size };
-    LLVMValueRef result = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn, args, 1, "alloc");
+    LLVMValueRef args[2] = { size, Null };
+    LLVMValueRef result;
+    if (cg->observation_config) {
+        args[1] = cg_observation_site_arg(cg, node);
+        result = cg_observation_call(cg, ObsNew, args, 2);
+    } else result = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn, args, 1, "alloc");
     /* record provenance tag for this allocation */
     if (cg->provenance_count < 256) {
         cg->provenance[cg->provenance_count].name     = Null;  /* filled when stored */
@@ -4753,7 +4759,11 @@ static LLVMValueRef gen_mov(cg_t *cg, node_t *node) {
     LLVMValueRef ptr = gen_expr(cg, node->as.mov_expr.ptr);
     LLVMValueRef sz  = gen_expr(cg, node->as.mov_expr.size);
     sz = coerce_int(cg, sz, LLVMInt64TypeInContext(cg->ctx));
-    LLVMValueRef args[2] = { ptr, sz };
+    LLVMValueRef args[3] = { ptr, sz, Null };
+    if (cg->observation_config) {
+        args[2] = cg_observation_site_arg(cg, node);
+        return cg_observation_call(cg, ObsMov, args, 3);
+    }
     return LLVMBuildCall2(cg->builder, cg->realloc_type, cg->realloc_fn, args, 2, "realloc");
 }
 
@@ -6624,6 +6634,9 @@ static LLVMValueRef gen_colon_call(cg_t *cg, node_t *node) {
 
 static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node);
 static LLVMValueRef gen_expr(cg_t *cg, node_t *node) {
+    if (!cg_observation_expr_guard(cg, node))
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
+    cg_observation_hit(cg, node);
     if(!iface_local_expression(cg,node))return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     LLVMValueRef value=gen_expr_unchecked(cg,node);
     return iface_local_result(cg,node,value);
@@ -6683,6 +6696,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
                 LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, msg, "efmt");
                 LLVMValueRef args[1] = { fmt };
                 LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 1, "");
+                cg_observation_assertion(cg, False);
                 if (cg->test_fail_count) {
                     LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
                     cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
@@ -6691,6 +6705,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
             }
             LLVMBuildBr(cg->builder, merge_bb);
             LLVMPositionBuilderAtEnd(cg->builder, pass_bb);
+            cg_observation_assertion(cg, True);
             if (cg->test_pass_count) {
                 LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_pass_count, "pc");
                 cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "pi");
@@ -6719,6 +6734,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
                 LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, msg, "eqfmt");
                 LLVMValueRef args[1] = { fmt };
                 LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 1, "");
+                cg_observation_assertion(cg, False);
                 if (cg->test_fail_count) {
                     LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
                     cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
@@ -6727,6 +6743,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
             }
             LLVMBuildBr(cg->builder, merge_bb);
             LLVMPositionBuilderAtEnd(cg->builder, pass_bb);
+            cg_observation_assertion(cg, True);
             if (cg->test_pass_count) {
                 LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_pass_count, "pc");
                 cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "pi");
@@ -6754,6 +6771,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
                 LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, msg, "neqfmt");
                 LLVMValueRef args[1] = { fmt };
                 LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 1, "");
+                cg_observation_assertion(cg, False);
                 if (cg->test_fail_count) {
                     LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
                     cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
@@ -6762,6 +6780,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
             }
             LLVMBuildBr(cg->builder, merge_bb);
             LLVMPositionBuilderAtEnd(cg->builder, pass_bb);
+            cg_observation_assertion(cg, True);
             if (cg->test_pass_count) {
                 LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_pass_count, "pc");
                 cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "pi");
@@ -6776,6 +6795,7 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
             LLVMValueRef fmt = LLVMBuildGlobalStringPtr(cg->builder, "  FAIL: %s\n", "tffmt");
             LLVMValueRef args[2] = { fmt, msg };
             LLVMBuildCall2(cg->builder, cg->printf_type, cg->printf_fn, args, 2, "");
+            cg_observation_assertion(cg, False);
             if (cg->test_fail_count) {
                 LLVMValueRef cnt = LLVMBuildLoad2(cg->builder, LLVMInt32TypeInContext(cg->ctx), cg->test_fail_count, "fc");
                 cnt = LLVMBuildAdd(cg->builder, cnt, LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 1, 0), "fi");
@@ -6940,8 +6960,11 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
                 }
             }
             LLVMValueRef ptr = gen_expr(cg, ptr_node);
-            LLVMValueRef args[1] = { ptr };
-            LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
+            LLVMValueRef args[2] = { ptr, Null };
+            if (cg->observation_config) {
+                args[1] = cg_observation_site_arg(cg, node);
+                cg_observation_call(cg, ObsRem, args, 2);
+            } else LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, args, 1, "");
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         }
         case NodeConstructorCall: return gen_constructor_call(cg, node);

@@ -1,0 +1,6 @@
+mod observation_zero_assertions;
+fn value(void): i32 { ret 7; }
+test 'zero assertions' {
+    stack i32 n = value();
+    print.('OBSERVATION_ONCE\n');
+}

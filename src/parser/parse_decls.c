@@ -1602,6 +1602,8 @@ static node_t *parse_fn_decl(parser_t *p, linkage_t linkage) {
         consume(p, TokSemicolon, "';'");
         /* synthesize: { ret expr; } */
         node_t *ret_node = make_node(NodeRetStmt, body_line);
+        ast_set_observation_origin(ret_node, expr->observation_file,
+                                   expr->observation_line, expr->observation_end_line);
         node_list_init(&ret_node->as.ret_stmt.values);
         node_list_push(&ret_node->as.ret_stmt.values, expr);
         body = make_node(NodeBlock, body_line);

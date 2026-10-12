@@ -55,7 +55,7 @@ function createTestController(ctx) {
             ctrl.items.delete(uri.toString());
     }));
     ctrl.createRunProfile('Run', vscode.TestRunProfileKind.Run, (req, token) => {
-        _runTests(ctrl, req, token);
+        return _runTests(ctrl, req, token);
     });
     return ctrl;
 }
@@ -113,15 +113,28 @@ function _runTests(ctrl, req, token) {
         for (const item of items)
             run.started(item);
         const p = new Promise(resolve => {
-            const proc = (0, child_process_1.spawn)(bin, ['test', filePath], { stdio: 'pipe' });
-            let out = '';
-            proc.stdout.on('data', (d) => { out += d.toString(); });
-            proc.stderr.on('data', (d) => { out += d.toString(); });
-            token.onCancellationRequested(() => proc.kill());
-            proc.on('close', code => {
+            const stdout = [];
+            const stderr = [];
+            let finished = false;
+            let cancellation;
+            const finish = (failure) => {
+                // A spawn error can be followed by close. Publish each result and
+                // settle this file exactly once, whichever terminal event arrives.
+                if (finished)
+                    return;
+                finished = true;
+                cancellation?.dispose();
+                // Decode complete streams so split UTF-8 chunks and interleaved
+                // stderr cannot corrupt a test result line in stdout (or vice versa).
+                const out = [stdout, stderr]
+                    .map(chunks => Buffer.concat(chunks).toString()).join('\n').trim();
                 for (const item of items) {
+                    // Process failure dominates even previously printed PASS lines.
+                    if (failure !== undefined) {
+                        run.failed(item, new vscode.TestMessage(out ? `${failure}\n${out}` : failure));
+                        continue;
+                    }
                     const testName = item.label;
-                    // Parse output for per-test results
                     // Compiler emits lines like: "PASS test_name" / "FAIL test_name: reason"
                     const passRe = new RegExp(`\\bPASS\\b.*${escapeRegex(testName)}`);
                     const failRe = new RegExp(`\\bFAIL\\b.*${escapeRegex(testName)}:?\\s*(.*)`);
@@ -133,19 +146,45 @@ function _runTests(ctrl, req, token) {
                     else if (passM) {
                         run.passed(item);
                     }
-                    else if (code === 0) {
-                        run.passed(item);
-                    }
                     else {
-                        run.failed(item, new vscode.TestMessage(out.trim() || 'Test failed'));
+                        // Preserve the existing successful-exit fallback when the
+                        // compiler does not emit an individual result for this item.
+                        run.passed(item);
                     }
                 }
                 resolve();
-            });
+            };
+            try {
+                const proc = (0, child_process_1.spawn)(bin, ['test', filePath], { stdio: 'pipe' });
+                proc.stdout.on('data', (d) => { if (!finished)
+                    stdout.push(d); });
+                proc.stderr.on('data', (d) => { if (!finished)
+                    stderr.push(d); });
+                proc.on('error', error => finish(`Unable to run Stasha tests: ${error.message}`));
+                proc.on('close', (code, signal) => {
+                    if (signal) {
+                        finish(`Stasha tests terminated by signal ${signal}.`);
+                    }
+                    else if (code !== 0) {
+                        finish(code === null ? 'Stasha tests did not exit normally.' :
+                            `Stasha tests exited with code ${code}.`);
+                    }
+                    else {
+                        finish();
+                    }
+                });
+                cancellation = token.onCancellationRequested(() => proc.kill());
+                // Also release a subscription returned after synchronous cancellation.
+                if (finished)
+                    cancellation.dispose();
+            }
+            catch (error) {
+                finish(`Unable to run Stasha tests: ${error instanceof Error ? error.message : String(error)}`);
+            }
         });
         promises.push(p);
     }
-    Promise.all(promises).then(() => run.end());
+    return Promise.all(promises).then(() => run.end());
 }
 function _allItems(ctrl) {
     const items = [];

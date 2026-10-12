@@ -50,6 +50,14 @@ node_t *make_node(node_kind_t kind, usize_t line) {
     return n;
 }
 
+void ast_set_observation_origin(node_t *node, const char *file,
+                                usize_t line, usize_t end_line) {
+    if (!node) return;
+    node->observation_file = file ? ast_strdup(file, strlen(file)) : Null;
+    node->observation_line = line;
+    node->observation_end_line = end_line >= line ? end_line : line;
+}
+
 void ast_set_loc(node_t *node, token_t tok) {
     if (!node) return;
     node->line = tok.line;

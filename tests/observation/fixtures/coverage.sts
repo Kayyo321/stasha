@@ -1,0 +1,15 @@
+mod observation_coverage;
+fn covered(stack bool choose): i32 {
+    stack i32 a = 1;
+    a = a + 1;
+    a = a + 1;
+    a = a + 1;
+    if (choose) {
+        a = a + 1;
+    }
+    a = a + 1;
+    a = a + 1;
+    ret a;
+}
+fn never(void): i32 { ret 99; }
+test 'nine of ten' { expect_eq.(covered(true), 7); }

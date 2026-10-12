@@ -1,0 +1,44 @@
+mod observation_control;
+fn exercise(stack i32 n): i32 {
+    stack i32 total = 0;
+    stack i32 data[2] = .{1, 2};
+    for (
+        stack i32 i = 0;
+        i < n;
+        i++
+    ) {
+        if (i == 1) { continue; }
+        total += data[0];
+    }
+    while (total < 3) { total++; }
+    do { total--; }
+    while (total > 2);
+    if (n < 0) {
+        total = 99;
+    } else if (n == 0) {
+        total = 0;
+    } else {
+        total += 1;
+    }
+    stack bool take = n > 0 &&
+        total > 0;
+    stack i32 choice = take ?
+        7 :
+        8;
+    match choice {
+        7 if take => { total += 1; }
+        _ => { total = 77; }
+    }
+    switch (choice) {
+        case 7: { total += 1; break; }
+        default: { total = 88; }
+    }
+    inf { break; }
+    ret total;
+    total = 999;
+}
+test 'controls and once' {
+    print.('OBSERVATION_ONCE\n');
+    expect_eq.(exercise(3), 5);
+    expect_eq.(exercise(0), 88);
+}

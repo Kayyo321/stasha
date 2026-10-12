@@ -42,7 +42,9 @@ static node_t *parse_for_stmt(parser_t *p) {
     if (check(p, TokSemicolon)) {
         advance_parser(p); /* empty init: for (; ...) / for ; ... */
     } else if (can_start_var_decl(p)) {
+        usize_t init_line = p->current.line;
         init = parse_var_decl(p, LinkageNone);
+        ast_set_observation_origin(init, p->observation_origin, init_line, p->previous.line);
     } else {
         init = parse_expr(p);
         consume(p, TokSemicolon, "';'");
@@ -809,6 +811,8 @@ static node_t *parse_statement(parser_t *p) {
     if (!enter_parser_nesting(p)) return make_node(NodeIntLitExpr, p->current.line);
     parser_state_t before = save_state(p);
     node_t *result = parse_statement_impl(p);
+    ast_set_observation_origin(result, p->observation_origin,
+                               before.current.line, p->previous.line);
     ensure_parser_progress(p, before);
     p->nesting_depth--;
     return result;
