@@ -1346,7 +1346,82 @@ static void test_observed_query_origins(void) {
     }
 }
 
+static void check_make_origin_nodes(node_t*m,uint32_t file_id,const char*file) {
+    static const struct {node_kind_t kind;uint32_t line,col,end_line,end_col;} spans[]={
+        {NodeMakeExpr,3,20,3,34},{NodeMakeExpr,3,52,3,69},
+        {NodeMakeExpr,5,20,9,5},{NodeLenExpr,7,9,7,15},
+        {NodeCapExpr,8,9,8,15},{NodeLenExpr,10,9,10,15}
+    };
+    CHECK(m && m->as.module.decls.count==1);
+    node_t*f=m->as.module.decls.items[0];
+    CHECK(f->kind==NodeFnDecl && !strcmp(f->as.fn_decl.name,"measure"));
+    node_list_t b=f->as.fn_decl.body->as.block.stmts;
+    CHECK(b.count==5);
+    CHECK(b.items[0]->kind==NodeVarDecl && !strcmp(b.items[0]->as.var_decl.name,"a"));
+    CHECK(b.items[1]->kind==NodeVarDecl && !strcmp(b.items[1]->as.var_decl.name,"b"));
+    CHECK(b.items[2]->kind==NodeVarDecl && !strcmp(b.items[2]->as.var_decl.name,"make_count"));
+    CHECK(b.items[3]->kind==NodeVarDecl && !strcmp(b.items[3]->as.var_decl.name,"c"));
+    CHECK(b.items[4]->kind==NodeRetStmt && b.items[4]->as.ret_stmt.values.count==1);
+    node_t*a=b.items[0]->as.var_decl.init,*bb=b.items[1]->as.var_decl.init,*c=b.items[3]->as.var_decl.init;
+    CHECK(a->kind==NodeMakeExpr && bb->kind==NodeMakeExpr && c->kind==NodeMakeExpr);
+    CHECK(!a->as.make_expr.cap && bb->as.make_expr.cap && c->as.make_expr.cap);
+    node_t*nodes[]={a,bb,c,c->as.make_expr.len,c->as.make_expr.cap,b.items[4]->as.ret_stmt.values.items[0]};
+    CHECK(sizeof(nodes)/sizeof(nodes[0])==sizeof(spans)/sizeof(spans[0]));
+    for(size_t i=0;i<sizeof(nodes)/sizeof(nodes[0]);++i) {
+        node_t*n=nodes[i];CHECK(n && n->kind==spans[i].kind);
+        CHECK(n->line==spans[i].line && n->col==0 && n->len==0);
+        CHECK(n->observation_file_id_plus_one==file_id);
+        CHECK(n->observation_line==spans[i].line && n->observation_end_line==spans[i].end_line);
+        CHECK(!n->observation_hit_id && !n->observation_site_id && !n->observation_target_decl_id_plus_one);
+        if(file_id) {
+            CHECK(n->observation_col==spans[i].col && n->observation_end_col==spans[i].end_col);
+            CHECK(n->observation_file && !strcmp(n->observation_file,file));
+        } else CHECK(n->observation_col==0 && n->observation_end_col==0);
+    }
+    if(file_id) {
+        CHECK(b.items[0]->observation_line==3 && b.items[0]->observation_col==5);
+        CHECK(b.items[0]->observation_end_line==3 && b.items[0]->observation_end_col==35);
+        CHECK(b.items[1]->observation_line==3 && b.items[1]->observation_col==37);
+        CHECK(b.items[1]->observation_end_line==3 && b.items[1]->observation_end_col==70);
+        CHECK(b.items[3]->observation_line==5 && b.items[3]->observation_col==5);
+        CHECK(b.items[3]->observation_end_line==9 && b.items[3]->observation_end_col==6);
+        CHECK(b.items[4]->observation_line==10 && b.items[4]->observation_col==5);
+        CHECK(b.items[4]->observation_end_line==10 && b.items[4]->observation_end_col==16);
+    }
+}
+static void test_observed_make_origins(void) {
+    const char*literal="mod slice_make.origins;\n"
+        "fn measure(void): i32 {\n"
+        "    heap []i32 a = make.([]i32, 1); heap []i32 b = make.([]i32, 1, 2);\n"
+        "    stack i32 make_count = 1;\n"
+        "    heap []i32 c = make.(\n"
+        "        []i32,\n"
+        "        len.(a),\n"
+        "        cap.(b)\n"
+        "    );\n"
+        "    ret len.(c);\n"
+        "}\n";
+    case_name="owned literal make and count-query spans in both graph files";
+    for(uint32_t id=1;id<=2;++id) {
+        const char*expected=id==1?"/owned/root.sts":"/owned/slice.sts";
+        char*source=strdup(literal),*file=strdup(expected);CHECK(source && file);
+        restore_diagnostic_counts(0,0);diag_clear_captured();diag_set_render_enabled(False);
+        diag_register_source(file,source);diag_set_file(file);diag_set_source(source);
+        stream=pp_process(source,file,NULL,0);CHECK(stream);
+        node_t*m=parse_observed_from_stream(stream,id,12);CHECK(m && !get_error_count());
+        pp_stream_free(stream);stream=NULL;
+        memset(source,'x',strlen(source));memset(file,'y',strlen(file));free(source);free(file);
+        check_make_origin_nodes(m,id,expected);finish_case();
+    }
+    case_name="make AST and ordinary coordinates remain unchanged";
+    for(int mode=0;mode<2;++mode) {
+        node_t*m=parse_case(literal,(boolean_t)mode);CHECK(m && !get_error_count());
+        check_make_origin_nodes(m,0,NULL);finish_case();
+    }
+}
+
 int main(void) {
+    test_observed_make_origins();
     test_observed_query_origins();
     test_observed_declaration_boundaries();
     test_observed_owned_origins();

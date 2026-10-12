@@ -145,7 +145,7 @@ static int sts_observation_graph_encode(const sts_observation_graph *g,sts_obser
     if(!g||g->failed||!g->file_count||g->file_count>STS_OBS_FILE_LIMIT||g->edge_count!=g->file_count-1)return -1;
 #define OBS_GU(v) sts_observation_encode_u32(e,(v))
     sts_observation_encode_text(e,"stasha-observation-input-graph-v2");OBS_GU(2);
-    sts_observation_encode_text(e,STASHA_OBSERVATION_PROFILE);sts_observation_encode_text(e,STS_OBS_LOOKUP_POLICY);
+    sts_observation_encode_text(e,STS_OBS_GRAPH_PROFILE_V2);sts_observation_encode_text(e,STS_OBS_LOOKUP_POLICY);
     sts_observation_encode_text(e,STS_OBS_DUPLICATE_POLICY);sts_observation_encode_text(e,STS_OBS_ALIAS_POLICY);
     sts_observation_encode_text(e,g->invocation_directory);sts_observation_encode_text(e,g->original_root_spelling);OBS_GU(0);OBS_GU(g->file_count);
     for(uint32_t i=0;i<g->file_count;++i){const sts_observation_source *f=&g->files[i];

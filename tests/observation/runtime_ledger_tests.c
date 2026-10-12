@@ -5,14 +5,14 @@
 #include "../../src/runtime/observation_runtime.c"
 #include <assert.h>
 
-_Static_assert(STASHA_OBSERVATION_ABI_VERSION == 2u, "explicit v2 runtime ABI");
-_Static_assert(STASHA_OBSERVATION_SCHEMA_VERSION == 2u, "explicit v2 report schema");
-_Static_assert(STASHA_OBSERVATION_ALLOCATION_VERSION == 1u, "unchanged allocation metric");
+_Static_assert(STASHA_OBSERVATION_ABI_VERSION == 3u, "explicit v3 runtime ABI");
+_Static_assert(STASHA_OBSERVATION_SCHEMA_VERSION == 3u, "explicit v3 report schema");
+_Static_assert(STASHA_OBSERVATION_ALLOCATION_VERSION == 2u, "domain-qualified allocation metric");
 _Static_assert(STASHA_OBSERVATION_LINE_VERSION == 2u, "file-qualified line metric");
-_Static_assert(_Generic(&__stasha_obs_init_v2,
+_Static_assert(_Generic(&__stasha_obs_init_v3,
     void (*)(const char *, const char *, const char *, const char *, const char *,
              uint32_t, uint32_t, uint32_t, uint32_t): 1, default: 0),
-    "v2 initializer retains its physical parameter types");
+    "v3 initializer retains its physical parameter types");
 
 typedef struct {
     uintptr_t next_key, last_key;
@@ -335,10 +335,10 @@ static void test_report_literal(void) {
     reset_sink(); obs_writer writer = { &sink, write_text, 0, 0 };
     assert(obs_emit_report(&state, &writer));
     const char expected[] =
-        "STASHA_OBSERVATION 2\nprofile native-sequential-direct-source-v2\nruntime_abi 2\nmetric_versions 1 2\n"
+        "STASHA_OBSERVATION 3\nprofile native-sequential-direct-source-slice-v3\nruntime_abi 3\nmetric_versions 2 2\n"
         "run run01\ninput_graph input_graph01\nmap map01\nconfig config01\ncompiler compiler01\n"
         "enabled 3\ninventory 1 10 8\nstate 1 0 1\nassertions 2 0\ntests 1 1\ntest 0 2\n"
-        "hits 0102\nallocations 1 8\nallocation 1 8 0 4294967295 0\nEND\n";
+        "hits 0102\nallocations 1 8\nallocation 1 1 8 0 4294967295 0\nEND\n";
     assert(strcmp(sink.bytes, expected) == 0);
     assert(writer.count == sizeof(expected) - 1);
     reset_sink(); sink.fail_after = 20;
@@ -391,7 +391,7 @@ static void test_maximum_report_bounds(void) {
     for (uint32_t i = 0; i < state.record_count; ++i) {
         state.records[i] = (obs_record){
             (uintptr_t)i + 1u, UINT64_MAX - state.record_count + i + 1u,
-            i ? 0u : UINT64_MAX, STASHA_OBSERVATION_MAX_SITES - 1u,
+            i ? 0u : UINT64_MAX, STASHA_OBSERVATION_EXPLICIT_USER_HEAP, STASHA_OBSERVATION_MAX_SITES - 1u,
             STASHA_OBSERVATION_NO_SITE, STASHA_OBSERVATION_MAX_TESTS - 1u
         };
     }
@@ -401,6 +401,11 @@ static void test_maximum_report_bounds(void) {
     assert(obs_emit_report(&state, &writer));
     assert(writer.count == counter.bytes && counter.calls > state.record_count);
     assert(writer.count < STASHA_OBSERVATION_MAX_REPORT_BYTES);
+    assert(writer.count <= 1640454u); /* Frozen conservative whole-report bound. */
+    reset_sink();writer=(obs_writer){&sink,write_text,0,0};
+    obs_printf(&writer,"allocation %" PRIu64 " 1 %" PRIu64 " %" PRIu32 " %" PRIu32 " %" PRIu32 "\n",
+        UINT64_MAX,UINT64_MAX,STASHA_OBSERVATION_MAX_SITES-1u,UINT32_MAX,STASHA_OBSERVATION_MAX_TESTS-1u);
+    assert(!writer.failed&&writer.count==77u&&sink.length==77u);
     /* The configured bound is inclusive and stops before calling the sink. */
     reset_sink();
     writer = (obs_writer){ &sink, write_text, STASHA_OBSERVATION_MAX_REPORT_BYTES - 1u, 0 };
@@ -408,6 +413,9 @@ static void test_maximum_report_bounds(void) {
     assert(writer.count == STASHA_OBSERVATION_MAX_REPORT_BYTES && sink.calls == 1u);
     obs_write(&writer, "y", 1u);
     assert(writer.failed && sink.calls == 1u && sink.length == 1u);
+    reset_sink();writer=(obs_writer){&sink,write_text,STASHA_OBSERVATION_MAX_REPORT_BYTES+1u,0};
+    obs_write(&writer,"x",1);assert(writer.failed&&!sink.calls);
+    writer=(obs_writer){&sink,write_text,SIZE_MAX,0};obs_write(&writer,"x",1);assert(writer.failed&&!sink.calls);
 }
 
 typedef struct {
@@ -472,7 +480,7 @@ static void test_publication_controls(void) {
     assert(publication_spy.scripted_index == 4);
     assert(publication_spy.flags == (O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC));
     assert(publication_spy.mode == 0600);
-    assert(strncmp(sink.bytes, "STASHA_OBSERVATION 2\n", 21) == 0);
+    assert(strncmp(sink.bytes, "STASHA_OBSERVATION 3\n", 21) == 0);
     assert(strstr(sink.bytes, "state 1 0 1\n") != NULL);
     assert(strcmp(sink.bytes + sink.length - 4, "END\n") == 0);
     assert(obs_finish_publish(&state, 0, 0, &mock_io) == 1);
@@ -516,6 +524,100 @@ static void test_publication_controls(void) {
     assert(!allocator_spy.alloc_calls && !allocator_spy.resize_calls && !allocator_spy.release_calls);
 }
 
+static uintptr_t add_slice(uintptr_t key, size_t bytes, uint32_t site) {
+    allocator_spy.next_key=key;
+    obs_alloc_result result=obs_core_slice_new(&state,&allocator,bytes,site);
+    assert(result.key==key&&result.error_number==allocator_spy.error_number&&!state.reason);
+    assert(allocator_spy.last_size==bytes);
+    return result.key;
+}
+static void test_mixed_domains_and_reuse(void) {
+    start();add(100,7,0);add_slice(200,20,3);
+    assert(state.record_count==2&&state.total_bytes==27&&state.generation==2);
+    assert(state.records[0].domain==1&&state.records[1].domain==2);
+    assert(state.records[1].alloc_site==3&&state.records[1].origin_test==0&&state.records[1].resize_site==UINT32_MAX);
+    assert(obs_audit(&state));
+    assert(obs_core_end(&state,0)&&obs_core_finish(&state,0,0));
+    reset_sink();obs_writer writer={&sink,write_text,0,0};assert(obs_emit_report(&state,&writer));
+    const char records[]="allocations 2 27\nallocation 1 1 7 0 4294967295 0\nallocation 2 2 20 3 4294967295 0\nEND\n";
+    assert(sizeof(records)-1==86&&!strcmp(strstr(sink.bytes,"allocations "),records));
+    start();add_slice(100,20,3);add(200,7,0);
+    assert(obs_core_slice_rem(&state,&allocator,100,4)==37);
+    add(100,11,1);assert(state.records[1].generation==3&&state.records[1].domain==1);
+    assert(obs_core_rem(&state,&allocator,200,2)==37);
+    add_slice(200,8,3);assert(state.records[1].generation==4&&state.records[1].domain==2);
+    assert(obs_core_rem(&state,&allocator,100,2)==37&&obs_core_slice_rem(&state,&allocator,200,4)==37);
+    assert(!state.record_count&&!state.total_bytes&&state.generation==4&&allocator_spy.release_calls==4);
+    assert(obs_audit(&state));
+    /* Suite attribution remains dynamic across source files/tests, with no implicit release. */
+    reset(2,0,2);assert(obs_core_begin(&state,0));add_slice(400,12,3);assert(obs_core_end(&state,0));
+    assert(obs_core_begin(&state,1));add_slice(500,8,3);assert(obs_core_end(&state,1));
+    assert(obs_core_finish(&state,0,0));assert(state.records[0].origin_test==0&&state.records[1].origin_test==1);
+    assert(state.total_bytes==20&&!allocator_spy.release_calls);
+}
+static void test_wrong_domains_before_callbacks(void) {
+    for(unsigned op=0;op<4;++op){
+        start();add_slice(100,20,3);unsigned calls=allocator_spy.alloc_calls;
+        if(op==0)obs_core_rem(&state,&allocator,100,4);
+        else obs_core_mov(&state,&allocator,100,op==1?0:op==2?8:SIZE_MAX,2);
+        assert(state.reason==STASHA_OBSERVATION_WRONG_DOMAIN);
+        assert(!allocator_spy.release_calls&&!allocator_spy.resize_calls&&allocator_spy.alloc_calls==calls);
+        assert(state.record_count==1&&state.total_bytes==20&&state.generation==1);
+    }
+    start();add(100,7,0);obs_core_slice_rem(&state,&allocator,100,4);
+    assert(state.reason==STASHA_OBSERVATION_WRONG_DOMAIN&&!allocator_spy.release_calls&&state.total_bytes==7);
+    for(unsigned bad=0;bad<2;++bad){
+        start();add_slice(100,20,3);state.records[0].domain=bad?UINT32_MAX:0;
+        obs_core_slice_rem(&state,&allocator,100,4);
+        assert(state.reason==STASHA_OBSERVATION_CORRUPTED_LEDGER&&!allocator_spy.release_calls);
+        start();add(100,7,0);state.records[0].domain=bad?UINT32_MAX:0;
+        obs_core_mov(&state,&allocator,100,8,2);
+        assert(state.reason==STASHA_OBSERVATION_CORRUPTED_LEDGER&&!allocator_spy.resize_calls);
+    }
+    start();obs_core_new_domain(&state,&allocator,8,0,3);
+    assert(state.reason==STASHA_OBSERVATION_CORRUPTED_LEDGER&&!allocator_spy.alloc_calls);
+}
+static void test_slice_null_and_invalid_is_pure(void) {
+    start();errno=41;allocator_spy.error_number=ENOMEM;
+    obs_alloc_result result=obs_core_slice_new(&state,&allocator,20,3);
+    assert(!result.key&&result.error_number==ENOMEM&&errno==41);
+    assert(!state.record_count&&!state.total_bytes&&!state.generation&&allocator_spy.alloc_calls==1);
+    assert(obs_core_slice_rem(&state,&allocator,0,4)==41&&!allocator_spy.release_calls);
+    start();errno=41;result=obs_core_slice_new(&state,&allocator,0,3);
+    assert(!result.key&&result.error_number==41&&errno==41&&state.reason==STASHA_OBSERVATION_INVALID_SLICE_SIZE);
+    assert(!allocator_spy.alloc_calls&&!state.record_count&&!state.generation);
+    start();obs_core_slice_new(&state,&allocator,20,8);
+    assert(state.reason==STASHA_OBSERVATION_BAD_SITE&&!allocator_spy.alloc_calls);
+    for(unsigned which=0;which<3;++which){
+        start();add_slice(100,20,3);
+        if(which==2){obs_core_slice_rem(&state,&allocator,100,4);assert(allocator_spy.release_calls==1);}
+        obs_core_slice_rem(&state,&allocator,which==0?101:which==1?999:100,4);
+        assert(state.reason==STASHA_OBSERVATION_UNKNOWN_BASE&&allocator_spy.release_calls==(which==2));
+    }
+    start();add(100,7,0);allocator_spy.next_key=100;obs_core_slice_new(&state,&allocator,20,3);
+    assert(state.reason==STASHA_OBSERVATION_DUPLICATE_BASE&&state.total_bytes==7&&state.record_count==1);
+}
+static void test_slice_arithmetic_and_corruption(void) {
+    start();add(100,SIZE_MAX,0);unsigned calls=allocator_spy.alloc_calls;
+    obs_core_slice_new(&state,&allocator,1,3);
+    assert(state.reason==STASHA_OBSERVATION_TOTAL_OVERFLOW&&allocator_spy.alloc_calls==calls);
+    start();state.generation=UINT64_MAX;obs_core_slice_new(&state,&allocator,1,3);
+    assert(state.reason==STASHA_OBSERVATION_GENERATION_OVERFLOW&&!allocator_spy.alloc_calls);
+    start();state.record_count=STASHA_OBSERVATION_MAX_RECORDS;
+    for(uint32_t i=0;i<state.record_count;++i)state.records[i].domain=1;
+    obs_core_slice_new(&state,&allocator,1,3);
+    assert(state.reason==STASHA_OBSERVATION_RECORD_CAPACITY&&!allocator_spy.alloc_calls);
+    for(unsigned which=0;which<5;++which){
+        start();add(100,7,0);add_slice(200,20,3);
+        if(which==0)state.records[1].domain=3;
+        if(which==1)state.records[1].bytes=0;
+        if(which==2)state.records[1].resize_site=2;
+        if(which==3){state.records[0].bytes=UINT64_MAX;state.total_bytes=19;}
+        if(which==4){state.records[0].domain=2;state.records[0].bytes=UINT64_MAX;state.total_bytes=19;}
+        assert(!obs_audit(&state)&&state.reason==STASHA_OBSERVATION_CORRUPTED_LEDGER);
+    }
+}
+
 int main(void) {
     test_balances();
     test_null_and_failure();
@@ -532,6 +634,10 @@ int main(void) {
     test_report_literal();
     test_maximum_report_bounds();
     test_publication_controls();
-    puts("observation runtime pure ledger tests: 15 groups passed");
+    test_mixed_domains_and_reuse();
+    test_wrong_domains_before_callbacks();
+    test_slice_null_and_invalid_is_pure();
+    test_slice_arithmetic_and_corruption();
+    puts("observation runtime pure ledger tests: 19 groups passed");
     return 0;
 }

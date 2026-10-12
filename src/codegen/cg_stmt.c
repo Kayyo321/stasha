@@ -197,6 +197,11 @@ static void gen_local_var(cg_t *cg, node_t *node) {
     }
 
     if(!iface_local_declaration_storage(cg,node,type))return;
+    obs_slice_record*observed_slice=Null;
+    if(cg->observation_config && ti.base==TypeSlice) {
+        observed_slice=cg_observation_slice_declaration(cg,node,type);
+        if(!observed_slice)return;
+    }
 
     /* ── New allocation rule:
        - Non-pointer variables are always stack-allocated (StorageDefault).
@@ -277,7 +282,10 @@ static void gen_local_var(cg_t *cg, node_t *node) {
                 cg->hint_var_flags  = node->as.var_decl.flags;
             }
             cg->hint_ret_type = type;
+            obs_slice_record*saved_pending=cg->observation_slice_pending;
+            cg->observation_slice_pending=observed_slice;
             init = gen_scalar_as_storage(cg, node->as.var_decl.init, ti, type);
+            cg->observation_slice_pending=saved_pending;
             cg->hint_ret_type   = Null;
             cg->hint_slice_elem = saved_slice_elem;
             cg->hint_storage    = saved_storage;
@@ -308,6 +316,8 @@ static void gen_local_var(cg_t *cg, node_t *node) {
             cg->locals.entries[cg->locals.count-1].iface_excluded_origin = iface_origin;
     }
     symtab_set_last_storage(&cg->locals, node->as.var_decl.storage, False);
+    if(observed_slice && !cg_observation_slice_bind(cg,node,observed_slice,
+            &cg->locals.entries[cg->locals.count-1]))return;
     {
         long arr_sz = (node->as.var_decl.flags & VdeclArray) ? node->as.var_decl.array_sizes[0] : -1;
         symtab_set_last_extra(&cg->locals, node->as.var_decl.flags & VdeclConst,
@@ -2105,6 +2115,9 @@ static void gen_stmt(cg_t *cg, node_t *node) {
 
 static void gen_block(cg_t *cg, node_t *node) {
     if(!iface_local_lowering(cg,node))return;
+    node_t*saved_observation_block=cg->observation_block;
+    usize_t saved_observation_child=cg->observation_child;
+    cg->observation_block=node;
     usize_t old_count = cg->locals.count;
     push_dtor_scope(cg);
     boolean_t block_terminated = False;
@@ -2119,6 +2132,7 @@ static void gen_block(cg_t *cg, node_t *node) {
             diag_finish();
             break;  /* stop generating unreachable stmts */
         }
+        cg->observation_child=i;
         gen_stmt(cg, node->as.block.stmts.items[i]);
         /* Check if the current basic block now has a terminator */
         LLVMBasicBlockRef cur = LLVMGetInsertBlock(cg->builder);
@@ -2143,4 +2157,6 @@ static void gen_block(cg_t *cg, node_t *node) {
         }
     }
     cg->locals.count = old_count;
+    cg->observation_block=saved_observation_block;
+    cg->observation_child=saved_observation_child;
 }

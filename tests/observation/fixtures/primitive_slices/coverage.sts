@@ -1,0 +1,14 @@
+mod observation_primitive_slices;
+fn work(void): i32 {
+    heap []i32 s = make.([]i32, 3, 5);
+    defer { rem.(s); }
+    s[0] = 9;
+    ret s[0] + len.(s) + cap.(s);
+}
+fn never(void): i32 {
+    heap []i16 cold = make.([]i16, 0, 2);
+    ret cap.(cold);
+}
+test 'slice coverage' {
+    expect_eq.(work(), 17);
+}

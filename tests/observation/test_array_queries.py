@@ -25,7 +25,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/observation/fixtures/array_queries"
 FAMILY = "observed-array-queries"
-POLICY = "closed-direct-source-fixed-array-queries-v3"
+POLICY = "closed-direct-source-array-and-local-primitive-slices-v1"
 ORDINARY_NAMES = ("direct", "named_extent", "inferred_extent", "empty_extent", "empty_inferred",
                   "const_array", "final_array", "matrix", "deep_rank", "global_array")
 FIXED_NAMES = ("coverage80", "coverage81", "coverage-only", "allocation-only", "control-anchors",
@@ -247,19 +247,9 @@ def materialize(session):
 
 
 def config_digest(compiler, runtime, optimization, *, enabled=3, warn=1, maximum=8, minimum=90, policy=POLICY, debug=0, target="x86_64-unknown-linux-gnu"):
-    """Independent literal schema/limits. Never imports native serializer values."""
-    out = support.Canonical()
-    out.text("stasha-observation-config-v2"); out.u32(2); out.u32(2)
-    out.text("native-sequential-direct-source-v2"); out.u32(1); out.u32(2)
-    for value in ("direct-source-bounds-v2", "requested-entry-directory-v1", "reject-v1", "global-unique-exported-target-v1", policy): out.text(value)
-    limits = (256, 255, 16777216, 1000000, 127, 255, 511, 511, 1023, 4095, 4096, 65536, 65536, 4096, 65536, 65536, 16384, 2097152, 33554432, 33554432)
-    out.u32(len(limits))
-    for limit in limits: out.u32(limit)
-    out.text(target); out.raw(bytes.fromhex(compiler)); out.raw(bytes.fromhex(runtime))
-    for value in (optimization, debug, enabled, warn, maximum is not None): out.u32(value)
-    if maximum is not None: out.u64(maximum)
-    out.optional_u32(minimum)
-    return out.digest(), bytes(out.value)
+    """Independent v3 serializer shared by all observed-family validators."""
+    return support.config_digest(compiler, runtime, optimization, enabled=enabled, warn=warn,
+        maximum=maximum, minimum=minimum, policy=policy, debug=debug, target=target)
 
 
 def run_ordinary(session, sources, levels):
@@ -286,7 +276,7 @@ def flags_for(oracle):
 
 
 def run_observed(session, sources, levels):
-    runs, signatures = set(), {}
+    runs, evidence_paths, signatures = set(), set(), {}
     for opt in levels:
         for name in (*FIXED_NAMES, *("adapter-" + n for n in ORDINARY_NAMES)):
             oracle = fixture_oracle(name); key = f"{name}-O{opt}"; entry = sources[name]
@@ -297,10 +287,12 @@ def run_observed(session, sources, levels):
             assert result.stdout.count(b"OBSERVATION_ONCE\n") == int(oracle["sentinel"])
             match = re.search(rb"observation: private evidence ([^\r\n]+)", result.stderr); assert match
             evidence = Path(os.fsdecode(match.group(1)))
+            assert str(evidence.resolve()) not in evidence_paths and not evidence.is_symlink()
+            evidence_paths.add(str(evidence.resolve()))
             metadata, report = (evidence / "driver.json").read_bytes(), (evidence / "report").read_bytes()
             assert len(metadata) <= 33554432 and len(report) <= 2097152
             (dest / "driver.json").write_bytes(metadata); (dest / "report").write_bytes(report)
-            data = json.loads(metadata)
+            data = support.strict_json(metadata)
             assert data["run"] not in runs, "stale runtime identity"; runs.add(data["run"])
             raw = support.validate_driver(data, report.decode("ascii"), session, binary, entry,
                 **{key: oracle[key] for key in ("expected", "pairs", "hits", "assertions", "tests", "live", "byte_count")})
@@ -316,16 +308,16 @@ def run_observed(session, sources, levels):
             if name == "control-anchors": assert raw.hex() == "ffb903"
             if name == "imports": assert raw.hex() == "ff1f"
             if name.startswith("retained"):
-                assert data["allocations"] == [{"generation": 1, "bytes": 13, "allocation_site": 0, "resize_site": 4294967295, "test": 0}]
+                assert data["allocations"] == [{"generation": 1, "domain": 1, "bytes": 13, "allocation_site": 0, "resize_site": 4294967295, "test": 0}]
             for path in (pre, post):
-                text = path.read_text(); assert "__stasha_obs_init_v2" in text
+                text = path.read_text(); assert "__stasha_obs_init_v3" in text
                 assert not re.search(r"@__stasha_obs_init\(", text)
             signature = (data["coverage"], [(f["lines"], f["exclusions"]) for f in data["files"]], data["tests"], data["sites"])
             if name in signatures: assert signature == signatures[name], "optimization changed fixed source inventory"
             signatures[name] = signature
             session.cases.append({"name": key, "stage": "observed_native", "status": "pass", "executions": 1,
                 "input_graph_sha256": data["input_graph_sha256"], "map_sha256": data["map_sha256"], "config_sha256": data["config_sha256"],
-                "source_sha256": sha(entry), "binary_sha256": sha(binary), "pre_ir_sha256": sha(pre), "post_ir_sha256": sha(post),
+                "source_sha256": sha(entry), "binary_sha256": sha(binary), "run_id": data["run"], "pre_ir_sha256": sha(pre), "post_ir_sha256": sha(post),
                 "assertions_passed": oracle["assertions"], "tests": oracle["tests"], "eligible": len(oracle["pairs"]),
                 "covered": len(oracle["hits"]), "live_allocations": oracle["live"], "tracked_outstanding_bytes": oracle["byte_count"]})
 
@@ -372,7 +364,7 @@ def run_nonlaunch(session, ordinary, positive, negative, levels, ir_compiler):
             support.validate_positive_nonlaunch_result(result, output); support.retain_nonlaunch_evidence(dest, result)
             for path in (pre, post):
                 text = path.read_text()
-                assert ("__stasha_obs_init_v2" in text) == (command == "test")
+                assert ("__stasha_obs_init_v3" in text) == (command == "test")
             session.cases.append({"name": key, "stage": "compile_only", "status": "pass", "executions": 0,
                 "pre_ir_sha256": sha(pre), "post_ir_sha256": sha(post), "independent_ir_review": "required"})
     assert sha(ir_compiler) == digest
@@ -418,11 +410,10 @@ def selftest(artifacts):
             self.assertEqual(fixture_oracle("imports")["assertions"], 14)
         def test_independent_configuration_known_answers(self):
             digest, encoded = config_digest("dd" * 32, "aa" * 32, 2)
-            self.assertEqual(len(encoded), 485)
-            self.assertEqual(digest, "b3ceb27bd1814a1f71e560649fd6354ec718310490ae23a4d9b072479d2d30bf")
-            old, old_bytes = config_digest("dd" * 32, "aa" * 32, 2, policy="closed-direct-source-scalar-v2")
-            self.assertEqual(len(old_bytes), 472)
-            self.assertEqual(old, "bac9c0710c372aa6ccf949ce3def394ca04953638c22b915b0772279c4873e53")
+            self.assertEqual(len(encoded), 526)
+            self.assertEqual(digest, "1dc9f3d3e2be65e986cf997e1350dea939ad3517d392f67a3d9220f98d3ed457")
+            old, old_bytes = config_digest("dd" * 32, "aa" * 32, 2, policy="closed-direct-source-fixed-array-queries-v3")
+            self.assertNotEqual(old, digest); self.assertNotEqual(old_bytes, encoded)
         def test_nonlaunch_partition(self):
             inventory = expected_cases([0, 2, 3])
             self.assertEqual(len(inventory["ordinary_native"]), 30)

@@ -1012,6 +1012,7 @@ static void parser_observation_spans(parser_t*p) {
             case NodeTestBlock:key=TokTest;break;
             case NodeImpDecl:key=TokImp;break;
             case NodeNewExpr:key=TokNew;break;
+            case NodeMakeExpr:key=TokMake;break;
             case NodeMovExpr:key=TokMov;break;
             case NodeRemStmt:key=TokRem;break;
             case NodeSizeofExpr:key=TokSizeof;break;

@@ -1,0 +1,20 @@
+mod observation_slice_order;
+stack i32 trace = 0;
+fn step(stack i32 tag, stack i32 value): i32 {
+    trace = trace * 10 + tag;
+    ret value;
+}
+fn exercise(void): void {
+    heap []i32 s = make.([]i32, step(1, 2), step(2, 4));
+    expect_eq.(trace, 12);
+    rem.(s);
+    trace = 0;
+    heap []i16 t = make.([]i16, step(1, 3));
+    expect_eq.(trace, 1);
+    rem.(t);
+    trace = 0;
+    heap []i32 z = make.([]i32, step(1, 0), step(2, 0));
+    expect_eq.(trace, 12);
+    rem.(z);
+}
+test 'count order' { exercise(); }

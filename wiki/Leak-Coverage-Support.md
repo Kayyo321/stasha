@@ -29,18 +29,21 @@ close a fully measured support row or justify blanket default activation.
 
 ## Current admission profile
 
-The v2 design is limited to an explicit on-disk root `stasha test`
+The v3 design is limited to an explicit on-disk root `stasha test`
 invocation with optional distinct direct ordinary leaf-source imports on hosted native **Linux x86-64 GNU/glibc LP64**. It admits sequential,
 directly named non-generic functions; primitive scalar/pointer values and fixed
-primitive nonpointer-element arrays; bounded ordinary control flow and defer;
+primitive nonpointer-element arrays; bounded local explicit-count builtin primitive
+slice backing with closed retained/direct-rem/adjacent-defer schedules; bounded
+ordinary control flow and defer;
 explicit `new`, two-argument `mov`, and `rem`; primitive assertions and printing;
 and selected compile-time/target conditionals. The detailed restrictions are in
 the [observation guide](../tests/observation/README.md#admitted-source-profile).
 
 Projects, transitive imports, explicit aliases, providers, other artifact modes, stdin overrides, additional
 libraries, and other targets are outside this profile. The source inventory
-rejects unsupported constructs even in uncalled functions. The exact profile is `native-sequential-direct-source-v2`, with observer ABI and
-report/manifest schema 2, allocation metric 1 and line metric 2. Root imports are
+rejects unsupported constructs even in uncalled functions. The exact profile is `native-sequential-direct-source-slice-v3`, with observer ABI and
+raw-report/driver-JSON/manifest schema 3, allocation metric 2 and line metric 2.
+Input graph bytes/schema and family-evidence receipt schema remain v2/2. Root imports are
 unconditional plain imports; leaf imports, duplicate modules/canonical files and
 ambiguous aliases are rejected. Imported tests receive their own lexical module
 context and identity. Requested entry-directory dependency lookup is preserved.
@@ -51,7 +54,9 @@ tests do not establish successful execution of a generated test image.
 ### Allocation and coverage boundaries
 
 - `tracked_outstanding_bytes` sums requested sizes of live successful explicit
-  `new`/`mov` allocations at the end of the whole test suite. Production and test
+  `new`/`mov` allocations plus admitted generated primitive-slice backing, at the
+  end of the whole test suite. Separate explicit-user-heap and primitive-slice
+  backing totals sum to the combined thresholded total. Production and test
   allocations both count; a later test may release an earlier test's buffer.
   There is no per-test subtraction. Reachable retained buffers still count.
 - Allocation count is separate from bytes. A nonnull zero-byte allocation can
@@ -92,8 +97,9 @@ proof of correct lowering or observation.
 | Scalars, pointers, arrays, variables and ordinary control | Qualify the admitted subset; extend storage/type combinations, atomic/volatile/TLS/restrict, aliases/inference, comparison chains, `with`, foreach and multi-return/destructuring. Preserve evaluation order, diagnostics and cleanup on every exit. |
 | Functions and source names | Expression bodies, recursion, quoted/long names, linkage and exports need stable resolved identities and collision-safe hooks; application `main` needs an explicit execution policy. |
 | Structs, unions, enums, inline tagged values and interfaces | Cover layout/attributes/bitfields, members, methods, constructors, pattern bindings, dispatch, nested fields and destructors. Interface/provider integration remains an open qualification dependency. |
-| Fixed primitive-array len/cap queries | Bounded identifier and remaining-rank indexed-subarray implementation has an exact third-family qualification gate. Admission policy `closed-direct-source-fixed-array-queries-v3`; source/IR acceptance, ordinary/adapted positives, literal 8/10 oracle and final aggregate are required before this row closes. General pointer/slice/member/alias/parameter/unsafe queries remain open. |
-| Initializers, slices and views | Cover compound/designated initialization, spread/range/merge, `make`, append/growth, copy and queries. Track actual backing storage; pointer/descriptor copies and interior views are not new allocations or proof of ownership. |
+| Fixed primitive-array len/cap queries | Preserve the published bounded identifier/remaining-rank proof, ten ordinary sources, five generator dependencies and exact 8/10 oracle under observer v3. Third-family source/IR, native and final aggregate gates remain mandatory. Borrowed-view/member/alias/parameter/unsafe queries remain open. |
+| Local explicit-count primitive slice backing | Fourth-family bounded increment: exact local builtin element identity, direct-live scalar queries/indexes and retained/direct/adjacent-defer schedules. Independent source/IR, pure controls, 188 ordinary and 800 observed native runs and final four-family aggregate are required. Native malloc-null remains NOT_RUN. |
+| General initializers, slices and views | Compound/designated initialization, spread/range/merge, general `make`, append/growth, copy, aliases, transfer/return/capture, composite elements and other queries stay open. Descriptor copies and interior views are not new allocations or ownership proof. |
 | Errors, formatting and generated helpers | Classify heap versus stack/static buffers, propagation cleanup, hash/equality, type queries and rich assertions. Generated allocations need source attribution and matching release events. |
 | Generics, lambdas and variadics | Preserve template/specialization/instantiation origins; lifted and captured bodies; function pointers, callbacks, pipelines/trailing closures; raw/typed variadic ABI and state. Track actual environment storage, not an assumed heap allocation for every capture. |
 | Modules, macros and compile-time forms | The bounded v2 profile adds immutable direct-source graphs, per-file coverage, owned test identities and rejection of repeated imports. General transitive imports, deduplication policy, submodule/project tests and macro definition/expansion origins remain open. Freeze separate source-line and specialization/expansion reporting rules. |
@@ -211,8 +217,9 @@ compatibility never implies complete path execution or a static leak-freedom pro
 
 ### Fixed-array query evidence boundary
 
-The bounded query increment preserves ABI/report schema 2 and allocation/line
-metrics 1/2. The permanent family retains ten exact ordinary sources and their
+The inherited bounded query increment is requalified under observer ABI/report
+schema 3 and allocation/line metrics 2/2 without changing its ordinary inputs
+or literal coverage/semantic oracles. The permanent family retains ten exact ordinary sources and their
 single-main-rename adapters, six independently frozen fixtures, strict runtime
 identity checks, and no-launch-only negative controls. Its central 8/10 `ff00`
 oracle has five assertions and two successful balanced 8-byte helper allocations;
@@ -221,3 +228,29 @@ later-test cleanup and distinct root/import source owners. Source/IR or pure-onl
 results are preparation evidence, not successful native qualification. Close only
 this bounded row after all required gates on the same final candidate; all other
 query/storage/provider/target rows and default activation remain open.
+
+### Primitive-slice evidence boundary
+
+The measured generated domain is only local explicit-count builtin primitive
+slice backing in the declared sequential hosted Linux x86-64 LP64 profile.
+Positive capacity requests exactly capacity times target ABI element stride;
+zero capacity makes no allocator event. Source/IR must establish full-width count
+validation, once-only count order, reason-8 null dominance, full-capacity zeroing,
+effectful real allocator hooks and every ordinary cleanup exit. Native assertions
+never read spare capacity. The separately reviewed 47-case inventory includes
+all eleven primitive types, integer count widths, zero/retained/mixed domains,
+source imports, same-line sites, nested/shadowed bindings and three schedules.
+
+Pure synthetic-ID/allocator-spy and complete parser/serialization controls prove
+bookkeeping/failure contracts without native invalid allocator operations.
+Exactly 177 rejection sources and 22 count-failure sources remain nonlaunch-only.
+Native positive reports must independently match source, image, profile/config/map,
+site/domain/generation and per-domain requested-byte totals. All four mandatory
+families must reach exact terminal receipts on unchanged final artifacts.
+
+Genuine native malloc-null remains **NOT_RUN / outside initial native qualification**.
+An inspected reason-8 branch or a callback that returns NULL does not establish
+native OOM. Unsupported slices/aliases/transfers/growth, providers, generated
+allocation families, broad ownership/lifetime analysis and other platforms remain
+open. These gates neither close full-language support nor enable default checking,
+implicit coverage minimums, restricted descriptor/archive work or LeakSanitizer.

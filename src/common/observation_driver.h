@@ -23,11 +23,13 @@
 
 typedef struct {
     uint64_t generation, bytes;
-    uint32_t allocation_site, resize_site, test;
+    uint32_t domain, allocation_site, resize_site, test;
 } sts_observation_live;
 typedef struct {
     uint64_t assertions_passed, assertions_failed, live_bytes, covered;
     uint32_t complete, reason, endpoint, started, completed, live_count;
+    uint64_t domain_bytes[2];
+    uint32_t domain_counts[2];
     uint8_t hits[STS_OBS_LINE_LIMIT / 8];
     sts_observation_live live[STS_OBS_RECORD_LIMIT];
 } sts_observation_report;
@@ -95,6 +97,17 @@ static int sts_observation_decl_contains(const sts_observation_declaration *d,ui
 static int sts_observation_decl_kind_valid(uint32_t kind) {
     return kind==STS_OBS_DECL_FN||kind==STS_OBS_DECL_VAR||kind==STS_OBS_DECL_TYPE||
         kind==STS_OBS_DECL_IMPORT||kind==STS_OBS_DECL_COMPTIME_ASSERT||kind==STS_OBS_DECL_TEST;
+}
+static int sts_observation_slice_metadata_valid(const sts_observation_site *site) {
+    if (site->kind != STS_OBS_SLICE_MAKE)
+        return !site->slice_element_kind && !site->slice_abi_stride && !site->slice_count_arity;
+    uint32_t stride = sts_observation_slice_stride(site->slice_element_kind);
+    return stride && site->slice_abi_stride == stride &&
+        (site->slice_count_arity == 1u || site->slice_count_arity == 2u);
+}
+static int sts_observation_slice_bytes_valid(const sts_observation_site *site, uint64_t bytes) {
+    return site->kind == STS_OBS_SLICE_MAKE && sts_observation_slice_metadata_valid(site) &&
+        bytes && bytes % site->slice_abi_stride == 0 && bytes / site->slice_abi_stride <= INT32_MAX;
 }
 static int sts_observation_manifest_valid(const sts_observation_config *c,
                                            const sts_observation_manifest *m) {
@@ -164,7 +177,7 @@ static int sts_observation_manifest_valid(const sts_observation_config *c,
     for(uint32_t i=0;i<m->site_count;++i){const sts_observation_site *a=&m->sites[i];
         if(a->decl_id>=m->decl_count||a->file_id!=m->declarations[a->decl_id].file_id||!a->owner||
            !sts_observation_span_valid(m,a->file_id,a->line,a->col,a->end_line,a->end_col)||
-           !sts_observation_decl_contains(&m->declarations[a->decl_id],a->line,a->col,a->end_line,a->end_col)||a->kind<STS_OBS_NEW||a->kind>STS_OBS_REM||
+           !sts_observation_decl_contains(&m->declarations[a->decl_id],a->line,a->col,a->end_line,a->end_col)||a->kind<STS_OBS_NEW||a->kind>STS_OBS_SLICE_REM||!sts_observation_slice_metadata_valid(a)||
            (a->owner_test!=UINT32_MAX&&(a->owner_test>=m->test_count||m->tests[a->owner_test].decl_id!=a->decl_id)))return 0;
         const sts_observation_declaration *d=&m->declarations[a->decl_id];
         if(!d->selected||(d->kind!=STS_OBS_DECL_FN&&d->kind!=STS_OBS_DECL_TEST)||
@@ -215,7 +228,7 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
     uint64_t a, b, d;
 #define OBS_LITERAL(s) do { if (!sts_observation_literal(&r, (s))) goto malformed; } while (0)
 #define OBS_NUMBER(max, sep, dst) do { if (!sts_observation_number(&r, (max), (sep), &(dst))) goto malformed; } while (0)
-    OBS_LITERAL("STASHA_OBSERVATION 2\nprofile native-sequential-direct-source-v2\nruntime_abi 2\nmetric_versions 1 2\n");
+    OBS_LITERAL("STASHA_OBSERVATION 3\nprofile native-sequential-direct-source-slice-v3\nruntime_abi 3\nmetric_versions 2 2\n");
     if (!sts_observation_identity(&r, "run ", c->run_id) ||
         !sts_observation_identity(&r, "input_graph ", c->input_graph_id) ||
         !sts_observation_identity(&r, "map ", m->map_id) ||
@@ -226,7 +239,7 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
     OBS_NUMBER(STS_OBS_LINE_LIMIT, ' ', b); OBS_NUMBER(STS_OBS_SITE_LIMIT, '\n', d);
     if (a != m->test_count || b != m->line_count || d != m->site_count) goto identity;
     OBS_LITERAL("state "); OBS_NUMBER(1, ' ', a); out->complete = (uint32_t)a;
-    OBS_NUMBER(12, ' ', a); out->reason = (uint32_t)a;
+    OBS_NUMBER(14, ' ', a); out->reason = (uint32_t)a;
     OBS_NUMBER(1, '\n', a); out->endpoint = (uint32_t)a;
     OBS_LITERAL("assertions "); OBS_NUMBER(UINT64_MAX, ' ', out->assertions_passed);
     OBS_NUMBER(UINT64_MAX, '\n', out->assertions_failed);
@@ -266,18 +279,31 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
         OBS_LITERAL("allocation "); OBS_NUMBER(UINT64_MAX, ' ', live->generation);
         if (!live->generation || live->generation <= previous) goto impossible;
         previous = live->generation;
+        OBS_NUMBER(2, ' ', a); live->domain = (uint32_t)a;
+        if (!live->domain) goto impossible;
         OBS_NUMBER(UINT64_MAX, ' ', live->bytes);
         OBS_NUMBER(UINT32_MAX, ' ', a); live->allocation_site = (uint32_t)a;
         OBS_NUMBER(UINT32_MAX, ' ', a); live->resize_site = (uint32_t)a;
         OBS_NUMBER(UINT32_MAX, '\n', a); live->test = (uint32_t)a;
         if (live->allocation_site >= m->site_count || live->test >= out->started ||
-            (m->sites[live->allocation_site].kind != STS_OBS_NEW && m->sites[live->allocation_site].kind != STS_OBS_MOV) ||
-            (live->resize_site != UINT32_MAX && (live->resize_site >= m->site_count || m->sites[live->resize_site].kind != STS_OBS_MOV)) ||
-            (m->sites[live->allocation_site].owner_test != UINT32_MAX && m->sites[live->allocation_site].owner_test != live->test) ||
-            out->live_bytes > UINT64_MAX - live->bytes) goto impossible;
+            (m->sites[live->allocation_site].owner_test != UINT32_MAX && m->sites[live->allocation_site].owner_test != live->test)) goto impossible;
+        const sts_observation_site *origin = &m->sites[live->allocation_site];
+        if (live->domain == STASHA_OBSERVATION_EXPLICIT_USER_HEAP) {
+            if ((origin->kind != STS_OBS_NEW && origin->kind != STS_OBS_MOV) ||
+                (live->resize_site != UINT32_MAX && (live->resize_site >= m->site_count ||
+                 m->sites[live->resize_site].kind != STS_OBS_MOV))) goto impossible;
+        } else if (live->resize_site != UINT32_MAX || !sts_observation_slice_bytes_valid(origin, live->bytes)) goto impossible;
+        unsigned domain = live->domain - 1u;
+        if (out->live_bytes > UINT64_MAX - live->bytes ||
+            out->domain_bytes[domain] > UINT64_MAX - live->bytes || out->domain_counts[domain] == UINT32_MAX) goto impossible;
+        out->domain_bytes[domain] += live->bytes;
+        ++out->domain_counts[domain];
         out->live_bytes += live->bytes;
     }
-    if (b != out->live_bytes) goto impossible;
+    if (out->domain_bytes[0] > UINT64_MAX - out->domain_bytes[1] ||
+        out->domain_counts[0] > UINT32_MAX - out->domain_counts[1] ||
+        out->domain_bytes[0] + out->domain_bytes[1] != out->live_bytes ||
+        out->domain_counts[0] + out->domain_counts[1] != out->live_count || b != out->live_bytes) goto impossible;
     OBS_LITERAL("END\n");
     if (r.p != r.end) goto malformed;
 #undef OBS_LITERAL
@@ -511,7 +537,7 @@ static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
         const sts_observation_config *c,const sts_observation_manifest *m,
         const sts_observation_child *child,const sts_observation_report *report,int parsed,int overall) {
     int valid=sts_observation_manifest_valid(c,m);const sts_observation_graph *g=c->graph;
-    fprintf(f,"{\n\"schema\":2,\"profile\":\"native-sequential-direct-source-v2\",\"runtime_abi\":2,\"allocation_metric_version\":1,\"line_metric_version\":2,\"target\":");
+    fprintf(f,"{\n\"schema\":3,\"profile\":\"native-sequential-direct-source-slice-v3\",\"runtime_abi\":3,\"allocation_metric_version\":2,\"line_metric_version\":2,\"target\":");
     sts_observation_json_string(f,run->target);
     fputs(",\"text_encoding\":\"UTF-8; raw dynamic text bytes in *_bytes_hex\",\"source_path\":",f);sts_observation_json_string(f,c->source_path);
     fputs(",\"source_path_bytes_hex\":",f);sts_observation_json_bytes(f,c->source_path);
@@ -530,6 +556,8 @@ static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
         !(c->enabled_mask&2)?"disabled":parsed&&report->complete&&sts_observation_coverage_pass(report->covered,m->line_count,c->min_coverage)?"pass":"fail");
     if(parsed)fprintf(f,"\"complete\":%u,\"reason\":%u,\"suite_endpoint\":%u,\"tests_started\":%u,\"tests_completed\":%u,\"assertions_passed\":%" PRIu64 ",\"assertions_failed\":%" PRIu64 ",\"covered_lines\":%" PRIu64 ",\"live_allocations\":%u,\"tracked_outstanding_bytes\":%" PRIu64 ",\n",
         report->complete,report->reason,report->endpoint,report->started,report->completed,report->assertions_passed,report->assertions_failed,report->covered,report->live_count,report->live_bytes);
+    if(parsed)fprintf(f,"\"allocation_domains\":{\"explicit_user_heap\":{\"live_allocations\":%u,\"tracked_outstanding_bytes\":%" PRIu64 "},\"generated_primitive_slice_backing\":{\"live_allocations\":%u,\"tracked_outstanding_bytes\":%" PRIu64 "}},\n",
+        report->domain_counts[0],report->domain_bytes[0],report->domain_counts[1],report->domain_bytes[1]);
     fprintf(f,"\"eligible_lines\":%u,\"coverage_applicable\":%s,\"files\":[",valid?m->line_count:0,valid&&m->line_count?"true":"false");
     uint32_t next=0;
     for(uint32_t i=0;g&&i<g->file_count;++i){const sts_observation_source *s=&g->files[i];
@@ -572,7 +600,8 @@ static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
     fputs("],\n\"sites\":[",f);
     for(uint32_t i=0;valid&&i<m->site_count;++i){const sts_observation_site *a=&m->sites[i];
         fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"decl_id\":%u,\"line\":%u,\"col\":%u,\"end_line\":%u,\"end_col\":%u,\"kind\":%u,\"owner_test\":%u,\"owner\":",i?",":"",i,a->file_id,a->decl_id,a->line,a->col,a->end_line,a->end_col,a->kind,a->owner_test);
-        sts_observation_json_string(f,a->owner);fputs(",\"static_test_id\":",f);if(a->owner_test==UINT32_MAX)fputs("null",f);else fprintf(f,"%u",a->owner_test);fputs(",\"owner_bytes_hex\":",f);sts_observation_json_bytes(f,a->owner);fputc('}',f);
+        sts_observation_json_string(f,a->owner);fputs(",\"static_test_id\":",f);if(a->owner_test==UINT32_MAX)fputs("null",f);else fprintf(f,"%u",a->owner_test);fputs(",\"owner_bytes_hex\":",f);sts_observation_json_bytes(f,a->owner);
+        fprintf(f,",\"slice_element_kind\":%u,\"slice_abi_stride\":%u,\"slice_count_arity\":%u}",a->slice_element_kind,a->slice_abi_stride,a->slice_count_arity);
     }
     fputs("],\n\"coverage\":[",f);
     for(uint32_t i=0;valid&&i<m->line_count;++i)fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"line\":%u,\"hit\":%s}",i?",":"",i,m->line_file_ids[i],m->lines[i],parsed&&(report->hits[i/8]&(1u<<(i%8)))?"true":"false");
@@ -581,7 +610,7 @@ static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
     for(uint32_t i=1;valid&&i<=c->source_line_count;++i){uint32_t mask=m->files[0].reason_masks[i],reason=0;if(!(mask&1u))for(reason=1;reason<5&&!(mask&(1u<<reason));++reason);fprintf(f,"%s%u",i>1?",":"",reason);}
     fputs("],\n\"allocations\":[",f);
     for(uint32_t i=0;parsed&&i<report->live_count;++i){const sts_observation_live *a=&report->live[i];
-        fprintf(f,"%s{\"generation\":%" PRIu64 ",\"bytes\":%" PRIu64 ",\"allocation_site\":%u,\"resize_site\":%u,\"test\":%u}",i?",":"",a->generation,a->bytes,a->allocation_site,a->resize_site,a->test);
+        fprintf(f,"%s{\"generation\":%" PRIu64 ",\"domain\":%u,\"bytes\":%" PRIu64 ",\"allocation_site\":%u,\"resize_site\":%u,\"test\":%u}",i?",":"",a->generation,a->domain,a->bytes,a->allocation_site,a->resize_site,a->test);
     }
     fputs("]\n}\n",f);return ferror(f)?-1:0;
 }
@@ -600,17 +629,27 @@ static int sts_observation_metadata_count(const sts_observation_run *run,const s
     if(count.failed)bad=1;
     *size=count.size;return bad?-1:0;
 }
+/* Used only after the exact immutable emitter has counted successfully.
+ * Kept separate so pure integer tests can prove the inclusive cap without
+ * constructing giant labels or launching any child image. */
+static int sts_observation_metadata_reserve(sts_observation_run *run,
+        const sts_observation_manifest *m,size_t immutable,char *error,size_t error_size) {
+    if(m->line_count>STS_OBS_LINE_LIMIT||m->file_count>STS_OBS_FILE_LIMIT)
+        return sts_observation_error(error,error_size,"invalid observation metadata inventory bounds");
+    /* Exact immutable JSON plus worst-case result growth: records 256 each,
+     * hit lines 11 each, per-file numbers 40 each; domain object 256, parsed
+     * scalar fields 768, child/status 512, identity text 512, slack 2048. */
+    size_t extra=(size_t)STS_OBS_RECORD_LIMIT*256u+(size_t)m->line_count*11u+(size_t)m->file_count*40u+4096u;
+    if(immutable>STS_OBS_METADATA_LIMIT||extra>STS_OBS_METADATA_LIMIT-immutable)
+        return sts_observation_error(error,error_size,"observation metadata plus bounded runtime results exceeds 32 MiB");
+    run->metadata_preflight_size=immutable+extra;return 0;
+}
 static int sts_observation_metadata_preflight(sts_observation_run *run,const sts_observation_config *c,
         const sts_observation_manifest *m,char *error,size_t error_size) {
     if(!sts_observation_manifest_valid(c,m))return sts_observation_error(error,error_size,"invalid observation metadata manifest");
     sts_observation_child child={0};size_t size;
     if(sts_observation_metadata_count(run,c,m,&child,NULL,0,1,&size))return sts_observation_error(error,error_size,"observation immutable metadata exceeds 32 MiB");
-    /* Exact immutable JSON plus worst-case result growth: each live record is
-     * at most 256 bytes, each possible hit line 11, per-file numbers 40, and
-     * all remaining report/child/hash decimal expansion at most 4096. */
-    size_t extra=(size_t)STS_OBS_RECORD_LIMIT*256u+(size_t)m->line_count*11u+(size_t)m->file_count*40u+4096u;
-    if(size>STS_OBS_METADATA_LIMIT||extra>STS_OBS_METADATA_LIMIT-size)return sts_observation_error(error,error_size,"observation metadata plus bounded runtime results exceeds 32 MiB");
-    run->metadata_preflight_size=size+extra;return 0;
+    return sts_observation_metadata_reserve(run,m,size,error,error_size);
 }
 #endif
 static int sts_observation_write_metadata(const sts_observation_run *run,

@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 _Static_assert(sizeof(size_t) == 8u && sizeof(uintptr_t) == 8u,
-               "observation ABI 2 requires a native LP64 host");
+               "observation ABI 3 requires a native LP64 host");
 
 /* This runtime deliberately has no constructor, destructor, signal handler or
  * atexit finalizer. Its sole successful endpoint is the generated test main.
@@ -24,6 +24,7 @@ typedef struct {
     uintptr_t key;
     uint64_t generation;
     uint64_t bytes;
+    uint32_t domain;
     uint32_t alloc_site;
     uint32_t resize_site;
     uint32_t origin_test;
@@ -144,6 +145,11 @@ static int obs_core_hit(obs_state *s, uint32_t line) {
     return 1;
 }
 
+static int obs_domain_valid(uint32_t domain) {
+    return domain == STASHA_OBSERVATION_EXPLICIT_USER_HEAP ||
+           domain == STASHA_OBSERVATION_GENERATED_PRIMITIVE_SLICE_BACKING;
+}
+
 static int obs_operation(obs_state *s, uint32_t site) {
     if (!obs_current_test(s)) return 0;
     if (site >= s->site_count) {
@@ -153,6 +159,12 @@ static int obs_operation(obs_state *s, uint32_t site) {
     if (s->record_count > STASHA_OBSERVATION_MAX_RECORDS) {
         obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
         return 0;
+    }
+    for (uint32_t i = 0; i < s->record_count; ++i) {
+        if (!obs_domain_valid(s->records[i].domain)) {
+            obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
+            return 0;
+        }
     }
     return 1;
 }
@@ -173,7 +185,7 @@ static int obs_new_capacity(obs_state *s, uint64_t bytes) {
     return s->reason == STASHA_OBSERVATION_OK;
 }
 
-static void obs_add(obs_state *s, uintptr_t key, uint64_t bytes, uint32_t site) {
+static void obs_add(obs_state *s, uintptr_t key, uint64_t bytes, uint32_t site, uint32_t domain) {
     if (obs_find(s, key) != STASHA_OBSERVATION_MAX_RECORDS) {
         obs_fail(s, STASHA_OBSERVATION_DUPLICATE_BASE);
         return;
@@ -182,25 +194,51 @@ static void obs_add(obs_state *s, uintptr_t key, uint64_t bytes, uint32_t site) 
     r->key = key;
     r->generation = ++s->generation;
     r->bytes = bytes;
+    r->domain = domain;
     r->alloc_site = site;
     r->resize_site = STASHA_OBSERVATION_NO_SITE;
     r->origin_test = s->current_test;
     s->total_bytes += bytes;
 }
 
+static obs_alloc_result obs_core_new_domain(obs_state *s, const obs_allocator *a,
+                                     size_t bytes, uint32_t site, uint32_t domain) {
+    obs_alloc_result result = { 0, errno };
+    if (!obs_operation(s, site)) return result;
+    if (!obs_domain_valid(domain)) {
+        obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
+        return result;
+    }
+    if (domain == STASHA_OBSERVATION_GENERATED_PRIMITIVE_SLICE_BACKING && !bytes) {
+        obs_fail(s, STASHA_OBSERVATION_INVALID_SLICE_SIZE);
+        return result;
+    }
+    if (!obs_new_capacity(s, (uint64_t)bytes)) return result;
+    result = a->allocate(a->context, bytes);
+    if (result.key) obs_add(s, result.key, (uint64_t)bytes, site, domain);
+    return result;
+}
+
 static obs_alloc_result obs_core_new(obs_state *s, const obs_allocator *a,
                                      size_t bytes, uint32_t site) {
-    obs_alloc_result result = { 0, errno };
-    if (!obs_operation(s, site) || !obs_new_capacity(s, (uint64_t)bytes)) return result;
-    result = a->allocate(a->context, bytes);
-    if (result.key) obs_add(s, result.key, (uint64_t)bytes, site);
-    return result;
+    return obs_core_new_domain(s, a, bytes, site, STASHA_OBSERVATION_EXPLICIT_USER_HEAP);
+}
+
+static obs_alloc_result obs_core_slice_new(obs_state *s, const obs_allocator *a,
+                                           size_t bytes, uint32_t site) {
+    return obs_core_new_domain(s, a, bytes, site, STASHA_OBSERVATION_GENERATED_PRIMITIVE_SLICE_BACKING);
 }
 
 static obs_alloc_result obs_core_mov(obs_state *s, const obs_allocator *a,
                                      uintptr_t key, size_t bytes, uint32_t site) {
     obs_alloc_result result = { 0, errno };
     if (!obs_operation(s, site)) return result;
+    uint32_t index = key ? obs_find(s, key) : STASHA_OBSERVATION_MAX_RECORDS;
+    if (index != STASHA_OBSERVATION_MAX_RECORDS &&
+        s->records[index].domain != STASHA_OBSERVATION_EXPLICIT_USER_HEAP) {
+        obs_fail(s, STASHA_OBSERVATION_WRONG_DOMAIN);
+        return result;
+    }
     if (!bytes) {
         obs_fail(s, STASHA_OBSERVATION_ZERO_RESIZE);
         return result;
@@ -209,10 +247,9 @@ static obs_alloc_result obs_core_mov(obs_state *s, const obs_allocator *a,
         if (!obs_new_capacity(s, (uint64_t)bytes)) return result;
         /* Keep realloc(NULL,n) as realloc(NULL,n), not malloc(n). */
         result = a->resize(a->context, 0, bytes);
-        if (result.key) obs_add(s, result.key, (uint64_t)bytes, site);
+        if (result.key) obs_add(s, result.key, (uint64_t)bytes, site, STASHA_OBSERVATION_EXPLICIT_USER_HEAP);
         return result;
     }
-    uint32_t index = obs_find(s, key);
     if (index == STASHA_OBSERVATION_MAX_RECORDS) {
         obs_fail(s, STASHA_OBSERVATION_UNKNOWN_BASE);
         return result;
@@ -242,14 +279,22 @@ static obs_alloc_result obs_core_mov(obs_state *s, const obs_allocator *a,
     return result;
 }
 
-static int obs_core_rem(obs_state *s, const obs_allocator *a,
-                         uintptr_t key, uint32_t site) {
+static int obs_core_rem_domain(obs_state *s, const obs_allocator *a,
+                         uintptr_t key, uint32_t site, uint32_t domain) {
     int error_number = errno;
     if (!obs_operation(s, site)) return error_number;
+    if (!obs_domain_valid(domain)) {
+        obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
+        return error_number;
+    }
     if (!key) return error_number;
     uint32_t index = obs_find(s, key);
     if (index == STASHA_OBSERVATION_MAX_RECORDS) {
         obs_fail(s, STASHA_OBSERVATION_UNKNOWN_BASE);
+        return error_number;
+    }
+    if (s->records[index].domain != domain) {
+        obs_fail(s, STASHA_OBSERVATION_WRONG_DOMAIN);
         return error_number;
     }
     uint64_t bytes = s->records[index].bytes;
@@ -265,6 +310,14 @@ static int obs_core_rem(obs_state *s, const obs_allocator *a,
             (s->record_count - index) * sizeof(s->records[0]));
     memset(&s->records[s->record_count], 0, sizeof(s->records[0]));
     return error_number;
+}
+
+static int obs_core_rem(obs_state *s, const obs_allocator *a, uintptr_t key, uint32_t site) {
+    return obs_core_rem_domain(s, a, key, site, STASHA_OBSERVATION_EXPLICIT_USER_HEAP);
+}
+
+static int obs_core_slice_rem(obs_state *s, const obs_allocator *a, uintptr_t key, uint32_t site) {
+    return obs_core_rem_domain(s, a, key, site, STASHA_OBSERVATION_GENERATED_PRIMITIVE_SLICE_BACKING);
 }
 
 static int obs_audit(obs_state *s) {
@@ -299,10 +352,14 @@ static int obs_audit(obs_state *s) {
         obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
         return 0;
     }
-    uint64_t total = 0, generation = 0;
+    uint64_t total = 0, generation = 0, domain_bytes[2] = {0,0};
+    uint32_t domain_counts[2] = {0,0};
     for (uint32_t i = 0; i < s->record_count; ++i) {
         const obs_record *r = &s->records[i];
-        if (!r->key || r->generation <= generation || r->generation > s->generation ||
+        if (!obs_domain_valid(r->domain) ||
+            (r->domain == STASHA_OBSERVATION_GENERATED_PRIMITIVE_SLICE_BACKING &&
+             (!r->bytes || r->resize_site != STASHA_OBSERVATION_NO_SITE)) ||
+            !r->key || r->generation <= generation || r->generation > s->generation ||
             r->alloc_site >= s->site_count || r->origin_test >= s->test_count ||
             !s->tests[r->origin_test] ||
             (r->resize_site != STASHA_OBSERVATION_NO_SITE && r->resize_site >= s->site_count) ||
@@ -316,10 +373,20 @@ static int obs_audit(obs_state *s) {
                 return 0;
             }
         }
+        unsigned domain = r->domain - 1u;
+        if (r->bytes > UINT64_MAX - domain_bytes[domain] || domain_counts[domain] == UINT32_MAX) {
+            obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
+            return 0;
+        }
+        domain_bytes[domain] += r->bytes;
+        ++domain_counts[domain];
         total += r->bytes;
         generation = r->generation;
     }
-    if (total != s->total_bytes) {
+    if (domain_bytes[0] > UINT64_MAX - domain_bytes[1] ||
+        domain_counts[0] > UINT32_MAX - domain_counts[1] ||
+        domain_bytes[0] + domain_bytes[1] != total ||
+        domain_counts[0] + domain_counts[1] != s->record_count || total != s->total_bytes) {
         obs_fail(s, STASHA_OBSERVATION_CORRUPTED_LEDGER);
         return 0;
     }
@@ -396,7 +463,8 @@ typedef struct { const obs_io *io; int fd; } obs_fd_context;
 
 static void obs_write(obs_writer *w, const char *bytes, size_t count) {
     if (w->failed) return;
-    if (count > STASHA_OBSERVATION_MAX_REPORT_BYTES - w->count ||
+    if (w->count > STASHA_OBSERVATION_MAX_REPORT_BYTES ||
+        count > STASHA_OBSERVATION_MAX_REPORT_BYTES - w->count ||
         !w->write_bytes(w->context, bytes, count)) {
         w->failed = 1;
         return;
@@ -449,8 +517,8 @@ static int obs_emit_report(obs_state *s, obs_writer *w) {
     obs_printf(w, "\nallocations %" PRIu32 " %" PRIu64 "\n", s->record_count, s->total_bytes);
     for (uint32_t i = 0; i < s->record_count; ++i) {
         const obs_record *r = &s->records[i];
-        obs_printf(w, "allocation %" PRIu64 " %" PRIu64 " %" PRIu32 " %" PRIu32 " %" PRIu32 "\n",
-            r->generation, r->bytes, r->alloc_site, r->resize_site, r->origin_test);
+        obs_printf(w, "allocation %" PRIu64 " %" PRIu32 " %" PRIu64 " %" PRIu32 " %" PRIu32 " %" PRIu32 "\n",
+            r->generation, r->domain, r->bytes, r->alloc_site, r->resize_site, r->origin_test);
     }
     obs_write(w, "END\n", 4u);
     return !w->failed;
@@ -521,7 +589,9 @@ static void obs_diagnostic(const obs_state *s) {
         "zero-size resize is unsupported by observation profile", "allocation record capacity exhausted",
         "outstanding requested-byte total overflow", "duplicate live allocation base",
         "allocation generation overflow", "inconsistent observation bookkeeping",
-        "report creation, write, or close failed"
+        "report creation, write, or close failed",
+        "allocation base belongs to the wrong observation domain",
+        "positive-size slice allocation hook received zero bytes"
     };
     unsigned reason = (unsigned)s->reason;
     const char *description = reason < sizeof(descriptions) / sizeof(descriptions[0])
@@ -537,7 +607,7 @@ static _Noreturn void obs_abort(obs_state *s) {
     _Exit(1);
 }
 
-void __stasha_obs_init_v2(const char *run, const char *input_graph, const char *map,
+void __stasha_obs_init_v3(const char *run, const char *input_graph, const char *map,
                        const char *config, const char *compiler, uint32_t enabled,
                        uint32_t tests, uint32_t lines, uint32_t sites) {
     int error_number = errno;
@@ -589,6 +659,20 @@ void *__stasha_obs_mov(void *base, size_t bytes, uint32_t site) {
 void __stasha_obs_rem(void *base, uint32_t site) {
     uintptr_t key = (uintptr_t)base; /* No later evaluation of base. */
     int error_number = obs_core_rem(&obs_global, &obs_native_allocator, key, site);
+    if (obs_global.reason) obs_abort(&obs_global);
+    errno = error_number;
+}
+
+void *__stasha_obs_slice_new_v3(size_t bytes, uint32_t site) {
+    obs_alloc_result result = obs_core_slice_new(&obs_global, &obs_native_allocator, bytes, site);
+    if (obs_global.reason) obs_abort(&obs_global);
+    errno = result.error_number;
+    return (void *)result.key;
+}
+
+void __stasha_obs_slice_rem_v3(void *base, uint32_t site) {
+    uintptr_t key = (uintptr_t)base;
+    int error_number = obs_core_slice_rem(&obs_global, &obs_native_allocator, key, site);
     if (obs_global.reason) obs_abort(&obs_global);
     errno = error_number;
 }

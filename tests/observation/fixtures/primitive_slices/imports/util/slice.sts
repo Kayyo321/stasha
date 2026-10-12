@@ -1,0 +1,9 @@
+mod util.slice;
+// Keep the make line equal to the root make line.
+ext fn keep(void): void {
+    heap []i32 s = make.([]i32, 1, 3);
+    expect_eq.(cap.(s), 3);
+}
+test 'leaf slice' {
+    keep();
+}

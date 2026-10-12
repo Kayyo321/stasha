@@ -1,0 +1,10 @@
+mod root;
+imp util.slice;
+fn local(void): void {
+    heap []i32 s = make.([]i32, 1, 2);
+    expect_eq.(len.(s), 1);
+}
+test 'root slice' {
+    local();
+    slice.keep();
+}

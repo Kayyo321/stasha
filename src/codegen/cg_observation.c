@@ -27,7 +27,7 @@
 _Static_assert(NodeFnDecl==STS_OBS_DECL_FN && NodeVarDecl==STS_OBS_DECL_VAR &&
     NodeTypeDecl==STS_OBS_DECL_TYPE && NodeImpDecl==STS_OBS_DECL_IMPORT &&
     NodeComptimeAssert==STS_OBS_DECL_COMPTIME_ASSERT && NodeTestBlock==STS_OBS_DECL_TEST,
-    "observation v2 declaration schema must match reviewed AST enum");
+    "observation declaration schema must match reviewed AST enum");
 
 static const sts_observation_graph *obs_diagnostic_graph;
 
@@ -132,7 +132,137 @@ result_t codegen_observation_check_providers(node_t *ast, const sts_observation_
     return Ok;
 }
 
-typedef struct {const char*name;type_info_t type;unsigned array_rank;uint32_t file_id;boolean_t global;} obs_binding;
+/* Private identities are never symbol-table slots or serialized addresses.
+ * The source records freeze after admission. Only alloca/type is write-once
+ * emission state, and complete symbol copies retain the same record pointer. */
+enum { ObsSliceRetained=1, ObsSliceDirect, ObsSliceDefer };
+enum { ObsSliceQuery=1, ObsSliceRead, ObsSliceWrite, ObsSliceRelease };
+enum { ObsSliceHashSlots=131072 }; /* twice either 65,536 identity cap */
+typedef struct obs_slice_reference obs_slice_reference;
+struct obs_slice_reference {
+    node_t *ident, *operation, *parent, *block, *deferred;
+    uint32_t block_id, child, owner_child, use;
+    obs_slice_record *binding;
+    obs_slice_reference *next;
+};
+struct obs_slice_record {
+    uint32_t id, file_id, decl_id, block_id, child, element, schedule;
+    node_t *declaration, *make, *block, *release;
+    obs_slice_reference *references;
+    obs_slice_record *next;
+    LLVMValueRef alloca;
+    LLVMTypeRef descriptor_type;
+};
+typedef struct {
+    node_t *node;
+    uint32_t file_id, decl_id, parent_id, parent_child;
+} obs_slice_block;
+struct obs_slice_state {
+    obs_slice_record *records;
+    obs_slice_record **declarations;
+    obs_slice_reference **references;
+    obs_slice_block *blocks;
+    uint32_t binding_count, reference_count, block_count, block_capacity;
+    size_t *line_offsets[STS_OBS_FILE_LIMIT];
+    boolean_t frozen;
+};
+static void *obs_slice_calloc(size_t count,size_t size) {
+    if(!size || count>SIZE_MAX/size)return Null;
+    return calloc(count,size);
+}
+static obs_slice_state *obs_slice_state_get(cg_t*cg,node_t*n) {
+    if(!cg->observation_slices) {
+        cg->observation_slices=obs_slice_calloc(1,sizeof(*cg->observation_slices));
+        if(!cg->observation_slices)obs_error(n,"slice identity allocation failure");
+    }
+    return cg->observation_slices;
+}
+static size_t obs_slice_hash(node_t*n) {
+    uintptr_t x=(uintptr_t)n;
+    x=(x>>4)^(x>>17);return (size_t)(x*UINT64_C(11400714819323198485))&(ObsSliceHashSlots-1);
+}
+static obs_slice_record *obs_slice_declaration_find(cg_t*cg,node_t*n) {
+    obs_slice_state*s=cg->observation_slices;
+    if(!s || !s->declarations)return Null;
+    size_t slot=obs_slice_hash(n);
+    for(size_t i=0;i<ObsSliceHashSlots;++i,slot=(slot+1)&(ObsSliceHashSlots-1)) {
+        obs_slice_record*r=s->declarations[slot];
+        if(!r || r->declaration==n)return r;
+    }
+    return Null;
+}
+static obs_slice_reference *obs_slice_reference_find(cg_t*cg,node_t*n) {
+    obs_slice_state*s=cg->observation_slices;
+    if(!s || !s->references)return Null;
+    size_t slot=obs_slice_hash(n);
+    for(size_t i=0;i<ObsSliceHashSlots;++i,slot=(slot+1)&(ObsSliceHashSlots-1)) {
+        obs_slice_reference*r=s->references[slot];
+        if(!r || r->ident==n)return r;
+    }
+    return Null;
+}
+static void cg_observation_slice_dispose(cg_t*cg) {
+    obs_slice_state*s=cg->observation_slices;if(!s)return;
+    for(obs_slice_record*r=s->records;r;) {
+        obs_slice_record*next=r->next;
+        for(obs_slice_reference*u=r->references;u;) {obs_slice_reference*v=u->next;(free)(u);u=v;}
+        (free)(r);r=next;
+    }
+    for(uint32_t i=0;i<STS_OBS_FILE_LIMIT;++i)(free)(s->line_offsets[i]);
+    (free)(s->declarations);(free)(s->references);(free)(s->blocks);(free)(s);
+    cg->observation_slices=Null;cg->observation_slice_pending=Null;
+}
+static uint32_t obs_slice_element(type_info_t t) {
+    if(t.is_pointer || t.ptr_depth || t.ptr_perm || t.user_name || t.fn_ptr_desc ||
+       t.elem_type || t.nullable || t.written_nullable || t.written_storage || t.generic_use)return 0;
+    for(size_t i=0;i<sizeof(t.ptr_perms)/sizeof(t.ptr_perms[0]);++i)if(t.ptr_perms[i])return 0;
+    switch(t.base) {
+        case TypeI8:return STS_OBS_SLICE_I8;case TypeU8:return STS_OBS_SLICE_U8;
+        case TypeI16:return STS_OBS_SLICE_I16;case TypeU16:return STS_OBS_SLICE_U16;
+        case TypeI32:return STS_OBS_SLICE_I32;case TypeU32:return STS_OBS_SLICE_U32;
+        case TypeI64:return STS_OBS_SLICE_I64;case TypeU64:return STS_OBS_SLICE_U64;
+        case TypeBool:return STS_OBS_SLICE_BOOL;
+        case TypeF32:return STS_OBS_SLICE_F32;case TypeF64:return STS_OBS_SLICE_F64;
+        default:return 0;
+    }
+}
+static uint32_t obs_slice_type_element(type_info_t t) {
+    if(t.base!=TypeSlice || !t.elem_type)return 0;
+    type_info_t root=t;root.base=TypeBool;root.elem_type=Null;
+    return obs_slice_element(root)?obs_slice_element(t.elem_type[0]):0;
+}
+/* Inclusive parser spans must refer to actual braces in graph-owned bytes.
+ * Cache bounded line offsets, so nested scopes never rescan a whole file. */
+static int obs_slice_source_char(cg_t*cg,node_t*n,uint32_t line,uint32_t col) {
+    obs_slice_state*s=obs_slice_state_get(cg,n);
+    const sts_observation_graph*g=cg->observation_config->graph;
+    if(!s || !n->observation_file_id_plus_one || n->observation_file_id_plus_one>g->file_count || !col)return -1;
+    uint32_t file=n->observation_file_id_plus_one-1;
+    const sts_observation_source*f=&g->files[file];
+    if(!line || line>f->physical_line_count || !f->bytes)return -1;
+    if(!s->line_offsets[file]) {
+        size_t count=(size_t)f->physical_line_count+1;
+        if(count<=f->physical_line_count)return -1;
+        size_t*offsets=obs_slice_calloc(count,sizeof(*offsets));if(!offsets)return -1;
+        uint32_t next=1;offsets[0]=0;
+        for(size_t i=0;i<f->byte_length;++i)if(f->bytes[i]=='\n') {
+            if(next>=f->physical_line_count){(free)(offsets);return -1;}
+            offsets[next++]=i+1;
+        }
+        if(next!=f->physical_line_count){(free)(offsets);return -1;}
+        offsets[next]=f->byte_length;s->line_offsets[file]=offsets;
+    }
+    size_t start=s->line_offsets[file][line-1],end=s->line_offsets[file][line];
+    if((size_t)col-1>=end-start)return -1;
+    return (unsigned char)f->bytes[start+col-1];
+}
+static boolean_t obs_slice_braces(cg_t*cg,node_t*n) {
+    return n && n->kind==NodeBlock &&
+        obs_slice_source_char(cg,n,(uint32_t)n->observation_line,n->observation_col)=='{' &&
+        obs_slice_source_char(cg,n,(uint32_t)n->observation_end_line,n->observation_end_col)=='}';
+}
+
+typedef struct {const char*name;type_info_t type;unsigned array_rank;uint32_t file_id;boolean_t global;obs_slice_record*slice;} obs_binding;
 typedef struct {
     cg_t *cg;
     const char *owner;
@@ -142,6 +272,9 @@ typedef struct {
     type_info_t return_type,match_type;
     obs_binding *bindings;
     size_t binding_count,binding_capacity;
+    node_t *path[STS_OBS_SLICE_DEPTH_LIMIT], *deferred, *pending_slice;
+    struct {node_t*node;uint32_t id,child;} blocks[STS_OBS_SLICE_DEPTH_LIMIT];
+    uint32_t block_depth;
 } obs_walk;
 
 static boolean_t obs_origin(obs_walk*w,node_t*n) {
@@ -280,7 +413,7 @@ static boolean_t obs_bind(obs_walk *w, node_t *n) {
         w->bindings = p; w->binding_capacity = cap;
     }
     w->bindings[w->binding_count++] = (obs_binding){n->as.var_decl.name, n->as.var_decl.type,
-        (n->as.var_decl.flags & VdeclArray) ? (unsigned)(n->as.var_decl.array_ndim > 0 ? n->as.var_decl.array_ndim : 1) : 0, w->file_id,w->global_binding};
+        (n->as.var_decl.flags & VdeclArray) ? (unsigned)(n->as.var_decl.array_ndim > 0 ? n->as.var_decl.array_ndim : 1) : 0, w->file_id,w->global_binding,Null};
     return True;
 }
 
@@ -303,7 +436,9 @@ static type_info_t obs_expr_type(obs_walk *w, node_t *n, unsigned depth) {
         case NodeAddrOf:
             t=obs_expr_type(w,n->as.addr_of.operand,depth+1);t.ptr_depth=(t.is_pointer?(t.ptr_depth?t.ptr_depth:1):0)+1;t.is_pointer=True;return t;
         case NodeIndexExpr:
-            t=obs_expr_type(w,n->as.index_expr.object,depth+1);if(t.is_pointer){t.ptr_depth=t.ptr_depth>0?t.ptr_depth-1:0;t.is_pointer=t.ptr_depth>0;}return t;
+            t=obs_expr_type(w,n->as.index_expr.object,depth+1);
+            if(t.base==TypeSlice && !t.is_pointer && t.elem_type)return t.elem_type[0];
+            if(t.is_pointer){t.ptr_depth=t.ptr_depth>0?t.ptr_depth-1:0;t.is_pointer=t.ptr_depth>0;}return t;
         case NodeUnaryPrefixExpr: case NodeUnaryPostfixExpr:
             t=obs_expr_type(w,n->as.unary.operand,depth+1);
             if(n->as.unary.op==TokStar && t.is_pointer){t.ptr_depth=t.ptr_depth>0?t.ptr_depth-1:0;t.is_pointer=t.ptr_depth>0;}
@@ -361,7 +496,8 @@ static void obs_anchor(obs_walk*w,node_t*n) {
 }
 static boolean_t obs_site(obs_walk*w,node_t*n,uint32_t kind) {
     sts_observation_manifest*m=w->cg->observation_manifest;
-    if(w->reason!=STS_OBS_ELIGIBLE && w->reason!=STS_OBS_TEST)return True;
+    if(w->reason!=STS_OBS_ELIGIBLE && w->reason!=STS_OBS_TEST &&
+       !((kind==STS_OBS_SLICE_MAKE || kind==STS_OBS_SLICE_REM) && w->reason==STS_OBS_UNREACHABLE))return True;
     if(m->site_count>=STASHA_OBSERVATION_MAX_SITES)return obs_error(n,"allocation-site capacity");
     uint32_t id=m->site_count++;
     m->sites[id]=(sts_observation_site){.line=(uint32_t)n->observation_line,.kind=kind,.owner_test=w->owner_test,
@@ -411,7 +547,180 @@ static boolean_t obs_static(node_t *n) {
     }
 }
 
+/* Count-only source typing mirrors the existing scalar result rules while
+ * resolving identifiers through the frozen lexical source walk. It rejects
+ * floating and unknown counts even when ordinary lowering skips dead source.
+ * Pure scalar literal/width helpers are shared; no LLVM storage is fabricated. */
+static type_info_t obs_slice_count_type(obs_walk*,node_t*,unsigned);
+static type_info_t obs_slice_count_common(obs_walk*w,node_t*a,node_t*b,unsigned depth) {
+    boolean_t al=scalar_literal_tree(a),bl=scalar_literal_tree(b);
+    type_info_t at=obs_slice_count_type(w,a,depth+1),bt=obs_slice_count_type(w,b,depth+1);
+    if(al && !bl && scalar_integer(bt))return bt;
+    if(bl && !al && scalar_integer(at))return at;
+    if(scalar_integer(at) && scalar_integer(bt)) {
+        if(scalar_unsigned(at)!=scalar_unsigned(bt)) {
+            uint64_t am,bm;boolean_t an,bn;
+            if(al && bl && scalar_literal(a,&am,&an) && scalar_literal(b,&bm,&bn) && !an && !bn)
+                return scalar_type(TypeU64);
+            return NO_TYPE;
+        }
+        return scalar_bits(at)>=scalar_bits(bt)?at:bt;
+    }
+    if(scalar_numeric(at) && scalar_numeric(bt) && (is_float_type(at) || is_float_type(bt)))
+        return scalar_type(at.base==TypeF64 || bt.base==TypeF64?TypeF64:TypeF32);
+    return at;
+}
+static type_info_t obs_slice_count_type(obs_walk*w,node_t*n,unsigned depth) {
+    if(!n || depth>=STS_OBS_SLICE_DEPTH_LIMIT)return NO_TYPE;
+    uint64_t magnitude;boolean_t negative;
+    if(scalar_literal(n,&magnitude,&negative))return scalar_literal_type(n,NO_TYPE);
+    switch(n->kind) {
+        case NodeCharLitExpr:return scalar_type(TypeU8);
+        case NodeSizeofExpr:return scalar_type(TypeU64);
+        case NodeBinaryExpr:
+            switch(n->as.binary.op) {
+                case TokLt:case TokGt:case TokLtEq:case TokGtEq:case TokEqEq:case TokBangEq:
+                case TokAmpAmp:case TokPipePipe:return scalar_type(TypeBool);
+                case TokLtLt:case TokGtGt:return obs_slice_count_type(w,n->as.binary.left,depth+1);
+                default:return obs_slice_count_common(w,n->as.binary.left,n->as.binary.right,depth);
+            }
+        case NodeTernaryExpr:
+            return obs_slice_count_common(w,n->as.ternary.then_expr,n->as.ternary.else_expr,depth);
+        case NodeUnaryPrefixExpr:case NodeUnaryPostfixExpr: {
+            if(n->as.unary.op==TokBang)return scalar_type(TypeBool);
+            type_info_t t=obs_slice_count_type(w,n->as.unary.operand,depth+1);
+            return n->as.unary.op==TokStar?ti_deref_one(t):t;
+        }
+        case NodeAssignExpr:return obs_slice_count_type(w,n->as.assign.target,depth+1);
+        case NodeCompoundAssign:return obs_slice_count_type(w,n->as.compound_assign.target,depth+1);
+        default:return obs_expr_type(w,n,depth);
+    }
+}
+
+static boolean_t obs_slice_block_enter(obs_walk*w,node_t*n) {
+    obs_slice_state*s=obs_slice_state_get(w->cg,n);if(!s)return False;
+    if(s->block_count>=STS_OBS_SLICE_BLOCK_LIMIT || w->block_depth>=STS_OBS_SLICE_DEPTH_LIMIT)
+        return obs_error(n,"slice block identity or depth capacity");
+    if(s->block_count==s->block_capacity) {
+        size_t capacity=s->block_capacity?(size_t)s->block_capacity*2:64;
+        if(capacity>STS_OBS_SLICE_BLOCK_LIMIT || capacity>SIZE_MAX/sizeof(*s->blocks))
+            return obs_error(n,"slice block identity allocation capacity");
+        obs_slice_block*p=(realloc)(s->blocks,capacity*sizeof(*p));
+        if(!p)return obs_error(n,"slice block identity allocation failure");
+        s->blocks=p;s->block_capacity=(uint32_t)capacity;
+    }
+    uint32_t id=s->block_count++;
+    s->blocks[id]=(obs_slice_block){.node=n,.file_id=w->file_id,.decl_id=w->decl_id,
+        .parent_id=w->block_depth?w->blocks[w->block_depth-1].id:UINT32_MAX,
+        .parent_child=w->block_depth?w->blocks[w->block_depth-1].child:UINT32_MAX};
+    w->blocks[w->block_depth].node=n;w->blocks[w->block_depth].id=id;
+    w->blocks[w->block_depth++].child=0;return True;
+}
+static boolean_t obs_slice_collect_reference(obs_walk*w,node_t*n,obs_slice_record*binding) {
+    obs_slice_state*s=w->cg->observation_slices;
+    node_t*operation=w->depth>=2?w->path[w->depth-2]:Null;
+    node_t*parent=w->depth>=3?w->path[w->depth-3]:Null;
+    uint32_t use=0;
+    if(operation && (operation->kind==NodeLenExpr || operation->kind==NodeCapExpr) &&
+       operation->as.len_expr.operand==n)use=ObsSliceQuery;
+    else if(operation && operation->kind==NodeIndexExpr && operation->as.index_expr.object==n) {
+        if(parent && ((parent->kind==NodeAddrOf && parent->as.addr_of.operand==operation) ||
+           (parent->kind==NodeCompoundAssign && parent->as.compound_assign.target==operation) ||
+           ((parent->kind==NodeUnaryPrefixExpr || parent->kind==NodeUnaryPostfixExpr) &&
+            (parent->as.unary.op==TokPlusPlus || parent->as.unary.op==TokMinusMinus))))
+            return obs_error(n,"slice element address or compound/postfix mutation");
+        use=parent && parent->kind==NodeAssignExpr && parent->as.assign.target==operation?ObsSliceWrite:ObsSliceRead;
+    } else if(operation && operation->kind==NodeRemStmt && operation->as.rem_stmt.ptr==n &&
+              parent && parent->kind==NodeExprStmt && parent->as.expr_stmt.expr==operation)use=ObsSliceRelease;
+    if(!use)return obs_error(n,"slice descriptor reference outside the closed direct-use whitelist");
+    if(!s || s->frozen || s->reference_count>=STS_OBS_SLICE_REFERENCE_LIMIT || !w->block_depth ||
+       binding->file_id!=w->file_id || binding->decl_id!=w->decl_id || obs_slice_reference_find(w->cg,n))
+        return obs_error(n,"slice reference capacity or original declaration identity");
+    uint32_t owner_child=UINT32_MAX;
+    for(uint32_t i=0;i<w->block_depth;++i)
+        if(w->blocks[i].id==binding->block_id && w->blocks[i].node==binding->block)
+            owner_child=w->blocks[i].child;
+    if(owner_child==UINT32_MAX)return obs_error(n,"slice reference escaped its original block");
+    if(!s->references) {
+        s->references=obs_slice_calloc(ObsSliceHashSlots,sizeof(*s->references));
+        if(!s->references)return obs_error(n,"slice reference table allocation failure");
+    }
+    obs_slice_reference*r=obs_slice_calloc(1,sizeof(*r));
+    if(!r)return obs_error(n,"slice reference allocation failure");
+    *r=(obs_slice_reference){.ident=n,.operation=operation,.parent=parent,
+        .block=w->blocks[w->block_depth-1].node,.block_id=w->blocks[w->block_depth-1].id,
+        .child=w->blocks[w->block_depth-1].child,.owner_child=owner_child,.deferred=w->deferred,
+        .use=use,.binding=binding,.next=binding->references};
+    size_t slot=obs_slice_hash(n);
+    while(s->references[slot])slot=(slot+1)&(ObsSliceHashSlots-1);
+    s->references[slot]=r;binding->references=r;++s->reference_count;return True;
+}
+static boolean_t obs_slice_variable(obs_walk*w,node_t*n,boolean_t runtime) {
+    uint32_t element=obs_slice_type_element(n->as.var_decl.type);
+    node_t*make=n->as.var_decl.init;
+    node_t*parent=w->depth>=2?w->path[w->depth-2]:Null;
+    if(!runtime || w->global_binding || w->deferred || !w->block_depth ||
+       parent!=w->blocks[w->block_depth-1].node || !obs_slice_braces(w->cg,parent) ||
+       n->as.var_decl.storage!=StorageHeap || n->as.var_decl.flags || n->as.var_decl.attr_flags ||
+       n->as.var_decl.bitfield_width || n->as.var_decl.array_ndim || n->as.var_decl.linkage!=LinkageNone ||
+       obs_reserved(n->as.var_decl.name) || !strcmp(n->as.var_decl.name,"_") || !element ||
+       !make || make->kind!=NodeMakeExpr || make->as.make_expr.init || !make->as.make_expr.len ||
+       obs_slice_element(make->as.make_expr.elem_type)!=element)
+        return obs_error(n,"slice constructor requires a direct unqualified heap builtin declaration in a source brace block");
+    obs_slice_state*s=obs_slice_state_get(w->cg,n);
+    if(!s || s->frozen || s->binding_count>=STS_OBS_SLICE_BINDING_LIMIT || obs_slice_declaration_find(w->cg,n))
+        return obs_error(n,"slice declaration capacity or duplicate original identity");
+    obs_anchor(w,n);
+    /* Counts resolve before this name enters lexical scope, including shadows. */
+    node_t*pending=w->pending_slice;w->pending_slice=n;
+    boolean_t ok=obs_node(w,make,False);w->pending_slice=pending;if(!ok)return False;
+    if(!s->declarations) {
+        s->declarations=obs_slice_calloc(ObsSliceHashSlots,sizeof(*s->declarations));
+        if(!s->declarations)return obs_error(n,"slice declaration table allocation failure");
+    }
+    obs_slice_record*r=obs_slice_calloc(1,sizeof(*r));
+    if(!r)return obs_error(n,"slice declaration allocation failure");
+    *r=(obs_slice_record){.id=s->binding_count++,.file_id=w->file_id,.decl_id=w->decl_id,
+        .block_id=w->blocks[w->block_depth-1].id,.child=w->blocks[w->block_depth-1].child,
+        .element=element,.declaration=n,.make=make,.block=parent,.next=s->records};
+    size_t slot=obs_slice_hash(n);while(s->declarations[slot])slot=(slot+1)&(ObsSliceHashSlots-1);
+    s->declarations[slot]=r;s->records=r;
+    if(!obs_bind(w,n))return False;
+    w->bindings[w->binding_count-1].slice=r;return True;
+}
+static boolean_t obs_slice_classify(cg_t*cg) {
+    obs_slice_state*s=cg->observation_slices;if(!s)return True;
+    for(obs_slice_record*r=s->records;r;r=r->next) {
+        uint32_t releases=0,deferred=0;obs_slice_reference*release=Null;
+        for(obs_slice_reference*u=r->references;u;u=u->next) {
+            if(u->use==ObsSliceRelease){++releases;release=u;}
+            if(u->deferred)++deferred;
+        }
+        if(!releases && !deferred){r->schedule=ObsSliceRetained;continue;}
+        if(releases!=1)return obs_error(r->declaration,"slice schedule requires zero releases or exactly one designated release");
+        if(!deferred && release->block==r->block && release->block_id==r->block_id &&
+           release->child>r->child && release->child<r->block->as.block.stmts.count &&
+           r->block->as.block.stmts.items[release->child]==release->parent) {
+            for(obs_slice_reference*u=r->references;u;u=u->next)
+                if(u->owner_child>release->child)
+                    return obs_error(u->ident,"slice reference occurs after its direct release");
+            r->schedule=ObsSliceDirect;r->release=release->operation;continue;
+        }
+        node_t*d=release->deferred;
+        node_t*b=d && d->kind==NodeDeferStmt?d->as.defer_stmt.body:Null;
+        if(deferred==1 && d && (size_t)r->child+1<r->block->as.block.stmts.count &&
+           r->block->as.block.stmts.items[r->child+1]==d && release->owner_child==r->child+1 &&
+           obs_slice_braces(cg,b) && b->as.block.stmts.count==1 && b->as.block.stmts.items[0]==release->parent &&
+           release->block==b && release->child==0) {
+            r->schedule=ObsSliceDefer;r->release=release->operation;continue;
+        }
+        return obs_error(release->operation,"slice release must be direct later same-block or exact adjacent defer { rem.(s); }");
+    }
+    s->frozen=True;return True;
+}
+
 static boolean_t obs_variable(obs_walk *w, node_t *n, boolean_t runtime) {
+    if(n->as.var_decl.type.base==TypeSlice)return obs_slice_variable(w,n,runtime);
     if (!obs_type(n,n->as.var_decl.type,False) || n->as.var_decl.attr_flags ||
         n->as.var_decl.bitfield_width ||
         (n->as.var_decl.flags & ~(VdeclConst|VdeclFinal|VdeclArray)) ||
@@ -420,9 +729,13 @@ static boolean_t obs_variable(obs_walk *w, node_t *n, boolean_t runtime) {
         return obs_error(n, "unsupported storage, declaration attribute or implicit allocation");
     if (n->as.var_decl.array_ndim < 0 || n->as.var_decl.array_ndim > 8)
         return obs_error(n,"array rank");
-    for (int i=0;i<n->as.var_decl.array_ndim;++i)
+    for (int i=0;i<n->as.var_decl.array_ndim;++i) {
         if (n->as.var_decl.array_sizes[i] < 0)
             return obs_error(n,"non-fixed array extent");
+        const char*name=n->as.var_decl.array_size_names[i];
+        obs_binding*b=name?obs_binding_lookup(w,name):Null;
+        if(b && b->slice)return obs_error(n,"slice descriptor cannot be a named array extent");
+    }
     if (!runtime && !obs_static(n->as.var_decl.init)) return obs_error(n,"non-static global initialization");
     if (!(n->as.var_decl.flags & VdeclArray) && !obs_conversion(w,n->as.var_decl.init,n->as.var_decl.type)) return False;
     boolean_t discarded=!strcmp(n->as.var_decl.name,"_");
@@ -448,13 +761,16 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
     switch (n->kind) {
         case NodeBlock: {
             size_t saved = w->binding_count; unsigned reason = w->reason;
+            if(!obs_slice_block_enter(w,n))return False;
             for (usize_t i=0;i<n->as.block.stmts.count;++i) {
                 node_t *s=n->as.block.stmts.items[i];
+                if(i>UINT32_MAX)return obs_error(s,"block child identity capacity");
+                w->blocks[w->block_depth-1].child=(uint32_t)i;
                 if (w->reason == STS_OBS_UNREACHABLE) obs_exclude(w,s,STS_OBS_UNREACHABLE);
                 OS(s);
                 if (obs_terminates(w->cg,s)) w->reason=STS_OBS_UNREACHABLE;
             }
-            w->binding_count=saved; w->reason=reason; return True;
+            w->binding_count=saved; w->reason=reason; --w->block_depth; return True;
         }
         case NodeVarDecl: return obs_variable(w,n,True);
         case NodeExprStmt: ON(n->as.expr_stmt.expr); return True;
@@ -477,7 +793,11 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
         case NodeWhileStmt: OA(n->as.while_stmt.cond); OS(n->as.while_stmt.body); return True;
         case NodeDoWhileStmt: OS(n->as.do_while_stmt.body); OA(n->as.do_while_stmt.cond); return True;
         case NodeInfLoop: OS(n->as.inf_loop.body); return True;
-        case NodeDeferStmt: {uint32_t old=w->anchor_kind;w->anchor_kind=STS_OBS_ANCHOR_DEFER;OS(n->as.defer_stmt.body);w->anchor_kind=old;return True;}
+        case NodeDeferStmt: {
+            uint32_t old=w->anchor_kind;node_t*deferred=w->deferred;
+            w->anchor_kind=STS_OBS_ANCHOR_DEFER;w->deferred=n;
+            OS(n->as.defer_stmt.body);w->anchor_kind=old;w->deferred=deferred;return True;
+        }
         case NodeMatchStmt: {
             OA(n->as.match_stmt.expr);type_info_t old=w->match_type;
             w->match_type=obs_expr_type(w,n->as.match_stmt.expr,0);
@@ -547,6 +867,8 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
             return obs_list(w,args);
         }
         case NodeIdentExpr: {
+            obs_binding*b=obs_binding_lookup(w,n->as.ident.name);
+            if(b && b->slice)return obs_slice_collect_reference(w,n,b->slice);
             node_t*d=obs_visible_decl(w,n->as.ident.name);
             if(!obs_bound(w,n->as.ident.name) && (obs_reserved(n->as.ident.name) || (d&&d->kind==NodeFnDecl)))
                 return obs_error(n,"native symbol or source function used as a value");
@@ -557,12 +879,16 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
         case NodeStrLitExpr:
             return n->as.str_lit.is_heap ? obs_error(n,"implicit heap string allocation") : True;
         case NodeIndexExpr: ON(n->as.index_expr.object); ON(n->as.index_expr.index); return True;
-        case NodeLenExpr: case NodeCapExpr:
-            if(!obs_array_query_rank(w,n->as.len_expr.operand))
+        case NodeLenExpr: case NodeCapExpr: {
+            node_t*operand=n->as.len_expr.operand;
+            obs_binding*b=operand && operand->kind==NodeIdentExpr?obs_binding_lookup(w,operand->as.ident.name):Null;
+            if(b && b->slice) {ON(operand);return True;}
+            if(!obs_array_query_rank(w,operand))
                 return obs_error(n,"fixed-array query requires an admitted array with a remaining dimension");
             /* The bounded shape classifier cannot replace the complete walk:
              * nested calls, arms and effects retain their ordinary inventory. */
             ON(n->as.len_expr.operand); return True;
+        }
         case NodeTernaryExpr:
             OA(n->as.ternary.cond); OA(n->as.ternary.then_expr); OA(n->as.ternary.else_expr); return True;
         case NodeCastExpr:
@@ -578,9 +904,33 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
             if (n->as.mov_expr.zone_name) return obs_error(n,"zone resize/move");
             if (!obs_site(w,n,STS_OBS_MOV)) return False;
             ON(n->as.mov_expr.ptr); ON(n->as.mov_expr.size); return True;
-        case NodeRemStmt:
-            if (!obs_site(w,n,STS_OBS_REM)) return False;
-            ON(n->as.rem_stmt.ptr); return True;
+        case NodeMakeExpr: {
+            node_t*d=w->pending_slice;
+            if(!d || d->as.var_decl.init!=n || n->as.make_expr.init || !n->as.make_expr.len ||
+               obs_slice_element(n->as.make_expr.elem_type)!=obs_slice_type_element(d->as.var_decl.type))
+                return obs_error(n,"make must be the exact admitted direct slice initializer");
+            if(!obs_site(w,n,STS_OBS_SLICE_MAKE))return False;
+            if(n->observation_site_id) {
+                sts_observation_site*site=&w->cg->observation_manifest->sites[n->observation_site_id-1];
+                site->slice_element_kind=obs_slice_element(n->as.make_expr.elem_type);
+                site->slice_abi_stride=sts_observation_slice_stride(site->slice_element_kind);
+                site->slice_count_arity=n->as.make_expr.cap?2:1;
+            }
+            ON(n->as.make_expr.len);ON(n->as.make_expr.cap);
+            node_t*counts[]={n->as.make_expr.len,n->as.make_expr.cap};
+            for(unsigned i=0;i<2;++i)if(counts[i]) {
+                type_info_t t=obs_slice_count_type(w,counts[i],0);
+                if(t.is_pointer || t.base<TypeBool || t.base>TypeU64)
+                    return obs_error(counts[i],"slice count must have ordinary primitive integer or bool type");
+            }
+            return True;
+        }
+        case NodeRemStmt: {
+            node_t*ptr=n->as.rem_stmt.ptr;
+            obs_binding*b=ptr && ptr->kind==NodeIdentExpr?obs_binding_lookup(w,ptr->as.ident.name):Null;
+            if(!obs_site(w,n,b && b->slice?STS_OBS_SLICE_REM:STS_OBS_REM))return False;
+            ON(ptr);return True;
+        }
         case NodeCompoundInit: return obs_list(w,n->as.compound_init.items);
         case NodeInitIndex: ON(n->as.init_index.index); ON(n->as.init_index.value); return True;
         case NodeExpectExpr: ON(n->as.expect_expr.expr); return True;
@@ -598,7 +948,8 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
 }
 static boolean_t obs_node(obs_walk *w, node_t *n, boolean_t statement) {
     if (!n) return True;
-    if (++w->depth > 1024) { --w->depth; return obs_error(n,"source inventory nesting limit"); }
+    if (++w->depth > STS_OBS_SLICE_DEPTH_LIMIT) { --w->depth; return obs_error(n,"source inventory nesting limit"); }
+    w->path[w->depth-1]=n;
     boolean_t result=obs_node_inner(w,n,statement);
     --w->depth; return result;
 }
@@ -739,7 +1090,7 @@ static boolean_t cg_observation_prepare(cg_t*cg) {
         } else if(d->kind==NodeImpDecl) {obs_exclude(&w,d,STS_OBS_NONEXEC);}
         else {obs_error(d,"unqualified top-level type or syntax");goto done;}
     }
-    if(cg->observation_inventory_error)goto done;
+    if(cg->observation_inventory_error || !obs_slice_classify(cg))goto done;
     for(uint32_t f=0;f<m->file_count;++f)for(uint32_t line=1;line<=m->files[f].physical_line_count;++line) {
         uint32_t*mask=&m->files[f].reason_masks[line];
         *mask&=~0x80000000u;if(!*mask)*mask=1u<<STS_OBS_NONEXEC;
@@ -766,7 +1117,7 @@ done:
 static LLVMValueRef cg_observation_call(cg_t *cg, unsigned op, LLVMValueRef *args, unsigned count) {
     LLVMValueRef fn=cg->observation_fns[op];
     return LLVMBuildCall2(cg->builder,LLVMGlobalGetValueType(fn),fn,args,count,
-        (op==ObsNew||op==ObsMov||op==ObsFinish)?"obs.result":"");
+        (op==ObsNew||op==ObsMov||op==ObsFinish||op==ObsSliceNew)?"obs.result":"");
 }
 static void cg_observation_declare(cg_t *cg) {
     if (!cg->observation_config) return;
@@ -774,9 +1125,11 @@ static void cg_observation_declare(cg_t *cg) {
     LLVMTypeRef init[]={p,p,p,p,p,u,u,u,u},one[]={u},newargs[]={z,u},movargs[]={p,z,u},remargs[]={p,u},finish[]={z,z};
     LLVMTypeRef types[]={LLVMFunctionType(v,init,9,0),LLVMFunctionType(v,one,1,0),LLVMFunctionType(v,one,1,0),
         LLVMFunctionType(v,one,1,0),LLVMFunctionType(p,newargs,2,0),LLVMFunctionType(p,movargs,3,0),
-        LLVMFunctionType(v,remargs,2,0),LLVMFunctionType(u,finish,2,0)};
-    const char *names[]={"__stasha_obs_init_v2","__stasha_obs_test_begin","__stasha_obs_test_end","__stasha_obs_hit",
-        "__stasha_obs_new","__stasha_obs_mov","__stasha_obs_rem","__stasha_obs_finish"};
+        LLVMFunctionType(v,remargs,2,0),LLVMFunctionType(u,finish,2,0),
+        LLVMFunctionType(p,newargs,2,0),LLVMFunctionType(v,remargs,2,0)};
+    const char *names[]={"__stasha_obs_init_v3","__stasha_obs_test_begin","__stasha_obs_test_end","__stasha_obs_hit",
+        "__stasha_obs_new","__stasha_obs_mov","__stasha_obs_rem","__stasha_obs_finish",
+        "__stasha_obs_slice_new_v3","__stasha_obs_slice_rem_v3"};
     for (unsigned i=0;i<ObsFunctionCount;++i) cg->observation_fns[i]=LLVMAddFunction(cg->module,names[i],types[i]);
     cg->observation_pass=LLVMAddGlobal(cg->module,z,"__stasha_obs_assert_pass");
     cg->observation_fail=LLVMAddGlobal(cg->module,z,"__stasha_obs_assert_fail");
@@ -967,10 +1320,144 @@ static boolean_t cg_observation_call_guard(cg_t*cg,node_t*n) {
     if(!cg->observation_config)return True;
     return cg_observation_selected_guard(cg,n,cg_lookup(cg,n->as.call.callee));
 }
+static boolean_t obs_slice_source_guard(cg_t*cg,obs_slice_record*r) {
+    obs_slice_state*s=cg->observation_slices;
+    const sts_observation_graph*g=cg->observation_config->graph;
+    if(!r || !s || !s->frozen || !g || !g->frozen || g->failed || r->id>=s->binding_count ||
+       r->file_id>=g->file_count || r->decl_id>=cg->observation_manifest->decl_count ||
+       cg->observation_manifest->declarations[r->decl_id].file_id!=r->file_id ||
+       !cg->observation_manifest->declarations[r->decl_id].selected ||
+       r->block_id>=s->block_count || s->blocks[r->block_id].node!=r->block ||
+       s->blocks[r->block_id].file_id!=r->file_id || s->blocks[r->block_id].decl_id!=r->decl_id ||
+       !r->block || r->block->kind!=NodeBlock || r->child>=r->block->as.block.stmts.count ||
+       r->block->as.block.stmts.items[r->child]!=r->declaration ||
+       obs_slice_declaration_find(cg,r->declaration)!=r ||
+       r->declaration->kind!=NodeVarDecl || r->declaration->as.var_decl.init!=r->make ||
+       r->declaration->as.var_decl.storage!=StorageHeap || r->declaration->as.var_decl.flags ||
+       r->declaration->as.var_decl.attr_flags || r->declaration->as.var_decl.array_ndim ||
+       obs_slice_type_element(r->declaration->as.var_decl.type)!=r->element ||
+       !r->make || r->make->kind!=NodeMakeExpr || r->make->as.make_expr.init ||
+       !r->make->as.make_expr.len || obs_slice_element(r->make->as.make_expr.elem_type)!=r->element ||
+       r->declaration->observation_file_id_plus_one!=r->file_id+1 ||
+       r->make->observation_file_id_plus_one!=r->file_id+1 ||
+       !r->declaration->observation_file || strcmp(r->declaration->observation_file,g->files[r->file_id].canonical_path) ||
+       !r->make->observation_file || strcmp(r->make->observation_file,g->files[r->file_id].canonical_path) ||
+       r->schedule<ObsSliceRetained || r->schedule>ObsSliceDefer)
+        return obs_error(r?r->declaration:cg->ast,"slice escaped its frozen declaration/source/block identity");
+    return True;
+}
+static boolean_t obs_slice_site_guard(cg_t*cg,node_t*n,obs_slice_record*r,uint32_t kind) {
+    sts_observation_manifest*m=cg->observation_manifest;
+    if(!n->observation_site_id || n->observation_site_id>m->site_count)
+        return obs_error(n,"slice operation has no original static site");
+    sts_observation_site*t=&m->sites[n->observation_site_id-1];
+    if(t->kind!=kind || t->file_id!=r->file_id || t->decl_id!=r->decl_id ||
+       t->line!=n->observation_line || t->col!=n->observation_col ||
+       t->end_line!=n->observation_end_line || t->end_col!=n->observation_end_col ||
+       (kind==STS_OBS_SLICE_MAKE && (t->slice_element_kind!=r->element ||
+        t->slice_abi_stride!=sts_observation_slice_stride(r->element) ||
+        t->slice_count_arity!=(n->as.make_expr.cap?2u:1u))) ||
+       (kind==STS_OBS_SLICE_REM && (t->slice_element_kind || t->slice_abi_stride || t->slice_count_arity)))
+        return obs_error(n,"slice operation static site metadata mismatch");
+    return True;
+}
+static obs_slice_record *cg_observation_slice_declaration(cg_t*cg,node_t*n,LLVMTypeRef type) {
+    obs_slice_record*r=obs_slice_declaration_find(cg,n);
+    if(!obs_slice_source_guard(cg,r))return Null;
+    if(cg->observation_block!=r->block || cg->observation_child!=r->child || type!=slice_struct_type(cg)) {
+        obs_error(n,"slice declaration lowering differs from its original block or descriptor type");return Null;
+    }
+    return r;
+}
+static boolean_t cg_observation_slice_bind(cg_t*cg,node_t*n,obs_slice_record*r,symbol_t*symbol) {
+    if(!r)return !cg->observation_config || n->as.var_decl.type.base!=TypeSlice;
+    if(!obs_slice_source_guard(cg,r))return False;
+    if(n!=r->declaration || !symbol || symbol->storage!=StorageHeap ||
+       obs_slice_type_element(symbol->stype)!=r->element || symbol->type!=slice_struct_type(cg) ||
+       !symbol->value || !LLVMIsAAllocaInst(symbol->value) ||
+       LLVMGetAllocatedType(symbol->value)!=symbol->type ||
+       LLVMGetBasicBlockParent(LLVMGetInstructionParent(symbol->value))!=cg->current_fn ||
+       (symbol->observation_slice && symbol->observation_slice!=r) ||
+       (r->alloca && (r->alloca!=symbol->value || r->descriptor_type!=symbol->type)))
+        return obs_error(n,"slice declaration storage association mismatch");
+    r->alloca=symbol->value;r->descriptor_type=symbol->type;symbol->observation_slice=r;return True;
+}
+static boolean_t cg_observation_slice_make_guard(cg_t*cg,node_t*n,type_info_t element,uint64_t stride) {
+    if(!cg->observation_config)return True;
+    obs_slice_record*r=cg->observation_slice_pending;
+    if(!obs_slice_source_guard(cg,r))return False;
+    if(r->make!=n || cg->observation_block!=r->block || cg->observation_child!=r->child ||
+       obs_slice_element(element)!=r->element || !cg->di_data_layout ||
+       LLVMPointerSize(cg->di_data_layout)!=8 || !stride ||
+       LLVMABISizeOfType(cg->di_data_layout,get_llvm_type(cg,element))!=stride ||
+       stride!=sts_observation_slice_stride(r->element))
+        return obs_error(n,"slice make original initializer, element or target ABI stride mismatch");
+    return obs_slice_site_guard(cg,n,r,STS_OBS_SLICE_MAKE);
+}
+static symbol_t *obs_slice_use_guard(cg_t*cg,node_t*operation,node_t*ident,uint32_t use) {
+    obs_slice_reference*u=obs_slice_reference_find(cg,ident);
+    obs_slice_record*r=u?u->binding:Null;
+    if(!u || !r || u->ident!=ident || u->operation!=operation || u->use!=use ||
+       !ident || ident->kind!=NodeIdentExpr || !operation ||
+       ident->observation_file_id_plus_one!=r->file_id+1 ||
+       operation->observation_file_id_plus_one!=r->file_id+1 || !obs_slice_source_guard(cg,r)) {
+        obs_error(operation,"slice operation lacks its permitted original reference identity");return Null;
+    }
+    boolean_t shape=use==ObsSliceQuery?
+        ((operation->kind==NodeLenExpr || operation->kind==NodeCapExpr) && operation->as.len_expr.operand==ident):
+        use==ObsSliceRelease?(operation->kind==NodeRemStmt && operation->as.rem_stmt.ptr==ident && r->release==operation &&
+            u->parent && u->parent->kind==NodeExprStmt && u->parent->as.expr_stmt.expr==operation):
+        (operation->kind==NodeIndexExpr && operation->as.index_expr.object==ident &&
+            (use!=ObsSliceWrite || (u->parent && u->parent->kind==NodeAssignExpr && u->parent->as.assign.target==operation)));
+    symbol_t*symbol=cg_lookup(cg,ident->as.ident.name);
+    if(!shape || !symbol || symbol->observation_slice!=r || symbol->storage!=StorageHeap || symbol->flags ||
+       obs_slice_type_element(symbol->stype)!=r->element || !r->alloca ||
+       symbol->value!=r->alloca || symbol->type!=r->descriptor_type || symbol->type!=slice_struct_type(cg) ||
+       !LLVMIsAAllocaInst(r->alloca) || LLVMGetAllocatedType(r->alloca)!=r->descriptor_type ||
+       LLVMGetBasicBlockParent(LLVMGetInstructionParent(r->alloca))!=cg->current_fn) {
+        obs_error(operation,"slice reference resolved to different declaration/storage/element");return Null;
+    }
+    if(use==ObsSliceRelease && !obs_slice_site_guard(cg,operation,r,STS_OBS_SLICE_REM))return Null;
+    return symbol;
+}
+static boolean_t cg_observation_slice_index_guard(cg_t*cg,node_t*n,boolean_t write) {
+    if(!cg->observation_config || !n || n->kind!=NodeIndexExpr)return True;
+    node_t*ident=n->as.index_expr.object;
+    if(!ident || ident->kind!=NodeIdentExpr)return True;
+    symbol_t*symbol=cg_lookup(cg,ident->as.ident.name);
+    if(!obs_slice_reference_find(cg,ident) && (!symbol || symbol->stype.base!=TypeSlice))return True;
+    return obs_slice_use_guard(cg,n,ident,write?ObsSliceWrite:ObsSliceRead)!=Null;
+}
+static boolean_t cg_observation_slice_rem_guard(cg_t*cg,node_t*n) {
+    if(!cg->observation_config)return True;
+    node_t*ident=n->as.rem_stmt.ptr;
+    if(!ident || ident->kind!=NodeIdentExpr)return True;
+    symbol_t*symbol=cg_lookup(cg,ident->as.ident.name);
+    if(!obs_slice_reference_find(cg,ident) && (!symbol || symbol->stype.base!=TypeSlice))return True;
+    return obs_slice_use_guard(cg,n,ident,ObsSliceRelease)!=Null;
+}
+/* Zero means use the separately proven array path, never struct fallback. */
+static int cg_observation_slice_query_guard(cg_t*cg,node_t*n,symbol_t**out) {
+    *out=Null;if(!cg->observation_config)return 0;
+    node_t*ident=n->as.len_expr.operand;
+    if(!ident || ident->kind!=NodeIdentExpr)return 0;
+    symbol_t*symbol=cg_lookup(cg,ident->as.ident.name);
+    if(!obs_slice_reference_find(cg,ident) && (!symbol || symbol->stype.base!=TypeSlice))return 0;
+    *out=obs_slice_use_guard(cg,n,ident,ObsSliceQuery);return *out?1:-1;
+}
+
 static boolean_t cg_observation_expr_guard(cg_t *cg,node_t *n) {
     if(!cg->observation_config)return True;
+    if(n->kind==NodeIndexExpr && !cg_observation_slice_index_guard(cg,n,False))return False;
+    if(n->kind==NodeAssignExpr && !cg_observation_slice_index_guard(cg,n->as.assign.target,True))return False;
+    if(n->kind==NodeRemStmt && !cg_observation_slice_rem_guard(cg,n))return False;
+    if(n->kind==NodeMakeExpr && (!cg->observation_slice_pending || cg->observation_slice_pending->make!=n))
+        return obs_error(n,"make escaped its pending original slice declaration");
     if(n->kind==NodeIdentExpr) {
         symbol_t*s=cg_lookup(cg,n->as.ident.name);
+        obs_slice_reference*u=obs_slice_reference_find(cg,n);
+        if(u || (s && s->stype.base==TypeSlice))
+            return u && obs_slice_use_guard(cg,u->operation,n,u->use)?True:obs_error(n,"unclassified slice descriptor lowering");
         if(s && LLVMIsAFunction(s->value))return obs_error(n,"function value");
     }
     if(n->kind==NodeCastExpr && n->as.cast_expr.target.is_pointer) {
@@ -983,8 +1470,9 @@ static boolean_t cg_observation_expr_guard(cg_t *cg,node_t *n) {
 static boolean_t cg_observation_audit(cg_t *cg) {
     if(!cg->observation_config)return True;
     static const char*allowed[]={"printf","fprintf","puts","putchar","fputs","fwrite","memcmp","memcpy","memmove","memset",
-        "__crash_runtime_install","__crash_runtime_register_block","__stasha_obs_init_v2","__stasha_obs_test_begin","__stasha_obs_test_end",
-        "__stasha_obs_hit","__stasha_obs_new","__stasha_obs_mov","__stasha_obs_rem","__stasha_obs_finish"};
+        "__crash_runtime_install","__crash_runtime_register_block","__stasha_obs_init_v3","__stasha_obs_test_begin","__stasha_obs_test_end",
+        "__stasha_obs_hit","__stasha_obs_new","__stasha_obs_mov","__stasha_obs_rem","__stasha_obs_finish",
+        "__stasha_obs_slice_new_v3","__stasha_obs_slice_rem_v3"};
     for(LLVMValueRef fn=LLVMGetFirstFunction(cg->module);fn;fn=LLVMGetNextFunction(fn))
         for(LLVMBasicBlockRef b=LLVMGetFirstBasicBlock(fn);b;b=LLVMGetNextBasicBlock(b))
             for(LLVMValueRef in=LLVMGetFirstInstruction(b);in;in=LLVMGetNextInstruction(in)) {

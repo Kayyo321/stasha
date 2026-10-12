@@ -44,6 +44,8 @@ typedef struct iface_native iface_native_t;
 typedef struct iface_source_record iface_source_record_t;
 typedef struct iface_local_plan iface_local_plan_t;
 typedef struct iface_factory_state iface_factory_state_t;
+typedef struct obs_slice_record obs_slice_record;
+typedef struct obs_slice_state obs_slice_state;
 /* Explicit source-only frame. It never changes emission context or owns LLVM. */
 typedef struct {
     iface_local_plan_t *plan;
@@ -145,6 +147,7 @@ typedef struct {
     LLVMTypeRef type;
     type_info_t stype;
     iface_source_record_t *iface_source; /* stable raw declaration/fact, owned by cg */
+    obs_slice_record *observation_slice; /* stable declaration identity; copied with defers */
     unsigned iface_excluded_origin; /* known unsupported initialization origin; NOT assignment safety */
     fn_ptr_desc_t *scalar_signature; /* resolved source call types, independent of LLVM */
     boolean_t requires_receiver; /* only methods declared inside a type have hidden this */
@@ -419,7 +422,11 @@ typedef struct {
 
     const sts_observation_config *observation_config;
     sts_observation_manifest *observation_manifest;
-    LLVMValueRef observation_fns[8], observation_pass, observation_fail;
+    LLVMValueRef observation_fns[10], observation_pass, observation_fail;
+    obs_slice_state *observation_slices;
+    obs_slice_record *observation_slice_pending;
+    node_t *observation_block;
+    usize_t observation_child;
     uint8_t *observation_emitted;
     node_t **observation_anchor_nodes;
     boolean_t observation_inventory_error;
@@ -597,7 +604,7 @@ static boolean_t is_generic_template(cg_t *cg, const char *name) {
     return False;
 }
 
-enum { ObsInit, ObsBegin, ObsEnd, ObsHit, ObsNew, ObsMov, ObsRem, ObsFinish, ObsFunctionCount };
+enum { ObsInit, ObsBegin, ObsEnd, ObsHit, ObsNew, ObsMov, ObsRem, ObsFinish, ObsSliceNew, ObsSliceRem, ObsFunctionCount };
 static void cg_observation_hit(cg_t *cg, node_t *node);
 static LLVMValueRef cg_observation_site_arg(cg_t *cg, node_t *node);
 static LLVMValueRef cg_observation_call(cg_t *cg, unsigned op, LLVMValueRef *args, unsigned count);
@@ -605,6 +612,12 @@ static void cg_observation_assertion(cg_t *cg, boolean_t passed);
 static boolean_t cg_observation_call_guard(cg_t *cg, node_t *node);
 static boolean_t cg_observation_selected_guard(cg_t *cg, node_t *node, symbol_t *selected);
 static boolean_t cg_observation_expr_guard(cg_t *cg, node_t *node);
+static obs_slice_record *cg_observation_slice_declaration(cg_t *, node_t *, LLVMTypeRef);
+static boolean_t cg_observation_slice_bind(cg_t *, node_t *, obs_slice_record *, symbol_t *);
+static boolean_t cg_observation_slice_make_guard(cg_t *, node_t *, type_info_t, uint64_t);
+static boolean_t cg_observation_slice_index_guard(cg_t *, node_t *, boolean_t);
+static boolean_t cg_observation_slice_rem_guard(cg_t *, node_t *);
+static int cg_observation_slice_query_guard(cg_t *, node_t *, symbol_t **);
 
 /* gen_stmt forward declaration (emit_dtor_calls calls it for deferred stmts) */
 static void gen_stmt(cg_t *cg, node_t *node);
@@ -735,7 +748,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         cg.crash_protection_disabled     = ast->as.module.crash_protection_disabled;
         cg.crash_tracking_disabled       = ast->as.module.crash_tracking_disabled;
     }
-    if (!cg_observation_prepare(&cg)) { (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null; return Err; }
+    if (!cg_observation_prepare(&cg)) { (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); cg_observation_slice_dispose(&cg); obs_diagnostic_graph=Null; return Err; }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorError, "stasha.abi", 10,
@@ -769,7 +782,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         LLVMDisposeBuilder(cg.builder);
         LLVMDisposeModule(cg.module);
         LLVMContextDispose(cg.ctx);
-        (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null;
+        (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); cg_observation_slice_dispose(&cg); obs_diagnostic_graph=Null;
         return Err;
     }
     LLVMCodeGenOptLevel opt_level = map_opt_level(optimization_level);
@@ -787,7 +800,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         LLVMDisposeBuilder(cg.builder);
         LLVMDisposeModule(cg.module);
         LLVMContextDispose(cg.ctx);
-        (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null;
+        (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); cg_observation_slice_dispose(&cg); obs_diagnostic_graph=Null;
         return Err;
     }
 
@@ -2427,7 +2440,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
     }
 
 cg_cleanup:
-    (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null;
+    (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); cg_observation_slice_dispose(&cg); obs_diagnostic_graph=Null;
     iface_factory_dispose(&cg);
     /* Failed compilation must never leave an object that looks current. */
     if (emit_result != Ok || get_error_count() > errors_before) remove(obj_output);

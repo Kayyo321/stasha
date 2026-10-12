@@ -3960,6 +3960,10 @@ static LLVMValueRef gen_compound_assign(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
     if(!iface_local_lowering(cg,node))return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     node_t *target = node->as.assign.target;
+    /* This target goes through address lowering, not gen_expr(target). Validate
+     * its frozen use before evaluating RHS effects, retaining ordinary order. */
+    if(!cg_observation_slice_index_guard(cg,target,True))
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
 
     if (target->kind == NodeIdentExpr) {
         symbol_t *sym = cg_lookup(cg, target->as.ident.name);
@@ -4096,6 +4100,8 @@ static LLVMValueRef gen_assign(cg_t *cg, node_t *node) {
 }
 
 static LLVMValueRef gen_index(cg_t *cg, node_t *node) {
+    if(!cg_observation_slice_index_guard(cg,node,False))
+        return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
     LLVMTypeRef element = Null;
     LLVMValueRef address = scalar_member_address(cg, node, &element, Null, PtrRead);
     if (!address) return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
@@ -6264,6 +6270,8 @@ static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
         return LLVMConstNull(sl_ty);
     }
 
+    if(!cg_observation_slice_make_guard(cg,node,elem_ti,stride))return LLVMConstNull(sl_ty);
+
     /* Capture both operands, in source order, before rejecting their values.
      * Signed widening followed by unsigned comparisons rejects negatives and
      * full-width u64 values without truncating either descriptor count. */
@@ -6295,9 +6303,12 @@ static LLVMValueRef gen_make_expr(cg_t *cg, node_t *node) {
     LLVMPositionBuilderAtEnd(cg->builder, alloc_bb);
     LLVMValueRef bytes = LLVMBuildMul(cg->builder, cap64,
         LLVMConstInt(i64_ty, stride, 0), "make.bytes");
-    LLVMValueRef margs[1] = { bytes };
-    LLVMValueRef ptr = LLVMBuildCall2(cg->builder, cg->malloc_type, cg->malloc_fn,
-                                      margs, 1, "mk.ptr");
+    LLVMValueRef margs[2] = { bytes, Null };
+    LLVMValueRef ptr;
+    if(cg->observation_config) {
+        margs[1]=cg_observation_site_arg(cg,node);
+        ptr=cg_observation_call(cg,ObsSliceNew,margs,2);
+    } else ptr=LLVMBuildCall2(cg->builder,cg->malloc_type,cg->malloc_fn,margs,1,"mk.ptr");
     scalar_trap_if(cg, LLVMBuildIsNull(cg->builder, ptr, "make.allocation.failed"), 8);
     LLVMBuildMemSet(cg->builder, ptr,
                     LLVMConstInt(LLVMInt8TypeInContext(cg->ctx), 0, 0),
@@ -6513,6 +6524,16 @@ static boolean_t query_array_self_context(cg_t *cg, node_t *node) {
 static LLVMValueRef gen_array_query(cg_t *cg, node_t *node, unsigned descriptor_field) {
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(cg->ctx);
     node_t *operand = node->as.len_expr.operand;
+    symbol_t*slice=Null;
+    int slice_route=cg_observation_slice_query_guard(cg,node,&slice);
+    if(slice_route<0)return LLVMConstInt(i32_ty,0,0);
+    if(slice_route>0) {
+        /* Only the original direct use plus its bound descriptor alloca can
+         * enter here; an arbitrary LLVM struct never qualifies. */
+        LLVMValueRef value=LLVMBuildLoad2(cg->builder,slice->type,slice->value,"obs.slice");
+        return LLVMBuildExtractValue(cg->builder,value,descriptor_field,
+            descriptor_field==1?"obs.slice.len":"obs.slice.cap");
+    }
     LLVMTypeRef candidate = query_array_path_eligible(cg, operand)
         ? access_storage_type(cg, operand) : Null;
     if (candidate && LLVMGetTypeKind(candidate) == LLVMArrayTypeKind) {
@@ -6864,6 +6885,8 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
             diag_finish();
             return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
         case NodeRemStmt: {
+            if(!cg_observation_slice_rem_guard(cg,node))
+                return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx),0,0);
             node_t *ptr_node = node->as.rem_stmt.ptr;
             /* zone member: rem.(this.xyz) or rem.(s.xyz) */
             if (ptr_node->kind == NodeSelfMemberExpr || ptr_node->kind == NodeMemberExpr) {
@@ -6955,8 +6978,11 @@ static LLVMValueRef gen_expr_unchecked(cg_t *cg, node_t *node) {
                         LLVMPositionBuilderAtEnd(cg->builder, end_bb);
                     }
 
-                    LLVMValueRef fargs[1] = { dptr };
-                    LLVMBuildCall2(cg->builder, cg->free_type, cg->free_fn, fargs, 1, "");
+                    LLVMValueRef fargs[2] = { dptr, Null };
+                    if(cg->observation_config) {
+                        fargs[1]=cg_observation_site_arg(cg,node);
+                        cg_observation_call(cg,ObsSliceRem,fargs,2);
+                    } else LLVMBuildCall2(cg->builder,cg->free_type,cg->free_fn,fargs,1,"");
                     return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
                 }
                 /* heap primitive var: free the heap ptr and null the alloca */

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direct-source v2 qualification with distinct preparation, rejection and native stages.
+"""Direct-source/slice v3 qualification with distinct preparation, rejection and native stages.
 
 --selftest-only is pure Python/mocks: it never invokes Stasha, a C compiler, or a
 generated program. Compile-only controls require a separate no-launch compiler.
@@ -27,7 +27,8 @@ sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
 BASIC = ROOT / "tests/observation/fixtures/source_imports/basic"
-PROFILE = "native-sequential-direct-source-v2"
+PROFILE = "native-sequential-direct-source-slice-v3"
+GRAPH_PROFILE = "native-sequential-direct-source-v2"
 BASIC_HASHES = {"root.sts": "d96b7a0bcd97e1e90a2420e768d5348fa4b063cde8e35be3a5603f0bbc2db61d",
                 "util/calc.sts": "b7dca2e313dc1f404c3923027aa17f5656f17acc9645324092ebd9009e87566b"}
 BASIC_LINES = [(0, 4), (1, 3), (1, 5), (1, 6), (1, 7), (1, 8), (1, 9), (1, 12)]
@@ -36,8 +37,9 @@ FAMILY_IDENTITIES = {
     "ordinary-imported-tests": ("tests/scalars/test_imported_tests.py", False),
     "observed-source-imports": ("tests/observation/test_source_imports.py", True),
     "observed-array-queries": ("tests/observation/test_array_queries.py", True),
+    "observed-primitive-slices": ("tests/observation/test_primitive_slices.py", True),
 }
-MANDATORY_INPUTS = ["tests/observation/test_array_queries.py",
+MANDATORY_INPUTS = ["tests/observation/test_primitive_slices.py", "tests/observation/test_array_queries.py",
     "tests/memory/run_array_queries.py", "tests/memory/run_access_contracts.py",
     "tests/scalars/generate.py", "tests/scalars/reference.py", "tests/scalars/run.py", "tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py",
     "tests/observation/test_observation.py", "tests/observation/test_source_graph.c",
@@ -79,7 +81,7 @@ def input_manifest():
 
 
 class FamilySession:
-    """Fail-closed recorder with explicit runner/runtime identity for all three families."""
+    """Fail-closed recorder with explicit runner/runtime identity for all four families."""
     def __init__(self, family, compiler, artifacts, levels, *, runtime):
         assert family in FAMILY_IDENTITIES, "unknown qualification family"
         assert runtime == FAMILY_IDENTITIES[family][1], "wrong family runtime requirement"
@@ -152,6 +154,10 @@ class FamilySession:
         for stage, names in expected.items():
             assert sorted(case["name"] for case in self.cases if case["stage"] == stage) == sorted(names)
         assert all(record["status"] == "pass" for record in self.records)
+        observed_runs = [case['run_id'] for case in self.cases if case['stage'] == 'observed_native']
+        assert len(observed_runs) == len(set(observed_runs)), 'duplicate observed run'
+        self.artifact_manifest = {str(p.relative_to(self.artifacts)): sha(p) for p in sorted(self.artifacts.rglob('*'))
+                                  if p.is_file() and p.name != 'result.json'}
         self.status = "pass"
 
     def receipt(self):
@@ -159,6 +165,8 @@ class FamilySession:
         if nonlaunch is None: nonlaunch = compile_only_inventory(self.levels)["compile_only"]
         data = {"schema": 2, "family": self.family, "status": self.status, "failure": self.failure,
                 "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
+                "observation_profile": PROFILE if self.runtime else None,
+                "native_oom": "NOT_RUN / outside initial native qualification",
                 "runner_sha256": self.source_manifest[FAMILY_IDENTITIES[self.family][0]],
                 "optimization_levels": self.levels, "source_manifest": self.source_manifest,
                 "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"),
@@ -170,7 +178,8 @@ class FamilySession:
                     "executed_count": sum(case["stage"] == "compile_only" for case in self.cases)},
                 "inventory": self.inventory,
                 "counts": {stage: sum(case["stage"] == stage for case in self.cases) for stage in self.inventory},
-                "cases": self.cases, "runs": self.records}
+                "cases": self.cases, "runs": self.records,
+                "artifact_manifest": getattr(self, "artifact_manifest", {})}
         (self.artifacts / "result.json").write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -324,7 +333,7 @@ def raw_field(item, name):
 
 def recompute_graph(data):
     out = Canonical(); out.text("stasha-observation-input-graph-v2"); out.u32(2)
-    for value in [PROFILE, "requested-entry-directory-v1", "reject-v1", "global-unique-exported-target-v1"]: out.text(value)
+    for value in [GRAPH_PROFILE, "requested-entry-directory-v1", "reject-v1", "global-unique-exported-target-v1"]: out.text(value)
     out.blob(raw_field(data, "invocation_directory")); out.blob(raw_field(data, "original_root_spelling")); out.u32(0)
     out.u32(len(data["files"]))
     for file in data["files"]:
@@ -340,7 +349,7 @@ def recompute_graph(data):
 
 
 def recompute_map(data):
-    out = Canonical(); out.text("stasha-observation-map-v2"); out.u32(2)
+    out = Canonical(); out.text("stasha-observation-map-v3"); out.u32(3)
     out.raw(bytes.fromhex(data["input_graph_sha256"])); out.raw(bytes.fromhex(data["config_sha256"]))
     out.u32(len(data["files"]))
     for file in data["files"]:
@@ -361,6 +370,8 @@ def recompute_map(data):
             for key in ["id", "decl_id", "file_id", "line", "col", "end_line", "end_col", "kind"]: out.u32(item[key])
             if table == "anchors": out.u32(item["exclusion_reason"])
             out.optional_u32(item[optional])
+            if table == "sites":
+                for key in ("slice_element_kind", "slice_abi_stride", "slice_count_arity"): out.u32(item[key])
     out.u32(len(data["coverage"]))
     for item in data["coverage"]:
         for key in ["id", "file_id", "line"]: out.u32(item[key])
@@ -371,8 +382,169 @@ def recompute_map(data):
     return out.digest()
 
 
+def strict_json(value):
+    def pairs(items):
+        result = {}
+        for key, item in items:
+            assert key not in result, 'duplicate JSON field: ' + key
+            result[key] = item
+        return result
+    def invalid(value): raise ValueError('nonfinite JSON number: ' + value)
+    return json.loads(value, object_pairs_hook=pairs, parse_constant=invalid)
+
+
+def config_digest(compiler, runtime, optimization, *, enabled=3, warn=1, maximum=8, minimum=90,
+                  policy='closed-direct-source-array-and-local-primitive-slices-v1', debug=0, target='x86_64-unknown-linux-gnu'):
+    """Independent literal schema 3. Input graph encoding remains frozen v2."""
+    out = Canonical(); out.text('stasha-observation-config-v3'); out.u32(3); out.u32(3)
+    out.text(PROFILE); out.u32(2); out.u32(2)
+    for value in ('direct-source-slice-bounds-v3', 'requested-entry-directory-v1', 'reject-v1', 'global-unique-exported-target-v1', policy): out.text(value)
+    limits = (256,255,16777216,1000000,127,255,511,511,1023,4095,4096,65536,65536,4096,65536,65536,16384,2097152,33554432,33554432,65536,65536,65536,1024)
+    out.u32(len(limits))
+    for value in limits: out.u32(value)
+    out.text(target); out.raw(bytes.fromhex(compiler)); out.raw(bytes.fromhex(runtime))
+    for value in (optimization, debug, enabled, warn, maximum is not None): out.u32(value)
+    if maximum is not None: out.u64(maximum)
+    out.optional_u32(minimum)
+    return out.digest(), bytes(out.value)
+
+
+def map_known_answer():
+    def record(keys, values): return dict(zip(keys.split(), values))
+    declarations = []
+    for fields, name in [([0,0,0,1,1,1,3,1], b'f'), ([1,0,1,58,4,1,6,1], b'')]:
+        declarations.append({**record('id file_id ordinal_in_file kind line col end_line end_col', fields),
+            'module_name_bytes_hex': b'root'.hex(), 'name_bytes_hex': name.hex(), 'source_linkage': 0, 'selected': 1})
+    site_keys = 'id decl_id file_id line col end_line end_col kind static_test_id slice_element_kind slice_abi_stride slice_count_arity'
+    return {'input_graph_sha256': bytes(range(32)).hex(), 'config_sha256': bytes(range(32,64)).hex(),
+        'files': [dict(id=0,role=0,physical_line_count=6,source_sha256='a5'*32,exclusions=[2,1,2,4,4,4])],
+        'declarations': declarations, 'tests': [dict(id=0,decl_id=1,file_id=0,line=4,col=1,name_bytes_hex=b't'.hex())],
+        'anchors': [record('id decl_id file_id line col end_line end_col kind exclusion_reason coverage_id', fields) for fields in
+                    ([0,0,0,2,1,2,80,1,0,0], [1,1,0,5,1,5,80,3,2,None])],
+        'sites': [record(site_keys, fields) for fields in
+                  ([0,0,0,2,1,2,10,1,None,0,0,0], [1,0,0,2,12,2,22,2,None,0,0,0],
+                   [2,0,0,2,24,2,30,3,None,0,0,0], [3,0,0,2,32,2,50,4,None,5,4,2],
+                   [4,1,0,5,1,5,20,4,0,9,1,1], [5,1,0,5,22,5,30,5,0,0,0,0])],
+        'coverage': [dict(id=0,file_id=0,line=2)]}
+
+
+def validate_raw_report(data, report):
+    """Exhaustive ordered wire grammar plus independently checked domain ledger.
+
+    Reconstruct every canonical raw row from JSON only after checking all numeric
+    types, IDs, domain/site semantics, test lifecycle, generations and totals.
+    Extra/missing/reordered/duplicate/trailing raw text cannot be ignored.
+    """
+    u64max, u32max = 2**64 - 1, 2**32 - 1
+    def number(value, maximum=u64max):
+        assert type(value) is int and 0 <= value <= maximum, ('invalid unsigned field', value)
+        return value
+    assert type(report) is str and report.isascii() and len(report.encode('ascii')) <= 2097152
+    assert data['schema'] == 3 and data['profile'] == PROFILE
+    assert data['runtime_abi'] == 3 and data['allocation_metric_version'] == data['line_metric_version'] == 2
+    assert data['report_valid'] is True
+    assert number(data['complete'],1) == 1 and number(data['reason'],14) == 0 and number(data['suite_endpoint'],1) == 1
+    tests, sites, coverage = data['tests'], data['sites'], data['coverage']
+    assert 1 <= len(tests) <= 4096 and len(sites) <= 65536 and len(coverage) <= 65536
+    assert number(data['tests_started'], 4096) == number(data['tests_completed'], 4096) == len(tests)
+    assert [number(t['id'], 4095) for t in tests] == list(range(len(tests)))
+    assert [number(s['id'], 65535) for s in sites] == list(range(len(sites)))
+    assert [number(c['id'], 65535) for c in coverage] == list(range(len(coverage)))
+    assert len({(c['file_id'], c['line']) for c in coverage}) == len(coverage)
+    assert re.fullmatch(r'x86_64-(?:unknown|pc)-linux-gnu', data['target'])
+    strides = (0,1,1,2,2,4,4,8,8,1,4,8)
+    for site in sites:
+        kind = number(site['kind'], 5); assert kind >= 1
+        element = number(site['slice_element_kind'], 11)
+        stride = number(site['slice_abi_stride'], 8); arity = number(site['slice_count_arity'], 2)
+        if kind == 4: assert element > 0 and stride == strides[element] and arity in (1,2)
+        else: assert element == stride == arity == 0
+        if site['static_test_id'] is not None: number(site['static_test_id'], len(tests)-1)
+    previous, live_bytes = 0, 0
+    domains = {'explicit_user_heap': dict(live_allocations=0,tracked_outstanding_bytes=0),
+               'generated_primitive_slice_backing': dict(live_allocations=0,tracked_outstanding_bytes=0)}
+    records = data['allocations']; assert len(records) <= 16384
+    rows = ['STASHA_OBSERVATION 3', 'profile ' + PROFILE, 'runtime_abi 3', 'metric_versions 2 2']
+    for raw, key in [('run','run'),('input_graph','input_graph_sha256'),('map','map_sha256'),('config','config_sha256'),('compiler','compiler_sha256')]:
+        value = data[key]; assert type(value) is str and re.fullmatch(r'[0-9a-f]{64}', value)
+        rows.append(raw + ' ' + value)
+    enabled = number(data['enabled'], 3); assert enabled
+    passed, failed = number(data['assertions_passed']), number(data['assertions_failed']); assert passed <= u64max-failed
+    rows += [f'enabled {enabled}', f'inventory {len(tests)} {len(coverage)} {len(sites)}', 'state 1 0 1',
+             f'assertions {passed} {failed}', f'tests {len(tests)} {len(tests)}']
+    rows += [f'test {i} 2' for i in range(len(tests))]
+    bitmap = bytearray((len(coverage)+7)//8)
+    assert [f['id'] for f in data['files']] == list(range(len(data['files'])))
+    hit_pairs = set()
+    for file in data['files']:
+        assert len(file['hit_lines']) == len(set(file['hit_lines']))
+        assert set(file['hit_lines']) <= set(file['lines'])
+        assert file['covered_lines'] == len(file['hit_lines'])
+        hit_pairs.update((file['id'], line) for line in file['hit_lines'])
+    assert hit_pairs <= {(c['file_id'],c['line']) for c in coverage}
+    for i, point in enumerate(coverage):
+        is_hit = (point['file_id'],point['line']) in hit_pairs
+        assert type(point['hit']) is bool and point['hit'] == is_hit
+        if is_hit: bitmap[i//8] |= 1 << (i%8)
+    assert data['covered_lines'] == len(hit_pairs)
+    if not enabled & 2: assert not hit_pairs
+    rows.append('hits ' + (bitmap.hex() or '-'))
+    allocation_rows=[]
+    for record in records:
+        assert set(record) == {'generation','domain','bytes','allocation_site','resize_site','test'}
+        generation=number(record['generation']); assert previous < generation; previous=generation
+        domain=number(record['domain'],2); assert domain in (1,2)
+        size=number(record['bytes']); origin=number(record['allocation_site'],len(sites)-1)
+        resize=number(record['resize_site'],u32max); test=number(record['test'],len(tests)-1)
+        site=sites[origin]
+        assert site['static_test_id'] is None or site['static_test_id']==test
+        if domain==1:
+            assert site['kind'] in (1,2)
+            if resize!=u32max: assert resize<len(sites) and sites[resize]['kind']==2
+            key='explicit_user_heap'
+        else:
+            assert site['kind']==4 and resize==u32max and size>0
+            stride=site['slice_abi_stride']; assert size%stride==0 and size//stride<=2147483647
+            key='generated_primitive_slice_backing'
+        assert live_bytes <= u64max-size; live_bytes+=size
+        subtotal=domains[key]; assert subtotal['tracked_outstanding_bytes']<=u64max-size
+        subtotal['tracked_outstanding_bytes']+=size; subtotal['live_allocations']+=1
+        allocation_rows.append('allocation '+' '.join(str(record[k]) for k in ('generation','domain','bytes','allocation_site','resize_site','test')))
+    assert number(data['live_allocations'],16384)==len(records)
+    assert number(data['tracked_outstanding_bytes'])==live_bytes
+    assert set(data['allocation_domains']) == set(domains)
+    for value in data['allocation_domains'].values():
+        assert set(value) == {'live_allocations','tracked_outstanding_bytes'}
+        number(value['live_allocations'],16384); number(value['tracked_outstanding_bytes'])
+    assert data['allocation_domains']==domains
+    rows += [f'allocations {len(records)} {live_bytes}', *allocation_rows, 'END']
+    assert report == '\n'.join(rows)+'\n', 'noncanonical, mismatched, incomplete or trailing report data'
+    return rows
+
+
+def raw_report_known_answer():
+    # Standalone complete model using only literal protocol inputs, not output.
+    model = map_known_answer()
+    model.update(schema=3, profile=PROFILE, runtime_abi=3, allocation_metric_version=2, line_metric_version=2,
+        target='x86_64-unknown-linux-gnu', report_valid=True, complete=1, reason=0, suite_endpoint=1,
+        tests_started=1, tests_completed=1, enabled=3, assertions_passed=2, assertions_failed=0,
+        covered_lines=1, live_allocations=2, tracked_outstanding_bytes=27, run='11'*32, compiler_sha256='dd'*32,
+        map_sha256='33'*32, allocations=[dict(generation=1,domain=1,bytes=7,allocation_site=0,resize_site=4294967295,test=0),
+                                      dict(generation=2,domain=2,bytes=20,allocation_site=3,resize_site=4294967295,test=0)],
+        allocation_domains={'explicit_user_heap':dict(live_allocations=1,tracked_outstanding_bytes=7),
+                            'generated_primitive_slice_backing':dict(live_allocations=1,tracked_outstanding_bytes=20)})
+    model['files'][0].update(lines=[2],hit_lines=[2],covered_lines=1)
+    model['coverage'][0]['hit'] = True
+    report = ('STASHA_OBSERVATION 3\nprofile native-sequential-direct-source-slice-v3\nruntime_abi 3\nmetric_versions 2 2\n'
+        + 'run ' + '11'*32 + '\ninput_graph ' + bytes(range(32)).hex() + '\nmap ' + '33'*32
+        + '\nconfig ' + bytes(range(32,64)).hex() + '\ncompiler ' + 'dd'*32
+        + '\nenabled 3\ninventory 1 1 6\nstate 1 0 1\nassertions 2 0\ntests 1 1\ntest 0 2\nhits 01\n'
+        + 'allocations 2 27\nallocation 1 1 7 0 4294967295 0\nallocation 2 2 20 3 4294967295 0\nEND\n')
+    return model, report
+
+
 def validate_driver(data, report, session, binary, entry, *, expected, pairs, hits, assertions, tests, live=0, byte_count=0):
-    assert data["schema"] == 2 and data["profile"] == PROFILE
+    assert data["schema"] == 3 and data["profile"] == PROFILE
     assert re.fullmatch(r"[0-9a-f]{64}", data["input_graph_sha256"])
     assert recompute_graph(data) == data["input_graph_sha256"]
     assert recompute_map(data) == data["map_sha256"]
@@ -391,21 +563,7 @@ def validate_driver(data, report, session, binary, entry, *, expected, pairs, hi
     coverage = data["coverage"]
     assert [(item["file_id"], item["line"]) for item in coverage] == pairs
     assert [item["id"] for item in coverage] == list(range(len(pairs)))
-    rows = report.splitlines()
-    assert rows[:4] == ["STASHA_OBSERVATION 2", "profile " + PROFILE, "runtime_abi 2", "metric_versions 1 2"]
-    identities = dict(row.split(" ", 1) for row in rows[4:9])
-    assert identities == {"run": data["run"], "input_graph": data["input_graph_sha256"],
-                          "map": data["map_sha256"], "config": data["config_sha256"], "compiler": data["compiler_sha256"]}
-    assert next(row for row in rows if row.startswith("state ")) == "state 1 0 1"
-    assert next(row for row in rows if row.startswith("assertions ")) == f"assertions {assertions} 0"
-    assert next(row for row in rows if row.startswith("allocations ")) == f"allocations {live} {byte_count}"
-    raw_allocations = [list(map(int, row.split()[1:])) for row in rows if row.startswith("allocation ")]
-    assert raw_allocations == [[item[key] for key in ["generation", "bytes", "allocation_site", "resize_site", "test"]] for item in data["allocations"]]
-    assert len(raw_allocations) == live and sum(item[1] for item in raw_allocations) == byte_count
-    assert rows[-1] == "END" and len(rows) == 17 + tests + live
-    assert next(row for row in rows if row.startswith("tests ")) == f"tests {tests} {tests}"
-    assert [row for row in rows if row.startswith("test ")] == [f"test {i} 2" for i in range(tests)]
-    assert next(row for row in rows if row.startswith("inventory ")) == f"inventory {tests} {len(pairs)} {len(data['sites'])}"
+    rows = validate_raw_report(data, report)
     bitmap = next(row.split(" ")[1] for row in rows if row.startswith("hits "))
     raw = bytes.fromhex(bitmap) if bitmap != "-" else b""
     assert len(raw) == (len(pairs) + 7) // 8
@@ -444,7 +602,7 @@ def validate_driver(data, report, session, binary, entry, *, expected, pairs, hi
 
 
 def run_native(session, sources, levels):
-    seen_runs = set()
+    seen_runs, seen_evidence = set(), set()
     signatures = {}
     oracles = {
         "imported-main": ([(1, 2)], [(1, 2)], 1, 1, 0, 0, 100, 0),
@@ -476,17 +634,19 @@ def run_native(session, sources, levels):
             match = re.search(rb"observation: private evidence ([^\r\n]+)", result.stderr)
             assert match, key + ": missing driver evidence"
             evidence = Path(os.fsdecode(match.group(1)))
+            assert str(evidence.resolve()) not in seen_evidence and not evidence.is_symlink()
+            seen_evidence.add(str(evidence.resolve()))
             metadata = (evidence / "driver.json").read_bytes(); report = (evidence / "report").read_bytes()
             assert len(metadata) <= 32 * 1024 * 1024 and len(report) <= 2 * 1024 * 1024
             (dest / "driver.json").write_bytes(metadata); (dest / "report").write_bytes(report)
-            data = json.loads(metadata)
+            data = strict_json(metadata)
             assert data["run"] not in seen_runs, "stale run ID"; seen_runs.add(data["run"])
             raw = validate_driver(data, report.decode("ascii"), session, binary, entry,
                                   expected=expected, pairs=pairs, hits=hits, assertions=assertions,
                                   tests=tests, live=live, byte_count=byte_count)
             for path in (pre, post):
                 ir = path.read_text()
-                assert "__stasha_obs_init_v2" in ir and not re.search(r"@__stasha_obs_init\(", ir)
+                assert "__stasha_obs_init_v3" in ir and not re.search(r"@__stasha_obs_init\(", ir)
             if name.startswith("basic"):
                 assert raw == b"\x7f"
                 assert [(item["id"], item["file_id"], item["ordinal_in_file"], item["kind"], item["line"]) for item in data["declarations"]] == [
@@ -500,13 +660,18 @@ def run_native(session, sources, levels):
             if name.startswith("imported-leak"):
                 assert [(site["id"], site["file_id"], site["line"], site["kind"], site["static_test_id"]) for site in data["sites"]] == [(0, 1, 3, 1, 1)]
                 records = [row.split() for row in report.decode("ascii").splitlines() if row.startswith("allocation ")]
-                assert len(records) == 1 and records[0][2:] == ["13", "0", "4294967295", "1"]
+                assert len(records) == 1 and records[0][2:] == ["1", "13", "0", "4294967295", "1"]
+            enabled = 1 | (2 if minimum is not None else 0)
+            assert data['enabled'] == enabled and data['warn_memleak'] is False
+            assert data['max_leaked_bytes'] == maximum and data['min_test_coverage'] == minimum
+            assert data['config_sha256'] == config_digest(session.compiler_hash, session.runtime_hash, opt,
+                enabled=enabled, warn=0, maximum=maximum, minimum=minimum, target=data['target'])[0]
             signature = (data["coverage"], [(file["lines"], file["exclusions"]) for file in data["files"]], data["tests"], data["sites"])
             if name in signatures: assert signature == signatures[name], name + ": optimization changed source inventory"
             signatures[name] = signature
             session.cases.append({"name": key, "stage": "observed_native", "status": "pass", "executions": 1,
                                   "input_graph_sha256": data["input_graph_sha256"], "map_sha256": data["map_sha256"],
-                                  "config_sha256": data["config_sha256"], "binary_sha256": sha(binary),
+                                  "config_sha256": data["config_sha256"], "binary_sha256": sha(binary), "run_id": data["run"],
                                   "pre_ir_sha256": sha(pre), "post_ir_sha256": sha(post),
                                   "assertions_passed": assertions, "tests": tests,
                                   "eligible": len(pairs), "covered": len(hits), "live_allocations": live,
@@ -559,7 +724,7 @@ def retain_nonlaunch_evidence(destination, result):
     raw = (evidence / "driver.json").read_bytes()
     assert len(raw) <= 32 * 1024 * 1024
     data = json.loads(raw)
-    assert data["schema"] == 2 and data["profile"] == PROFILE
+    assert data["schema"] == 3 and data["profile"] == PROFILE
     assert data["child"]["launched"] == 0 and data["child"]["exited"] == 0
     assert not data["report_valid"] and data["overall_status"] != 0
     assert not (evidence / "report").exists(), "nonlaunch case produced runtime report"
@@ -627,7 +792,7 @@ def run_compile_only(session, positive, negative, ordinary_sources, levels, ir_c
             retain_nonlaunch_evidence(dest, result)
             assert b"passed, " not in result.stdout
             before, after = pre.read_text(), post.read_text()
-            assert "__stasha_obs_init_v2" in before and "__stasha_obs_init_v2" in after
+            assert "__stasha_obs_init_v3" in before and "__stasha_obs_init_v3" in after
             for pattern in patterns: assert re.search(pattern, before, re.MULTILINE), (key, pattern)
             session.cases.append({"name": key, "stage": "compile_only", "status": "pass", "executions": 0,
                                   "pre_ir_sha256": sha(pre), "post_ir_sha256": sha(post), "independent_ir_review": "required"})
@@ -653,18 +818,21 @@ def enrollment_selftest(artifacts):
     wrapper = load_module("enrollment_wrapper", ROOT / "tests/observation/test_observation.py")
     ordinary = load_module("enrollment_ordinary", ROOT / "tests/scalars/test_imported_tests.py")
     arrays = load_module("enrollment_array_queries", ROOT / "tests/observation/test_array_queries.py")
+    slices = load_module("enrollment_primitive_slices", ROOT / "tests/observation/test_primitive_slices.py")
     levels = [0, 2, 3]
     expected_by_family = {"ordinary-imported-tests": {"ordinary_native": ordinary.expected_cases(levels)},
                           "observed-source-imports": expected_cases(levels),
-                          "observed-array-queries": arrays.expected_cases(levels)}
+                          "observed-array-queries": arrays.expected_cases(levels),
+                          "observed-primitive-slices": slices.expected_cases(levels)}
 
     class FakeQualification:
         def __init__(self, work, mutation=None, affected="ordinary-imported-tests"):
             self.artifacts = work; self.compiler = work / "exact-stasha"
             self.compiler_hash = "a" * 64; self.runtime_hash = "b" * 64
             self.source_manifest = {name: sha(ROOT / name) for name in [
-                "tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py", "tests/observation/test_observation.py", "tests/observation/test_array_queries.py"]}
+                "tests/scalars/test_imported_tests.py", "tests/observation/test_source_imports.py", "tests/observation/test_observation.py", "tests/observation/test_array_queries.py", "tests/observation/test_primitive_slices.py"]}
             self.family_receipts, self.records = [], []
+            self.timeouts = {}
             self.status = "running"
             self.mutation, self.affected = mutation, affected
         def verify_inputs(self):
@@ -672,6 +840,7 @@ def enrollment_selftest(artifacts):
         def command(self, name, argv, **kwargs):
             self.records.append((name, argv))
             if name not in expected_by_family: return self.artifacts, subprocess.CompletedProcess(argv, 0, b"", b"")
+            self.timeouts[name] = kwargs["timeout"]
             mutation = self.mutation if name == self.affected else None
             if mutation == "nonzero": raise AssertionError("child exit 1")
             if mutation == "timeout": raise subprocess.TimeoutExpired(argv, 120)
@@ -690,17 +859,33 @@ def enrollment_selftest(artifacts):
             (result / "generated-manifest.json").write_text(json.dumps(generated))
             data = {"schema": 2, "family": name, "status": "pass", "failure": None,
                     "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
+                    "observation_profile": PROFILE if FAMILY_IDENTITIES[name][1] else None,
                     "runner_sha256": self.source_manifest[runner], "optimization_levels": levels,
                     "source_manifest": self.source_manifest, "source_manifest_sha256": sha(manifest_path),
                     "generated_manifest": generated, "generated_resolutions": {"mock.sts": str(source_path.resolve())},
                     "inventory": inventory, "counts": {stage: len(cases) for stage, cases in inventory.items()},
                     "cases": [{"name": case, "stage": stage, "status": "pass", "executions": 1}
                               for stage, cases in inventory.items() for case in cases],
-                    "runs": [{"status": "pass"}]}
+                    "runs": [{"name": "mock-run", "status": "pass"}],
+                    "artifact_manifest": {"source-manifest.json": sha(manifest_path), "mock.sts": sha(source_path),
+                        "generated-manifest.json": sha(result / "generated-manifest.json")}}
+            for case in data["cases"]:
+                if case["stage"] == "observed_native": case["run_id"] = hashlib.sha256(case["name"].encode()).hexdigest()
             if mutation == "malformed": (result / "result.json").write_text("{"); return
             if mutation in ("running", "fail", "skipped"): data["status"] = mutation
             if mutation == "compiler": data["compiler_sha256"] = "c" * 64
             if mutation == "runtime": data["runtime_sha256"] = "c" * 64
+            if mutation == "profile": data["observation_profile"] = "native-sequential-direct-source-v2"
+            if mutation == "family": data["family"] = "substituted-family"
+            if mutation == "unexpected-case": data["cases"].append(dict(name="unexpected",stage="ordinary_native",status="pass",executions=1))
+            if mutation == "duplicate-run": data["runs"].append(dict(data["runs"][0]))
+            if mutation == "duplicate-run-id":
+                observed = [case for case in data["cases"] if case["stage"] == "observed_native"]
+                observed[1]["run_id"] = observed[0]["run_id"]
+            if mutation == "artifact-hash": data["artifact_manifest"]["mock.sts"] = "c" * 64
+            if mutation == "artifact-path": data["artifact_manifest"]["../outside"] = "c" * 64
+            if mutation == "missing-artifact": data["artifact_manifest"] = {}
+
             if mutation == "runner": data["runner_sha256"] = "c" * 64
             if mutation == "optimizations": data["optimization_levels"] = [0]
             if mutation == "source": data["source_manifest"] = {}
@@ -724,17 +909,58 @@ def enrollment_selftest(artifacts):
                 wrapper.dispatch_required_families(q, levels, "selected-clang --target=native")
                 names = [name for name, _ in q.records]
                 self.assertEqual(names, ["runtime-unit-build", "runtime-unit-run", "driver-unit-build", "driver-unit-run",
-                                         "source-graph-unit-build", "source-graph-unit-run", "ordinary-imported-tests", "observed-source-imports", "observed-array-queries"])
+                                         "source-graph-unit-build", "source-graph-unit-run", "ordinary-imported-tests", "observed-source-imports", "observed-array-queries", "observed-primitive-slices"])
                 graph = q.records[4][1]
                 self.assertEqual(graph[:2], ["selected-clang", "--target=native"])
                 self.assertIn(str(ROOT / "tests/observation/test_source_graph.c"), graph)
                 self.assertEqual(q.records[5][1], [str(q.artifacts / "source-graph-unit")])
-                for family, argv in q.records[-3:]:
+                for family, argv in q.records[-4:]:
                     self.assertEqual(argv[argv.index("--compiler") + 1], str(q.compiler))
                     self.assertEqual(argv[argv.index("--opt") + 1], "0,2,3")
                 self.assertEqual(q.records[-1][1][-2:], ["--cc", "selected-clang --target=native"])
-                self.assertEqual(len(q.family_receipts), 3)
+                self.assertEqual(len(q.family_receipts), 4)
+                self.assertEqual(q.timeouts, {"ordinary-imported-tests": 1800, "observed-source-imports": 1800,
+                                              "observed-array-queries": 1800, "observed-primitive-slices": 3600})
                 self.assertEqual(wrapper.expected_array_cases(levels), arrays.expected_cases(levels))
+                self.assertEqual(wrapper.expected_slice_cases(levels), slices.expected_cases(levels))
+        def test_real_timeout_cannot_publish_partial_pass(self):
+            families = ["ordinary-imported-tests", "observed-source-imports", "observed-array-queries", "observed-primitive-slices"]
+            real_command, real_receipt = wrapper.Qualification.command, wrapper.Qualification.receipt
+            for index, family in enumerate(families):
+                with self.subTest(family=family), tempfile.TemporaryDirectory() as temp:
+                    q = FakeQualification(Path(temp)); original = q.command
+                    q.failure = None; q.enrollment_selftest = None
+                    (q.artifacts / "source-manifest.json").write_text(json.dumps(q.source_manifest))
+                    def command(name, argv, **kwargs):
+                        return real_command(q, name, argv, **kwargs) if name == family else original(name, argv, **kwargs)
+                    q.command = command
+                    q.run = lambda selected, cc: wrapper.dispatch_required_families(q, selected, cc)
+                    q.receipt = lambda: real_receipt(q)
+                    def timeout(argv, **kwargs):
+                        raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output=b"partial stdout", stderr=b"partial stderr")
+                    argv = ["test_observation.py", "--compiler", str(q.compiler), "--artifacts", str(q.artifacts), "--opt", "0,2,3"]
+                    with mock.patch.object(wrapper, "Qualification", return_value=q), \
+                         mock.patch.object(wrapper.sys, "argv", argv), \
+                         mock.patch.object(wrapper.subprocess, "run", side_effect=timeout) as launch, \
+                         mock.patch("builtins.print") as printed:
+                        with self.assertRaises(subprocess.TimeoutExpired): wrapper.main()
+                    launch.assert_called_once()
+                    self.assertEqual(launch.call_args.kwargs["timeout"], 3600 if family == "observed-primitive-slices" else 1800)
+                    printed.assert_not_called()
+                    self.assertEqual([r["family"] for r in q.family_receipts], families[:index])
+                    record = q.records[-1]
+                    self.assertEqual(record["name"], family)
+                    self.assertEqual(record["status"], "fail"); self.assertIs(record["timeout"], True)
+                    self.assertIn("TimeoutExpired", record["error"])
+                    destination = q.artifacts / family
+                    self.assertEqual(json.loads((destination / "status.json").read_text()), record)
+                    self.assertEqual((destination / "stdout").read_bytes(), b"partial stdout")
+                    self.assertEqual((destination / "stderr").read_bytes(), b"partial stderr")
+                    receipt = json.loads((q.artifacts / "result.json").read_text())
+                    self.assertEqual(receipt["status"], "fail")
+                    self.assertIn("TimeoutExpired", receipt["failure"])
+                    self.assertEqual(len(receipt["required_families"]), index)
+                    self.assertEqual(receipt["runs"][-1], record)
         def test_graph_build_failure(self):
             self._graph_failure("source-graph-unit-build")
         def test_graph_run_failure(self):
@@ -771,19 +997,66 @@ def enrollment_selftest(artifacts):
                                 "requested_module_bytes_hex": b"raw".hex(), "lookup_path_bytes_hex": b"/invoke/entry/raw\xff.sts".hex()}]}
             self.assertEqual(recompute_graph(model), "6134956c38d24a31674d40d1d65308619b177cb3168a23bfa059d097267d126a")
         def test_map_known_answer(self):
-            # Serializer-only schema model; declaration kind 7 is not admission evidence.
-            def record(keys, values): return dict(zip(keys.split(), values))
-            anchor_keys = "id decl_id file_id line col end_line end_col kind exclusion_reason coverage_id"
-            site_keys = "id decl_id file_id line col end_line end_col kind static_test_id"
-            model = {"input_graph_sha256": bytes(range(32)).hex(), "config_sha256": bytes(range(32, 64)).hex(),
-                     "files": [{"id": 0, "role": 0, "physical_line_count": 2, "source_sha256": "a5" * 32, "exclusions": [5, 4]}],
-                     "declarations": [{**record("id file_id ordinal_in_file kind line col end_line end_col", [0, 0, 0, 7, 1, 2, 1, 20]),
-                                       "module_name_bytes_hex": b"root".hex(), "name_bytes_hex": b"f".hex(), "source_linkage": 1, "selected": 1}],
-                     "tests": [{**record("id decl_id file_id line col", [0, 0, 0, 1, 2]), "name_bytes_hex": b"repeat".hex()}],
-                     "anchors": [record(anchor_keys, [0, 0, 0, 1, 2, 1, 20, 1, 0, 0]), record(anchor_keys, [1, 0, 0, 2, 1, 2, 9, 3, 2, None])],
-                     "sites": [record(site_keys, [0, 0, 0, 1, 3, 1, 8, 1, None]), record(site_keys, [1, 0, 0, 2, 1, 2, 9, 3, 0])],
-                     "coverage": [{"id": 0, "file_id": 0, "line": 1}]}
-            self.assertEqual(recompute_map(model), "3cd86e33227d7932d56031c1fdd1a4c2974d130c92a985506dd83cf8e0ea59d1")
+            self.assertEqual(recompute_map(map_known_answer()), "ee3bd2ad5c88b2fb90e257277618654d5e7498d4bf221ca06cfcebe8b6689a60")
+        def test_config_known_answers(self):
+            digest, value = config_digest("dd" * 32, "aa" * 32, 2)
+            self.assertEqual(len(value), 526)
+            self.assertEqual(digest, "1dc9f3d3e2be65e986cf997e1350dea939ad3517d392f67a3d9220f98d3ed457")
+            digest, value = config_digest("dd" * 32, "aa" * 32, 2, enabled=1, maximum=None, minimum=None)
+            self.assertEqual(len(value), 514)
+            self.assertEqual(digest, "73e35427155369e8f0650b12ee31635baa2f8494cbfca23e3959ce73fa0dd953")
+        def test_strict_json_duplicates(self):
+            for text in ('{"a":1,"a":2}', '{"x":NaN}', '{"x":Infinity}'):
+                self.assertRaises((ValueError, AssertionError), strict_json, text)
+        def test_complete_raw_v3_known_answer(self):
+            model, report = raw_report_known_answer()
+            self.assertEqual(validate_raw_report(model, report)[-1], 'END')
+            section = report[report.index('allocations '):]
+            self.assertEqual(len(section), 86)
+            self.assertEqual(hashlib.sha256(section.encode()).hexdigest(), '14074eb03ad114dead37a8c2b9edfd4676485af698b86f605e6c303ce6ebf30c')
+        def test_complete_raw_rejects_every_unconsumed_byte(self):
+            model, report = raw_report_known_answer()
+            mutations = (report[:-1], report+'\n', report+'END\n', report.replace('enabled 3', 'enabled 03'),
+                report.replace('enabled 3', 'enabled +3'), report.replace('enabled 3', 'enabled  3'),
+                report.replace('runtime_abi 3', 'runtime_abi 2'), report.replace('STASHA_OBSERVATION 3', 'STASHA_OBSERVATION 2'),
+                report.replace('metric_versions 2 2', 'metric_versions 1 2'), report.replace('state 1 0 1', 'state 0 1 0'),
+                report.replace('test 0 2', 'test 0 2\ntest 0 2'), report.replace('allocations 2 27', 'allocations 2 28'),
+                report.replace('allocation 1 1 7 0 4294967295 0\n', ''), report.replace('hits 01', 'hits ff'),
+                report.replace('hits 01', 'hits 0100'), report.replace('allocations 2 27\n',''), report.replace('tests 1 1','tests 1 0'))
+            for bad in mutations:
+                with self.subTest(report=bad): self.assertRaises(AssertionError, validate_raw_report, model, bad)
+        def test_raw_domain_metadata_and_totals_fail_closed(self):
+            model, report = raw_report_known_answer()
+            def clone(): return json.loads(json.dumps(model))
+            cases=[]
+            for key,value in [('domain',0),('domain',3),('bytes',0),('bytes',21),('bytes',4*2147483648),
+                              ('generation',1),('generation',2**64),('test',1),('allocation_site',99),('allocation_site',0),('resize_site',1)]:
+                m=clone(); m['allocations'][1][key]=value; cases.append(m)
+            for key,value in [('slice_element_kind',0),('slice_element_kind',12),('slice_abi_stride',8),('slice_count_arity',0),('slice_count_arity',3),('kind',3)]:
+                m=clone();m['sites'][3][key]=value;cases.append(m)
+            m=clone();m['sites'][0]['slice_count_arity']=1;cases.append(m)
+            m=clone();m['allocations'][0]['domain']=2;cases.append(m)
+            m=clone();m['allocation_domains']['generated_primitive_slice_backing']['tracked_outstanding_bytes']=0;cases.append(m)
+            m=clone();m['allocation_domains']['unmeasured_provider']={'live_allocations':0,'tracked_outstanding_bytes':0};cases.append(m)
+            m=clone();m['tracked_outstanding_bytes']=28;cases.append(m)
+            m=clone();m['complete']=0;cases.append(m)
+            m=clone();m['tests_completed']=0;cases.append(m)
+            m=clone();m['allocations']=list(reversed(m['allocations']));cases.append(m)
+            for bad in cases:
+                with self.subTest(model=bad): self.assertRaises((AssertionError,KeyError), validate_raw_report, bad, report)
+        def test_maximum_strides_are_pure_metadata_only(self):
+            # Never materialize or execute a huge native source: integer records only.
+            model, report = raw_report_known_answer()
+            for element,stride in enumerate((1,1,2,2,4,4,8,8,1,4,8),1):
+                for capacity in (0,2147483647,2147483648):
+                    m=json.loads(json.dumps(model)); size=capacity*stride
+                    m['sites'][3].update(slice_element_kind=element,slice_abi_stride=stride)
+                    m['allocations'][1]['bytes']=size
+                    m['tracked_outstanding_bytes']=size+7
+                    m['allocation_domains']['generated_primitive_slice_backing']['tracked_outstanding_bytes']=size
+                    raw=report.replace('allocations 2 27',f'allocations 2 {size+7}').replace('allocation 2 2 20 3',f'allocation 2 2 {size} 3')
+                    if capacity==2147483647: validate_raw_report(m,raw)
+                    else: self.assertRaises(AssertionError,validate_raw_report,m,raw)
         def test_positive_nonlaunch_expected_link_failure(self):
             with tempfile.TemporaryDirectory() as temp:
                 result = subprocess.CompletedProcess([], 1, b"", b"hosted Linux linking requires a working native C compiler; set CC to its executable path\nlinking failed\n")
@@ -828,7 +1101,7 @@ def enrollment_selftest(artifacts):
             self.assertFalse(set(BENIGN_REJECTIONS) & NO_LAUNCH_NAMES)
             self.assertNotIn("compile_only", expected_cases(levels))
         def test_all_array_dependencies_mandatory(self):
-            for missing_name in ["tests/observation/test_array_queries.py", *arrays.DEPENDENCY_HASHES]:
+            for missing_name in ["tests/observation/test_primitive_slices.py", "tests/observation/test_array_queries.py", *arrays.DEPENDENCY_HASHES]:
                 def missing(path):
                     if path == ROOT / missing_name: raise FileNotFoundError(path)
                     return b"mock frozen input"
@@ -838,12 +1111,15 @@ def enrollment_selftest(artifacts):
             with tempfile.TemporaryDirectory() as temp:
                 self.assertRaises(AssertionError, FamilySession, "unknown", None, Path(temp), levels, runtime=False)
         def test_observed_runtime_required(self):
-            for family in ("observed-source-imports", "observed-array-queries"):
+            for family in ("observed-source-imports", "observed-array-queries", "observed-primitive-slices"):
                 with tempfile.TemporaryDirectory() as temp:
                     self.assertRaises(AssertionError, FamilySession, family, None, Path(temp), levels, runtime=False)
         def test_array_pure_components(self):
             with tempfile.TemporaryDirectory() as temp:
                 self.assertEqual(arrays.selftest(Path(temp)), 0)
+        def test_slice_pure_components(self):
+            with tempfile.TemporaryDirectory() as temp:
+                self.assertEqual(slices.selftest(Path(temp)), 0)
         def test_missing_mandatory_runner_fails(self):
             original = Path.read_bytes
             def missing(path):
@@ -866,9 +1142,9 @@ def enrollment_selftest(artifacts):
                 self.assertNotEqual(q.status, "pass")
         return test
     mutations = ["nonzero", "timeout", "exception", "missing-latest", "missing-receipt", "malformed", "running", "fail", "skipped",
-                 "compiler", "runner", "optimizations", "source", "missing-case", "duplicate-case", "skipped-case", "count", "run-status", "zero-executions", "outside-receipt", "missing-generated", "changed-generated"]
+                 "compiler", "runner", "optimizations", "source", "missing-case", "duplicate-case", "skipped-case", "count", "run-status", "zero-executions", "outside-receipt", "missing-generated", "changed-generated", "family", "unexpected-case", "duplicate-run", "artifact-hash", "artifact-path", "missing-artifact"]
     for family in expected_by_family:
-        for mutation in mutations + (["runtime"] if FAMILY_IDENTITIES[family][1] else []):
+        for mutation in mutations + (["runtime", "profile", "duplicate-run-id"] if FAMILY_IDENTITIES[family][1] else []):
             setattr(EnrollmentTests, "test_" + family.replace("-", "_") + "_" + mutation.replace("-", "_"), failure_test(mutation, family))
     with mock.patch("subprocess.run", side_effect=AssertionError("selftests may not spawn processes")):
         result = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromTestCase(EnrollmentTests))

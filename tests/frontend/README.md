@@ -47,6 +47,20 @@ The same source preserves ordinary AST kinds and legacy diagnostic coordinates
 in both parser modes without acquiring graph IDs or observed columns. These
 parser-only checks do not qualify query admission or generated execution.
 
+## Observed primitive-slice constructor positions
+
+The exact `slice_make.origins` literal checks repeated same-line constructors and a
+multiline constructor whose length and capacity are direct `len`/`cap` queries.
+Expected keyword-to-closing-parenthesis spans are literal numeric coordinates:
+make `(3,20,3,34)`, `(3,52,3,69)`, `(5,20,9,5)`; queries `(7,9,7,15)`,
+`(8,9,8,15)`, `(10,9,10,15)`. The identifier `make_count` is not a keyword.
+Enclosing declarations and return statements retain their semicolon-inclusive
+spans. Both graph file IDs retain `/owned/root.sts` or `/owned/slice.sts` after
+caller buffers and the token stream are released. Plain and ordinary
+preprocessed parsing preserve AST kinds, line numbers, legacy zero col/len, and
+absent observer identities. These parser-only checks do not establish slice
+admission, allocator effects, runtime schedules, or native OOM behavior.
+
 ## Literal source positions
 
 Tokens begin at their opening quote, backtick, or dollar prefix, even when their

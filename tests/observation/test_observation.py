@@ -124,6 +124,63 @@ def expected_array_cases(levels):
             "observed_native": [f"{name}-O{opt}" for opt in levels for name in (*fixed, *("adapter-" + n for n in ordinary))]}
 
 
+def expected_slice_cases(levels):
+    # Parent-owned literal R2 enrollment, independently frozen before child evaluation.
+    names = ('coverage',
+ 'count_order',
+ 'same_line',
+ 'imports',
+ 'primitive_i8',
+ 'primitive_u8',
+ 'primitive_i16',
+ 'primitive_u16',
+ 'primitive_i32',
+ 'primitive_u32',
+ 'primitive_i64',
+ 'primitive_u64',
+ 'primitive_bool',
+ 'primitive_f32',
+ 'primitive_f64',
+ 'count_i8',
+ 'count_u8',
+ 'count_i16',
+ 'count_u16',
+ 'count_i32',
+ 'count_u32',
+ 'count_i64',
+ 'count_u64',
+ 'count_bool',
+ 'count_unsigned_top_bit',
+ 'retained_i32',
+ 'retained_empty',
+ 'omitted_i16',
+ 'zero_omitted',
+ 'zero_explicit',
+ 'mixed_both',
+ 'mixed_explicit_only',
+ 'mixed_slice_only',
+ 'schedule_direct',
+ 'schedule_defer_fallthrough',
+ 'schedule_defer_return',
+ 'schedule_defer_nested',
+ 'schedule_defer_continue',
+ 'schedule_defer_break',
+ 'schedule_defer_nested_exits',
+ 'schedule_direct_bypass_return',
+ 'schedule_direct_bypass_break',
+ 'schedule_direct_bypass_continue',
+ 'schedule_shadow_defer',
+ 'schedule_shadow_siblings',
+ 'nested_scalar',
+ 'no_assertions')
+    below = ('retained_i32','retained_empty','omitted_i16','mixed_both','mixed_explicit_only','mixed_slice_only',
+             'schedule_direct_bypass_return','schedule_direct_bypass_break','schedule_direct_bypass_continue','imports')
+    return {'ordinary_native': [f'{name}-ordinary-O{opt}' for opt in levels for name in names],
+            'observed_native': [f'{name}-{mode}-O{opt}' for opt in levels for name in names
+                for mode in ('warn','max_equal','coverage_only','combined', *(('max_below',) if name in below else ()),
+                             *(('coverage_66','coverage_67') if name == 'coverage' else ()))]}
+
+
 def validate_family_receipt(qualification, destination, family, runner, expected, levels):
     # A child cannot choose an older or external successful receipt via LATEST.
     latest = (destination / "LATEST").read_text().strip()
@@ -141,9 +198,12 @@ def validate_family_receipt(qualification, destination, family, runner, expected
         "ordinary-imported-tests": ("tests/scalars/test_imported_tests.py", False),
         "observed-source-imports": ("tests/observation/test_source_imports.py", True),
         "observed-array-queries": ("tests/observation/test_array_queries.py", True),
+        "observed-primitive-slices": ("tests/observation/test_primitive_slices.py", True),
     }
     assert family in identities and runner == identities[family][0]
-    if identities[family][1]: assert data["runtime_sha256"] == qualification.runtime_hash
+    if identities[family][1]:
+        assert data["runtime_sha256"] == qualification.runtime_hash
+        assert data["observation_profile"] == "native-sequential-direct-source-slice-v3"
     assert data["source_manifest"] == qualification.source_manifest
     assert data["source_manifest_sha256"] == sha(result_dir / "source-manifest.json")
     assert json.loads((result_dir / "source-manifest.json").read_text()) == qualification.source_manifest
@@ -162,6 +222,18 @@ def validate_family_receipt(qualification, destination, family, runner, expected
         assert sorted(case["name"] for case in data["cases"] if case["stage"] == stage) == sorted(cases)
     assert all(case["status"] == "pass" for case in data["cases"])
     assert data["runs"] and all(run["status"] == "pass" for run in data["runs"])
+    run_names = [run['name'] for run in data['runs']]
+    assert len(run_names) == len(set(run_names)), 'duplicate command receipt'
+    observed_runs = [case['run_id'] for case in data['cases'] if case['stage'] == 'observed_native']
+    assert len(observed_runs) == len(set(observed_runs)), 'duplicate runtime identity'
+    artifacts = data['artifact_manifest']; assert artifacts
+    for relative, digest in artifacts.items():
+        assert not Path(relative).is_absolute() and '..' not in Path(relative).parts
+        path = result_dir / relative
+        assert path.is_file() and sha(path) == digest, 'changed/missing artifact'
+    actual = {str(p.relative_to(result_dir)) for p in result_dir.rglob('*') if p.is_file() and p.name != 'result.json'}
+    assert actual == set(artifacts), 'missing/unexpected artifact enrollment'
+
     for case in data["cases"]:
         if case["stage"] in ("ordinary_native", "observed_native"):
             assert case["executions"] == 1
@@ -182,14 +254,20 @@ def dispatch_required_families(qualification, levels, cc):
          observed.expected_cases(levels), ["--cc", cc]),
         ("observed-array-queries", "tests/observation/test_array_queries.py",
          expected_array_cases(levels), ["--cc", cc]),
+        ("observed-primitive-slices", "tests/observation/test_primitive_slices.py",
+         expected_slice_cases(levels), ["--cc", cc]),
     ]:
         destination = qualification.artifacts / family
         argv = [sys.executable, "-B", str(ROOT / runner), "--compiler", str(qualification.compiler),
                 "--opt", ",".join(map(str, levels)), "--artifacts", str(destination), *extra]
-        qualification.command(family, argv, timeout=1800)
+        qualification.command(family, argv, timeout=3600 if family == "observed-primitive-slices" else 1800)
         receipt = validate_family_receipt(qualification, destination, family, runner, expected, levels)
         qualification.family_receipts.append(receipt)
-    assert len(qualification.family_receipts) == 3
+    assert len(qualification.family_receipts) == 4
+    all_ids = [case['run_id'] for receipt in qualification.family_receipts for case in receipt['result']['cases']
+               if case['stage'] == 'observed_native']
+    assert len(all_ids) == len(set(all_ids)), 'duplicate run identity across mandatory families'
+    if hasattr(qualification, 'run_ids'): qualification.run_ids.update(all_ids)
 
 
 class Qualification:
@@ -222,7 +300,7 @@ class Qualification:
     def receipt(self):
         (self.artifacts / "result.json").write_text(json.dumps({"status": self.status, "failure": self.failure,
             "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
-            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source and bounded array-query positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
+            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source and bounded array-query and primitive-slice positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
 
     def command(self, name: str, argv: list[str], *, env=None, expected=0, cwd=None, timeout=60):
         dest = self.artifacts / name
@@ -265,11 +343,14 @@ class Qualification:
         match = re.search(rb"observation: private evidence ([^\r\n]+)", result.stderr)
         assert match, f"{name}: no independent evidence location"
         evidence = Path(os.fsdecode(match.group(1)))
-        data = json.loads((evidence / "driver.json").read_text())
+        support = load_family_module("leaf_json_support", "tests/observation/test_source_imports.py")
+        metadata = (evidence / "driver.json").read_bytes()
+        assert len(metadata) <= 33554432
+        data = support.strict_json(metadata)
         shutil.copy2(evidence / "driver.json", dest / "driver.json")
         if (evidence / "report").exists():
             shutil.copy2(evidence / "report", dest / "report")
-        assert data["schema"] == 2 and data["profile"] == "native-sequential-direct-source-v2"
+        assert data["schema"] == 3 and data["profile"] == "native-sequential-direct-source-slice-v3"
         assert re.fullmatch(r"[0-9a-f]{64}", data["input_graph_sha256"])
         assert len(data["files"]) == 1 and not data["edges"]
         assert sha(source_path) == source_before and data["files"][0]["source_sha256"] == source_before
@@ -301,12 +382,12 @@ class Qualification:
         if live is not None: assert data["live_allocations"] == live, name
         if assertions is not None: assert (data["assertions_passed"], data["assertions_failed"]) == assertions, name
         # Independent bitmap parsing verifies each source line rather than a child percentage.
-        report = (dest / "report").read_text().splitlines()
-        assert report[:4] == ["STASHA_OBSERVATION 2", "profile native-sequential-direct-source-v2", "runtime_abi 2", "metric_versions 1 2"]
-        assert report[5] == "input_graph " + data["input_graph_sha256"]
-        assert next(row for row in report if row.startswith("tests ")) == f"tests {tests} {tests}"
-        assert [row for row in report if row.startswith("test ")] == [f"test {i} 2" for i in range(tests)]
-        assert next(row for row in report if row.startswith("inventory ")) == f"inventory {tests} {len(data['lines'])} {len(data['sites'])}"
+        support = load_family_module("leaf_protocol_support", "tests/observation/test_source_imports.py")
+        report = support.validate_raw_report(data, (dest / "report").read_text())
+        assert support.recompute_graph(data) == data["input_graph_sha256"]
+        assert support.recompute_map(data) == data["map_sha256"]
+        assert support.config_digest(self.compiler_hash, self.runtime_hash, opt, enabled=data['enabled'],
+            warn=int(data['warn_memleak']), maximum=data['max_leaked_bytes'], minimum=data['min_test_coverage'], target=data['target'])[0] == data['config_sha256']
         bitmap = next(row.split(" ")[1] for row in report if row.startswith("hits "))
         hits = bytes.fromhex(bitmap) if bitmap != "-" else b""
         uncovered = [line for i, line in enumerate(data["lines"]) if not hits[i // 8] & (1 << (i % 8))]
@@ -415,7 +496,7 @@ class Qualification:
         }.items():
             self.command("reject-option-" + name, [str(self.compiler), "test", str(FIXTURES / "coverage.sts"), *flags], expected=1)
         self.verify_inputs()
-        assert len(self.family_receipts) == 3 and self.enrollment_selftest is not None
+        assert len(self.family_receipts) == 4 and self.enrollment_selftest is not None
         assert sha(Path(self.enrollment_selftest["receipt"])) == self.enrollment_selftest["receipt_sha256"]
         assert all(record["status"] == "pass" for record in self.records)
         for child in self.family_receipts:
