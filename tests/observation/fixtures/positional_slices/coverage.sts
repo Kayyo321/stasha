@@ -1,0 +1,12 @@
+mod observation_positional_slices;
+fn make_sum(void): i32 {
+    heap []i32 s = make.{4, 5, 6};
+    defer { rem.(s); }
+    s[1] = s[1] + 1;
+    ret s[0] + s[1] + s[2];
+}
+fn cold(void): i32 {
+    heap []u8 s = make.{9, 10};
+    ret len.(s);
+}
+test 'positional slice coverage' { expect_eq.(make_sum(), 16); }

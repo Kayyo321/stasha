@@ -1,0 +1,4 @@
+mod positional_root;
+imp util.leaf;
+fn work(void): i32 { heap []i32 s = make.{leaf.item()}; defer { rem.(s); } ret s[0]; }
+test 'root' { expect_eq.(work(), 9); }

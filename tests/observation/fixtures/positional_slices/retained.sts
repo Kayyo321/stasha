@@ -1,0 +1,6 @@
+mod observation_positional_retained;
+fn retain(void): i32 {
+    heap []i16 s = make.{2, 3, 4};
+    ret s[0] + s[1] + s[2];
+}
+test 'positional retained' { expect_eq.(retain(), 9); }

@@ -25,7 +25,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/observation/fixtures/array_queries"
 FAMILY = "observed-array-queries"
-POLICY = "closed-direct-source-array-and-local-primitive-slices-v1"
+POLICY = "closed-direct-source-primitive-slice-count-or-positional-v1"
 ORDINARY_NAMES = ("direct", "named_extent", "inferred_extent", "empty_extent", "empty_inferred",
                   "const_array", "final_array", "matrix", "deep_rank", "global_array")
 FIXED_NAMES = ("coverage80", "coverage81", "coverage-only", "allocation-only", "control-anchors",
@@ -247,7 +247,7 @@ def materialize(session):
 
 
 def config_digest(compiler, runtime, optimization, *, enabled=3, warn=1, maximum=8, minimum=90, policy=POLICY, debug=0, target="x86_64-unknown-linux-gnu"):
-    """Independent v3 serializer shared by all observed-family validators."""
+    """Independent v4 serializer shared by all observed-family validators."""
     return support.config_digest(compiler, runtime, optimization, enabled=enabled, warn=warn,
         maximum=maximum, minimum=minimum, policy=policy, debug=debug, target=target)
 
@@ -310,7 +310,7 @@ def run_observed(session, sources, levels):
             if name.startswith("retained"):
                 assert data["allocations"] == [{"generation": 1, "domain": 1, "bytes": 13, "allocation_site": 0, "resize_site": 4294967295, "test": 0}]
             for path in (pre, post):
-                text = path.read_text(); assert "__stasha_obs_init_v3" in text
+                text = path.read_text(); assert "__stasha_obs_init_v4" in text
                 assert not re.search(r"@__stasha_obs_init\(", text)
             signature = (data["coverage"], [(f["lines"], f["exclusions"]) for f in data["files"]], data["tests"], data["sites"])
             if name in signatures: assert signature == signatures[name], "optimization changed fixed source inventory"
@@ -364,7 +364,7 @@ def run_nonlaunch(session, ordinary, positive, negative, levels, ir_compiler):
             support.validate_positive_nonlaunch_result(result, output); support.retain_nonlaunch_evidence(dest, result)
             for path in (pre, post):
                 text = path.read_text()
-                assert ("__stasha_obs_init_v3" in text) == (command == "test")
+                assert ("__stasha_obs_init_v4" in text) == (command == "test")
             session.cases.append({"name": key, "stage": "compile_only", "status": "pass", "executions": 0,
                 "pre_ir_sha256": sha(pre), "post_ir_sha256": sha(post), "independent_ir_review": "required"})
     assert sha(ir_compiler) == digest
@@ -410,8 +410,11 @@ def selftest(artifacts):
             self.assertEqual(fixture_oracle("imports")["assertions"], 14)
         def test_independent_configuration_known_answers(self):
             digest, encoded = config_digest("dd" * 32, "aa" * 32, 2)
-            self.assertEqual(len(encoded), 526)
-            self.assertEqual(digest, "1dc9f3d3e2be65e986cf997e1350dea939ad3517d392f67a3d9220f98d3ed457")
+            self.assertEqual(len(encoded), 559)
+            self.assertEqual(digest, "32266849eed635082fdc9753111d97ff4bbeaaf9d95f07cf66c5d31fc90b1654")
+            preserved, preserved_bytes = support.config_digest("dd" * 32, "aa" * 32, 2, _version=3)
+            self.assertEqual(len(preserved_bytes), 526)
+            self.assertEqual(preserved, "1dc9f3d3e2be65e986cf997e1350dea939ad3517d392f67a3d9220f98d3ed457")
             old, old_bytes = config_digest("dd" * 32, "aa" * 32, 2, policy="closed-direct-source-fixed-array-queries-v3")
             self.assertNotEqual(old, digest); self.assertNotEqual(old_bytes, encoded)
         def test_nonlaunch_partition(self):

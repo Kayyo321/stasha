@@ -27,13 +27,15 @@
 #define STS_OBS_SLICE_REFERENCE_LIMIT 65536u
 #define STS_OBS_SLICE_BLOCK_LIMIT 65536u
 #define STS_OBS_SLICE_DEPTH_LIMIT 1024u
+#define STS_OBS_POSITIONAL_ITEMS_PER_CONSTRUCTOR_LIMIT 65536u
+#define STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT 65536u
 /* Graph encoding remains the independently frozen v2 identity. */
 #define STS_OBS_GRAPH_PROFILE_V2 "native-sequential-direct-source-v2"
 #define STS_OBS_LOOKUP_POLICY "requested-entry-directory-v1"
 #define STS_OBS_DUPLICATE_POLICY "reject-v1"
 #define STS_OBS_ALIAS_POLICY "global-unique-exported-target-v1"
-#define STS_OBS_ADMISSION_POLICY "closed-direct-source-array-and-local-primitive-slices-v1"
-#define STS_OBS_RESOURCE_POLICY "direct-source-slice-bounds-v3"
+#define STS_OBS_ADMISSION_POLICY "closed-direct-source-primitive-slice-count-or-positional-v1"
+#define STS_OBS_RESOURCE_POLICY "direct-source-positional-slice-bounds-v4"
 enum { STS_OBS_ROOT = 0, STS_OBS_IMPORT = 1 };
 typedef struct {
     uint32_t file_id, role;
@@ -76,7 +78,8 @@ enum {
 enum { STS_OBS_DECL_FN=1, STS_OBS_DECL_VAR=2, STS_OBS_DECL_TYPE=3,
        STS_OBS_DECL_IMPORT=6, STS_OBS_DECL_COMPTIME_ASSERT=27, STS_OBS_DECL_TEST=58 };
 enum { STS_OBS_NEW = 1, STS_OBS_MOV = 2, STS_OBS_REM = 3,
-       STS_OBS_SLICE_MAKE = 4, STS_OBS_SLICE_REM = 5 };
+       STS_OBS_SLICE_MAKE = 4, STS_OBS_SLICE_REM = 5,
+       STS_OBS_SLICE_MAKE_POSITIONAL = 6 };
 enum { STS_OBS_SLICE_NONE = 0, STS_OBS_SLICE_I8 = 1, STS_OBS_SLICE_U8 = 2,
        STS_OBS_SLICE_I16 = 3, STS_OBS_SLICE_U16 = 4, STS_OBS_SLICE_I32 = 5,
        STS_OBS_SLICE_U32 = 6, STS_OBS_SLICE_I64 = 7, STS_OBS_SLICE_U64 = 8,
@@ -94,6 +97,7 @@ typedef struct {
     char *owner;
     uint32_t file_id, decl_id, col, end_line, end_col;
     uint32_t slice_element_kind, slice_abi_stride, slice_count_arity;
+    uint32_t slice_initializer_item_count;
 } sts_observation_site;
 typedef struct {
     uint32_t line; char *name;
@@ -222,7 +226,7 @@ static inline void sts_observation_encode_digest(sts_observation_encoder *e, con
 static inline void sts_observation_encode_optional_u32(sts_observation_encoder *e, int present, uint32_t v) {
     sts_observation_encode_u32(e,present ? 1u : 0u); if(present) sts_observation_encode_u32(e,v);
 }
-/* Configuration field order is frozen with the v3 encoding vectors. */
+/* Configuration field order is frozen with the v4 encoding vectors. */
 static inline int sts_observation_config_encode(const sts_observation_config *c,const char *runtime_id,
                                                  const char *target,int optimization,int debug,
                                                  sts_observation_encoder *encoded) {
@@ -230,8 +234,8 @@ static inline int sts_observation_config_encode(const sts_observation_config *c,
        c->warn_memleak<0||c->warn_memleak>1||c->has_max_bytes<0||c->has_max_bytes>1||
        c->has_min_coverage<0||c->has_min_coverage>1||c->min_coverage>100||
        c->enabled_mask!=(uint32_t)(((c->warn_memleak||c->has_max_bytes)?1:0)|(c->has_min_coverage?2:0))||!c->enabled_mask)return -1;
-    sts_observation_encode_text(encoded,"stasha-observation-config-v3");
-    sts_observation_encode_u32(encoded,3);sts_observation_encode_u32(encoded,3);
+    sts_observation_encode_text(encoded,"stasha-observation-config-v4");
+    sts_observation_encode_u32(encoded,4);sts_observation_encode_u32(encoded,4);
     sts_observation_encode_text(encoded,STASHA_OBSERVATION_PROFILE);
     sts_observation_encode_u32(encoded,2);sts_observation_encode_u32(encoded,2);
     sts_observation_encode_text(encoded,STS_OBS_RESOURCE_POLICY);sts_observation_encode_text(encoded,STS_OBS_LOOKUP_POLICY);
@@ -241,7 +245,8 @@ static inline int sts_observation_config_encode(const sts_observation_config *c,
         STS_OBS_IDENTIFIER_LIMIT,STS_OBS_MODULE_LIMIT,STS_OBS_SYMBOL_LIMIT,STS_OBS_ROOT_PATH_LIMIT,STS_OBS_IMPORT_PATH_LIMIT,
         STS_OBS_PATH_LIMIT,STS_OBS_LABEL_LIMIT,STS_OBS_DECL_LIMIT,STS_OBS_ANCHOR_LIMIT,STASHA_OBSERVATION_MAX_TESTS,STASHA_OBSERVATION_MAX_LINES,
         STASHA_OBSERVATION_MAX_SITES,STASHA_OBSERVATION_MAX_RECORDS,STASHA_OBSERVATION_MAX_REPORT_BYTES,STS_OBS_MANIFEST_LIMIT,STS_OBS_METADATA_LIMIT,
-        STS_OBS_SLICE_BINDING_LIMIT,STS_OBS_SLICE_REFERENCE_LIMIT,STS_OBS_SLICE_BLOCK_LIMIT,STS_OBS_SLICE_DEPTH_LIMIT};
+        STS_OBS_SLICE_BINDING_LIMIT,STS_OBS_SLICE_REFERENCE_LIMIT,STS_OBS_SLICE_BLOCK_LIMIT,STS_OBS_SLICE_DEPTH_LIMIT,
+        STS_OBS_POSITIONAL_ITEMS_PER_CONSTRUCTOR_LIMIT,STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT};
     sts_observation_encode_u32(encoded,sizeof(limits)/sizeof(limits[0]));
     for(size_t i=0;i<sizeof(limits)/sizeof(limits[0]);++i)sts_observation_encode_u32(encoded,limits[i]);
     sts_observation_encode_text(encoded,target);sts_observation_encode_digest(encoded,c->compiler_id);
@@ -271,7 +276,7 @@ static inline int sts_observation_manifest_digest(const sts_observation_config *
     }
     sts_observation_encoder e; sts_observation_encode_init(&e,STS_OBS_MANIFEST_LIMIT);
 #define OBS_U(v) sts_observation_encode_u32(&e,(v))
-    sts_observation_encode_text(&e,"stasha-observation-map-v3"); OBS_U(3);
+    sts_observation_encode_text(&e,"stasha-observation-map-v4"); OBS_U(4);
     sts_observation_encode_digest(&e,c->input_graph_id); sts_observation_encode_digest(&e,c->config_id);
     OBS_U(m->file_count);
     for(uint32_t i=0;i<m->file_count;++i) {
@@ -305,6 +310,7 @@ static inline int sts_observation_manifest_digest(const sts_observation_config *
         OBS_U(s->end_line); OBS_U(s->end_col); OBS_U(s->kind);
         sts_observation_encode_optional_u32(&e,s->owner_test != UINT32_MAX,s->owner_test);
         OBS_U(s->slice_element_kind); OBS_U(s->slice_abi_stride); OBS_U(s->slice_count_arity);
+        OBS_U(s->slice_initializer_item_count);
     }
     OBS_U(m->line_count);
     for(uint32_t i=0;i<m->line_count;++i) {OBS_U(i);OBS_U(m->line_file_ids[i]);OBS_U(m->lines[i]);}

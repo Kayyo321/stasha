@@ -1,4 +1,4 @@
-# Native direct-source and primitive-slice observations (v3, developmental)
+# Native direct-source and primitive-slice observations (v4, developmental)
 
 This partial profile remains opt-in until complete language support is qualified;
 coverage minimums are always explicit choices. See the
@@ -67,7 +67,7 @@ and static globals; fixed primitive nonpointer-element arrays; literal strings;
 primitive arithmetic/casts and array/pointer operations; lexical blocks;
 if/else-if, for/while/do-while/inf, integer match/switch with guards, return,
 break/continue and defer; explicit `new`, two-argument `mov`, `rem`; the bounded
-local explicit-count primitive slices described below; primitive
+local explicit-count and positional primitive slices described below; primitive
 test assertions and literal-message failure; compiler-generated primitive print.
 
 The source walker rejects all other node families by default, even in uncalled
@@ -106,15 +106,15 @@ runtime's dense IDs. The optimizer cannot remove
 zero-hit denominator metadata because the generated harness explicitly registers
 its fixed inventory, independent of otherwise removable function bodies.
 
-The v3 profile is `native-sequential-direct-source-slice-v3`: observer ABI 3,
-raw report/driver JSON/manifest schema 3, allocation metric 2 and line metric 2.
-It uses `__stasha_obs_init_v3`, with no v2 alias; mixed image/runtime/report
+The v4 profile is `native-sequential-direct-source-positional-slice-v4`: observer ABI 4,
+raw report/driver JSON/manifest schema 4, allocation metric 2 and line metric 2.
+It uses `__stasha_obs_init_v4`, with no v3 compatibility alias; mixed image/runtime/report
 versions are rejected. Input graph tag/schema, byte encoding, old graph-profile
 identity and known-answer vector remain v2. Qualification-family receipt schema
 also remains 2: it is an evidence structure, independent of observer wire schema.
 The admission policy is
-`closed-direct-source-array-and-local-primitive-slices-v1` and resource policy is
-`direct-source-slice-bounds-v3`. File, declaration, anchor, test, operation and
+`closed-direct-source-primitive-slice-count-or-positional-v1` and resource policy is
+`direct-source-positional-slice-bounds-v4`. File, declaration, anchor, test, operation and
 denominator metadata remain present with coverage collection disabled. Per-file
 exclusion bitmasks preserve mixed test/production ownership on a physical line.
 
@@ -168,17 +168,19 @@ The native positive suite uses ordinary defined-behavior programs only, and chec
 9/10 versus 8/10 coverage, threshold equality, test-only leaks, zero assertions,
 zero denominators, suite-wide cleanup, every control anchor family, optimizer
 invariance and exactly-once sentinels. Preserved leaf line/allocation oracles are
-requalified under v3, not regenerated from new compiler output.
+requalified under v4, not regenerated from new compiler output.
 
 The existing hosted entry runs `test_observation.py`, which now requires all
 three pure component tests (runtime, driver, source graph), Python-only enrollment
 selftests, the ordinary imported-test family, the observed-source family, and
-the bounded observed-array-query family, and the bounded observed-primitive-slice
-family. All four children receive the exact selected compiler and optimization set. Missing,
+the bounded observed-array-query, observed-primitive-slice and observed-positional-slice
+families. All five children receive the exact selected compiler. The mandatory
+aggregate requires the full O0–O3 set; old standalone families retain their existing
+optimization selection. The positional family rejects partial/reordered native sets. Missing,
 malformed, nonterminal, changed-identity, skipped, timed-out or failing child
 receipts prevent wrapper success. Runner sources and fixed fixtures belong to
-the frozen input inventory. All three observed families require the exact selected runtime archive identity
-and v3 profile. All children retain terminal artifact manifests; altered artifacts,
+the frozen input inventory. All four observed families require the exact selected runtime archive identity
+and v4 profile. All children retain terminal artifact manifests; altered artifacts,
 duplicate cases/runs, substituted receipts and changed sources fail enrollment.
 There is no default skip for any family.
 
@@ -227,7 +229,7 @@ not a claim that every Stasha program or runtime family has been qualified.
 
 The preceding array checkpoint used policy
 `closed-direct-source-fixed-array-queries-v3` within observer v2. Its exact source,
-semantic and coverage inventories remain unchanged under observer v3, allocation
+semantic and coverage inventories remain unchanged under observer v4, allocation
 metric 2 and line metric 2. Only the protocol/recomputation boundary advances.
 The new configuration known answer is 526 bytes, SHA-256
 `1dc9f3d3e2be65e986cf997e1350dea939ad3517d392f67a3d9220f98d3ed457`
@@ -361,8 +363,10 @@ fixture is exactly 4/6 with `0f`; the imported fixture retains three slice recor
 of 8,12,12 bytes with test IDs 0,0,1. Mixed domains retain independent 7+20=27
 bytes. Every source/site/line/record/threshold oracle is frozen before compilation.
 
-The separate no-launch inventory has exactly 177 rejection sources and 22
-count-value IR controls. None can enter native dispatch, even after erroneous
+The historical no-launch inventory contained 177 rejection sources. Exactly
+three source-identical inline-make cases are now fifth-family positives; 174
+rejection sources and all 22 count-value IR controls remain nonlaunch-only. All
+historical source bytes/hashes and existing native oracles remain preserved. None can enter native dispatch, even after erroneous
 admission; missing nonlaunch instrumentation is a blocker, never a normal-runner
 fallback. Count failures establish reason-6 edges before allocation through IR,
 not native panic runs. No enormous valid allocation or native-invalid-memory
@@ -378,7 +382,7 @@ python3 tests/observation/test_primitive_slices.py --stage native --compiler bin
 ```
 
 Independent source/ordinary and observed pre/post-O0–O3 IR, pure components,
-separately accepted small real native positives, and the complete four-family
+separately accepted small real native positives, and the complete five-family
 unchanged-candidate aggregate are distinct required gates. A prepared receipt,
 source review or pure spy does not establish native qualification. Endpoint
 records prove retained backing; balanced totals alone do not prove every callback
@@ -391,3 +395,97 @@ execution. Other slices, transfers, growth, providers, targets, generated alloca
 families and broad lifetime analysis stay unsupported/open. This bounded increment
 never means full language support, default checker activation or a default coverage
 minimum, and authorizes no restricted descriptor/archive or LeakSanitizer work.
+
+
+## Bounded positional primitive-slice initialization
+
+The fifth family adds only direct local `heap []T name = make.{items};` in an
+ordinary source brace block. T is one of the eleven builtin primitive scalar
+elements already listed. Empty initialization is admitted: its descriptor is
+null/zero/zero and it produces no allocation. Nonempty backing requests exactly
+N times target ABI stride, sets len=cap=N, and uses the existing retained,
+same-block direct-rem or adjacent-defer schedule. Aliases, descriptor escape,
+views, transfer, growth, composites, range/spread/designated items, deferred-body
+constructors and indirect construction remain excluded.
+
+Items are recursively source-semantically typed primitive literals/reads,
+unary `- ! ~`, the admitted numeric/integer/comparison/logical operators,
+primitive casts/sizeof, compatible conditional arms and direct scalar source
+calls. Imported direct calls must already resolve to an exact exported source
+target. Arguments and all conditional/short-circuit operands satisfy the same
+item rules, even when uncalled or untaken. Direct item indexing, len/cap,
+data members, assignment, increment/decrement, address/deref, pointer/void/unknown
+values and aggregates are excluded; helpers can still use the wider admitted
+profile internally. Contextual literal types and ordinary conversions are
+preserved. Finite exactly representable floating inputs and initialized reads
+are fixture preconditions, not new float restrictions or a definite-initialization
+proof. Initializer reads precede binding insertion.
+
+The immutable ordered original item identities, count and owners are checked
+before output. The internal compound wrapper keeps pointer/shape identity;
+completed outer-make and item spans supply source metadata. No full wrapper
+brace extent is assumed. N and the aggregate across selected walked constructors,
+including dead/uncalled source, are each limited to 65,536. Size/snapshot bounds
+are checked without truncation. These observer bounds do not become ordinary
+language limits.
+
+Kind 6 is positional make. Kind 4 remains count make; kinds 1–5 retain their meaning.
+The canonical site adds `slice_initializer_item_count` immediately after count
+arity. Kind 6 has primitive element/stride, arity 0 and N; kind 4 has arity 1/2 and
+positional count 0; other sites have all four constructor fields zero. Empty/dead
+kind 6 sites remain in the static map. A live positional record must be nonempty
+and have exactly N×stride bytes, in existing domain 2 without resize origin.
+Config 4 appends the two 65,536 item limits to the prior 24-entry resource vector.
+Allocation/line metrics stay 2/2; graph 2 and its byte encoding remain unchanged.
+
+The shared ordinary primitive positional lowering guards unsuccessful nonzero
+allocation with nonreturning reason 8 before zeroing, item effects, stores and
+publication. Source/pre-IR describes the intended allocation route; ordinary
+LLVM allocation elision remains valid under the as-if rule. Observed hooks must
+retain their effects and identities. Generated stdout proves values/evaluation
+order, not allocator call counts. The raw report remains a live endpoint record,
+not an event log; source/IR and pure controls establish callback/cleanup routes.
+
+`fixtures/positional_slices/corpus.json` contains the separately frozen R2 source
+corpus, full source-derived declarations/anchors/sites/spans/ownership/line masks,
+endpoint generation/test attribution, source-graph edge, resource recipes and
+independently reviewed protocol known answers. Historical draft status strings
+inside immutable input documents are superseded by the embedded independent
+full-oracle seal. Expected values are never learned from compiler output.
+The fixed inventory is 46 positives, 102 new nonlaunch rejects and 4 nonlaunch
+resource controls. All 184 ordinary O0–O3 image executions must pass exact
+stdout/exit/stderr plus source/image/pre/post-IR identity checks before the first
+of 784 observed invocations. A missing, failed, changed, timed-out or substituted
+ordinary case blocks observation. Neither cached receipts nor partial opt sets
+satisfy that barrier. Full-family budget is 3600 seconds, each command 120 seconds;
+prior-family budgets are unchanged. The Python-only aggregate enrollment
+selftest has its separately reviewed 120-second cumulative budget (measured 48.072
+seconds with the added ordinary mocks under the previous 60-second cap).
+
+The central fixture is 4/6 (66 passes, 67 fails); plain multiline item-only lines
+are excluded. Mixed domains start at 7 explicit+20 count+6 positional=33 bytes,
+and selective release yields 26/13/27/0. Modes independently check warning-only,
+max equality/below, coverage-only, combined, and zero-denominator behavior.
+Coverage-only still retains allocation endpoint records; allocation-only keeps
+the same denominator and clears hits. Test ownership and dynamic originating
+test are separate, and released allocations leave generation gaps.
+
+```
+python3 tests/memory/test_positional_make.py
+python3 tests/observation/test_positional_slices.py --selftest-only --artifacts build/observation/positional-mocks
+python3 tests/observation/test_positional_slices.py --stage prepare --artifacts build/observation/positional-prepared
+python3 tests/observation/test_positional_slices.py --stage compile-only --compiler bin/stasha \
+  --ir-compiler /path/to/reviewed-fork-disabled-stasha --opt 0,1,2,3 --artifacts build/observation/positional-nonlaunch
+python3 tests/observation/test_positional_slices.py --stage native --compiler bin/stasha \
+  --opt 0,1,2,3 --artifacts build/observation/positional-native
+```
+
+The local coordinator must accept independent source/pre/post-IR review before
+any new native fixture execution. Permanent CI then exercises the reviewed
+unchanged source; no private review artifact is a hidden CI dependency.
+Preparation, pure mocks, source/IR inspection, ordinary execution and observed
+execution are distinct evidence. New positional allocation-failure/malformed
+native experiments and genuine OOM remain NOT_RUN. Existing separately scoped
+preservation controls retain their authority. This bounded family does not
+complete the language-support roadmap, enable the checker by default, select a
+coverage minimum, or authorize restricted descriptor/archive or LSan work.

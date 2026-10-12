@@ -113,6 +113,15 @@ def pure_components(qualification, cc):
         qualification.command(name + "-run", [str(exe)])
 
 
+def dispatch_enrollment_selftest(qualification):
+    # Approved internal-only headroom: the full ordinary Python mocks measured
+    # 48.072s within the previous 60s cap. Native family/image limits do not change.
+    destination = qualification.artifacts / 'wrapper-enrollment-selftest'
+    qualification.command('wrapper-enrollment-selftest', [sys.executable, '-B', str(ROOT / 'tests/observation/test_source_imports.py'),
+        '--selftest-only', '--artifacts', str(destination)], timeout=120)
+    return destination
+
+
 def expected_array_cases(levels):
     # Parent-owned literal case inventory; never accept the child's receipt as
     # an oracle and never enumerate other ordinary array-query RuntimeCases.
@@ -181,6 +190,71 @@ def expected_slice_cases(levels):
                              *(('coverage_66','coverage_67') if name == 'coverage' else ()))]}
 
 
+POSITIONAL_QUALIFICATION_CONTRACT = dict(
+    corpus_sha256='12e1882c72db168c5d8b9bc80ab69c67a924a0007875a0a536d3272734ea0dd1',
+    oracle_index_sha256='3afe36ec7631c6f81330cbb46489d3b87c754ac8b357fae902535c98f911f310',
+    ordinary_required=184, observed_required=784, ordinary_before_observed=True,
+    cumulative_timeout_seconds=3600, per_command_timeout_seconds=120,
+    native_oom='NOT_RUN / outside positional qualification',
+    source_ir_review='independent coordinator prerequisite; no local approval inferred')
+
+
+def expected_positional_cases(levels):
+    # Parent-owned frozen case inventory, never taken from a successful child.
+    names = ('coverage',
+ 'retained',
+ 'primitive_i8',
+ 'primitive_u8',
+ 'primitive_i16',
+ 'primitive_u16',
+ 'primitive_i32',
+ 'primitive_u32',
+ 'primitive_i64',
+ 'primitive_u64',
+ 'primitive_bool',
+ 'primitive_f32',
+ 'primitive_f64',
+ 'conversions',
+ 'empty_and_single',
+ 'scalar_reads',
+ 'scalar_operators',
+ 'scalar_comparisons',
+ 'helper_order',
+ 'helper_explicit_heap',
+ 'plain_multiline',
+ 'conditional_items',
+ 'short_circuit_items',
+ 'shadow_initializer',
+ 'same_line',
+ 'imports',
+ 'test_owned',
+ 'schedule_direct',
+ 'schedule_defer_fallthrough',
+ 'schedule_defer_return',
+ 'schedule_defer_nested',
+ 'schedule_defer_continue',
+ 'schedule_defer_break',
+ 'schedule_defer_nested_exits',
+ 'schedule_direct_bypass_return',
+ 'schedule_direct_bypass_break',
+ 'schedule_direct_bypass_continue',
+ 'schedule_shadow_siblings',
+ 'mixed_none',
+ 'mixed_explicit_rem',
+ 'mixed_count_rem',
+ 'mixed_positional_rem',
+ 'mixed_all_rem',
+ 'promoted_inline_make-called',
+ 'promoted_inline_make-dead',
+ 'promoted_inline_make-uncalled')
+    below = ('retained', 'test_owned', 'schedule_direct_bypass_return', 'schedule_direct_bypass_break', 'schedule_direct_bypass_continue', 'mixed_none', 'mixed_explicit_rem', 'mixed_count_rem', 'mixed_positional_rem', 'promoted_inline_make-called')
+    return {'ordinary_native': [f'{name}-ordinary-O{opt}' for opt in levels for name in names],
+            'observed_native': [f'{name}-{mode}-O{opt}' for opt in levels for name in names
+                for mode in ('warn', 'max-equal', 'coverage-zero', 'combined-equal',
+                    *(('max-below',) if name in below else ()),
+                    *(('coverage-66','coverage-67') if name == 'coverage' else ()))]}
+
+
 def validate_family_receipt(qualification, destination, family, runner, expected, levels):
     # A child cannot choose an older or external successful receipt via LATEST.
     latest = (destination / "LATEST").read_text().strip()
@@ -199,11 +273,12 @@ def validate_family_receipt(qualification, destination, family, runner, expected
         "observed-source-imports": ("tests/observation/test_source_imports.py", True),
         "observed-array-queries": ("tests/observation/test_array_queries.py", True),
         "observed-primitive-slices": ("tests/observation/test_primitive_slices.py", True),
+        "observed-positional-slices": ("tests/observation/test_positional_slices.py", True),
     }
     assert family in identities and runner == identities[family][0]
     if identities[family][1]:
         assert data["runtime_sha256"] == qualification.runtime_hash
-        assert data["observation_profile"] == "native-sequential-direct-source-slice-v3"
+        assert data["observation_profile"] == "native-sequential-direct-source-positional-slice-v4"
     assert data["source_manifest"] == qualification.source_manifest
     assert data["source_manifest_sha256"] == sha(result_dir / "source-manifest.json")
     assert json.loads((result_dir / "source-manifest.json").read_text()) == qualification.source_manifest
@@ -213,6 +288,12 @@ def validate_family_receipt(qualification, destination, family, runner, expected
         assert not Path(relative).is_absolute() and ".." not in Path(relative).parts
         assert sha(path) == digest and str(path.resolve()) == data["generated_resolutions"][relative]
     assert json.loads((result_dir / "generated-manifest.json").read_text()) == data["generated_manifest"]
+    if family == 'observed-positional-slices':
+        assert levels == [0, 1, 2, 3]
+        assert data['qualification_contract'] == POSITIONAL_QUALIFICATION_CONTRACT
+        assert data['counts'] == {'ordinary_native': 184, 'observed_native': 784}
+        stages = [case['stage'] for case in data['cases']]
+        assert stages == ['ordinary_native'] * 184 + ['observed_native'] * 784, 'ordinary-before-observed barrier violated'
     assert data["inventory"] == expected
     names = [case["name"] for case in data["cases"]]
     assert len(names) == len(set(names))
@@ -224,6 +305,9 @@ def validate_family_receipt(qualification, destination, family, runner, expected
     assert data["runs"] and all(run["status"] == "pass" for run in data["runs"])
     run_names = [run['name'] for run in data['runs']]
     assert len(run_names) == len(set(run_names)), 'duplicate command receipt'
+    if family == 'observed-positional-slices':
+        commands = [name + suffix for name in expected['ordinary_native'] for suffix in ('-compile','-execute')] + expected['observed_native']
+        assert run_names == commands, 'missing/reordered positional command receipt'
     observed_runs = [case['run_id'] for case in data['cases'] if case['stage'] == 'observed_native']
     assert len(observed_runs) == len(set(observed_runs)), 'duplicate runtime identity'
     artifacts = data['artifact_manifest']; assert artifacts
@@ -245,6 +329,7 @@ def validate_family_receipt(qualification, destination, family, runner, expected
 def dispatch_required_families(qualification, levels, cc):
     """Mandatory hosted families: no optional/default skip or absent-pass path."""
     qualification.verify_inputs()
+    assert levels == [0, 1, 2, 3], 'mandatory positional family requires --opt 0,1,2,3; no child dispatched'
     ordinary = load_family_module("ordinary_imported_tests", "tests/scalars/test_imported_tests.py")
     observed = load_family_module("observed_source_imports", "tests/observation/test_source_imports.py")
     for family, runner, expected, extra in [
@@ -256,14 +341,16 @@ def dispatch_required_families(qualification, levels, cc):
          expected_array_cases(levels), ["--cc", cc]),
         ("observed-primitive-slices", "tests/observation/test_primitive_slices.py",
          expected_slice_cases(levels), ["--cc", cc]),
+        ("observed-positional-slices", "tests/observation/test_positional_slices.py",
+         expected_positional_cases(levels), ["--cc", cc]),
     ]:
         destination = qualification.artifacts / family
         argv = [sys.executable, "-B", str(ROOT / runner), "--compiler", str(qualification.compiler),
                 "--opt", ",".join(map(str, levels)), "--artifacts", str(destination), *extra]
-        qualification.command(family, argv, timeout=3600 if family == "observed-primitive-slices" else 1800)
+        qualification.command(family, argv, timeout=3600 if family in ("observed-primitive-slices", "observed-positional-slices") else 1800)
         receipt = validate_family_receipt(qualification, destination, family, runner, expected, levels)
         qualification.family_receipts.append(receipt)
-    assert len(qualification.family_receipts) == 4
+    assert len(qualification.family_receipts) == 5
     all_ids = [case['run_id'] for receipt in qualification.family_receipts for case in receipt['result']['cases']
                if case['stage'] == 'observed_native']
     assert len(all_ids) == len(set(all_ids)), 'duplicate run identity across mandatory families'
@@ -300,7 +387,7 @@ class Qualification:
     def receipt(self):
         (self.artifacts / "result.json").write_text(json.dumps({"status": self.status, "failure": self.failure,
             "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
-            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source and bounded array-query and primitive-slice positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
+            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "wrapper_enrollment_timeout_seconds": 120, "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source and bounded array-query and primitive/positional-slice positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
 
     def command(self, name: str, argv: list[str], *, env=None, expected=0, cwd=None, timeout=60):
         dest = self.artifacts / name
@@ -350,7 +437,7 @@ class Qualification:
         shutil.copy2(evidence / "driver.json", dest / "driver.json")
         if (evidence / "report").exists():
             shutil.copy2(evidence / "report", dest / "report")
-        assert data["schema"] == 3 and data["profile"] == "native-sequential-direct-source-slice-v3"
+        assert data["schema"] == 4 and data["profile"] == "native-sequential-direct-source-positional-slice-v4"
         assert re.fullmatch(r"[0-9a-f]{64}", data["input_graph_sha256"])
         assert len(data["files"]) == 1 and not data["edges"]
         assert sha(source_path) == source_before and data["files"][0]["source_sha256"] == source_before
@@ -402,11 +489,10 @@ class Qualification:
         return path
 
     def run(self, levels, cc):
+        assert levels == [0, 1, 2, 3], 'mandatory positional family requires --opt 0,1,2,3'
         pure_components(self, cc)
         # This subprocess is Python-only and cannot recursively invoke this wrapper.
-        selftest_dir = self.artifacts / "wrapper-enrollment-selftest"
-        self.command("wrapper-enrollment-selftest", [sys.executable, "-B", str(ROOT / "tests/observation/test_source_imports.py"),
-                     "--selftest-only", "--artifacts", str(selftest_dir)])
+        selftest_dir = dispatch_enrollment_selftest(self)
         selftest = json.loads((selftest_dir / "result.json").read_text())
         assert selftest["status"] == "pass" and selftest["tests_run"] > 0 and selftest["native_executions"] == 0
         self.enrollment_selftest = {"receipt": str(selftest_dir / "result.json"),
@@ -496,7 +582,7 @@ class Qualification:
         }.items():
             self.command("reject-option-" + name, [str(self.compiler), "test", str(FIXTURES / "coverage.sts"), *flags], expected=1)
         self.verify_inputs()
-        assert len(self.family_receipts) == 4 and self.enrollment_selftest is not None
+        assert len(self.family_receipts) == 5 and self.enrollment_selftest is not None
         assert sha(Path(self.enrollment_selftest["receipt"])) == self.enrollment_selftest["receipt_sha256"]
         assert all(record["status"] == "pass" for record in self.records)
         for child in self.family_receipts:
@@ -517,6 +603,7 @@ def main():
     args = parser.parse_args()
     levels = [int(level) for level in args.opt.split(",")]
     if not levels or len(levels) != len(set(levels)) or any(level not in range(4) for level in levels): parser.error("--opt must list levels 0 through 3")
+    if levels != [0, 1, 2, 3]: parser.error("mandatory positional family requires --opt 0,1,2,3 in frozen order")
     qualification = Qualification(args.compiler, args.artifacts)
     try:
         qualification.run(levels, args.cc)

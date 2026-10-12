@@ -5,14 +5,18 @@
 #include "../../src/runtime/observation_runtime.c"
 #include <assert.h>
 
-_Static_assert(STASHA_OBSERVATION_ABI_VERSION == 3u, "explicit v3 runtime ABI");
-_Static_assert(STASHA_OBSERVATION_SCHEMA_VERSION == 3u, "explicit v3 report schema");
+_Static_assert(STASHA_OBSERVATION_ABI_VERSION == 4u, "explicit v4 runtime ABI");
+_Static_assert(STASHA_OBSERVATION_SCHEMA_VERSION == 4u, "explicit v4 report schema");
 _Static_assert(STASHA_OBSERVATION_ALLOCATION_VERSION == 2u, "domain-qualified allocation metric");
 _Static_assert(STASHA_OBSERVATION_LINE_VERSION == 2u, "file-qualified line metric");
-_Static_assert(_Generic(&__stasha_obs_init_v3,
+_Static_assert(_Generic(&__stasha_obs_init_v4,
     void (*)(const char *, const char *, const char *, const char *, const char *,
              uint32_t, uint32_t, uint32_t, uint32_t): 1, default: 0),
-    "v3 initializer retains its physical parameter types");
+    "v4 initializer retains its physical parameter types");
+_Static_assert(_Generic(&__stasha_obs_slice_new_v4,
+    void *(*)(size_t, uint32_t): 1, default: 0), "v4 slice allocation physical types");
+_Static_assert(_Generic(&__stasha_obs_slice_rem_v4,
+    void (*)(void *, uint32_t): 1, default: 0), "v4 slice release physical types");
 
 typedef struct {
     uintptr_t next_key, last_key;
@@ -335,7 +339,7 @@ static void test_report_literal(void) {
     reset_sink(); obs_writer writer = { &sink, write_text, 0, 0 };
     assert(obs_emit_report(&state, &writer));
     const char expected[] =
-        "STASHA_OBSERVATION 3\nprofile native-sequential-direct-source-slice-v3\nruntime_abi 3\nmetric_versions 2 2\n"
+        "STASHA_OBSERVATION 4\nprofile native-sequential-direct-source-positional-slice-v4\nruntime_abi 4\nmetric_versions 2 2\n"
         "run run01\ninput_graph input_graph01\nmap map01\nconfig config01\ncompiler compiler01\n"
         "enabled 3\ninventory 1 10 8\nstate 1 0 1\nassertions 2 0\ntests 1 1\ntest 0 2\n"
         "hits 0102\nallocations 1 8\nallocation 1 1 8 0 4294967295 0\nEND\n";
@@ -480,7 +484,7 @@ static void test_publication_controls(void) {
     assert(publication_spy.scripted_index == 4);
     assert(publication_spy.flags == (O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC));
     assert(publication_spy.mode == 0600);
-    assert(strncmp(sink.bytes, "STASHA_OBSERVATION 3\n", 21) == 0);
+    assert(strncmp(sink.bytes, "STASHA_OBSERVATION 4\n", 21) == 0);
     assert(strstr(sink.bytes, "state 1 0 1\n") != NULL);
     assert(strcmp(sink.bytes + sink.length - 4, "END\n") == 0);
     assert(obs_finish_publish(&state, 0, 0, &mock_io) == 1);
@@ -618,6 +622,32 @@ static void test_slice_arithmetic_and_corruption(void) {
     }
 }
 
+static void test_positional_endpoint_routes(void) {
+    /* Two source constructor kinds share domain 2; the core has no N metadata.
+     * Integer keys and spies establish routing, never a native event trace. */
+    const uint64_t totals[]={33,26,13,27,0};
+    const unsigned counts[]={3,2,2,2,0};
+    for(unsigned removed=0;removed<5;++removed){
+        start();add(100,7,0);add_slice(200,20,3);add_slice(300,6,6);
+        assert(allocator_spy.alloc_calls==3&&!allocator_spy.resize_calls&&!allocator_spy.release_calls);
+        assert(state.generation==3&&state.records[2].generation==3&&state.records[2].domain==2);
+        assert(state.records[2].bytes==6&&state.records[2].alloc_site==6&&state.records[2].resize_site==UINT32_MAX&&state.records[2].origin_test==0);
+        if(removed==1||removed==4)assert(obs_core_rem(&state,&allocator,100,2)==37);
+        if(removed==2||removed==4)assert(obs_core_slice_rem(&state,&allocator,200,4)==37);
+        if(removed==3||removed==4)assert(obs_core_slice_rem(&state,&allocator,300,7)==37);
+        assert(state.total_bytes==totals[removed]&&state.record_count==counts[removed]);
+        assert(allocator_spy.release_calls==(removed==4?3u:removed!=0)&&state.generation==3);
+        unsigned releases=allocator_spy.release_calls;errno=41;
+        assert(obs_core_slice_rem(&state,&allocator,0,7)==41&&allocator_spy.release_calls==releases);
+        assert(obs_core_end(&state,0)&&obs_core_finish(&state,2,0)&&obs_audit(&state));
+        reset_sink();obs_writer writer={&sink,write_text,0,0};assert(obs_emit_report(&state,&writer));
+        if(!removed){
+            const char endpoint[]="allocations 3 33\nallocation 1 1 7 0 4294967295 0\nallocation 2 2 20 3 4294967295 0\nallocation 3 2 6 6 4294967295 0\nEND\n";
+            assert(!strcmp(strstr(sink.bytes,"allocations "),endpoint));
+        }
+    }
+}
+
 int main(void) {
     test_balances();
     test_null_and_failure();
@@ -638,6 +668,7 @@ int main(void) {
     test_wrong_domains_before_callbacks();
     test_slice_null_and_invalid_is_pure();
     test_slice_arithmetic_and_corruption();
-    puts("observation runtime pure ledger tests: 19 groups passed");
+    test_positional_endpoint_routes();
+    puts("observation runtime pure ledger tests: 20 groups passed");
     return 0;
 }

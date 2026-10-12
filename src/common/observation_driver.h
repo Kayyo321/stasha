@@ -99,15 +99,24 @@ static int sts_observation_decl_kind_valid(uint32_t kind) {
         kind==STS_OBS_DECL_IMPORT||kind==STS_OBS_DECL_COMPTIME_ASSERT||kind==STS_OBS_DECL_TEST;
 }
 static int sts_observation_slice_metadata_valid(const sts_observation_site *site) {
-    if (site->kind != STS_OBS_SLICE_MAKE)
-        return !site->slice_element_kind && !site->slice_abi_stride && !site->slice_count_arity;
+    if (site->kind != STS_OBS_SLICE_MAKE && site->kind != STS_OBS_SLICE_MAKE_POSITIONAL)
+        return !site->slice_element_kind && !site->slice_abi_stride && !site->slice_count_arity &&
+            !site->slice_initializer_item_count;
     uint32_t stride = sts_observation_slice_stride(site->slice_element_kind);
-    return stride && site->slice_abi_stride == stride &&
-        (site->slice_count_arity == 1u || site->slice_count_arity == 2u);
+    if (!stride || site->slice_abi_stride != stride) return 0;
+    if (site->kind == STS_OBS_SLICE_MAKE)
+        return (site->slice_count_arity == 1u || site->slice_count_arity == 2u) &&
+            !site->slice_initializer_item_count;
+    return !site->slice_count_arity &&
+        site->slice_initializer_item_count <= STS_OBS_POSITIONAL_ITEMS_PER_CONSTRUCTOR_LIMIT;
 }
 static int sts_observation_slice_bytes_valid(const sts_observation_site *site, uint64_t bytes) {
-    return site->kind == STS_OBS_SLICE_MAKE && sts_observation_slice_metadata_valid(site) &&
-        bytes && bytes % site->slice_abi_stride == 0 && bytes / site->slice_abi_stride <= INT32_MAX;
+    if (!bytes || !sts_observation_slice_metadata_valid(site)) return 0;
+    if (site->kind == STS_OBS_SLICE_MAKE)
+        return bytes % site->slice_abi_stride == 0 && bytes / site->slice_abi_stride <= INT32_MAX;
+    if (site->kind != STS_OBS_SLICE_MAKE_POSITIONAL || !site->slice_initializer_item_count) return 0;
+    uint64_t count = site->slice_initializer_item_count;
+    return count <= UINT64_MAX / site->slice_abi_stride && bytes == count * site->slice_abi_stride;
 }
 static int sts_observation_manifest_valid(const sts_observation_config *c,
                                            const sts_observation_manifest *m) {
@@ -174,11 +183,16 @@ static int sts_observation_manifest_valid(const sts_observation_config *c,
         }
     }
     for(uint32_t i=0;i<m->line_count;++i)if(!(anchored[i/8]&(1u<<(i%8))))return 0;
+    uint32_t positional_items=0;
     for(uint32_t i=0;i<m->site_count;++i){const sts_observation_site *a=&m->sites[i];
         if(a->decl_id>=m->decl_count||a->file_id!=m->declarations[a->decl_id].file_id||!a->owner||
            !sts_observation_span_valid(m,a->file_id,a->line,a->col,a->end_line,a->end_col)||
-           !sts_observation_decl_contains(&m->declarations[a->decl_id],a->line,a->col,a->end_line,a->end_col)||a->kind<STS_OBS_NEW||a->kind>STS_OBS_SLICE_REM||!sts_observation_slice_metadata_valid(a)||
+           !sts_observation_decl_contains(&m->declarations[a->decl_id],a->line,a->col,a->end_line,a->end_col)||a->kind<STS_OBS_NEW||a->kind>STS_OBS_SLICE_MAKE_POSITIONAL||!sts_observation_slice_metadata_valid(a)||
            (a->owner_test!=UINT32_MAX&&(a->owner_test>=m->test_count||m->tests[a->owner_test].decl_id!=a->decl_id)))return 0;
+        if(a->kind==STS_OBS_SLICE_MAKE_POSITIONAL){
+            if(a->slice_initializer_item_count>STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT-positional_items)return 0;
+            positional_items+=a->slice_initializer_item_count;
+        }
         const sts_observation_declaration *d=&m->declarations[a->decl_id];
         if(!d->selected||(d->kind!=STS_OBS_DECL_FN&&d->kind!=STS_OBS_DECL_TEST)||
            (d->kind==STS_OBS_DECL_TEST)!=(a->owner_test!=UINT32_MAX)||
@@ -228,7 +242,7 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
     uint64_t a, b, d;
 #define OBS_LITERAL(s) do { if (!sts_observation_literal(&r, (s))) goto malformed; } while (0)
 #define OBS_NUMBER(max, sep, dst) do { if (!sts_observation_number(&r, (max), (sep), &(dst))) goto malformed; } while (0)
-    OBS_LITERAL("STASHA_OBSERVATION 3\nprofile native-sequential-direct-source-slice-v3\nruntime_abi 3\nmetric_versions 2 2\n");
+    OBS_LITERAL("STASHA_OBSERVATION 4\nprofile native-sequential-direct-source-positional-slice-v4\nruntime_abi 4\nmetric_versions 2 2\n");
     if (!sts_observation_identity(&r, "run ", c->run_id) ||
         !sts_observation_identity(&r, "input_graph ", c->input_graph_id) ||
         !sts_observation_identity(&r, "map ", m->map_id) ||
@@ -537,7 +551,7 @@ static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
         const sts_observation_config *c,const sts_observation_manifest *m,
         const sts_observation_child *child,const sts_observation_report *report,int parsed,int overall) {
     int valid=sts_observation_manifest_valid(c,m);const sts_observation_graph *g=c->graph;
-    fprintf(f,"{\n\"schema\":3,\"profile\":\"native-sequential-direct-source-slice-v3\",\"runtime_abi\":3,\"allocation_metric_version\":2,\"line_metric_version\":2,\"target\":");
+    fprintf(f,"{\n\"schema\":4,\"profile\":\"native-sequential-direct-source-positional-slice-v4\",\"runtime_abi\":4,\"allocation_metric_version\":2,\"line_metric_version\":2,\"target\":");
     sts_observation_json_string(f,run->target);
     fputs(",\"text_encoding\":\"UTF-8; raw dynamic text bytes in *_bytes_hex\",\"source_path\":",f);sts_observation_json_string(f,c->source_path);
     fputs(",\"source_path_bytes_hex\":",f);sts_observation_json_bytes(f,c->source_path);
@@ -601,7 +615,7 @@ static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
     for(uint32_t i=0;valid&&i<m->site_count;++i){const sts_observation_site *a=&m->sites[i];
         fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"decl_id\":%u,\"line\":%u,\"col\":%u,\"end_line\":%u,\"end_col\":%u,\"kind\":%u,\"owner_test\":%u,\"owner\":",i?",":"",i,a->file_id,a->decl_id,a->line,a->col,a->end_line,a->end_col,a->kind,a->owner_test);
         sts_observation_json_string(f,a->owner);fputs(",\"static_test_id\":",f);if(a->owner_test==UINT32_MAX)fputs("null",f);else fprintf(f,"%u",a->owner_test);fputs(",\"owner_bytes_hex\":",f);sts_observation_json_bytes(f,a->owner);
-        fprintf(f,",\"slice_element_kind\":%u,\"slice_abi_stride\":%u,\"slice_count_arity\":%u}",a->slice_element_kind,a->slice_abi_stride,a->slice_count_arity);
+        fprintf(f,",\"slice_element_kind\":%u,\"slice_abi_stride\":%u,\"slice_count_arity\":%u,\"slice_initializer_item_count\":%u}",a->slice_element_kind,a->slice_abi_stride,a->slice_count_arity,a->slice_initializer_item_count);
     }
     fputs("],\n\"coverage\":[",f);
     for(uint32_t i=0;valid&&i<m->line_count;++i)fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"line\":%u,\"hit\":%s}",i?",":"",i,m->line_file_ids[i],m->lines[i],parsed&&(report->hits[i/8]&(1u<<(i%8)))?"true":"false");

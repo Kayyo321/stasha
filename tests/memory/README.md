@@ -267,3 +267,34 @@ Within the closed-local interface subset, use a typed `i32` query-derived index;
 the equivalent inline query remains a known source-proof exclusion. Historical
 len-minus-one invalid-index IR becomes a valid last-element case after correction,
 so current out-of-range tests use independent literal and adjusted query boundaries.
+
+
+## Ordinary positional primitive make controls
+
+`run_positional_make.py` supplies the ordinary half of the fifth observation
+family. It materializes only 46 independently frozen positive cases (47 source
+files), using exact source hashes and literal stdout/exit/stderr assertions.
+`python3 tests/memory/test_positional_make.py` runs dependency-free mocks;
+`run_positional_make.py --list` prints the inventory. The full native entry is
+`tests/observation/test_positional_slices.py`, which requires all 184 ordinary
+O0–O3 outcomes before any of 784 observed invocations. There is no standalone
+ordinary-only fifth-family PASS receipt or cached/subset shortcut.
+
+An ordinary `stasha test ... -o image` compiles without executing; the runner
+then checks the exact image and ordinary pre/post IR and executes it once.
+No observer hook may appear in that image/IR. Exact image stderr remains empty;
+benign source-owned compiler warnings do not redefine the runtime oracle.
+Receipt revalidation checks all sources, imported files, compile/execute records,
+outputs, images and IR before crossing the observed barrier. Wrong output,
+compiler/image exit, timeout, missing/stale/changed artifacts, substituted unsafe
+sources and incomplete receipts fail closed.
+
+The ordinary primitive positional path gains null-before-zeroing/item/store
+reason 8 dominance without changing item order, contextual conversion, len/cap or
+normal values. Ordinary allocation elision remains valid; post-IR allocator call
+counts are not a stdout oracle. Every positive reads initialized values in bounds.
+This suite does not claim definite-initialization analysis, general slice
+ownership, broad initializer coverage, failure unwinding or native OOM behavior.
+No malformed, over-limit, true-OOM or rejection fixture may execute here. See the
+[observation guide](../observation/README.md#bounded-positional-primitive-slice-initialization)
+for exact scope, versions and the separately nonlaunch source/IR inventory.

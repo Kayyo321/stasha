@@ -6048,6 +6048,59 @@ static LLVMValueRef gen_make_init_runtime(cg_t *cg, node_t *node, type_info_t el
     return result;
 }
 
+/* The primitive plain-positional heap route shares ordinary conversion and
+ * allocation-failure semantics with its observed form. Keep spreads, ranges,
+ * designators, aggregates and every stack/static path in the general lowerer. */
+static boolean_t make_plain_positional(node_t *init) {
+    if(!init || init->kind!=NodeCompoundInit ||
+       (init->as.compound_init.items.count && !init->as.compound_init.items.items))return False;
+    for(usize_t i=0;i<init->as.compound_init.items.count;++i) {
+        node_t *item=init->as.compound_init.items.items[i];
+        if(!item || item->kind==NodeInitIndex || item->kind==NodeInitField ||
+           item->kind==NodeSpreadExpr || item->kind==NodeRangeExpr || item->kind==NodeCompoundInit)return False;
+    }
+    return True;
+}
+static LLVMValueRef gen_make_positional_primitive(cg_t *cg,node_t *node,
+                                                 type_info_t element,LLVMTypeRef elem_ty) {
+    LLVMTypeRef sl_ty=slice_struct_type(cg),i32_ty=LLVMInt32TypeInContext(cg->ctx),
+                i64_ty=LLVMInt64TypeInContext(cg->ctx);
+    usize_t count=node->as.make_expr.init->as.compound_init.items.count;
+    /* This is the existing ordinary expansion limit, not the observer's
+     * independently bounded 65,536-item source inventory limit. */
+    if(count>UINT64_C(16777216) || count>INT32_MAX || !cg->di_data_layout ||
+       !LLVMPointerSize(cg->di_data_layout)) {
+        scalar_error(node,"positional primitive make has unsupported count or allocator ABI");
+        return LLVMConstNull(sl_ty);
+    }
+    uint64_t stride=LLVMABISizeOfType(cg->di_data_layout,elem_ty);
+    if(!stride || stride>cg_layout_max_size(cg) || count>cg_layout_max_size(cg)/stride) {
+        scalar_error(node,"positional primitive make allocation size is unrepresentable");
+        return LLVMConstNull(sl_ty);
+    }
+    /* Even the empty form must prove its original source/site/item identity. */
+    if(!cg_observation_slice_make_guard(cg,node,element,stride))return LLVMConstNull(sl_ty);
+    if(!count)return LLVMConstNull(sl_ty);
+    LLVMValueRef bytes=LLVMConstInt(i64_ty,(uint64_t)count*stride,0);
+    LLVMValueRef args[2]={bytes,Null},ptr;
+    if(cg->observation_config) {
+        args[1]=cg_observation_site_arg(cg,node);
+        ptr=cg_observation_call(cg,ObsSliceNew,args,2);
+    } else ptr=LLVMBuildCall2(cg->builder,cg->malloc_type,cg->malloc_fn,args,1,"mk.ptr");
+    scalar_trap_if(cg,LLVMBuildIsNull(cg->builder,ptr,"make.allocation.failed"),8);
+    LLVMBuildMemSet(cg->builder,ptr,LLVMConstInt(LLVMInt8TypeInContext(cg->ctx),0,0),bytes,0);
+    type_info_t saved_hse=cg->hint_slice_elem;
+    storage_t saved_hs=cg->hint_storage;
+    cg->hint_slice_elem=NO_TYPE;cg->hint_storage=StorageDefault;
+    for(usize_t i=0;i<count;++i)
+        store_array_value_at(cg,ptr,elem_ty,(long)i,node->as.make_expr.init->as.compound_init.items.items[i]);
+    cg->hint_slice_elem=saved_hse;cg->hint_storage=saved_hs;
+    LLVMValueRef len=LLVMConstInt(i32_ty,(uint64_t)count,0),result=LLVMGetUndef(sl_ty);
+    result=LLVMBuildInsertValue(cg->builder,result,ptr,0,"mk.0");
+    result=LLVMBuildInsertValue(cg->builder,result,len,1,"mk.1");
+    return LLVMBuildInsertValue(cg->builder,result,len,2,"mk.2");
+}
+
 /* make.{ items } — element type & storage come from the LHS via
  * cg->hint_slice_elem / cg->hint_storage (set by gen_local_var). */
 static LLVMValueRef gen_make_init(cg_t *cg, node_t *node) {
@@ -6070,6 +6123,16 @@ static LLVMValueRef gen_make_init(cg_t *cg, node_t *node) {
     LLVMTypeRef elem_ty = get_slice_elem_llvm_type(cg, elem_ti);
     LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(cg->ctx);
     LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(cg->ctx);
+
+    if(cg->hint_storage==StorageHeap && make_plain_positional(init)) {
+        type_info_t primitive;
+        if(!slice_source_resolve(cg,elem_ti,&primitive,node))return LLVMConstNull(sl_ty);
+        if(scalar_numeric(primitive))return gen_make_positional_primitive(cg,node,primitive,elem_ty);
+    }
+    if(cg->observation_config) {
+        cg_observation_slice_make_guard(cg,node,NO_TYPE,0);
+        return LLVMConstNull(sl_ty);
+    }
 
     /* if any item is a runtime-length slice spread, take the runtime path */
     for (usize_t i = 0; i < init->as.compound_init.items.count; i++) {

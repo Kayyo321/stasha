@@ -13,6 +13,28 @@ static void put_text(const char *path,const char *text){put(path,text,strlen(tex
 static void begin(sts_observation_graph *g,const char *root){CHECK(!sts_observation_graph_begin(g,root,error,sizeof(error)));CHECK(!sts_observation_graph_declare(g,0,"root",error,sizeof(error)));}
 static uint32_t add(sts_observation_graph *g,const char *name){uint32_t id=UINT32_MAX;CHECK(!sts_observation_graph_add(g,name,1,1,&id,error,sizeof(error)));CHECK(!sts_observation_graph_declare(g,id,name,error,sizeof(error)));return id;}
 
+/* Frozen ORACLES-R1 config bytes, not derived from the encoder under test. */
+static void configuration_v4_vectors(void) {
+    const struct {uint32_t enabled,warn,has_max,has_min,minimum;uint64_t maximum;size_t size;const char *digest,*hex;} vectors[]={
+        {3,1,1,1,100,33,559,"58bb952baae4cc65014e7f4f34d8bf387ac1076d8e17849c92326b1e4adc133a","000000000000001c7374617368612d6f62736572766174696f6e2d636f6e6669672d7634000000040000000400000000000000336e61746976652d73657175656e7469616c2d6469726563742d736f757263652d706f736974696f6e616c2d736c6963652d7634000000020000000200000000000000286469726563742d736f757263652d706f736974696f6e616c2d736c6963652d626f756e64732d7634000000000000001c7265717565737465642d656e7472792d6469726563746f72792d7631000000000000000972656a6563742d76310000000000000020676c6f62616c2d756e697175652d6578706f727465642d7461726765742d7631000000000000003b636c6f7365642d6469726563742d736f757263652d7072696d69746976652d736c6963652d636f756e742d6f722d706f736974696f6e616c2d76310000001a00000100000000ff01000000000f42400000007f000000ff000001ff000001ff000003ff00000fff0000100000010000000100000000100000010000000100000000400000200000020000000200000000010000000100000001000000000400000100000001000000000000000000187838365f36342d756e6b6e6f776e2d6c696e75782d676e75ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000020000000000000003000000010000000100000000000000210000000100000064"},
+        {1,1,0,0,0,0,547,"51a891168977452a1a0c681a8242db49365072ad112c678b95f27b3ac9d54e8a","000000000000001c7374617368612d6f62736572766174696f6e2d636f6e6669672d7634000000040000000400000000000000336e61746976652d73657175656e7469616c2d6469726563742d736f757263652d706f736974696f6e616c2d736c6963652d7634000000020000000200000000000000286469726563742d736f757263652d706f736974696f6e616c2d736c6963652d626f756e64732d7634000000000000001c7265717565737465642d656e7472792d6469726563746f72792d7631000000000000000972656a6563742d76310000000000000020676c6f62616c2d756e697175652d6578706f727465642d7461726765742d7631000000000000003b636c6f7365642d6469726563742d736f757263652d7072696d69746976652d736c6963652d636f756e742d6f722d706f736974696f6e616c2d76310000001a00000100000000ff01000000000f42400000007f000000ff000001ff000001ff000003ff00000fff0000100000010000000100000000100000010000000100000000400000200000020000000200000000010000000100000001000000000400000100000001000000000000000000187838365f36342d756e6b6e6f776e2d6c696e75782d676e75ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000020000000000000001000000010000000000000000"},
+        {1,0,1,0,0,33,555,"ef7f22b16ccb7903b58f4e78120c6a11294e625350be4bc041a0c53b23c03b03","000000000000001c7374617368612d6f62736572766174696f6e2d636f6e6669672d7634000000040000000400000000000000336e61746976652d73657175656e7469616c2d6469726563742d736f757263652d706f736974696f6e616c2d736c6963652d7634000000020000000200000000000000286469726563742d736f757263652d706f736974696f6e616c2d736c6963652d626f756e64732d7634000000000000001c7265717565737465642d656e7472792d6469726563746f72792d7631000000000000000972656a6563742d76310000000000000020676c6f62616c2d756e697175652d6578706f727465642d7461726765742d7631000000000000003b636c6f7365642d6469726563742d736f757263652d7072696d69746976652d736c6963652d636f756e742d6f722d706f736974696f6e616c2d76310000001a00000100000000ff01000000000f42400000007f000000ff000001ff000001ff000003ff00000fff0000100000010000000100000000100000010000000100000000400000200000020000000200000000010000000100000001000000000400000100000001000000000000000000187838365f36342d756e6b6e6f776e2d6c696e75782d676e75ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000200000000000000010000000000000001000000000000002100000000"},
+        {2,0,0,1,100,0,551,"32854b486f2f05a9f62f5bd0dd119c5bc3ee28a3c989c6d7f4d903ce53693ea6","000000000000001c7374617368612d6f62736572766174696f6e2d636f6e6669672d7634000000040000000400000000000000336e61746976652d73657175656e7469616c2d6469726563742d736f757263652d706f736974696f6e616c2d736c6963652d7634000000020000000200000000000000286469726563742d736f757263652d706f736974696f6e616c2d736c6963652d626f756e64732d7634000000000000001c7265717565737465642d656e7472792d6469726563746f72792d7631000000000000000972656a6563742d76310000000000000020676c6f62616c2d756e697175652d6578706f727465642d7461726765742d7631000000000000003b636c6f7365642d6469726563742d736f757263652d7072696d69746976652d736c6963652d636f756e742d6f722d706f736974696f6e616c2d76310000001a00000100000000ff01000000000f42400000007f000000ff000001ff000001ff000003ff00000fff0000100000010000000100000000100000010000000100000000400000200000020000000200000000010000000100000001000000000400000100000001000000000000000000187838365f36342d756e6b6e6f776e2d6c696e75782d676e75ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000002000000000000000200000000000000000000000100000064"},
+        {3,1,1,1,90,8,559,"32266849eed635082fdc9753111d97ff4bbeaaf9d95f07cf66c5d31fc90b1654","000000000000001c7374617368612d6f62736572766174696f6e2d636f6e6669672d7634000000040000000400000000000000336e61746976652d73657175656e7469616c2d6469726563742d736f757263652d706f736974696f6e616c2d736c6963652d7634000000020000000200000000000000286469726563742d736f757263652d706f736974696f6e616c2d736c6963652d626f756e64732d7634000000000000001c7265717565737465642d656e7472792d6469726563746f72792d7631000000000000000972656a6563742d76310000000000000020676c6f62616c2d756e697175652d6578706f727465642d7461726765742d7631000000000000003b636c6f7365642d6469726563742d736f757263652d7072696d69746976652d736c6963652d636f756e742d6f722d706f736974696f6e616c2d76310000001a00000100000000ff01000000000f42400000007f000000ff000001ff000001ff000003ff00000fff0000100000010000000100000000100000010000000100000000400000200000020000000200000000010000000100000001000000000400000100000001000000000000000000187838365f36342d756e6b6e6f776e2d6c696e75782d676e75ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000002000000000000000300000001000000010000000000000008000000010000005a"},
+    };
+    for(size_t i=0;i<sizeof(vectors)/sizeof(vectors[0]);++i){
+        sts_observation_config c={.compiler_id="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            .enabled_mask=vectors[i].enabled,.warn_memleak=vectors[i].warn,.has_max_bytes=vectors[i].has_max,
+            .max_bytes=vectors[i].maximum,.has_min_coverage=vectors[i].has_min,.min_coverage=vectors[i].minimum};
+        unsigned char bytes[559];sts_observation_encoder e;char digest[129];
+        sts_observation_encode_init(&e,sizeof(bytes));e.capture=bytes;e.capture_capacity=sizeof(bytes);
+        CHECK(!sts_observation_config_encode(&c,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","x86_64-unknown-linux-gnu",2,0,&e));
+        CHECK(e.size==vectors[i].size);sts_observation_digest_finish(&e.hash,digest);CHECK(!strcmp(digest,vectors[i].digest));
+        CHECK(strlen(vectors[i].hex)==2*e.size);
+        for(size_t j=0;j<e.size;++j)CHECK(bytes[j]==(unsigned char)((sts_observation_digest_hex_value(vectors[i].hex[2*j])<<4)|sts_observation_digest_hex_value(vectors[i].hex[2*j+1])));
+    }
+}
+
 static void encoding_vectors(void) {
     sts_observation_encoder e;unsigned char capture[128];
     sts_observation_encode_init(&e,128);e.capture=capture;e.capture_capacity=128;
@@ -42,16 +64,16 @@ static void encoding_vectors(void) {
     g.files[1].declared_module=NULL;CHECK(sts_observation_graph_freeze(&g,error,sizeof(error))!=0);CHECK(g.failed&&!g.frozen&&!g.input_graph_id[0]);
 
     /* R2 vectors were independently frozen before implementation. */
-    CHECK(!strcmp(STS_OBS_ADMISSION_POLICY,"closed-direct-source-array-and-local-primitive-slices-v1"));
-    CHECK(!strcmp(STS_OBS_RESOURCE_POLICY,"direct-source-slice-bounds-v3"));
+    CHECK(!strcmp(STS_OBS_ADMISSION_POLICY,"closed-direct-source-primitive-slice-count-or-positional-v1"));
+    CHECK(!strcmp(STS_OBS_RESOURCE_POLICY,"direct-source-positional-slice-bounds-v4"));
     CHECK(!strcmp(STS_OBS_GRAPH_PROFILE_V2,"native-sequential-direct-source-v2"));
     sts_observation_config kat={.warn_memleak=1,.has_max_bytes=1,.max_bytes=8,.has_min_coverage=1,.min_coverage=90,.enabled_mask=3,.compiler_id="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"};
     const char *runtime="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    unsigned char config_bytes[526];
+    unsigned char config_bytes[559];
     sts_observation_encode_init(&e,sizeof(config_bytes));e.capture=config_bytes;e.capture_capacity=sizeof(config_bytes);
     CHECK(!sts_observation_config_encode(&kat,runtime,"x86_64-unknown-linux-gnu",2,0,&e));
-    CHECK(e.size==526);sts_observation_digest_finish(&e.hash,digest);
-    CHECK(!strcmp(digest,"1dc9f3d3e2be65e986cf997e1350dea939ad3517d392f67a3d9220f98d3ed457"));
+    CHECK(e.size==559);sts_observation_digest_finish(&e.hash,digest);
+    CHECK(!strcmp(digest,"32266849eed635082fdc9753111d97ff4bbeaaf9d95f07cf66c5d31fc90b1654"));
     CHECK(!sts_observation_config_digest(&kat,runtime,"x86_64-unknown-linux-gnu",2,0));CHECK(!strcmp(kat.config_id,digest));
     /* Each independent policy and each new limit must actually be encoded.
      * Locate exact bytes, mutate only that field, and compare to literal KAT. */
@@ -61,9 +83,9 @@ static void encoding_vectors(void) {
         unsigned char *at=memmem(mutated,sizeof(mutated),policies[i],strlen(policies[i]));CHECK(at);*at^=1;
         char altered[129];sts_observation_digest(mutated,sizeof(mutated),altered);CHECK(strcmp(altered,digest));
     }
-    const unsigned char count_and_limits[]={0,0,0,24,0,0,1,0,0,0,0,255};
+    const unsigned char count_and_limits[]={0,0,0,26,0,0,1,0,0,0,0,255};
     unsigned char *limit_start=memmem(config_bytes,sizeof(config_bytes),count_and_limits,sizeof(count_and_limits));CHECK(limit_start);
-    for(unsigned i=20;i<24;++i){
+    for(unsigned i=20;i<26;++i){
         unsigned char mutated[sizeof(config_bytes)];memcpy(mutated,config_bytes,sizeof(mutated));
         size_t offset=(size_t)(limit_start-config_bytes)+4+4*i;
         CHECK(offset+4<=sizeof(mutated));mutated[offset+3]^=1;
@@ -71,13 +93,13 @@ static void encoding_vectors(void) {
     }
     kat.has_max_bytes=0;kat.has_min_coverage=0;kat.enabled_mask=1;
     sts_observation_encode_init(&e,STS_OBS_METADATA_LIMIT);
-    CHECK(!sts_observation_config_encode(&kat,runtime,"x86_64-unknown-linux-gnu",2,0,&e));CHECK(e.size==514);
-    sts_observation_digest_finish(&e.hash,digest);CHECK(!strcmp(digest,"73e35427155369e8f0650b12ee31635baa2f8494cbfca23e3959ce73fa0dd953"));
+    CHECK(!sts_observation_config_encode(&kat,runtime,"x86_64-unknown-linux-gnu",2,0,&e));CHECK(e.size==547);
+    sts_observation_digest_finish(&e.hash,digest);CHECK(!strcmp(digest,"51a891168977452a1a0c681a8242db49365072ad112c678b95f27b3ac9d54e8a"));
     CHECK(!sts_observation_config_digest(&kat,runtime,"x86_64-unknown-linux-gnu",2,0));CHECK(!strcmp(kat.config_id,digest));
     CHECK(sts_observation_config_digest(&kat,"bad","x86_64-unknown-linux-gnu",2,0)!=0);
     CHECK(sts_observation_config_digest(&kat,runtime,"x86_64-unknown-linux-gnu",4,0)!=0);
     kat.has_max_bytes=1;kat.has_min_coverage=1;kat.enabled_mask=3;
-    sts_observation_encode_init(&e,525);CHECK(sts_observation_config_encode(&kat,runtime,"x86_64-unknown-linux-gnu",2,0,&e)!=0);
+    sts_observation_encode_init(&e,558);CHECK(sts_observation_config_encode(&kat,runtime,"x86_64-unknown-linux-gnu",2,0,&e)!=0);
     sts_observation_config c={.input_graph_id="000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",.config_id="202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"};
     uint32_t masks[]={0,2,1,2,4,4,4},lines[]={2},line_files[]={0};
     sts_observation_file_manifest files[]={{.physical_line_count=6,.content_id="a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",.reason_masks=masks}};
@@ -97,11 +119,11 @@ static void encoding_vectors(void) {
         {.decl_id=1,.line=5,.col=22,.end_line=5,.end_col=30,.kind=5,.owner_test=0}};
     sts_observation_manifest m={.file_count=1,.files=files,.decl_count=2,.declarations=decls,.test_count=1,.tests=tests,
         .anchor_count=2,.anchors=anchors,.site_count=6,.sites=sites,.line_count=1,.lines=lines,.line_file_ids=line_files};
-    CHECK(!sts_observation_manifest_digest(&c,&m));CHECK(m.serialized_size==771);
-    CHECK(!strcmp(m.map_id,"ee3bd2ad5c88b2fb90e257277618654d5e7498d4bf221ca06cfcebe8b6689a60"));
-    uint32_t *fields[]={&sites[3].slice_element_kind,&sites[3].slice_abi_stride,&sites[3].slice_count_arity};
-    for(unsigned i=0;i<3;++i){uint32_t save=*fields[i];++*fields[i];CHECK(!sts_observation_manifest_digest(&c,&m));
-        CHECK(strcmp(m.map_id,"ee3bd2ad5c88b2fb90e257277618654d5e7498d4bf221ca06cfcebe8b6689a60"));*fields[i]=save;}
+    CHECK(!sts_observation_manifest_digest(&c,&m));CHECK(m.serialized_size==795);
+    CHECK(!strcmp(m.map_id,"3813ba52b6d33367990b5cbd004a984ec1c6f53e22e21a8b6d5f259d0957f12c"));
+    uint32_t *fields[]={&sites[3].slice_element_kind,&sites[3].slice_abi_stride,&sites[3].slice_count_arity,&sites[3].slice_initializer_item_count};
+    for(unsigned i=0;i<4;++i){uint32_t save=*fields[i];++*fields[i];CHECK(!sts_observation_manifest_digest(&c,&m));
+        CHECK(strcmp(m.map_id,"3813ba52b6d33367990b5cbd004a984ec1c6f53e22e21a8b6d5f259d0957f12c"));*fields[i]=save;}
     const char record[]="allocations 2 27\nallocation 1 1 7 0 4294967295 0\nallocation 2 2 20 3 4294967295 0\nEND\n";
     CHECK(sizeof(record)-1==86);sts_observation_digest(record,sizeof(record)-1,digest);
     CHECK(!strcmp(digest,"14074eb03ad114dead37a8c2b9edfd4676485af698b86f605e6c303ce6ebf30c"));
@@ -161,4 +183,4 @@ static void filesystem_controls(void) {
     for(size_t i=0;i<sizeof(paths)/sizeof(paths[0]);++i)CHECK(!unlink(paths[i]));
     CHECK(!rmdir("requested/util"));CHECK(!rmdir("target/util"));CHECK(!rmdir("requested"));CHECK(!rmdir("target"));CHECK(!rmdir("back"));CHECK(!chdir(cwd));CHECK(!rmdir(temp));
 }
-int main(void){encoding_vectors();module_bounds();filesystem_controls();printf("observation source graph: %u pure checks passed; no compiler or generated image executed\n",checks);return 0;}
+int main(void){configuration_v4_vectors();encoding_vectors();module_bounds();filesystem_controls();printf("observation source graph: %u pure checks passed; no compiler or generated image executed\n",checks);return 0;}

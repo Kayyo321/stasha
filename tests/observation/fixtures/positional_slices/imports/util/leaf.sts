@@ -1,0 +1,4 @@
+mod util.leaf;
+ext fn item(void): i32 { ret 9; }
+fn cold(void): i32 { heap []u8 s = make.{1}; ret s[0]; }
+test 'leaf' { heap []i16 s = make.{4}; expect_eq.(s[0], 4); rem.(s); }

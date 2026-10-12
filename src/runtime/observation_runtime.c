@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 _Static_assert(sizeof(size_t) == 8u && sizeof(uintptr_t) == 8u,
-               "observation ABI 3 requires a native LP64 host");
+               "observation ABI 4 requires a native LP64 host");
 
 /* This runtime deliberately has no constructor, destructor, signal handler or
  * atexit finalizer. Its sole successful endpoint is the generated test main.
@@ -607,7 +607,7 @@ static _Noreturn void obs_abort(obs_state *s) {
     _Exit(1);
 }
 
-void __stasha_obs_init_v3(const char *run, const char *input_graph, const char *map,
+void __stasha_obs_init_v4(const char *run, const char *input_graph, const char *map,
                        const char *config, const char *compiler, uint32_t enabled,
                        uint32_t tests, uint32_t lines, uint32_t sites) {
     int error_number = errno;
@@ -663,14 +663,14 @@ void __stasha_obs_rem(void *base, uint32_t site) {
     errno = error_number;
 }
 
-void *__stasha_obs_slice_new_v3(size_t bytes, uint32_t site) {
+void *__stasha_obs_slice_new_v4(size_t bytes, uint32_t site) {
     obs_alloc_result result = obs_core_slice_new(&obs_global, &obs_native_allocator, bytes, site);
     if (obs_global.reason) obs_abort(&obs_global);
     errno = result.error_number;
     return (void *)result.key;
 }
 
-void __stasha_obs_slice_rem_v3(void *base, uint32_t site) {
+void __stasha_obs_slice_rem_v4(void *base, uint32_t site) {
     uintptr_t key = (uintptr_t)base;
     int error_number = obs_core_slice_rem(&obs_global, &obs_native_allocator, key, site);
     if (obs_global.reason) obs_abort(&obs_global);

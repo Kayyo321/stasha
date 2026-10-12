@@ -2,7 +2,7 @@
 """Frozen primitive-slice qualification: pure prepare/mocks, no-launch IR, native positives.
 
 R2 oracles were independently reviewed before compiler evaluation. Expected
-results must never be changed to match implementation output. All 177 new
+results must never be changed to match implementation output. The 174 retained
 negative sources and 22 count controls are excluded from native dispatch.
 Native malloc-null is NOT_RUN / outside initial native qualification.
 """
@@ -25,7 +25,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/observation/fixtures/primitive_slices"
 FAMILY = "observed-primitive-slices"
-PROFILE = "native-sequential-direct-source-slice-v3"
+PROFILE = "native-sequential-direct-source-positional-slice-v4"
 CONTRACT_SHA256 = "27ff2b8d2ca38131b4b86224211758f0c3b23dd6d16f4f7bfa5bbaa30fe5c62c"
 REVIEWED_ORACLE_SHA256 = "47cdb29db83fac25d3153cc4aa9d32ad0df70e074503d4794b97eba391e70a67"
 REVIEWED_SOURCE_MANIFEST_SHA256 = "8d069d02a06d1023f524c50cc924a36e327f2991437d660fbc1d1bac70eace6d"
@@ -4967,6 +4967,16 @@ DYNAMIC_EVENTS = {'primitive_i8': [{'operation': 'allocate', 'generation': 1, 'd
              {'operation': 'allocate', 'generation': 2, 'domain': 2, 'bytes': 12, 'site': 1, 'test': 0},
              {'operation': 'allocate', 'generation': 3, 'domain': 2, 'bytes': 12, 'site': 1, 'test': 1}]}
 
+# Observer v4 promotes exactly these source-identical positional constructors.
+# Keep every historical source/hash and ordinary/count oracle; only dispatch moves.
+PROMOTED_REJECTIONS = ('inline_make-called', 'inline_make-dead', 'inline_make-uncalled')
+for _promoted in PROMOTED_REJECTIONS:
+    assert REJECTIONS.pop(_promoted)['id'] == 'inline_make'
+for _oracle in ORACLES.values():
+    for _site in _oracle['sites']:
+        _site['slice_initializer_item_count'] = 0
+
+
 def modes_for(name):
     assert name in NATIVE_NAMES
     return ('warn', 'max_equal', 'coverage_only', 'combined',
@@ -5120,7 +5130,7 @@ def run_observed(session, sources, levels):
                     enabled=mode['enabled'], warn=int(mode['warn']), maximum=mode['maximum'], minimum=mode['minimum'], target=data['target'])[0]
                 assert result.stderr.count(b'warning: outstanding tracked allocations at suite endpoint\n') == int(mode['warning'])
                 for path in (pre, post):
-                    text = path.read_text(); assert '__stasha_obs_init_v3' in text and '__stasha_obs_init_v2' not in text
+                    text = path.read_text(); assert '__stasha_obs_init_v4' in text and '__stasha_obs_init_v2' not in text
                 signature = static_signature(data)
                 if name in signatures: assert signature == signatures[name], 'optimization/mode changed static source identity'
                 signatures[name] = signature
@@ -5175,7 +5185,7 @@ def run_nonlaunch(session, sources, levels, ir_compiler):
                 env=dict(os.environ, STS_DUMP_IR_PRE=str(pre), STS_DUMP_IR=str(post)))
             support.validate_positive_nonlaunch_result(result, output); support.retain_nonlaunch_evidence(dest, result)
             for path in (pre, post):
-                text = path.read_text(); assert ('__stasha_obs_init_v3' in text) == observed
+                text = path.read_text(); assert ('__stasha_obs_init_v4' in text) == observed
                 if not observed: assert '__stasha_obs_' not in text
             session.cases.append(dict(name=key, stage='compile_only', status='pass', executions=0,
                 pre_ir_sha256=sha(pre), post_ir_sha256=sha(post), independent_ir_review='required'))
@@ -5186,7 +5196,7 @@ def selftest(artifacts):
     class PureTests(unittest.TestCase):
         def test_literal_counts(self):
             self.assertEqual(len(NATIVE_NAMES), 47); self.assertEqual(len(set(NATIVE_NAMES)), 47)
-            self.assertEqual(len(REJECTIONS), 177); self.assertEqual(len(COUNT_FAILURE_IDS), 22)
+            self.assertEqual(len(REJECTIONS), 174); self.assertEqual(len(COUNT_FAILURE_IDS), 22)
             self.assertEqual(len(SOURCE_HASHES), 247); self.assertEqual(len(GENERATED_SOURCES), 242)
             self.assertEqual(len(expected_cases(range(4))['ordinary_native']), 188)
             self.assertEqual(len(expected_cases(range(4))['observed_native']), 800)

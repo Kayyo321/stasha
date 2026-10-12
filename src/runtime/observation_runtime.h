@@ -5,11 +5,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define STASHA_OBSERVATION_ABI_VERSION 3u
-#define STASHA_OBSERVATION_SCHEMA_VERSION 3u
+#define STASHA_OBSERVATION_ABI_VERSION 4u
+#define STASHA_OBSERVATION_SCHEMA_VERSION 4u
 #define STASHA_OBSERVATION_ALLOCATION_VERSION 2u
 #define STASHA_OBSERVATION_LINE_VERSION 2u
-#define STASHA_OBSERVATION_PROFILE "native-sequential-direct-source-slice-v3"
+#define STASHA_OBSERVATION_PROFILE "native-sequential-direct-source-positional-slice-v4"
 #define STASHA_OBSERVATION_ALLOCATIONS 1u
 #define STASHA_OBSERVATION_COVERAGE 2u
 #define STASHA_OBSERVATION_MAX_TESTS 4096u
@@ -50,9 +50,9 @@ extern "C" {
 #endif
 
 /* The second identity binds the complete frozen input graph, including a
- * zero-import root graph. There is deliberately no v2 initialization alias:
+ * zero-import root graph. There is deliberately no v3 or older alias:
  * an old generated image must not silently enter this protocol. */
-void __stasha_obs_init_v3(const char *run_id, const char *input_graph_id,
+void __stasha_obs_init_v4(const char *run_id, const char *input_graph_id,
     const char *map_id, const char *config_id, const char *compiler_id,
     uint32_t enabled_mask, uint32_t test_count, uint32_t line_count,
     uint32_t site_count);
@@ -62,8 +62,8 @@ void __stasha_obs_hit(uint32_t line_id);
 void *__stasha_obs_new(size_t requested_bytes, uint32_t site_id);
 void *__stasha_obs_mov(void *base, size_t requested_bytes, uint32_t site_id);
 void __stasha_obs_rem(void *base, uint32_t site_id);
-void *__stasha_obs_slice_new_v3(size_t requested_bytes, uint32_t make_site);
-void __stasha_obs_slice_rem_v3(void *base, uint32_t rem_site);
+void *__stasha_obs_slice_new_v4(size_t requested_bytes, uint32_t make_site);
+void __stasha_obs_slice_rem_v4(void *base, uint32_t rem_site);
 /* Called after the final test returns/cleans up and the harness summary.
  * Returns zero only if measurement and exclusive report publication succeeded.
  * The caller must independently retain its assertion/test failure status. */

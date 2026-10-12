@@ -139,6 +139,17 @@ enum { ObsSliceRetained=1, ObsSliceDirect, ObsSliceDefer };
 enum { ObsSliceQuery=1, ObsSliceRead, ObsSliceWrite, ObsSliceRelease };
 enum { ObsSliceHashSlots=131072 }; /* twice either 65,536 identity cap */
 typedef struct obs_slice_reference obs_slice_reference;
+typedef struct {
+    node_t *node;
+    uint32_t ordinal,file_id,line,col,end_line,end_col,token_begin,token_end,kind;
+} obs_slice_item;
+typedef struct {
+    node_t *node;
+    size_t type_binding_count;
+    uint32_t type_file_id;
+    uint16_t types_ready;
+    unsigned char types[TypeF64+1],literal,shape;
+} obs_item_semantic;
 struct obs_slice_reference {
     node_t *ident, *operation, *parent, *block, *deferred;
     uint32_t block_id, child, owner_child, use;
@@ -147,7 +158,12 @@ struct obs_slice_reference {
 };
 struct obs_slice_record {
     uint32_t id, file_id, decl_id, block_id, child, element, schedule;
-    node_t *declaration, *make, *block, *release;
+    uint32_t constructor_kind,item_count,owner_test;
+    char *owner;
+    node_t *declaration, *make, *block, *release, *compound;
+    obs_slice_item *items;
+    uint32_t make_line,make_col,make_end_line,make_end_col;
+    uint32_t make_token_begin,make_token_end;
     obs_slice_reference *references;
     obs_slice_record *next;
     LLVMValueRef alloca;
@@ -162,7 +178,10 @@ struct obs_slice_state {
     obs_slice_record **declarations;
     obs_slice_reference **references;
     obs_slice_block *blocks;
-    uint32_t binding_count, reference_count, block_count, block_capacity;
+    uint32_t binding_count, reference_count, block_count, block_capacity, positional_item_count;
+    node_t **item_identities;
+    obs_item_semantic *semantics;
+    size_t semantic_count,semantic_capacity;
     size_t *line_offsets[STS_OBS_FILE_LIMIT];
     boolean_t frozen;
 };
@@ -206,10 +225,10 @@ static void cg_observation_slice_dispose(cg_t*cg) {
     for(obs_slice_record*r=s->records;r;) {
         obs_slice_record*next=r->next;
         for(obs_slice_reference*u=r->references;u;) {obs_slice_reference*v=u->next;(free)(u);u=v;}
-        (free)(r);r=next;
+        (free)(r->items);(free)(r->owner);(free)(r);r=next;
     }
     for(uint32_t i=0;i<STS_OBS_FILE_LIMIT;++i)(free)(s->line_offsets[i]);
-    (free)(s->declarations);(free)(s->references);(free)(s->blocks);(free)(s);
+    (free)(s->declarations);(free)(s->references);(free)(s->blocks);(free)(s->item_identities);(free)(s->semantics);(free)(s);
     cg->observation_slices=Null;cg->observation_slice_pending=Null;
 }
 static uint32_t obs_slice_element(type_info_t t) {
@@ -262,7 +281,7 @@ static boolean_t obs_slice_braces(cg_t*cg,node_t*n) {
         obs_slice_source_char(cg,n,(uint32_t)n->observation_end_line,n->observation_end_col)=='}';
 }
 
-typedef struct {const char*name;type_info_t type;unsigned array_rank;uint32_t file_id;boolean_t global;obs_slice_record*slice;} obs_binding;
+typedef struct {const char*name;type_info_t type;unsigned array_rank;uint32_t file_id;boolean_t global;obs_slice_record*slice;node_t*constant_source;} obs_binding;
 typedef struct {
     cg_t *cg;
     const char *owner;
@@ -413,7 +432,7 @@ static boolean_t obs_bind(obs_walk *w, node_t *n) {
         w->bindings = p; w->binding_capacity = cap;
     }
     w->bindings[w->binding_count++] = (obs_binding){n->as.var_decl.name, n->as.var_decl.type,
-        (n->as.var_decl.flags & VdeclArray) ? (unsigned)(n->as.var_decl.array_ndim > 0 ? n->as.var_decl.array_ndim : 1) : 0, w->file_id,w->global_binding,Null};
+        (n->as.var_decl.flags & VdeclArray) ? (unsigned)(n->as.var_decl.array_ndim > 0 ? n->as.var_decl.array_ndim : 1) : 0, w->file_id,w->global_binding,Null,w->global_binding?n:Null};
     return True;
 }
 
@@ -497,7 +516,7 @@ static void obs_anchor(obs_walk*w,node_t*n) {
 static boolean_t obs_site(obs_walk*w,node_t*n,uint32_t kind) {
     sts_observation_manifest*m=w->cg->observation_manifest;
     if(w->reason!=STS_OBS_ELIGIBLE && w->reason!=STS_OBS_TEST &&
-       !((kind==STS_OBS_SLICE_MAKE || kind==STS_OBS_SLICE_REM) && w->reason==STS_OBS_UNREACHABLE))return True;
+       !((kind==STS_OBS_SLICE_MAKE || kind==STS_OBS_SLICE_REM || kind==STS_OBS_SLICE_MAKE_POSITIONAL) && w->reason==STS_OBS_UNREACHABLE))return True;
     if(m->site_count>=STASHA_OBSERVATION_MAX_SITES)return obs_error(n,"allocation-site capacity");
     uint32_t id=m->site_count++;
     m->sites[id]=(sts_observation_site){.line=(uint32_t)n->observation_line,.kind=kind,.owner_test=w->owner_test,
@@ -597,6 +616,396 @@ static type_info_t obs_slice_count_type(obs_walk*w,node_t*n,unsigned depth) {
     }
 }
 
+/* Source-only positional item semantics. These run before LLVM exists and
+ * never borrow the lowerer's signless types or manufacture symbol storage. */
+/* Every original expression consumes source tokens. This cache has at most
+ * one entry per graph-owned source byte, and twelve primitive/NO_TYPE contexts
+ * per entry. It avoids repeatedly rescanning a left-associated literal tree.
+ * Cache keys are original AST identities, never mutable symbol-table slots. */
+static size_t obs_item_hash(node_t*n,size_t capacity) {
+    uintptr_t x=(uintptr_t)n;x=(x>>4)^(x>>17);
+    return (size_t)(x*UINT64_C(11400714819323198485))&(capacity-1);
+}
+static obs_item_semantic *obs_item_entry(obs_walk*w,node_t*n) {
+    obs_slice_state*s=obs_slice_state_get(w->cg,n);
+    if(!s || !n)return Null;
+    if(s->semantic_capacity) {
+        size_t slot=obs_item_hash(n,s->semantic_capacity);
+        while(s->semantics[slot].node && s->semantics[slot].node!=n)slot=(slot+1)&(s->semantic_capacity-1);
+        if(s->semantics[slot].node)return &s->semantics[slot];
+    }
+    const sts_observation_graph*g=w->cg->observation_config->graph;
+    if(s->frozen || !g || s->semantic_count>=g->byte_length) {
+        obs_error(n,"positional semantic identity exceeds original source capacity");w->cg->observation_inventory_error=True;return Null;
+    }
+    if(!s->semantic_capacity || s->semantic_count>=s->semantic_capacity/2) {
+        size_t capacity=s->semantic_capacity?s->semantic_capacity*2:256;
+        if(capacity<s->semantic_capacity || capacity>SIZE_MAX/sizeof(*s->semantics)) {
+            obs_error(n,"positional semantic cache allocation capacity");w->cg->observation_inventory_error=True;return Null;
+        }
+        obs_item_semantic*entries=obs_slice_calloc(capacity,sizeof(*entries));
+        if(!entries){obs_error(n,"positional semantic cache allocation failure");w->cg->observation_inventory_error=True;return Null;}
+        for(size_t i=0;i<s->semantic_capacity;++i)if(s->semantics[i].node) {
+            size_t slot=obs_item_hash(s->semantics[i].node,capacity);
+            while(entries[slot].node)slot=(slot+1)&(capacity-1);
+            entries[slot]=s->semantics[i];
+        }
+        (free)(s->semantics);s->semantics=entries;s->semantic_capacity=capacity;
+    }
+    size_t slot=obs_item_hash(n,s->semantic_capacity);
+    while(s->semantics[slot].node)slot=(slot+1)&(s->semantic_capacity-1);
+    s->semantics[slot].node=n;++s->semantic_count;return &s->semantics[slot];
+}
+static boolean_t obs_item_literal_tree(obs_walk*w,node_t*n,unsigned depth) {
+    if(!n || depth>=STS_OBS_SLICE_DEPTH_LIMIT)return False;
+    obs_item_semantic*entry=obs_item_entry(w,n);if(!entry)return False;
+    if(entry->literal)return entry->literal==2;
+    boolean_t literal=False;
+    switch(n->kind) {
+        case NodeIntLitExpr:case NodeCharLitExpr:literal=True;break;
+        case NodeUnaryPrefixExpr:
+            literal=(n->as.unary.op==TokMinus || n->as.unary.op==TokTilde || n->as.unary.op==TokPlus) &&
+                obs_item_literal_tree(w,n->as.unary.operand,depth+1);break;
+        case NodeBinaryExpr:
+            switch(n->as.binary.op) {
+                case TokPlus:case TokMinus:case TokStar:case TokSlash:case TokPercent:
+                case TokPlusPercent:case TokMinusPercent:case TokStarPercent:
+                case TokPlusBang:case TokMinusBang:case TokStarBang:
+                case TokAmp:case TokPipe:case TokCaret:case TokLtLt:case TokGtGt:
+                    literal=obs_item_literal_tree(w,n->as.binary.left,depth+1) &&
+                        obs_item_literal_tree(w,n->as.binary.right,depth+1);break;
+                default:break;
+            }
+            break;
+        default:break;
+    }
+    /* Recursive insertion can resize the table; reacquire the original key. */
+    entry=obs_item_entry(w,n);if(entry)entry->literal=literal?2:1;
+    return literal;
+}
+static boolean_t obs_item_shape(obs_walk*,node_t*,unsigned);
+/* Establish the complete bounded tree before scalar_literal_tree or any
+ * contextual inference traverses it. This pass has no inventory side effects. */
+static boolean_t obs_item_shape_inner(obs_walk*w,node_t*n,unsigned depth) {
+    if(!n || depth>STS_OBS_SLICE_DEPTH_LIMIT)return obs_error(n,"positional item source nesting limit or missing expression");
+    if(!obs_origin(w,n) || n->observation_file_id_plus_one!=w->file_id+1 || n->headers)
+        return obs_error(n,"positional item source owner or attribute");
+#define OIS(N) do {if(!obs_item_shape(w,(N),depth+1))return False;} while(0)
+    switch(n->kind) {
+        case NodeIntLitExpr:case NodeFloatLitExpr:case NodeCharLitExpr:case NodeBoolLitExpr:
+        case NodeIdentExpr:case NodeSizeofExpr:return True;
+        case NodeUnaryPrefixExpr:
+            if(n->as.unary.op!=TokMinus && n->as.unary.op!=TokBang && n->as.unary.op!=TokTilde)
+                return obs_error(n,"positional item unary operator");
+            OIS(n->as.unary.operand);return True;
+        case NodeBinaryExpr:
+            switch(n->as.binary.op) {
+                case TokPlus:case TokMinus:case TokStar:case TokSlash:case TokPercent:
+                case TokAmp:case TokPipe:case TokCaret:case TokLtLt:case TokGtGt:
+                case TokPlusPercent:case TokMinusPercent:case TokStarPercent:
+                case TokPlusBang:case TokMinusBang:case TokStarBang:
+                case TokEqEq:case TokBangEq:case TokLt:case TokGt:case TokLtEq:case TokGtEq:
+                case TokAmpAmp:case TokPipePipe:break;
+                default:return obs_error(n,"positional item binary operator");
+            }
+            OIS(n->as.binary.left);OIS(n->as.binary.right);return True;
+        case NodeCastExpr:OIS(n->as.cast_expr.expr);return True;
+        case NodeTernaryExpr:
+            OIS(n->as.ternary.cond);OIS(n->as.ternary.then_expr);OIS(n->as.ternary.else_expr);return True;
+        case NodeCallExpr:case NodeMethodCall: {
+            node_list_t args=n->kind==NodeCallExpr?n->as.call.args:n->as.method_call.args;
+            if(args.count>args.capacity || (args.count && !args.items))return obs_error(n,"positional call argument list shape");
+            if(n->kind==NodeMethodCall) {
+                node_t*alias=n->as.method_call.object;
+                if(!alias || alias->kind!=NodeIdentExpr)return obs_error(n,"positional call requires a source module alias");
+                OIS(alias);
+            }
+            for(usize_t i=0;i<args.count;++i)OIS(args.items[i]);
+            return True;
+        }
+        default:return obs_error(n,"positional item is outside the recursive primitive whitelist");
+    }
+#undef OIS
+}
+static boolean_t obs_item_shape(obs_walk*w,node_t*n,unsigned depth) {
+    if(!n || depth>STS_OBS_SLICE_DEPTH_LIMIT)return obs_error(n,"positional item source nesting limit or missing expression");
+    obs_item_semantic*entry=obs_item_entry(w,n);if(!entry)return False;
+    if(entry->shape)return obs_error(n,"repeated or cyclic positional expression identity");
+    entry->shape=1;
+    if(!obs_item_shape_inner(w,n,depth))return False;
+    entry=obs_item_entry(w,n);if(!entry)return False;
+    entry->shape=2;return True;
+}
+static type_info_t obs_item_type(obs_walk*,node_t*,type_info_t,unsigned);
+static type_info_t obs_item_common(obs_walk*w,node_t*a,node_t*b,type_info_t expected,unsigned depth) {
+    if(expected.base==TypeBool)expected=NO_TYPE;
+    boolean_t al=obs_item_literal_tree(w,a,0),bl=obs_item_literal_tree(w,b,0);
+    type_info_t at=obs_item_type(w,a,al&&bl?expected:NO_TYPE,depth+1);
+    type_info_t bt=obs_item_type(w,b,al&&bl?expected:NO_TYPE,depth+1);
+    if(!obs_slice_element(at) || !obs_slice_element(bt))return NO_TYPE;
+    if(al && !bl && scalar_integer(bt))return bt;
+    if(bl && !al && scalar_integer(at))return at;
+    if(scalar_integer(at) && scalar_integer(bt)) {
+        if(scalar_unsigned(at)!=scalar_unsigned(bt)) {
+            uint64_t am,bm;boolean_t an,bn;
+            if(al && bl && scalar_literal(a,&am,&an) && scalar_literal(b,&bm,&bn) && !an && !bn)
+                return scalar_type(TypeU64);
+            return NO_TYPE;
+        }
+        return scalar_bits(at)>=scalar_bits(bt)?at:bt;
+    }
+    if(scalar_numeric(at) && scalar_numeric(bt))
+        return scalar_type(at.base==TypeF64 || bt.base==TypeF64?TypeF64:TypeF32);
+    return NO_TYPE;
+}
+static type_info_t obs_item_type_inner(obs_walk*w,node_t*n,type_info_t expected,unsigned depth) {
+    if(!n || depth>=STS_OBS_SLICE_DEPTH_LIMIT)return NO_TYPE;
+    uint64_t magnitude;boolean_t negative;
+    if(scalar_literal(n,&magnitude,&negative))return scalar_literal_type(n,expected);
+    switch(n->kind) {
+        case NodeBoolLitExpr:return scalar_type(TypeBool);
+        case NodeCharLitExpr:return scalar_integer(expected) && expected.base!=TypeBool?expected:scalar_type(TypeU8);
+        case NodeFloatLitExpr:return scalar_type(TypeF64);
+        case NodeIdentExpr: {
+            obs_binding*b=obs_binding_lookup(w,n->as.ident.name);
+            return b && !b->array_rank && !b->slice && obs_slice_element(b->type)?b->type:NO_TYPE;
+        }
+        case NodeCastExpr:return obs_slice_element(n->as.cast_expr.target)?n->as.cast_expr.target:NO_TYPE;
+        case NodeSizeofExpr:return obs_slice_element(n->as.sizeof_expr.type)?scalar_type(TypeU64):NO_TYPE;
+        case NodeUnaryPrefixExpr:
+            if(n->as.unary.op==TokBang)return scalar_type(TypeBool);
+            if(n->as.unary.op==TokMinus || n->as.unary.op==TokTilde)
+                return obs_item_type(w,n->as.unary.operand,expected,depth+1);
+            return NO_TYPE;
+        case NodeBinaryExpr:
+            switch(n->as.binary.op) {
+                case TokEqEq:case TokBangEq:case TokLt:case TokGt:case TokLtEq:case TokGtEq:
+                case TokAmpAmp:case TokPipePipe:return scalar_type(TypeBool);
+                case TokLtLt:case TokGtGt:return obs_item_type(w,n->as.binary.left,expected,depth+1);
+                default:return obs_item_common(w,n->as.binary.left,n->as.binary.right,expected,depth);
+            }
+        case NodeTernaryExpr:return obs_item_common(w,n->as.ternary.then_expr,n->as.ternary.else_expr,expected,depth);
+        case NodeCallExpr:case NodeMethodCall: {
+            node_t*f=obs_selected_function(w,n);
+            return f && f->as.fn_decl.return_count==1 && obs_slice_element(f->as.fn_decl.return_types[0])?
+                f->as.fn_decl.return_types[0]:NO_TYPE;
+        }
+        default:return NO_TYPE;
+    }
+}
+static type_info_t obs_item_type(obs_walk*w,node_t*n,type_info_t expected,unsigned depth) {
+    if(!n || depth>=STS_OBS_SLICE_DEPTH_LIMIT)return NO_TYPE;
+    unsigned context=obs_slice_element(expected)?(unsigned)expected.base:(unsigned)TypeVoid;
+    obs_item_semantic*entry=obs_item_entry(w,n);if(!entry)return NO_TYPE;
+    if(entry->types_ready && (entry->type_file_id!=w->file_id || entry->type_binding_count!=w->binding_count)) {
+        obs_error(n,"positional semantic cache escaped its frozen lexical environment");
+        w->cg->observation_inventory_error=True;return NO_TYPE;
+    }
+    if(entry->types_ready&(1u<<context))return scalar_type((type_kind_t)entry->types[context]);
+    type_info_t type=obs_item_type_inner(w,n,expected,depth);
+    entry=obs_item_entry(w,n);if(!entry)return NO_TYPE;
+    entry->type_file_id=w->file_id;entry->type_binding_count=w->binding_count;
+    entry->types[context]=(unsigned char)type.base;entry->types_ready|=(uint16_t)(1u<<context);
+    return type;
+}
+/* Constant proof adapter for ordinary implicit integer conversion. The pure
+ * bit-pattern engine is shared; lexical bindings and primitive sizeof remain
+ * source facts. Runtime locals, including const locals, are never fit proofs. */
+static boolean_t obs_item_constant(obs_walk*w,node_t*n,type_info_t expected,
+                                   scalar_constant_t*out,unsigned depth,unsigned*budget,boolean_t exact_bindings) {
+    if(!n || depth>256 || !*budget)return False;
+    --*budget;
+    type_info_t t=obs_item_type(w,n,expected,0);
+    if(!scalar_integer(t))return False;
+    uint64_t m;boolean_t negative;
+    if(scalar_literal(n,&m,&negative)) {
+        if(!scalar_literal_fits(n,t))return False;
+        *out=(scalar_constant_t){(negative?UINT64_C(0)-m:m)&scalar_mask(scalar_bits(t)),t};return True;
+    }
+    scalar_constant_t a,b;
+#define OIC(N,T,O) obs_item_constant(w,(N),(T),(O),depth+1,budget,exact_bindings)
+    switch(n->kind) {
+        case NodeBoolLitExpr:*out=(scalar_constant_t){n->as.bool_lit.value!=0,scalar_type(TypeBool)};return True;
+        case NodeCharLitExpr: {
+            node_t literal=*n;literal.kind=NodeIntLitExpr;literal.as.int_lit.value=(unsigned char)n->as.char_lit.value;
+            if(!scalar_literal_fits(&literal,t))return False;
+            *out=(scalar_constant_t){literal.as.int_lit.value,t};return True;
+        }
+        case NodeSizeofExpr: {
+            uint32_t element=obs_slice_element(n->as.sizeof_expr.type);
+            if(!element)return False;
+            *out=(scalar_constant_t){sts_observation_slice_stride(element),scalar_type(TypeU64)};return True;
+        }
+        case NodeIdentExpr: {
+            obs_binding*binding=obs_binding_lookup(w,n->as.ident.name);
+            node_t*d=binding?binding->constant_source:Null;
+            /* Instrumentation internalizes globals; that must not broaden the
+             * ordinary source's proof for an externally visible constant. */
+            if(!binding || !binding->global || !d || !(d->as.var_decl.flags&VdeclConst) ||
+               (exact_bindings && d->as.var_decl.linkage!=LinkageInternal) ||
+               d->as.var_decl.attr_flags || binding->array_rank)return False;
+            obs_walk globals=*w;globals.file_id=binding->file_id;
+            globals.binding_count=0;
+            while(globals.binding_count<w->binding_count && w->bindings[globals.binding_count].global)++globals.binding_count;
+            if(!d->as.var_decl.init) {*out=(scalar_constant_t){0,t};return True;}
+            if(!obs_item_constant(&globals,d->as.var_decl.init,t,out,depth+1,budget,False))return False;
+            return scalar_const_convert(out,t,False);
+        }
+        case NodeCastExpr:
+            if(!OIC(n->as.cast_expr.expr,NO_TYPE,&a) || !scalar_const_convert(&a,t,True))return False;
+            *out=a;return True;
+        case NodeTernaryExpr:
+            if(!OIC(n->as.ternary.cond,NO_TYPE,&a) ||
+               !OIC(a.bits?n->as.ternary.then_expr:n->as.ternary.else_expr,t,out))return False;
+            return scalar_const_convert(out,t,False);
+        case NodeUnaryPrefixExpr:
+            if(!OIC(n->as.unary.operand,n->as.unary.op==TokBang?NO_TYPE:t,&a))return False;
+            if(n->as.unary.op==TokBang){*out=(scalar_constant_t){!a.bits,scalar_type(TypeBool)};return True;}
+            if(!scalar_const_convert(&a,t,False))return False;
+            if(n->as.unary.op==TokMinus)a.bits=(UINT64_C(0)-a.bits)&scalar_mask(scalar_bits(t));
+            else if(n->as.unary.op==TokTilde)a.bits=(~a.bits)&scalar_mask(scalar_bits(t));
+            else return False;
+            *out=a;return True;
+        case NodeBinaryExpr: {
+            token_kind_t op=n->as.binary.op;
+            if(op==TokAmpAmp || op==TokPipePipe) {
+                if(!OIC(n->as.binary.left,NO_TYPE,&a))return False;
+                if((op==TokAmpAmp && !a.bits) || (op==TokPipePipe && a.bits)) {
+                    *out=(scalar_constant_t){a.bits!=0,scalar_type(TypeBool)};return True;
+                }
+                if(!OIC(n->as.binary.right,NO_TYPE,&b))return False;
+                *out=(scalar_constant_t){b.bits!=0,scalar_type(TypeBool)};return True;
+            }
+            boolean_t shift=op==TokLtLt || op==TokGtGt;
+            type_info_t common=shift?obs_item_type(w,n->as.binary.left,expected,0):
+                obs_item_common(w,n->as.binary.left,n->as.binary.right,expected,0);
+            if(!scalar_integer(common) || !OIC(n->as.binary.left,common,&a) ||
+               !scalar_const_convert(&a,common,False) || !OIC(n->as.binary.right,shift?NO_TYPE:common,&b) ||
+               (!shift && !scalar_const_convert(&b,common,False)))return False;
+            uint64_t value;boolean_t boolean_result;unsigned reason;
+            if(!sts_scalar_fold_integer(op,a.bits,b.bits,scalar_bits(common),scalar_unsigned(common),
+                 scalar_bits(b.type),scalar_unsigned(b.type),&value,&boolean_result,&reason))return False;
+            *out=(scalar_constant_t){value,boolean_result?scalar_type(TypeBool):t};return True;
+        }
+        default:return False;
+    }
+#undef OIC
+}
+static boolean_t obs_item_conversion(obs_walk*w,node_t*n,type_info_t from,type_info_t to) {
+    if(!obs_slice_element(from) || !obs_slice_element(to))return obs_error(n,"positional item conversion requires known primitive scalars");
+    if(scalar_integer(from) && scalar_integer(to) && to.base!=TypeBool &&
+       (scalar_bits(to)<scalar_bits(from) || (scalar_unsigned(from)!=scalar_unsigned(to) &&
+        !(scalar_unsigned(from) && scalar_bits(to)>scalar_bits(from))))) {
+        scalar_constant_t value;unsigned budget=10000;
+        if(!obs_item_constant(w,n,from,&value,0,&budget,True) ||
+           scalar_bits(value.type)!=scalar_bits(from) || scalar_unsigned(value.type)!=scalar_unsigned(from) ||
+           !scalar_const_value_fits(value,to))
+            return obs_error(n,"positional item implicit integer conversion may change value; use an explicit cast");
+    }
+    return True;
+}
+static boolean_t obs_item_validate(obs_walk*,node_t*,type_info_t,unsigned,type_info_t*);
+static boolean_t obs_item_as(obs_walk*w,node_t*n,type_info_t to,unsigned depth) {
+    type_info_t from;
+    return obs_item_validate(w,n,to,depth,&from) && obs_item_conversion(w,n,from,to);
+}
+static boolean_t obs_item_validate(obs_walk*w,node_t*n,type_info_t expected,unsigned depth,type_info_t*out) {
+    if(!n || depth>=STS_OBS_SLICE_DEPTH_LIMIT)return obs_error(n,"positional item nesting limit or missing expression");
+    if(!obs_origin(w,n) || n->observation_file_id_plus_one!=w->file_id+1 || n->headers)
+        return obs_error(n,"positional item source owner or attribute");
+    type_info_t t=obs_item_type(w,n,expected,depth),child;
+    uint64_t magnitude;boolean_t negative;
+    if(scalar_literal(n,&magnitude,&negative)) {
+        if(!scalar_literal_fits(n,t))return obs_error(n,"positional integer literal is outside its contextual type");
+        /* Unary-minus integer literals are typed as one signed literal. */
+        if(n->kind==NodeUnaryPrefixExpr && (!obs_origin(w,n->as.unary.operand) ||
+           n->as.unary.operand->observation_file_id_plus_one!=w->file_id+1 || n->as.unary.operand->headers))return False;
+        *out=t;return True;
+    }
+#define OIV(N,T) obs_item_validate(w,(N),(T),depth+1,&child)
+#define OIA(N,T) obs_item_as(w,(N),(T),depth+1)
+    switch(n->kind) {
+        case NodeCharLitExpr: {
+            node_t literal=*n;literal.kind=NodeIntLitExpr;literal.as.int_lit.value=(unsigned char)n->as.char_lit.value;
+            if(!scalar_literal_fits(&literal,t))return obs_error(n,"positional character literal is outside its contextual type");
+            break;
+        }
+        case NodeBoolLitExpr:case NodeFloatLitExpr:case NodeIdentExpr:break;
+        case NodeSizeofExpr:
+            if(!obs_slice_element(n->as.sizeof_expr.type))return obs_error(n,"positional sizeof requires a direct nonpointer primitive type");
+            break;
+        case NodeUnaryPrefixExpr:
+            if(n->as.unary.op==TokBang) {if(!OIV(n->as.unary.operand,NO_TYPE))return False;}
+            else if(n->as.unary.op==TokMinus || n->as.unary.op==TokTilde) {
+                if(!obs_slice_element(t) || (n->as.unary.op==TokTilde && !scalar_integer(t)))
+                    return obs_error(n,"positional unary operator requires compatible primitive operands");
+                if(!OIA(n->as.unary.operand,t))return False;
+            } else return obs_error(n,"positional item unary operator");
+            break;
+        case NodeBinaryExpr: {
+            token_kind_t op=n->as.binary.op;
+            if(op==TokAmpAmp || op==TokPipePipe) {
+                if(!OIV(n->as.binary.left,NO_TYPE) || !OIV(n->as.binary.right,NO_TYPE))return False;
+                break;
+            }
+            boolean_t integer_only=False,shift=False;
+            switch(op) {
+                case TokPlus:case TokMinus:case TokStar:case TokSlash:
+                case TokEqEq:case TokBangEq:case TokLt:case TokGt:case TokLtEq:case TokGtEq:break;
+                case TokLtLt:case TokGtGt:shift=True; /* fall through */
+                case TokPercent:case TokAmp:case TokPipe:case TokCaret:
+                case TokPlusPercent:case TokMinusPercent:case TokStarPercent:
+                case TokPlusBang:case TokMinusBang:case TokStarBang:integer_only=True;break;
+                default:return obs_error(n,"positional item binary operator");
+            }
+            type_info_t left=obs_item_type(w,n->as.binary.left,NO_TYPE,depth+1);
+            type_info_t right=obs_item_type(w,n->as.binary.right,NO_TYPE,depth+1);
+            type_info_t common=shift?obs_item_type(w,n->as.binary.left,expected,depth+1):
+                obs_item_common(w,n->as.binary.left,n->as.binary.right,expected,depth);
+            if(!obs_slice_element(left) || !obs_slice_element(right) || !obs_slice_element(common) ||
+               (integer_only && (!scalar_integer(left) || !scalar_integer(right) || !scalar_integer(common))))
+                return obs_error(n,"positional binary operands have incompatible primitive types");
+            if(!OIA(n->as.binary.left,common))return False;
+            if(shift) {if(!OIV(n->as.binary.right,NO_TYPE))return False;}
+            else if(!OIA(n->as.binary.right,common))return False;
+            break;
+        }
+        case NodeCastExpr:
+            if(!obs_slice_element(t) || !OIV(n->as.cast_expr.expr,NO_TYPE))return obs_error(n,"positional cast requires primitive scalar source and destination");
+            break;
+        case NodeTernaryExpr:
+            if(!obs_slice_element(t))return obs_error(n,"positional conditional arms have incompatible primitive types");
+            if(!OIV(n->as.ternary.cond,NO_TYPE) || !OIA(n->as.ternary.then_expr,t) || !OIA(n->as.ternary.else_expr,t))return False;
+            break;
+        case NodeCallExpr:case NodeMethodCall: {
+            node_t*f=obs_selected_function(w,n);
+            node_list_t args=n->kind==NodeCallExpr?n->as.call.args:n->as.method_call.args;
+            if(!f || f->as.fn_decl.return_count!=1 || !obs_slice_element(t) || f->as.fn_decl.is_variadic ||
+               f->as.fn_decl.is_typed_variadic || args.count!=f->as.fn_decl.params.count)
+                return obs_error(n,"positional call requires an exact admitted primitive source signature");
+            for(usize_t i=0;i<args.count;++i) {
+                type_info_t parameter=f->as.fn_decl.params.items[i]->as.var_decl.type;
+                if(!obs_slice_element(parameter) || !OIA(args.items[i],parameter))
+                    return obs_error(args.items[i],"positional call argument requires a primitive source parameter");
+            }
+            break;
+        }
+        default:return obs_error(n,"positional item is outside the recursive primitive whitelist");
+    }
+#undef OIV
+#undef OIA
+    if(!obs_slice_element(t))return obs_error(n,"positional item requires a known nonpointer primitive scalar value");
+    *out=t;return True;
+}
+static uint32_t obs_slice_constructor(node_t*make,uint32_t element) {
+    if(!make || make->kind!=NodeMakeExpr || !element)return 0;
+    if(!make->as.make_expr.init)
+        return make->as.make_expr.len && obs_slice_element(make->as.make_expr.elem_type)==element?STS_OBS_SLICE_MAKE:0;
+    type_info_t context=make->as.make_expr.elem_type;context.base=TypeBool;
+    return make->as.make_expr.init->kind==NodeCompoundInit && !make->as.make_expr.len && !make->as.make_expr.cap &&
+        make->as.make_expr.elem_type.base==TypeVoid && obs_slice_element(context)?STS_OBS_SLICE_MAKE_POSITIONAL:0;
+}
+
 static boolean_t obs_slice_block_enter(obs_walk*w,node_t*n) {
     obs_slice_state*s=obs_slice_state_get(w->cg,n);if(!s)return False;
     if(s->block_count>=STS_OBS_SLICE_BLOCK_LIMIT || w->block_depth>=STS_OBS_SLICE_DEPTH_LIMIT)
@@ -655,23 +1064,75 @@ static boolean_t obs_slice_collect_reference(obs_walk*w,node_t*n,obs_slice_recor
     while(s->references[slot])slot=(slot+1)&(ObsSliceHashSlots-1);
     s->references[slot]=r;binding->references=r;++s->reference_count;return True;
 }
+static boolean_t obs_slice_item_span(node_t*make,node_t*item,node_t*previous,uint32_t file) {
+    if(!item || item->observation_file_id_plus_one!=file+1 ||
+       item->observation_token_begin<make->observation_token_begin ||
+       item->observation_token_end>make->observation_token_end ||
+       item->observation_token_end<item->observation_token_begin ||
+       item->observation_line<make->observation_line ||
+       (item->observation_line==make->observation_line && item->observation_col<make->observation_col) ||
+       item->observation_end_line>make->observation_end_line ||
+       (item->observation_end_line==make->observation_end_line && item->observation_end_col>make->observation_end_col) ||
+       (previous && (item->observation_token_begin<=previous->observation_token_end ||
+        item->observation_line<previous->observation_end_line ||
+        (item->observation_line==previous->observation_end_line && item->observation_col<=previous->observation_end_col))))return False;
+    return True;
+}
+static boolean_t obs_slice_snapshot(obs_walk*w,obs_slice_record*r) {
+    obs_slice_state*s=w->cg->observation_slices;
+    node_t*make=r->make;
+    r->make_line=(uint32_t)make->observation_line;r->make_col=make->observation_col;
+    r->make_end_line=(uint32_t)make->observation_end_line;r->make_end_col=make->observation_end_col;
+    r->make_token_begin=make->observation_token_begin;r->make_token_end=make->observation_token_end;
+    r->owner_test=w->owner_test;r->owner=strdup(w->owner?w->owner:"global");
+    if(!r->owner)return obs_error(make,"slice owner snapshot allocation failure");
+    if(r->constructor_kind!=STS_OBS_SLICE_MAKE_POSITIONAL)return True;
+    node_t*init=make->as.make_expr.init;
+    usize_t count=init->as.compound_init.items.count;
+    if(count>STS_OBS_POSITIONAL_ITEMS_PER_CONSTRUCTOR_LIMIT ||
+       s->positional_item_count>STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT ||
+       count>STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT-s->positional_item_count ||
+       count>SIZE_MAX/sizeof(*r->items) || count>init->as.compound_init.items.capacity ||
+       (count && !init->as.compound_init.items.items))
+        return obs_error(make,"positional item snapshot count or aggregate capacity");
+    r->compound=init;r->item_count=(uint32_t)count;
+    if(!count)return True;
+    r->items=obs_slice_calloc(count,sizeof(*r->items));
+    if(!r->items)return obs_error(make,"positional item snapshot allocation failure");
+    if(!s->item_identities)s->item_identities=obs_slice_calloc(ObsSliceHashSlots,sizeof(*s->item_identities));
+    if(!s->item_identities)return obs_error(make,"positional item identity allocation failure");
+    node_t*previous=Null;
+    for(uint32_t i=0;i<r->item_count;++i) {
+        node_t*item=init->as.compound_init.items.items[i];
+        if(!obs_slice_item_span(make,item,previous,r->file_id) || !obs_origin(w,item))
+            return obs_error(item,"positional item original order or source containment");
+        size_t slot=obs_slice_hash(item);
+        while(s->item_identities[slot] && s->item_identities[slot]!=item)slot=(slot+1)&(ObsSliceHashSlots-1);
+        if(s->item_identities[slot])return obs_error(item,"duplicate positional item original identity");
+        s->item_identities[slot]=item;
+        r->items[i]=(obs_slice_item){item,i,r->file_id,(uint32_t)item->observation_line,item->observation_col,
+            (uint32_t)item->observation_end_line,item->observation_end_col,item->observation_token_begin,item->observation_token_end,(uint32_t)item->kind};
+        previous=item;
+    }
+    s->positional_item_count+=r->item_count;return True;
+}
 static boolean_t obs_slice_variable(obs_walk*w,node_t*n,boolean_t runtime) {
     uint32_t element=obs_slice_type_element(n->as.var_decl.type);
     node_t*make=n->as.var_decl.init;
+    uint32_t constructor=obs_slice_constructor(make,element);
     node_t*parent=w->depth>=2?w->path[w->depth-2]:Null;
     if(!runtime || w->global_binding || w->deferred || !w->block_depth ||
        parent!=w->blocks[w->block_depth-1].node || !obs_slice_braces(w->cg,parent) ||
        n->as.var_decl.storage!=StorageHeap || n->as.var_decl.flags || n->as.var_decl.attr_flags ||
        n->as.var_decl.bitfield_width || n->as.var_decl.array_ndim || n->as.var_decl.linkage!=LinkageNone ||
        obs_reserved(n->as.var_decl.name) || !strcmp(n->as.var_decl.name,"_") || !element ||
-       !make || make->kind!=NodeMakeExpr || make->as.make_expr.init || !make->as.make_expr.len ||
-       obs_slice_element(make->as.make_expr.elem_type)!=element)
+       !constructor)
         return obs_error(n,"slice constructor requires a direct unqualified heap builtin declaration in a source brace block");
     obs_slice_state*s=obs_slice_state_get(w->cg,n);
     if(!s || s->frozen || s->binding_count>=STS_OBS_SLICE_BINDING_LIMIT || obs_slice_declaration_find(w->cg,n))
         return obs_error(n,"slice declaration capacity or duplicate original identity");
     obs_anchor(w,n);
-    /* Counts resolve before this name enters lexical scope, including shadows. */
+    /* Counts and positional items resolve before this name enters lexical scope. */
     node_t*pending=w->pending_slice;w->pending_slice=n;
     boolean_t ok=obs_node(w,make,False);w->pending_slice=pending;if(!ok)return False;
     if(!s->declarations) {
@@ -682,12 +1143,14 @@ static boolean_t obs_slice_variable(obs_walk*w,node_t*n,boolean_t runtime) {
     if(!r)return obs_error(n,"slice declaration allocation failure");
     *r=(obs_slice_record){.id=s->binding_count++,.file_id=w->file_id,.decl_id=w->decl_id,
         .block_id=w->blocks[w->block_depth-1].id,.child=w->blocks[w->block_depth-1].child,
-        .element=element,.declaration=n,.make=make,.block=parent,.next=s->records};
+        .element=element,.constructor_kind=constructor,.declaration=n,.make=make,.block=parent,.next=s->records};
     size_t slot=obs_slice_hash(n);while(s->declarations[slot])slot=(slot+1)&(ObsSliceHashSlots-1);
     s->declarations[slot]=r;s->records=r;
-    if(!obs_bind(w,n))return False;
+    if(!obs_slice_snapshot(w,r) || !obs_bind(w,n))return False;
     w->bindings[w->binding_count-1].slice=r;return True;
 }
+static boolean_t obs_slice_source_guard(cg_t*,obs_slice_record*);
+static boolean_t obs_slice_site_guard(cg_t*,node_t*,obs_slice_record*,uint32_t);
 static boolean_t obs_slice_classify(cg_t*cg) {
     obs_slice_state*s=cg->observation_slices;if(!s)return True;
     for(obs_slice_record*r=s->records;r;r=r->next) {
@@ -716,7 +1179,16 @@ static boolean_t obs_slice_classify(cg_t*cg) {
         }
         return obs_error(release->operation,"slice release must be direct later same-block or exact adjacent defer { rem.(s); }");
     }
-    s->frozen=True;return True;
+    s->frozen=True;
+    uint32_t total=0;
+    for(obs_slice_record*r=s->records;r;r=r->next) {
+        if(!obs_slice_source_guard(cg,r) || !obs_slice_site_guard(cg,r->make,r,r->constructor_kind))return False;
+        if(r->item_count>STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT-total)
+            return obs_error(r->make,"positional frozen aggregate capacity");
+        total+=r->item_count;
+    }
+    if(total!=s->positional_item_count)return obs_error(cg->ast,"positional frozen aggregate identity");
+    return True;
 }
 
 static boolean_t obs_variable(obs_walk *w, node_t *n, boolean_t runtime) {
@@ -906,10 +1378,37 @@ static boolean_t obs_node_inner(obs_walk *w, node_t *n, boolean_t statement) {
             ON(n->as.mov_expr.ptr); ON(n->as.mov_expr.size); return True;
         case NodeMakeExpr: {
             node_t*d=w->pending_slice;
-            if(!d || d->as.var_decl.init!=n || n->as.make_expr.init || !n->as.make_expr.len ||
-               obs_slice_element(n->as.make_expr.elem_type)!=obs_slice_type_element(d->as.var_decl.type))
+            uint32_t element=d?obs_slice_type_element(d->as.var_decl.type):0;
+            uint32_t constructor=obs_slice_constructor(n,element);
+            if(!d || d->as.var_decl.init!=n || !constructor)
                 return obs_error(n,"make must be the exact admitted direct slice initializer");
-            if(!obs_site(w,n,STS_OBS_SLICE_MAKE))return False;
+            if(constructor==STS_OBS_SLICE_MAKE_POSITIONAL) {
+                node_t*init=n->as.make_expr.init;
+                usize_t count=init->as.compound_init.items.count;
+                obs_slice_state*s=obs_slice_state_get(w->cg,n);
+                if(!s || count>STS_OBS_POSITIONAL_ITEMS_PER_CONSTRUCTOR_LIMIT ||
+                   s->positional_item_count>STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT ||
+                   count>STS_OBS_POSITIONAL_ITEMS_AGGREGATE_LIMIT-s->positional_item_count ||
+                   count>SIZE_MAX/sizeof(obs_slice_item) || count>init->as.compound_init.items.capacity ||
+                   (count && !init->as.compound_init.items.items))
+                    return obs_error(n,"positional item count or aggregate capacity");
+                if(!obs_origin(w,init) || init->observation_file_id_plus_one!=w->file_id+1 || init->headers)
+                    return obs_error(init,"positional compound wrapper source owner or shape");
+                for(usize_t i=0;i<count;++i)
+                    if(!obs_item_shape(w,init->as.compound_init.items.items[i],w->depth+2))return False;
+                for(usize_t i=0;i<count;++i)
+                    if(!obs_item_as(w,init->as.compound_init.items.items[i],d->as.var_decl.type.elem_type[0],0))return False;
+                if(!obs_site(w,n,constructor))return False;
+                if(n->observation_site_id) {
+                    sts_observation_site*site=&w->cg->observation_manifest->sites[n->observation_site_id-1];
+                    site->slice_element_kind=element;site->slice_abi_stride=sts_observation_slice_stride(element);
+                    site->slice_count_arity=0;site->slice_initializer_item_count=(uint32_t)count;
+                }
+                /* One ordinary expression inventory walk retains conditional/
+                 * logical anchors; plain item lines are not statement anchors. */
+                ON(init);return True;
+            }
+            if(!obs_site(w,n,constructor))return False;
             if(n->observation_site_id) {
                 sts_observation_site*site=&w->cg->observation_manifest->sites[n->observation_site_id-1];
                 site->slice_element_kind=obs_slice_element(n->as.make_expr.elem_type);
@@ -1127,9 +1626,9 @@ static void cg_observation_declare(cg_t *cg) {
         LLVMFunctionType(v,one,1,0),LLVMFunctionType(p,newargs,2,0),LLVMFunctionType(p,movargs,3,0),
         LLVMFunctionType(v,remargs,2,0),LLVMFunctionType(u,finish,2,0),
         LLVMFunctionType(p,newargs,2,0),LLVMFunctionType(v,remargs,2,0)};
-    const char *names[]={"__stasha_obs_init_v3","__stasha_obs_test_begin","__stasha_obs_test_end","__stasha_obs_hit",
+    const char *names[]={"__stasha_obs_init_v4","__stasha_obs_test_begin","__stasha_obs_test_end","__stasha_obs_hit",
         "__stasha_obs_new","__stasha_obs_mov","__stasha_obs_rem","__stasha_obs_finish",
-        "__stasha_obs_slice_new_v3","__stasha_obs_slice_rem_v3"};
+        "__stasha_obs_slice_new_v4","__stasha_obs_slice_rem_v4"};
     for (unsigned i=0;i<ObsFunctionCount;++i) cg->observation_fns[i]=LLVMAddFunction(cg->module,names[i],types[i]);
     cg->observation_pass=LLVMAddGlobal(cg->module,z,"__stasha_obs_assert_pass");
     cg->observation_fail=LLVMAddGlobal(cg->module,z,"__stasha_obs_assert_fail");
@@ -1336,14 +1835,45 @@ static boolean_t obs_slice_source_guard(cg_t*cg,obs_slice_record*r) {
        r->declaration->as.var_decl.storage!=StorageHeap || r->declaration->as.var_decl.flags ||
        r->declaration->as.var_decl.attr_flags || r->declaration->as.var_decl.array_ndim ||
        obs_slice_type_element(r->declaration->as.var_decl.type)!=r->element ||
-       !r->make || r->make->kind!=NodeMakeExpr || r->make->as.make_expr.init ||
-       !r->make->as.make_expr.len || obs_slice_element(r->make->as.make_expr.elem_type)!=r->element ||
+       !r->make || obs_slice_constructor(r->make,r->element)!=r->constructor_kind ||
+       r->make->observation_line!=r->make_line || r->make->observation_col!=r->make_col ||
+       r->make->observation_end_line!=r->make_end_line || r->make->observation_end_col!=r->make_end_col ||
+       r->make->observation_token_begin!=r->make_token_begin || r->make->observation_token_end!=r->make_token_end ||
        r->declaration->observation_file_id_plus_one!=r->file_id+1 ||
        r->make->observation_file_id_plus_one!=r->file_id+1 ||
        !r->declaration->observation_file || strcmp(r->declaration->observation_file,g->files[r->file_id].canonical_path) ||
        !r->make->observation_file || strcmp(r->make->observation_file,g->files[r->file_id].canonical_path) ||
        r->schedule<ObsSliceRetained || r->schedule>ObsSliceDefer)
         return obs_error(r?r->declaration:cg->ast,"slice escaped its frozen declaration/source/block identity");
+    if(r->constructor_kind==STS_OBS_SLICE_MAKE_POSITIONAL) {
+        node_t*init=r->make->as.make_expr.init;
+        if(init!=r->compound || !init || init->kind!=NodeCompoundInit || init->headers ||
+           init->observation_file_id_plus_one!=r->file_id+1 || init->observation_expanded || init->from_lib ||
+           !init->observation_file || strcmp(init->observation_file,g->files[r->file_id].canonical_path) ||
+           init->as.compound_init.items.count!=r->item_count ||
+           r->item_count>init->as.compound_init.items.capacity ||
+           r->item_count>STS_OBS_POSITIONAL_ITEMS_PER_CONSTRUCTOR_LIMIT ||
+           (r->item_count && (!r->items || !init->as.compound_init.items.items || !s->item_identities)))
+            return obs_error(r->make,"positional constructor escaped its frozen wrapper/count identity");
+        node_t*previous=Null;
+        for(uint32_t i=0;i<r->item_count;++i) {
+            const obs_slice_item*saved=&r->items[i];node_t*item=init->as.compound_init.items.items[i];
+            if(item!=saved->node || saved->ordinal!=i || saved->file_id!=r->file_id ||
+               !item || (uint32_t)item->kind!=saved->kind ||
+               !obs_slice_item_span(r->make,item,previous,r->file_id) || item->headers ||
+               item->observation_expanded || item->from_lib || item->generic_use || item->is_c_extern ||
+               !item->observation_file || strcmp(item->observation_file,g->files[r->file_id].canonical_path) ||
+               item->observation_line!=saved->line || item->observation_col!=saved->col ||
+               item->observation_end_line!=saved->end_line || item->observation_end_col!=saved->end_col ||
+               item->observation_token_begin!=saved->token_begin || item->observation_token_end!=saved->token_end)
+                return obs_error(item,"positional item escaped its frozen original identity/order/source span");
+            size_t slot=obs_slice_hash(item);
+            while(s->item_identities[slot] && s->item_identities[slot]!=item)slot=(slot+1)&(ObsSliceHashSlots-1);
+            if(s->item_identities[slot]!=item)return obs_error(item,"missing frozen positional item identity");
+            previous=item;
+        }
+    } else if(r->compound || r->items || r->item_count)
+        return obs_error(r->make,"count make carries positional source metadata");
     return True;
 }
 static boolean_t obs_slice_site_guard(cg_t*cg,node_t*n,obs_slice_record*r,uint32_t kind) {
@@ -1352,12 +1882,17 @@ static boolean_t obs_slice_site_guard(cg_t*cg,node_t*n,obs_slice_record*r,uint32
         return obs_error(n,"slice operation has no original static site");
     sts_observation_site*t=&m->sites[n->observation_site_id-1];
     if(t->kind!=kind || t->file_id!=r->file_id || t->decl_id!=r->decl_id ||
+       t->owner_test!=r->owner_test || !t->owner || !r->owner || strcmp(t->owner,r->owner) ||
        t->line!=n->observation_line || t->col!=n->observation_col ||
        t->end_line!=n->observation_end_line || t->end_col!=n->observation_end_col ||
        (kind==STS_OBS_SLICE_MAKE && (t->slice_element_kind!=r->element ||
         t->slice_abi_stride!=sts_observation_slice_stride(r->element) ||
-        t->slice_count_arity!=(n->as.make_expr.cap?2u:1u))) ||
-       (kind==STS_OBS_SLICE_REM && (t->slice_element_kind || t->slice_abi_stride || t->slice_count_arity)))
+        t->slice_count_arity!=(n->as.make_expr.cap?2u:1u) || t->slice_initializer_item_count)) ||
+       (kind==STS_OBS_SLICE_MAKE_POSITIONAL && (t->slice_element_kind!=r->element ||
+        t->slice_abi_stride!=sts_observation_slice_stride(r->element) || t->slice_count_arity ||
+        t->slice_initializer_item_count!=r->item_count)) ||
+       (kind==STS_OBS_SLICE_REM && (t->slice_element_kind || t->slice_abi_stride || t->slice_count_arity ||
+        t->slice_initializer_item_count)))
         return obs_error(n,"slice operation static site metadata mismatch");
     return True;
 }
@@ -1392,7 +1927,11 @@ static boolean_t cg_observation_slice_make_guard(cg_t*cg,node_t*n,type_info_t el
        LLVMABISizeOfType(cg->di_data_layout,get_llvm_type(cg,element))!=stride ||
        stride!=sts_observation_slice_stride(r->element))
         return obs_error(n,"slice make original initializer, element or target ABI stride mismatch");
-    return obs_slice_site_guard(cg,n,r,STS_OBS_SLICE_MAKE);
+    if(r->constructor_kind==STS_OBS_SLICE_MAKE_POSITIONAL &&
+       ((uint64_t)r->item_count>cg_layout_max_size(cg)/stride ||
+        (uint64_t)r->item_count*stride>UINT64_C(524288)))
+        return obs_error(n,"positional slice byte count exceeds its frozen request bound");
+    return obs_slice_site_guard(cg,n,r,r->constructor_kind);
 }
 static symbol_t *obs_slice_use_guard(cg_t*cg,node_t*operation,node_t*ident,uint32_t use) {
     obs_slice_reference*u=obs_slice_reference_find(cg,ident);
@@ -1470,9 +2009,9 @@ static boolean_t cg_observation_expr_guard(cg_t *cg,node_t *n) {
 static boolean_t cg_observation_audit(cg_t *cg) {
     if(!cg->observation_config)return True;
     static const char*allowed[]={"printf","fprintf","puts","putchar","fputs","fwrite","memcmp","memcpy","memmove","memset",
-        "__crash_runtime_install","__crash_runtime_register_block","__stasha_obs_init_v3","__stasha_obs_test_begin","__stasha_obs_test_end",
+        "__crash_runtime_install","__crash_runtime_register_block","__stasha_obs_init_v4","__stasha_obs_test_begin","__stasha_obs_test_end",
         "__stasha_obs_hit","__stasha_obs_new","__stasha_obs_mov","__stasha_obs_rem","__stasha_obs_finish",
-        "__stasha_obs_slice_new_v3","__stasha_obs_slice_rem_v3"};
+        "__stasha_obs_slice_new_v4","__stasha_obs_slice_rem_v4"};
     for(LLVMValueRef fn=LLVMGetFirstFunction(cg->module);fn;fn=LLVMGetNextFunction(fn))
         for(LLVMBasicBlockRef b=LLVMGetFirstBasicBlock(fn);b;b=LLVMGetNextBasicBlock(b))
             for(LLVMValueRef in=LLVMGetFirstInstruction(b);in;in=LLVMGetNextInstruction(in)) {
