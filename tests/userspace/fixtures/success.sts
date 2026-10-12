@@ -1,0 +1,18 @@
+mod lifecycle_success;
+imp lifecycle;
+fn main(void): i32 {
+    print.('MAIN start\n');
+    stack i32 status = lifecycle.run(false);
+    print.('MAIN status {} cleanups {}\n', status, lifecycle.cleanups());
+    ret status;
+}
+test 'success lifecycle' {
+    print.('OBS_SUCCESS\n');
+    expect_eq.(lifecycle.run(false), 0);
+    expect_eq.(lifecycle.cleanups(), 1);
+}
+test 'error lifecycle' {
+    print.('OBS_ERROR\n');
+    expect_eq.(lifecycle.run(true), 23);
+    expect_eq.(lifecycle.cleanups(), 2);
+}

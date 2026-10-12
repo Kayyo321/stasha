@@ -49,6 +49,8 @@ python3 tests/driver/editor_coordinates.py --compiler "$compiler" --artifacts "$
 python3 tests/driver/target_cli.py --compiler "$compiler" --artifacts "$artifacts/target-cli"
 python3 tests/driver/global_initializers.py --compiler "$compiler" --artifacts "$artifacts/globals"
 python3 tests/observation/test_observation.py --compiler "$compiler" --cc "${CC:-clang}" --opt 0,1,2,3 --artifacts "$artifacts/observation"
+python3 -m unittest discover -s tests/userspace -p 'test_lifecycle_runner.py'
+python3 tests/userspace/run_lifecycle.py --compiler "$compiler" --opt 0,1,2,3 --artifacts "$artifacts/userspace-lifecycle"
 sha256sum --check "$artifacts/compiler.sha256"
 printf 'PASS source=%s\n' "$(git rev-parse HEAD)" > "$artifacts/STATUS.txt"
 printf '%s\n' 'PASS: bounded Linux hosted compiler qualification; see native/kernel qualification limits.' > "$artifacts/RESULT.txt"

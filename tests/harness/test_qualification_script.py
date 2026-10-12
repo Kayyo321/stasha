@@ -96,6 +96,8 @@ class QualificationShellTests(unittest.TestCase):
             driver('tests/driver/target_cli.py','target-cli'),
             driver('tests/driver/global_initializers.py','globals'),
             ['tests/observation/test_observation.py','--compiler',compiler,'--cc',cc,'--opt','0,1,2,3','--artifacts',str(artifacts/'observation')],
+            ['-m','unittest','discover','-s','tests/userspace','-p','test_lifecycle_runner.py'],
+            ['tests/userspace/run_lifecycle.py','--compiler',compiler,'--opt','0,1,2,3','--artifacts',str(artifacts/'userspace-lifecycle')],
         ]
 
     def assert_exact_inventory(self,expected):
@@ -153,6 +155,31 @@ class QualificationShellTests(unittest.TestCase):
         self.assertEqual(self.status,'FAIL exit=89\n')
         self.assertTrue(self.commands[-1].startswith('python3 tests/observation/test_observation.py --compiler '))
         self.assertIn(' --opt 0,1,2,3 ',self.commands[-1])
+
+    def test_lifecycle_mock_failure_stops_runner_and_invalidates_stale_pass(self):
+        stage=['-m','unittest','discover','-s','tests/userspace','-p','test_lifecycle_runner.py']
+        result,receipt=self.invoke(93,stale=True,match_args=True,fail_match=' '.join(stage))
+        self.assertEqual(result.returncode,93,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=93\n')
+        expected=self.expected_python_inventory()
+        self.assert_exact_inventory(expected[:expected.index(stage)+1])
+        self.assertFalse(any('tests/userspace/run_lifecycle.py' in line for line in self.commands))
+
+    def test_lifecycle_native_failure_blocks_terminal_success(self):
+        result,receipt=self.invoke(94,stale=True,fail_match='tests/userspace/run_lifecycle.py')
+        self.assertEqual(result.returncode,94,result.stderr); self.assertIsNone(receipt)
+        self.assertEqual(self.status,'FAIL exit=94\n')
+        self.assert_exact_inventory(self.expected_python_inventory())
+
+    def test_lifecycle_enrolled_exactly_once_before_terminal_hash_check(self):
+        script=(ROOT/'scripts/qualify_linux.sh').read_text()
+        mock_stage="python3 -m unittest discover -s tests/userspace -p 'test_lifecycle_runner.py'"
+        native_stage='python3 tests/userspace/run_lifecycle.py --compiler "$compiler" --opt 0,1,2,3 --artifacts "$artifacts/userspace-lifecycle"'
+        self.assertEqual(script.count(mock_stage),1)
+        self.assertEqual(script.count(native_stage),1)
+        self.assertLess(script.index(mock_stage),script.index(native_stage))
+        self.assertLess(script.index(native_stage),script.index('sha256sum --check'))
+        self.assertLess(script.index('sha256sum --check'),script.index("printf 'PASS source="))
 
     def test_project_cli_failure_blocks_receipt_and_later_stages(self):
         result,receipt=self.invoke(85,stale=True,fail_match='tests/driver/project_cli.py')

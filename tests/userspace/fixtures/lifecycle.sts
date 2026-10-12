@@ -1,0 +1,34 @@
+mod lifecycle;
+stack i32 cleanup_count = 0;
+ext fn cleanups(void): i32 {
+    ret cleanup_count;
+}
+ext fn run(stack bool reject): i32 {
+    stack i32 processed = 0;
+    stack i32 requests[3] = .{1, 2, 3};
+    heap i32 *rw state = new.(sizeof.(i32));
+    if (state == nil) {
+        ret 70;
+    }
+    print.('START\n');
+    state[0] = 0;
+    defer {
+        rem.(state);
+        cleanup_count += 1;
+        print.('CLEANUP {}\n', processed);
+    }
+    for (stack i32 i = 0; i < 3; i++) {
+        if (reject && i == 1) {
+            print.('REJECT {}\n', requests[i]);
+            ret 23;
+        }
+        state[0] += requests[i];
+        processed += 1;
+        print.('REQUEST {}\n', requests[i]);
+    }
+    print.('TOTAL {}\n', state[0]);
+    if (state[0] != 6) {
+        ret 24;
+    }
+    ret 0;
+}
