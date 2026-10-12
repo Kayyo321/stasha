@@ -1,0 +1,16 @@
+mod util.calc;
+stack i32 state = 5;
+ext fn same(stack i32 x): i32 { ret x + 1; }
+ext fn work(void): i32 {
+    heap u8 *rw p = new.(8);
+    expect.(p != nil);
+    defer rem.(p);
+    state += 2;
+    ret state;
+}
+fn never(void): i32 {
+    ret 9;
+}
+test 'same label' {
+    expect_eq.(same(2), 3);
+}

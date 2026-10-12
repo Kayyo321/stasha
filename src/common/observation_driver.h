@@ -3,7 +3,7 @@
 
 /* Driver-only helpers, included before common.h's compiler-allocation macros.
  * Reports are data, never program output or shell commands. */
-#include "observation_options.h"
+#include "observation_sources.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -15,8 +15,6 @@
 #include <sys/wait.h>
 #endif
 
-#define STS_OBS_SOURCE_LIMIT (16u * 1024u * 1024u)
-#define STS_OBS_SOURCE_LINES 1000000u
 #define STS_OBS_REPORT_LIMIT STASHA_OBSERVATION_MAX_REPORT_BYTES
 #define STS_OBS_TEST_LIMIT STASHA_OBSERVATION_MAX_TESTS
 #define STS_OBS_LINE_LIMIT STASHA_OBSERVATION_MAX_LINES
@@ -41,6 +39,8 @@ typedef struct {
     char binary_id[129], runtime_id[129], target[256];
     char *source, *canonical_source;
     size_t source_size;
+    sts_observation_graph graph;
+    size_t metadata_preflight_size;
     int compile_link_success;
     int image_fd;
 } sts_observation_run;
@@ -52,6 +52,9 @@ static int sts_observation_error(char *error, size_t size, const char *message) 
 static void sts_observation_manifest_free(sts_observation_manifest *m) {
     if (m->sites) for (uint32_t i = 0; i < m->site_count; ++i) free(m->sites[i].owner);
     if (m->tests) for (uint32_t i = 0; i < m->test_count; ++i) free(m->tests[i].name);
+    if(m->files)for(uint32_t i=0;i<m->file_count;++i)free(m->files[i].reason_masks);
+    if(m->declarations)for(uint32_t i=0;i<m->decl_count;++i){free(m->declarations[i].module_name);free(m->declarations[i].name);}
+    free(m->files);free(m->declarations);free(m->anchors);free(m->line_file_ids);
     free(m->lines); free(m->sites); free(m->tests); free(m->exclusions);
     memset(m, 0, sizeof(*m));
 }
@@ -62,7 +65,7 @@ static void sts_observation_run_free(sts_observation_run *r) {
         r->image_fd = -1;
     }
 #endif
-    free(r->source); free(r->canonical_source);
+    sts_observation_graph_free(&r->graph);
     r->source = r->canonical_source = NULL;
 }
 static int sts_observation_id_valid(const char *s) {
@@ -75,32 +78,101 @@ static int sts_observation_id_valid(const char *s) {
     }
     return n <= 128;
 }
+static int sts_observation_sha256_valid(const char *s) {
+    if(!s||strlen(s)!=64)return 0;
+    for(unsigned i=0;i<64;++i)if(sts_observation_digest_hex_value((unsigned char)s[i])<0)return 0;
+    return 1;
+}
+static int sts_observation_span_valid(const sts_observation_manifest *m,uint32_t file,
+                                      uint32_t line,uint32_t col,uint32_t end_line,uint32_t end_col) {
+    return file<m->file_count&&line&&col&&end_col&&line<=end_line&&end_line<=m->files[file].physical_line_count&&
+        (line!=end_line||col<=end_col);
+}
+static int sts_observation_decl_contains(const sts_observation_declaration *d,uint32_t line,uint32_t col,uint32_t end_line,uint32_t end_col) {
+    return line>=d->line&&end_line<=d->end_line&&(line!=d->line||col>=d->col)&&
+        (end_line!=d->end_line||end_col<=d->end_col);
+}
+static int sts_observation_decl_kind_valid(uint32_t kind) {
+    return kind==STS_OBS_DECL_FN||kind==STS_OBS_DECL_VAR||kind==STS_OBS_DECL_TYPE||
+        kind==STS_OBS_DECL_IMPORT||kind==STS_OBS_DECL_COMPTIME_ASSERT||kind==STS_OBS_DECL_TEST;
+}
 static int sts_observation_manifest_valid(const sts_observation_config *c,
                                            const sts_observation_manifest *m) {
-    if (!c || !m || !c->source_line_count || c->source_line_count > STS_OBS_SOURCE_LINES ||
-        !sts_observation_id_valid(c->run_id) || !sts_observation_id_valid(c->source_id) ||
-        !sts_observation_id_valid(c->config_id) || !sts_observation_id_valid(c->compiler_id) ||
-        !sts_observation_id_valid(m->map_id) || c->enabled_mask < 1 || c->enabled_mask > 3 ||
-        c->enabled_mask != (uint32_t)(((c->warn_memleak || c->has_max_bytes) ? 1 : 0) | (c->has_min_coverage ? 2 : 0)) ||
-        c->min_coverage > 100 || !m->test_count || m->test_count > STS_OBS_TEST_LIMIT ||
-        m->line_count > STS_OBS_LINE_LIMIT || m->site_count > STS_OBS_SITE_LIMIT ||
-        !m->tests || !m->exclusions || (m->line_count && !m->lines) || (m->site_count && !m->sites)) return 0;
-    uint32_t line_id = 0;
-    for (uint32_t line = 1; line <= c->source_line_count; ++line) {
-        if (m->exclusions[line] > STS_OBS_UNREACHABLE) return 0;
-        if (m->exclusions[line] == STS_OBS_ELIGIBLE) {
-            if (line_id >= m->line_count || m->lines[line_id++] != line) return 0;
+    if(!c||!m||!c->graph||!c->graph->frozen||c->graph->failed||
+       !sts_observation_sha256_valid(c->run_id)||!sts_observation_sha256_valid(c->input_graph_id)||
+       strcmp(c->input_graph_id,c->graph->input_graph_id)||c->source_line_count!=c->graph->files[0].physical_line_count||!sts_observation_sha256_valid(c->config_id)||
+       !sts_observation_sha256_valid(c->compiler_id)||!sts_observation_sha256_valid(m->map_id)||
+       c->enabled_mask<1||c->enabled_mask>3||c->enabled_mask!=(uint32_t)(((c->warn_memleak||c->has_max_bytes)?1:0)|(c->has_min_coverage?2:0))||
+       c->min_coverage>100||!m->file_count||m->file_count>STS_OBS_FILE_LIMIT||m->file_count!=c->graph->file_count||
+       !m->test_count||m->test_count>STS_OBS_TEST_LIMIT||m->line_count>STS_OBS_LINE_LIMIT||m->site_count>STS_OBS_SITE_LIMIT||
+       m->decl_count>STS_OBS_DECL_LIMIT||m->anchor_count>STS_OBS_ANCHOR_LIMIT||!m->files||!m->tests||
+       (m->line_count&&(!m->lines||!m->line_file_ids))||(m->site_count&&!m->sites)||
+       (m->decl_count&&!m->declarations)||(m->anchor_count&&!m->anchors))return 0;
+    sts_observation_encoder graph_hash;sts_observation_encode_init(&graph_hash,STS_OBS_MANIFEST_LIMIT);
+    char graph_id[129];
+    if(sts_observation_graph_encode(c->graph,&graph_hash))return 0;
+    sts_observation_digest_finish(&graph_hash.hash,graph_id);
+    if(strcmp(graph_id,c->input_graph_id))return 0;
+    uint32_t coverage=0,total_lines=0;
+    for(uint32_t i=0;i<m->file_count;++i){
+        const sts_observation_file_manifest *f=&m->files[i];const sts_observation_source *g=&c->graph->files[i];
+        if(f->file_id!=i||f->role!=(i?STS_OBS_IMPORT:STS_OBS_ROOT)||!f->physical_line_count||
+           f->physical_line_count>STS_OBS_SOURCE_LINES-total_lines||f->physical_line_count!=g->physical_line_count||
+           !sts_observation_sha256_valid(f->content_id)||strcmp(f->content_id,g->content_id)||!f->reason_masks)return 0;
+        total_lines+=f->physical_line_count;
+        for(uint32_t line=1;line<=f->physical_line_count;++line){
+            uint32_t mask=f->reason_masks[line];if(!mask||(mask&~63u))return 0;
+            if(mask&1u){if(coverage>=m->line_count||m->line_file_ids[coverage]!=i||m->lines[coverage]!=line)return 0;++coverage;}
         }
     }
-    if (line_id != m->line_count) return 0;
-    for (uint32_t i = 0; i < m->test_count; ++i)
-        if (!m->tests[i].line || m->tests[i].line > c->source_line_count || !m->tests[i].name) return 0;
-    for (uint32_t i = 0; i < m->site_count; ++i) {
-        const sts_observation_site *s = &m->sites[i];
-        if (!s->line || s->line > c->source_line_count || !s->owner ||
-            s->kind < STS_OBS_NEW || s->kind > STS_OBS_REM ||
-            (s->owner_test != UINT32_MAX && s->owner_test >= m->test_count)) return 0;
+    if(coverage!=m->line_count||total_lines!=c->graph->physical_line_count)return 0;
+    uint32_t ordinal=0,previous_file=0;
+    for(uint32_t i=0;i<m->decl_count;++i){const sts_observation_declaration *d=&m->declarations[i];
+        if(d->file_id!=previous_file){if(d->file_id<previous_file)return 0;previous_file=d->file_id;ordinal=0;}
+        if(d->decl_id!=i||!sts_observation_decl_kind_valid(d->kind)||d->source_linkage>2||d->ordinal_in_file!=ordinal++||!sts_observation_span_valid(m,d->file_id,d->line,d->col,d->end_line,d->end_col)||
+           !d->module_name||strlen(d->module_name)>STS_OBS_MODULE_LIMIT||strcmp(d->module_name,c->graph->files[d->file_id].declared_module)||!d->name||strlen(d->name)>STS_OBS_IDENTIFIER_LIMIT||d->selected>1)return 0;
     }
+    for(uint32_t i=0;i<m->decl_count;++i){const sts_observation_declaration *d=&m->declarations[i];
+        int named=d->kind==STS_OBS_DECL_FN||d->kind==STS_OBS_DECL_VAR||d->kind==STS_OBS_DECL_TYPE;
+        if(named!=!!d->name[0]||(!named&&d->source_linkage)||
+           (d->kind==STS_OBS_DECL_TYPE&&d->selected)||(d->kind==STS_OBS_DECL_IMPORT&&d->file_id))return 0;
+    }
+    uint32_t selected_tests=0;
+    for(uint32_t i=0;i<m->decl_count;++i)if(m->declarations[i].kind==STS_OBS_DECL_TEST&&m->declarations[i].selected)++selected_tests;
+    if(selected_tests!=m->test_count)return 0;
+    for(uint32_t i=0;i<m->test_count;++i){const sts_observation_test *t=&m->tests[i];
+        if(t->decl_id>=m->decl_count||t->file_id!=m->declarations[t->decl_id].file_id||
+           t->line!=m->declarations[t->decl_id].line||t->col!=m->declarations[t->decl_id].col||m->declarations[t->decl_id].kind!=STS_OBS_DECL_TEST||!t->name||strlen(t->name)>STS_OBS_LABEL_LIMIT||
+           !m->declarations[t->decl_id].selected||(i&&t->decl_id<=m->tests[i-1].decl_id))return 0;
+    }
+    uint8_t anchored[STS_OBS_LINE_LIMIT/8]={0};
+    for(uint32_t i=0;i<m->anchor_count;++i){const sts_observation_anchor *a=&m->anchors[i];
+        if(a->anchor_id!=i||a->decl_id>=m->decl_count||a->file_id!=m->declarations[a->decl_id].file_id||
+           !sts_observation_span_valid(m,a->file_id,a->line,a->col,a->end_line,a->end_col)||
+           !sts_observation_decl_contains(&m->declarations[a->decl_id],a->line,a->col,a->end_line,a->end_col)||a->kind<1||a->kind>3||
+           a->exclusion_reason>STS_OBS_UNREACHABLE||a->has_coverage_id>1||
+           (a->exclusion_reason==STS_OBS_ELIGIBLE)!=!!a->has_coverage_id)return 0;
+        if(!(m->files[a->file_id].reason_masks[a->line]&(1u<<a->exclusion_reason)))return 0;
+        if(a->has_coverage_id){
+            const sts_observation_declaration *d=&m->declarations[a->decl_id];
+            if(a->coverage_id>=m->line_count||m->line_file_ids[a->coverage_id]!=a->file_id||m->lines[a->coverage_id]!=a->line||
+               !d->selected||d->kind!=STS_OBS_DECL_FN||(!d->file_id&&!strcmp(d->name,"main")))return 0;
+            anchored[a->coverage_id/8]|=(uint8_t)(1u<<(a->coverage_id%8));
+        }
+    }
+    for(uint32_t i=0;i<m->line_count;++i)if(!(anchored[i/8]&(1u<<(i%8))))return 0;
+    for(uint32_t i=0;i<m->site_count;++i){const sts_observation_site *a=&m->sites[i];
+        if(a->decl_id>=m->decl_count||a->file_id!=m->declarations[a->decl_id].file_id||!a->owner||
+           !sts_observation_span_valid(m,a->file_id,a->line,a->col,a->end_line,a->end_col)||
+           !sts_observation_decl_contains(&m->declarations[a->decl_id],a->line,a->col,a->end_line,a->end_col)||a->kind<STS_OBS_NEW||a->kind>STS_OBS_REM||
+           (a->owner_test!=UINT32_MAX&&(a->owner_test>=m->test_count||m->tests[a->owner_test].decl_id!=a->decl_id)))return 0;
+        const sts_observation_declaration *d=&m->declarations[a->decl_id];
+        if(!d->selected||(d->kind!=STS_OBS_DECL_FN&&d->kind!=STS_OBS_DECL_TEST)||
+           (d->kind==STS_OBS_DECL_TEST)!=(a->owner_test!=UINT32_MAX)||
+           strcmp(a->owner,a->owner_test==UINT32_MAX?d->name:m->tests[a->owner_test].name))return 0;
+    }
+    sts_observation_manifest checked=*m;
+    if(sts_observation_manifest_digest(c,&checked)||strcmp(checked.map_id,m->map_id)||checked.serialized_size!=m->serialized_size)return 0;
     return 1;
 }
 
@@ -143,9 +215,9 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
     uint64_t a, b, d;
 #define OBS_LITERAL(s) do { if (!sts_observation_literal(&r, (s))) goto malformed; } while (0)
 #define OBS_NUMBER(max, sep, dst) do { if (!sts_observation_number(&r, (max), (sep), &(dst))) goto malformed; } while (0)
-    OBS_LITERAL("STASHA_OBSERVATION 1\nprofile native-sequential-leaf-v1\nruntime_abi 1\nmetric_versions 1 1\n");
+    OBS_LITERAL("STASHA_OBSERVATION 2\nprofile native-sequential-direct-source-v2\nruntime_abi 2\nmetric_versions 1 2\n");
     if (!sts_observation_identity(&r, "run ", c->run_id) ||
-        !sts_observation_identity(&r, "source ", c->source_id) ||
+        !sts_observation_identity(&r, "input_graph ", c->input_graph_id) ||
         !sts_observation_identity(&r, "map ", m->map_id) ||
         !sts_observation_identity(&r, "config ", c->config_id) ||
         !sts_observation_identity(&r, "compiler ", c->compiler_id)) goto identity;
@@ -161,7 +233,7 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
     if (out->assertions_passed > UINT64_MAX - out->assertions_failed) goto impossible;
     OBS_LITERAL("tests "); OBS_NUMBER(m->test_count, ' ', a); out->started = (uint32_t)a;
     OBS_NUMBER(m->test_count, '\n', b); out->completed = (uint32_t)b;
-    if (b > a || a - b > 1) goto impossible;
+    if (b > a || a - b > 1 || (!a && (out->assertions_passed || out->assertions_failed))) goto impossible;
     for (uint32_t i = 0; i < m->test_count; ++i) {
         OBS_LITERAL("test "); OBS_NUMBER(m->test_count - 1, ' ', a); if (a != i) goto impossible;
         OBS_NUMBER(2, '\n', b);
@@ -185,7 +257,7 @@ static int sts_observation_parse_report(const void *bytes, size_t size,
         OBS_LITERAL("\n");
         for (uint32_t i = 0; i < m->line_count; ++i) out->covered += !!(out->hits[i / 8] & (1u << (i % 8)));
     }
-    if (out->covered && !out->started) goto impossible;
+    if (out->covered && (!out->started || !(c->enabled_mask & STASHA_OBSERVATION_COVERAGE))) goto impossible;
     OBS_LITERAL("allocations "); OBS_NUMBER(STS_OBS_RECORD_LIMIT, ' ', a); out->live_count = (uint32_t)a;
     OBS_NUMBER(UINT64_MAX, '\n', b);
     uint64_t previous = 0;
@@ -248,7 +320,7 @@ static int sts_observation_hash_fd(int fd, char out[129]) {
     return lseek(fd, 0, SEEK_SET) < 0 ? -1 : 0;
 }
 static int sts_observation_hash_file(const char *path, int nofollow, char out[129]) {
-    int fd = open(path, O_RDONLY | O_CLOEXEC | (nofollow ? O_NOFOLLOW : 0));
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | (nofollow ? O_NOFOLLOW : 0));
     if (fd < 0) return -1;
     struct stat st;
     int status = fstat(fd, &st) || !S_ISREG(st.st_mode) ? -1 : sts_observation_hash_fd(fd, out);
@@ -261,47 +333,18 @@ static int sts_observation_prepare(sts_observation_config *c, sts_observation_ru
                                     int optimization, int debug, char *error, size_t error_size) {
     memset(run, 0, sizeof(*run));
     run->image_fd = -1;
-    run->canonical_source = realpath(source, NULL);
-    if (!run->canonical_source) return sts_observation_error(error, error_size, "cannot resolve observation source");
-    int fd = open(run->canonical_source, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    struct stat st;
-    if (fd < 0) return sts_observation_error(error, error_size, "cannot open observation source");
-    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > STS_OBS_SOURCE_LIMIT) {
-        close(fd); return sts_observation_error(error, error_size, "observation source must be a bounded ordinary file (at most 16 MiB)");
-    }
-    run->source_size = (size_t)st.st_size;
-    run->source = malloc(run->source_size + 1);
-    if (!run->source) { close(fd); return sts_observation_error(error, error_size, "cannot allocate observation source buffer"); }
-    size_t offset = 0;
-    while (offset < run->source_size) {
-        ssize_t n = read(fd, run->source + offset, run->source_size - offset);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { close(fd); return sts_observation_error(error, error_size, "observation source changed or could not be read"); }
-        offset += (size_t)n;
-    }
-    char extra;
-    ssize_t n;
-    do { n = read(fd, &extra, 1); } while (n < 0 && errno == EINTR);
-    int closed = close(fd);
-    if (n != 0 || closed || memchr(run->source, 0, run->source_size))
-        return sts_observation_error(error, error_size, "observation source changed, contains NUL, or failed to close");
-    run->source[run->source_size] = 0;
-    c->source_line_count = 1;
-    for (size_t i = 0; i < run->source_size; ++i) if (run->source[i] == '\n') ++c->source_line_count;
-    if (c->source_line_count > STS_OBS_SOURCE_LINES)
-        return sts_observation_error(error, error_size, "observation source exceeds line capacity");
-    c->source_path = run->canonical_source;
-    sts_observation_digest(run->source, run->source_size, c->source_id);
+    if(sts_observation_graph_begin(&run->graph,source,error,error_size))return -1;
+    c->graph=&run->graph;
+    run->canonical_source=run->graph.files[0].canonical_path;
+    run->source=run->graph.files[0].bytes;run->source_size=run->graph.files[0].byte_length;
+    c->source_line_count=run->graph.files[0].physical_line_count;c->source_path=run->canonical_source;
     if (sts_observation_hash_file("/proc/self/exe", 0, c->compiler_id) ||
         sts_observation_hash_file(runtime, 1, run->runtime_id))
         return sts_observation_error(error, error_size, "cannot hash compiler or matching observation_runtime.a");
-    snprintf(run->target, sizeof(run->target), "%s", target);
-    char config[1024];
-    int len = snprintf(config, sizeof(config), "observation-1\nprofile native-sequential-leaf-v1\ntarget %s\ncompiler %s\nruntime %s\nmask %u\nwarn %d\nmax %d %" PRIu64 "\nmin %d %u\noptimization %d\ndebug %d\n",
-        target, c->compiler_id, run->runtime_id, c->enabled_mask, c->warn_memleak,
-        c->has_max_bytes, c->max_bytes, c->has_min_coverage, c->min_coverage, optimization, debug);
-    if (len < 0 || (size_t)len >= sizeof(config)) return sts_observation_error(error, error_size, "observation configuration exceeds capacity");
-    sts_observation_digest(config, (size_t)len, c->config_id);
+    if(strlen(target)>=sizeof(run->target))return sts_observation_error(error,error_size,"observation target exceeds capacity");
+    memcpy(run->target,target,strlen(target)+1);
+    if(sts_observation_config_digest(c,run->runtime_id,target,optimization,debug))
+        return sts_observation_error(error,error_size,"observation configuration exceeds capacity or is invalid");
     snprintf(run->directory, sizeof(run->directory), "/tmp/stasha-observation-XXXXXX");
     if (!mkdtemp(run->directory)) { run->directory[0] = 0; return sts_observation_error(error, error_size, "cannot create private observation directory"); }
     snprintf(run->report_path, sizeof(run->report_path), "%s/report", run->directory);
@@ -309,7 +352,8 @@ static int sts_observation_prepare(sts_observation_config *c, sts_observation_ru
     /* Directory uniqueness, process identity and compiler/config identity bind
      * this run. IDs are freshness labels, not cryptographic attestation. */
     char fresh[1024];
-    len = snprintf(fresh, sizeof(fresh), "%s:%ld:%s:%s", run->directory, (long)getpid(), c->source_id, c->config_id);
+    int len = snprintf(fresh, sizeof(fresh), "%s:%ld:%s:%s", run->directory, (long)getpid(), run->graph.files[0].content_id, c->config_id);
+    if(len<0||(size_t)len>=sizeof(fresh))return sts_observation_error(error,error_size,"observation run identity exceeds capacity");
     sts_observation_digest(fresh, (size_t)len, c->run_id);
     return 0;
 }
@@ -463,47 +507,123 @@ static int sts_observation_json_bytes(FILE *file, const char *s) {
         if (fprintf(file, "%02x", *p) < 0) return -1;
     return fputc('"', file) == EOF ? -1 : 0;
 }
-static int sts_observation_write_metadata(const sts_observation_run *run,
-                                           const sts_observation_config *c, const sts_observation_manifest *m,
-                                           const sts_observation_child *child,
-                                           const sts_observation_report *report, int parsed, int overall) {
+static int sts_observation_metadata_emit(FILE *f,const sts_observation_run *run,
+        const sts_observation_config *c,const sts_observation_manifest *m,
+        const sts_observation_child *child,const sts_observation_report *report,int parsed,int overall) {
+    int valid=sts_observation_manifest_valid(c,m);const sts_observation_graph *g=c->graph;
+    fprintf(f,"{\n\"schema\":2,\"profile\":\"native-sequential-direct-source-v2\",\"runtime_abi\":2,\"allocation_metric_version\":1,\"line_metric_version\":2,\"target\":");
+    sts_observation_json_string(f,run->target);
+    fputs(",\"text_encoding\":\"UTF-8; raw dynamic text bytes in *_bytes_hex\",\"source_path\":",f);sts_observation_json_string(f,c->source_path);
+    fputs(",\"source_path_bytes_hex\":",f);sts_observation_json_bytes(f,c->source_path);
+    fprintf(f,",\n\"run\":\"%s\",\"input_graph_sha256\":\"%s\",\"map_sha256\":\"%s\",\"config_sha256\":\"%s\",\"compiler_sha256\":\"%s\",\"runtime_sha256\":\"%s\",\"binary_sha256\":\"%s\",\n",
+        c->run_id,c->input_graph_id,m->map_id,c->config_id,c->compiler_id,run->runtime_id,run->binary_id);
+    fputs("\"invocation_directory_bytes_hex\":",f);sts_observation_json_bytes(f,g?g->invocation_directory:NULL);
+    fputs(",\"original_root_spelling_bytes_hex\":",f);sts_observation_json_bytes(f,g?g->original_root_spelling:NULL);
+    fprintf(f,",\"enabled\":%u,\"warn_memleak\":%s,\"max_leaked_bytes\":",c->enabled_mask,c->warn_memleak?"true":"false");
+    if(c->has_max_bytes)fprintf(f,"%" PRIu64,c->max_bytes);else fputs("null",f);
+    fputs(",\"min_test_coverage\":",f);if(c->has_min_coverage)fprintf(f,"%u",c->min_coverage);else fputs("null",f);
+    fprintf(f,",\n\"child\":{\"launched\":%d,\"waited\":%d,\"launch_errno\":%d,\"wait_errno\":%d,\"exited\":%d,\"exit_code\":%d,\"signal\":%d},\"report_valid\":%s,\"overall_status\":%d,\n",
+        child->launched,child->waited,child->launch_errno,child->wait_errno,child->exited,child->exit_code,child->signal,parsed?"true":"false",overall);
+    fprintf(f,"\"compile_link_success\":%s,\"manifest_valid\":%s,\"allocation_metric\":\"%s\",\"coverage_metric\":\"%s\",\n",
+        run->compile_link_success?"true":"false",valid?"true":"false",
+        !(c->enabled_mask&1)?"disabled":parsed&&report->complete&&(!c->has_max_bytes||report->live_bytes<=c->max_bytes)?"pass":"fail",
+        !(c->enabled_mask&2)?"disabled":parsed&&report->complete&&sts_observation_coverage_pass(report->covered,m->line_count,c->min_coverage)?"pass":"fail");
+    if(parsed)fprintf(f,"\"complete\":%u,\"reason\":%u,\"suite_endpoint\":%u,\"tests_started\":%u,\"tests_completed\":%u,\"assertions_passed\":%" PRIu64 ",\"assertions_failed\":%" PRIu64 ",\"covered_lines\":%" PRIu64 ",\"live_allocations\":%u,\"tracked_outstanding_bytes\":%" PRIu64 ",\n",
+        report->complete,report->reason,report->endpoint,report->started,report->completed,report->assertions_passed,report->assertions_failed,report->covered,report->live_count,report->live_bytes);
+    fprintf(f,"\"eligible_lines\":%u,\"coverage_applicable\":%s,\"files\":[",valid?m->line_count:0,valid&&m->line_count?"true":"false");
+    uint32_t next=0;
+    for(uint32_t i=0;g&&i<g->file_count;++i){const sts_observation_source *s=&g->files[i];
+        fprintf(f,"%s{\"id\":%u,\"role\":%u,\"source_sha256\":\"%s\",\"lookup_path\":",i?",":"",i,s->role,s->content_id);sts_observation_json_string(f,s->lookup_path);
+        fputs(",\"lookup_path_bytes_hex\":",f);sts_observation_json_bytes(f,s->lookup_path);
+        fputs(",\"canonical_path\":",f);sts_observation_json_string(f,s->canonical_path);fputs(",\"canonical_path_bytes_hex\":",f);sts_observation_json_bytes(f,s->canonical_path);
+        fputs(",\"requested_module\":",f);if(s->requested_module)sts_observation_json_string(f,s->requested_module);else fputs("null",f);
+        fputs(",\"requested_module_bytes_hex\":",f);if(s->requested_module)sts_observation_json_bytes(f,s->requested_module);else fputs("null",f);
+        fputs(",\"declared_module\":",f);sts_observation_json_string(f,s->declared_module);fputs(",\"declared_module_bytes_hex\":",f);sts_observation_json_bytes(f,s->declared_module);
+        fprintf(f,",\"source_bytes\":%zu,\"physical_line_count\":%u,\"lines\":[",s->byte_length,s->physical_line_count);
+        uint32_t begin=next,covered=0;
+        while(valid&&next<m->line_count&&m->line_file_ids[next]==i){fprintf(f,"%s%u",next>begin?",":"",m->lines[next]);if(parsed&&(report->hits[next/8]&(1u<<(next%8))))++covered;++next;}
+        fputs("],\"hit_lines\":[",f);int comma=0;
+        for(uint32_t j=begin;parsed&&j<next;++j)if(report->hits[j/8]&(1u<<(j%8))){fprintf(f,"%s%u",comma?",":"",m->lines[j]);comma=1;}
+        fprintf(f,"],\"eligible_lines\":%u,\"covered_lines\":%u,\"exclusions\":[",next-begin,covered);
+        for(uint32_t j=1;valid&&j<=s->physical_line_count;++j)fprintf(f,"%s%u",j>1?",":"",m->files[i].reason_masks[j]);
+        fputs("]}",f);
+    }
+    fputs("],\n\"edges\":[",f);
+    for(uint32_t i=0;g&&i<g->edge_count;++i){const sts_observation_edge *e=&g->edges[i];
+        fprintf(f,"%s{\"parent_file_id\":%u,\"child_file_id\":%u,\"line\":%u,\"col\":%u,\"ordinal\":%u,\"requested_module\":",i?",":"",e->parent_file_id,e->child_file_id,e->line,e->col,e->ordinal);
+        sts_observation_json_string(f,e->requested_module);fputs(",\"requested_module_bytes_hex\":",f);sts_observation_json_bytes(f,e->requested_module);
+        fputs(",\"lookup_path\":",f);sts_observation_json_string(f,e->lookup_path);fputs(",\"lookup_path_bytes_hex\":",f);sts_observation_json_bytes(f,e->lookup_path);fputc('}',f);
+    }
+    fputs("],\n\"declarations\":[",f);
+    for(uint32_t i=0;valid&&i<m->decl_count;++i){const sts_observation_declaration *d=&m->declarations[i];
+        fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"ordinal_in_file\":%u,\"kind\":%u,\"line\":%u,\"col\":%u,\"end_line\":%u,\"end_col\":%u,\"source_linkage\":%u,\"selected\":%u,\"module_name\":",i?",":"",d->decl_id,d->file_id,d->ordinal_in_file,d->kind,d->line,d->col,d->end_line,d->end_col,d->source_linkage,d->selected);
+        sts_observation_json_string(f,d->module_name);fputs(",\"module_name_bytes_hex\":",f);sts_observation_json_bytes(f,d->module_name);fputs(",\"name\":",f);sts_observation_json_string(f,d->name);fputs(",\"name_bytes_hex\":",f);sts_observation_json_bytes(f,d->name);fputc('}',f);
+    }
+    fputs("],\n\"tests\":[",f);
+    for(uint32_t i=0;valid&&i<m->test_count;++i){const sts_observation_test *t=&m->tests[i];
+        fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"decl_id\":%u,\"line\":%u,\"col\":%u,\"name\":",i?",":"",i,t->file_id,t->decl_id,t->line,t->col);
+        sts_observation_json_string(f,t->name);fputs(",\"name_bytes_hex\":",f);sts_observation_json_bytes(f,t->name);fputc('}',f);
+    }
+    fputs("],\n\"anchors\":[",f);
+    for(uint32_t i=0;valid&&i<m->anchor_count;++i){const sts_observation_anchor *a=&m->anchors[i];
+        fprintf(f,"%s{\"id\":%u,\"decl_id\":%u,\"file_id\":%u,\"line\":%u,\"col\":%u,\"end_line\":%u,\"end_col\":%u,\"kind\":%u,\"exclusion_reason\":%u,\"coverage_id\":",i?",":"",a->anchor_id,a->decl_id,a->file_id,a->line,a->col,a->end_line,a->end_col,a->kind,a->exclusion_reason);
+        if(a->has_coverage_id)fprintf(f,"%u",a->coverage_id);else fputs("null",f);fputc('}',f);
+    }
+    fputs("],\n\"sites\":[",f);
+    for(uint32_t i=0;valid&&i<m->site_count;++i){const sts_observation_site *a=&m->sites[i];
+        fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"decl_id\":%u,\"line\":%u,\"col\":%u,\"end_line\":%u,\"end_col\":%u,\"kind\":%u,\"owner_test\":%u,\"owner\":",i?",":"",i,a->file_id,a->decl_id,a->line,a->col,a->end_line,a->end_col,a->kind,a->owner_test);
+        sts_observation_json_string(f,a->owner);fputs(",\"static_test_id\":",f);if(a->owner_test==UINT32_MAX)fputs("null",f);else fprintf(f,"%u",a->owner_test);fputs(",\"owner_bytes_hex\":",f);sts_observation_json_bytes(f,a->owner);fputc('}',f);
+    }
+    fputs("],\n\"coverage\":[",f);
+    for(uint32_t i=0;valid&&i<m->line_count;++i)fprintf(f,"%s{\"id\":%u,\"file_id\":%u,\"line\":%u,\"hit\":%s}",i?",":"",i,m->line_file_ids[i],m->lines[i],parsed&&(report->hits[i/8]&(1u<<(i%8)))?"true":"false");
+    fputs("],\n\"lines\":[",f);for(uint32_t i=0;valid&&i<m->line_count;++i)fprintf(f,"%s%u",i?",":"",m->lines[i]);
+    fputs("],\n\"exclusions\":[",f);
+    for(uint32_t i=1;valid&&i<=c->source_line_count;++i){uint32_t mask=m->files[0].reason_masks[i],reason=0;if(!(mask&1u))for(reason=1;reason<5&&!(mask&(1u<<reason));++reason);fprintf(f,"%s%u",i>1?",":"",reason);}
+    fputs("],\n\"allocations\":[",f);
+    for(uint32_t i=0;parsed&&i<report->live_count;++i){const sts_observation_live *a=&report->live[i];
+        fprintf(f,"%s{\"generation\":%" PRIu64 ",\"bytes\":%" PRIu64 ",\"allocation_site\":%u,\"resize_site\":%u,\"test\":%u}",i?",":"",a->generation,a->bytes,a->allocation_site,a->resize_site,a->test);
+    }
+    fputs("]\n}\n",f);return ferror(f)?-1:0;
+}
 #if defined(__linux__)
-    int fd = open(run->metadata_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) return -1;
-    FILE *f = fdopen(fd, "w");
-    if (!f) { close(fd); return -1; }
-    int manifest_valid = sts_observation_manifest_valid(c, m);
-    fprintf(f, "{\n\"schema\":1,\"profile\":\"native-sequential-leaf-v1\",\"target\":");
-    sts_observation_json_string(f, run->target);
-    fprintf(f, ",\n\"text_encoding\":\"UTF-8; raw dynamic text bytes in *_bytes_hex\",\n\"source_path\":"); sts_observation_json_string(f, c->source_path);
-    fputs(",\"source_path_bytes_hex\":", f); sts_observation_json_bytes(f, c->source_path);
-    fprintf(f, ",\n\"run\":\"%s\",\"source_sha256\":\"%s\",\"map_sha256\":\"%s\",\"config_sha256\":\"%s\",\n\"compiler_sha256\":\"%s\",\"runtime_sha256\":\"%s\",\"binary_sha256\":\"%s\",\n",
-        c->run_id, c->source_id, m->map_id, c->config_id, c->compiler_id, run->runtime_id, run->binary_id);
-    fprintf(f, "\"enabled\":%u,\"warn_memleak\":%s,\"max_leaked_bytes\":", c->enabled_mask, c->warn_memleak ? "true" : "false");
-    if (c->has_max_bytes) fprintf(f, "%" PRIu64, c->max_bytes); else fputs("null", f);
-    fputs(",\"min_test_coverage\":", f); if (c->has_min_coverage) fprintf(f, "%u", c->min_coverage); else fputs("null", f);
-    fprintf(f, ",\n\"child\":{\"launched\":%d,\"waited\":%d,\"launch_errno\":%d,\"wait_errno\":%d,\"exited\":%d,\"exit_code\":%d,\"signal\":%d},\n\"report_valid\":%s,\"overall_status\":%d,\n",
-        child->launched, child->waited, child->launch_errno, child->wait_errno, child->exited, child->exit_code, child->signal, parsed ? "true" : "false", overall);
-    fprintf(f, "\"compile_link_success\":%s,\"manifest_valid\":%s,\"allocation_metric\":\"%s\",\"coverage_metric\":\"%s\",\n",
-        run->compile_link_success ? "true" : "false", manifest_valid ? "true" : "false",
-        !(c->enabled_mask & 1) ? "disabled" : parsed && report->complete && (!c->has_max_bytes || report->live_bytes <= c->max_bytes) ? "pass" : "fail",
-        !(c->enabled_mask & 2) ? "disabled" : parsed && report->complete && sts_observation_coverage_pass(report->covered, m->line_count, c->min_coverage) ? "pass" : "fail");
-    if (parsed) fprintf(f, "\"complete\":%u,\"reason\":%u,\"suite_endpoint\":%u,\"assertions_passed\":%" PRIu64 ",\"assertions_failed\":%" PRIu64 ",\"covered_lines\":%" PRIu64 ",\"live_allocations\":%u,\"tracked_outstanding_bytes\":%" PRIu64 ",\n",
-        report->complete, report->reason, report->endpoint, report->assertions_passed, report->assertions_failed, report->covered, report->live_count, report->live_bytes);
-    fputs("\"lines\":[", f);
-    for (uint32_t i = 0; manifest_valid && i < m->line_count; ++i) fprintf(f, "%s%u", i ? "," : "", m->lines[i]);
-    fputs("],\n\"tests\":[", f);
-    for (uint32_t i = 0; manifest_valid && i < m->test_count; ++i) { fprintf(f, "%s{\"id\":%u,\"line\":%u,\"name\":", i ? "," : "", i, m->tests[i].line); sts_observation_json_string(f, m->tests[i].name); fputs(",\"name_bytes_hex\":", f); sts_observation_json_bytes(f, m->tests[i].name); fputc('}', f); }
-    fputs("],\n\"sites\":[", f);
-    for (uint32_t i = 0; manifest_valid && i < m->site_count; ++i) { const sts_observation_site *s = &m->sites[i]; fprintf(f, "%s{\"id\":%u,\"line\":%u,\"kind\":%u,\"owner_test\":%u,\"owner\":", i ? "," : "", i, s->line, s->kind, s->owner_test); sts_observation_json_string(f, s->owner); fputs(",\"owner_bytes_hex\":", f); sts_observation_json_bytes(f, s->owner); fputc('}', f); }
-    fputs("],\n\"exclusions\":[", f);
-    for (uint32_t i = 1; manifest_valid && i <= c->source_line_count; ++i) fprintf(f, "%s%u", i > 1 ? "," : "", m->exclusions[i]);
-    fputs("]\n}\n", f);
-    int bad = ferror(f); if (fclose(f)) bad = 1;
-    return bad ? -1 : 0;
+typedef struct {size_t size,limit;int failed;} sts_observation_json_counter;
+static ssize_t sts_observation_count_json(void *cookie,const char *bytes,size_t size) {
+    sts_observation_json_counter *count=cookie;(void)bytes;
+    if(count->failed||count->size>count->limit||size>count->limit-count->size){count->failed=1;errno=EFBIG;return -1;}
+    count->size+=size;return (ssize_t)size;
+}
+static int sts_observation_metadata_count(const sts_observation_run *run,const sts_observation_config *c,
+        const sts_observation_manifest *m,const sts_observation_child *child,const sts_observation_report *r,int parsed,int status,size_t *size) {
+    sts_observation_json_counter count={.limit=STS_OBS_METADATA_LIMIT};
+    cookie_io_functions_t io={.write=sts_observation_count_json};FILE *f=fopencookie(&count,"w",io);if(!f)return -1;
+    int bad=sts_observation_metadata_emit(f,run,c,m,child,r,parsed,status);if(fclose(f))bad=1;
+    if(count.failed)bad=1;
+    *size=count.size;return bad?-1:0;
+}
+static int sts_observation_metadata_preflight(sts_observation_run *run,const sts_observation_config *c,
+        const sts_observation_manifest *m,char *error,size_t error_size) {
+    if(!sts_observation_manifest_valid(c,m))return sts_observation_error(error,error_size,"invalid observation metadata manifest");
+    sts_observation_child child={0};size_t size;
+    if(sts_observation_metadata_count(run,c,m,&child,NULL,0,1,&size))return sts_observation_error(error,error_size,"observation immutable metadata exceeds 32 MiB");
+    /* Exact immutable JSON plus worst-case result growth: each live record is
+     * at most 256 bytes, each possible hit line 11, per-file numbers 40, and
+     * all remaining report/child/hash decimal expansion at most 4096. */
+    size_t extra=(size_t)STS_OBS_RECORD_LIMIT*256u+(size_t)m->line_count*11u+(size_t)m->file_count*40u+4096u;
+    if(size>STS_OBS_METADATA_LIMIT||extra>STS_OBS_METADATA_LIMIT-size)return sts_observation_error(error,error_size,"observation metadata plus bounded runtime results exceeds 32 MiB");
+    run->metadata_preflight_size=size+extra;return 0;
+}
+#endif
+static int sts_observation_write_metadata(const sts_observation_run *run,
+        const sts_observation_config *c,const sts_observation_manifest *m,
+        const sts_observation_child *child,const sts_observation_report *report,int parsed,int overall) {
+#if defined(__linux__)
+    size_t size;if(sts_observation_metadata_count(run,c,m,child,report,parsed,overall,&size))return -1;
+    if(run->metadata_preflight_size&&size>run->metadata_preflight_size)return -1;
+    int fd=open(run->metadata_path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);if(fd<0)return -1;
+    FILE *f=fdopen(fd,"w");if(!f){close(fd);return -1;}
+    int bad=sts_observation_metadata_emit(f,run,c,m,child,report,parsed,overall);if(fclose(f))bad=1;return bad?-1:0;
 #else
-    (void)run; (void)c; (void)m; (void)child; (void)report; (void)parsed; (void)overall;
-    return -1;
+    (void)run;(void)c;(void)m;(void)child;(void)report;(void)parsed;(void)overall;return -1;
 #endif
 }
 
@@ -525,8 +645,8 @@ static void sts_observation_print_summary(const sts_observation_config *c,
         if (c->warn_memleak && r->live_count) fputs("warning: outstanding tracked allocations at suite endpoint\n", stderr);
         for (uint32_t i = 0; i < r->live_count; ++i) {
             const sts_observation_live *live = &r->live[i];
-            fprintf(stderr, "  allocation #%" PRIu64 ": %" PRIu64 " requested bytes, source line %u (%s), test %u\n", live->generation, live->bytes,
-                m->sites[live->allocation_site].line, m->sites[live->allocation_site].owner, live->test);
+            fprintf(stderr, "  allocation #%" PRIu64 ": %" PRIu64 " requested bytes, source file %u line %u (%s), test %u\n", live->generation, live->bytes,
+                m->sites[live->allocation_site].file_id, m->sites[live->allocation_site].line, m->sites[live->allocation_site].owner, live->test);
         }
     }
     if (!(c->enabled_mask & 2)) fputs("observation: executable statement/control-line coverage disabled\n", stderr);
@@ -535,7 +655,7 @@ static void sts_observation_print_summary(const sts_observation_config *c,
         else fprintf(stderr, "observation: executable statement/control-line coverage %" PRIu64 "/%u; minimum %u%% (%s)\n",
             r->covered, m->line_count, c->min_coverage, r->complete && sts_observation_coverage_pass(r->covered, m->line_count, c->min_coverage) ? "pass" : "fail");
         fputs("observation: uncovered source lines", stderr);
-        for (uint32_t i = 0; i < m->line_count; ++i) if (!(r->hits[i / 8] & (1u << (i % 8)))) fprintf(stderr, " %u", m->lines[i]);
+        for (uint32_t i = 0; i < m->line_count; ++i) if (!(r->hits[i / 8] & (1u << (i % 8)))) fprintf(stderr, " %u:%u", m->line_file_ids[i], m->lines[i]);
         fputc('\n', stderr);
     }
 }

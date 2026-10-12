@@ -1107,7 +1107,145 @@ static void test_resource_limits(void) {
     free(source);
 }
 
+static void test_observed_owned_origins(void) {
+    case_name="controlled graph-issued owned origins";
+    const char *literal="mod util.calc;\n"
+        "ext fn same(stack i32 x): i32 { ret x + 1; }\n"
+        "test 'same' { heap u8 *rw a = new.(8); heap u8 *rw b = new.(13); "
+        "a = mov.(a, 9); rem.(a); rem.(b); expect_eq.(same(2), 3); }\n";
+    char *source=strdup(literal),*file=strdup("/owned/calc.sts");
+    CHECK(source && file);
+    restore_diagnostic_counts(0,0);diag_clear_captured();diag_set_render_enabled(False);
+    diag_register_source(file,source);diag_set_file(file);diag_set_source(source);
+    stream=pp_process(source,file,NULL,0);CHECK(stream!=NULL);
+    node_t*m=parse_observed_from_stream(stream,2,4);
+    CHECK(m && get_error_count()==0 && m->observation_file_id_plus_one==2);
+    CHECK(m->as.module.decls.count==2);
+    node_t*f=m->as.module.decls.items[0],*test=m->as.module.decls.items[1];
+    CHECK(f->observation_file_id_plus_one==2 && f->observation_decl_ordinal==0);
+    CHECK(test->observation_file_id_plus_one==2 && test->observation_decl_ordinal==1);
+    CHECK(test->observation_line==3 && test->observation_col==1 && test->observation_end_line==3);
+    node_list_t body=test->as.test_block.body->as.block.stmts;
+    CHECK(body.count==6);
+    node_t*first=body.items[0]->as.var_decl.init,*second=body.items[1]->as.var_decl.init;
+    const char*line=strstr(literal,"test 'same'");
+    const char*new1=strstr(line,"new.(8)"),*new2=strstr(line,"new.(13)");
+    CHECK(first->kind==NodeNewExpr && second->kind==NodeNewExpr);
+    CHECK(first->observation_col==(uint32_t)(new1-line+1));
+    CHECK(first->observation_end_col==first->observation_col+6);
+    CHECK(second->observation_col==(uint32_t)(new2-line+1));
+    CHECK(second->observation_end_col==second->observation_col+7);
+    node_t*resize=body.items[2]->as.expr_stmt.expr->as.assign.value;
+    CHECK(resize->kind==NodeMovExpr);
+    CHECK(resize->observation_col==(uint32_t)(strstr(line,"mov.(a, 9)")-line+1));
+    node_t *rem1=body.items[3]->as.expr_stmt.expr,*rem2=body.items[4]->as.expr_stmt.expr;
+    CHECK(rem1->kind==NodeRemStmt && rem2->kind==NodeRemStmt);
+    CHECK(rem1->observation_col==(uint32_t)(strstr(line,"rem.(a)")-line+1));
+    CHECK(rem2->observation_col==(uint32_t)(strstr(line,"rem.(b)")-line+1));
+    node_t*call=body.items[5]->as.expr_stmt.expr->as.expect_eq.left;
+    CHECK(call->kind==NodeCallExpr);
+    CHECK(call->observation_col==(uint32_t)(strstr(line,"same(2)")-line+1));
+    CHECK(call->observation_end_col==call->observation_col+6);
+    CHECK(first->observation_file_id_plus_one==2 && call->observation_file_id_plus_one==2);
+    CHECK(!first->observation_hit_id && !first->observation_site_id && !call->observation_target_decl_id_plus_one);
+    pp_stream_free(stream);stream=NULL;
+    memset(source,'x',strlen(source));memset(file,'y',strlen(file));free(source);free(file);
+    CHECK(!strcmp(first->observation_file,"/owned/calc.sts"));
+    CHECK(!strcmp(call->observation_file,"/owned/calc.sts"));
+    CHECK(!strcmp(m->as.module.name,"util.calc"));
+    ast_free_all();
+
+    case_name="synthetic expression body retains real source span";
+    const char*expression="mod root;\nfn value(void): i32 =>\n    10 +\n    20;\ntest 'value' { expect_eq.(value(), 30); }\n";
+    stream=pp_process(expression,test_file,NULL,0);CHECK(stream);
+    m=parse_observed_from_stream(stream,1,6);CHECK(m);
+    node_t*ret=m->as.module.decls.items[0]->as.fn_decl.body->as.block.stmts.items[0];
+    CHECK(ret->kind==NodeRetStmt && ret->observation_line==3 && ret->observation_col==5);
+    CHECK(ret->observation_end_line==4 && ret->observation_end_col==6);
+    CHECK(m->as.module.decls.items[0]->observation_line==2);
+    finish_case();
+
+    case_name="observed multiline token end remains physical";
+    const char*multiline="mod root;\nfn value(void): i32 { stack i8 *r s = 'first\nsecond'; ret 1; }\ntest 'x' {}\n";
+    stream=pp_process(multiline,test_file,NULL,0);CHECK(stream);
+    m=parse_observed_from_stream(stream,1,5);CHECK(m);
+    node_t*text=m->as.module.decls.items[0]->as.fn_decl.body->as.block.stmts.items[0]->as.var_decl.init;
+    CHECK(text->kind==NodeStrLitExpr && text->observation_line==2);
+    CHECK(text->observation_col==(uint32_t)(strstr(multiline,"'first")-(strchr(multiline,'\n')+1)+1));
+    CHECK(text->observation_end_line==3 && text->observation_end_col==7);
+    finish_case();
+
+    case_name="ordinary origins cannot acquire graph identity";
+    m=parse_case("mod root; test 'ordinary' { expect.(true); }",True);
+    CHECK(m && !m->observation_file_id_plus_one);
+    CHECK(!m->as.module.decls.items[0]->observation_file_id_plus_one);
+    finish_case();
+    case_name="observed entry rejects absent or out-of-range graph identity";
+    restore_diagnostic_counts(0,0);
+    stream=pp_process("mod root; test 'id' {}",test_file,NULL,0);CHECK(stream);
+    CHECK(!parse_observed_from_stream(stream,0,1));
+    CHECK(!parse_observed_from_stream(stream,257,1));
+    CHECK(!parse_observed_from_stream(stream,1,0));
+    CHECK(!parse_observed_from_stream(stream,1,1000001));
+    finish_case();
+}
+
+static void test_observed_declaration_boundaries(void) {
+    case_name="observed declarations stop at preceding completed blocks";
+    const char*source="mod root;\n"
+        "fn prior(void): void { }\n"
+        "stack i32 global = 1;\n"
+        "fn probe(stack bool condition): void {\n"
+        "    if (condition) { } else { }\n"
+        "    stack bool take = condition &&\n"
+        "        true;\n"
+        "    if (condition) { } else { } stack i32 same_line = 2;\n"
+        "    { } stack i32 after_block;\n"
+        "    if (condition) { } stack i32 data[2] = .{4, 5};\n"
+        "    stack i32 nested[2][2] = .{[0] = .{1, 2}, [1] = .{3, 4}};\n"
+        "}\n"
+        "fn trailing(void): void { } stack i32 after_fn_same = 4;\n"
+        "test 'x' {}\n";
+    restore_diagnostic_counts(0,0);
+    stream=pp_process(source,test_file,NULL,0);CHECK(stream);
+    node_t*m=parse_observed_from_stream(stream,1,15);CHECK(m && !get_error_count());
+    CHECK(m->as.module.decls.count==6);
+    node_t*global=m->as.module.decls.items[1];
+    CHECK(global->kind==NodeVarDecl && !strcmp(global->as.var_decl.name,"global"));
+    CHECK(global->observation_line==3 && global->observation_col==1);
+    node_t*probe=m->as.module.decls.items[2];
+    CHECK(probe->as.fn_decl.params.items[0]->observation_line==4);
+    CHECK(probe->as.fn_decl.params.items[0]->observation_col==10);
+    node_list_t body=probe->as.fn_decl.body->as.block.stmts;CHECK(body.count==9);
+    node_t*take=body.items[1];
+    CHECK(take->kind==NodeVarDecl && !strcmp(take->as.var_decl.name,"take"));
+    CHECK(take->observation_line==6 && take->observation_col==5);
+    CHECK(take->observation_end_line==7 && take->observation_end_col==13);
+    const char*same_line=strstr(source,"    if (condition) { } else { } stack");
+    node_t*same=body.items[3];
+    CHECK(same->kind==NodeVarDecl && !strcmp(same->as.var_decl.name,"same_line"));
+    CHECK(same->observation_line==8 && same->observation_col==(uint32_t)(strstr(same_line,"stack")-same_line+1));
+    const char*block_line=strstr(source,"    { } stack");
+    node_t*after=body.items[5];
+    CHECK(after->kind==NodeVarDecl && !strcmp(after->as.var_decl.name,"after_block") && !after->as.var_decl.init);
+    CHECK(after->observation_line==9 && after->observation_col==(uint32_t)(strstr(block_line,"stack")-block_line+1));
+    const char*array_line=strstr(source,"    if (condition) { } stack");
+    node_t*data=body.items[7];
+    CHECK(data->kind==NodeVarDecl && data->as.var_decl.init->kind==NodeCompoundInit);
+    CHECK(data->observation_line==10 && data->observation_col==(uint32_t)(strstr(array_line,"stack")-array_line+1));
+    node_t*nested=body.items[8];
+    CHECK(nested->kind==NodeVarDecl && nested->as.var_decl.init->kind==NodeCompoundInit);
+    CHECK(nested->observation_line==11 && nested->observation_col==5 && nested->observation_end_line==11);
+    const char*final_line=strstr(source,"fn trailing");
+    node_t*final=m->as.module.decls.items[4];
+    CHECK(final->kind==NodeVarDecl && !strcmp(final->as.var_decl.name,"after_fn_same"));
+    CHECK(final->observation_line==13 && final->observation_col==(uint32_t)(strstr(final_line,"stack")-final_line+1));
+    finish_case();
+}
+
 int main(void) {
+    test_observed_declaration_boundaries();
+    test_observed_owned_origins();
     test_literals();
     test_comments();
     test_eof_locations();

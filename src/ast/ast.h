@@ -403,6 +403,12 @@ struct node {
     char *observation_file;
     usize_t observation_line, observation_end_line;
     uint32_t observation_hit_id, observation_site_id;
+    /* Zero means ordinary/untrusted. IDs are issued only by the observed
+     * snapshot parser and sealed source inventory; not inferred from paths. */
+    uint32_t observation_file_id_plus_one, observation_decl_id_plus_one;
+    uint32_t observation_decl_ordinal, observation_target_decl_id_plus_one;
+    uint32_t observation_col, observation_end_col;
+    uint32_t observation_token_begin, observation_token_end;
     boolean_t observation_expanded;
     boolean_t from_lib;  /* True if spliced from a library-backed import (imp + lib) */
     char *module_name;   /* dotted module path this decl came from, e.g. "net.socket"; NULL = root module */

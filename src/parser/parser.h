@@ -20,4 +20,9 @@ node_t *parse(const char *source);
  */
 node_t *parse_from_stream(const pp_stream_t *stream);
 
+/* Controlled entry for one validated, immutable graph snapshot. Ordinary
+ * entry points intentionally leave graph-issued IDs absent. */
+node_t *parse_observed_from_stream(const pp_stream_t *stream,
+    uint32_t file_id_plus_one, uint32_t physical_line_count);
+
 #endif

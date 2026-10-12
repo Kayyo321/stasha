@@ -33,6 +33,11 @@ typedef struct {
     /* A uniform, verified token-stream identity. Never borrowed by AST nodes. */
     const char *observation_origin;
     boolean_t observation_expanded;
+    uint32_t observation_file_id_plus_one, observation_physical_lines;
+    node_t **observation_nodes;
+    size_t observation_node_count, observation_node_capacity;
+    int *observation_pairs;
+    unsigned char *observation_claimed;
 
     /* Bound recursive productions before adversarial nesting exhausts the
        compiler's C stack. This budget is shared by types and expressions. */
@@ -40,10 +45,34 @@ typedef struct {
     boolean_t nesting_limit_hit;
 } parser_t;
 
+static void parser_observation_origin(parser_t *p, node_t *node, const char *file,
+                                       usize_t line, usize_t end_line) {
+    ast_set_observation_origin(node, file, line, end_line);
+    if (!node || !p->observation_file_id_plus_one) return;
+    node->observation_file_id_plus_one = p->observation_file_id_plus_one;
+    node->observation_token_end = p->stream_idx >= 2 ? (uint32_t)p->stream_idx - 2 : 0;
+
+}
+#define ast_set_observation_origin(node,file,line,end_line) \
+    parser_observation_origin(p,(node),(file),(line),(end_line))
+
 static node_t *parser_make_node(parser_t *p, node_kind_t kind, usize_t line) {
     node_t *node = make_node(kind, line);
     ast_set_observation_origin(node, p->observation_origin, line, p->previous.line);
     node->observation_expanded = p->observation_expanded;
+    node->observation_token_begin = p->stream_idx ? (uint32_t)p->stream_idx - 1 : 0;
+    if (p->observation_file_id_plus_one) {
+        if (p->observation_node_count == p->observation_node_capacity) {
+            if (p->observation_node_capacity > SIZE_MAX / 2 / sizeof(node_t *)) {
+                p->had_error = True; return node;
+            }
+            size_t cap = p->observation_node_capacity ? p->observation_node_capacity * 2 : 256;
+            node_t **nodes = (realloc)(p->observation_nodes, cap * sizeof(*nodes));
+            if (!nodes) { p->had_error = True; return node; }
+            p->observation_nodes = nodes; p->observation_node_capacity = cap;
+        }
+        p->observation_nodes[p->observation_node_count++] = node;
+    }
     return node;
 }
 
@@ -902,6 +931,7 @@ static node_t *run_parse(parser_t *p) {
     while (!check(p, TokEof)) {
         node_t *decl = parse_top_decl(p);
         if (decl) {
+            decl->observation_decl_ordinal = (uint32_t)module->as.module.decls.count;
             node_list_push(&module->as.module.decls, decl);
         } else {
             /* Recovery: skip to the next top-level declaration boundary. */
@@ -932,30 +962,212 @@ node_t *parse(const char *source) {
     return run_parse(&p);
 }
 
+/* Observation-only source span recovery is linear in token inventory plus
+ * grammar-local scans. Balanced token indices let an owner skip whole nested
+ * expressions/bodies rather than rescanning the file per AST node. All selected
+ * coordinates identify original tokens; generated nodes reuse source spans. */
+static boolean_t parser_observation_pairs(parser_t *p) {
+    size_t count=(size_t)p->stream_count;
+    if(count>SIZE_MAX/sizeof(int))return False;
+    p->observation_pairs=(malloc)(count*sizeof(int));
+    p->observation_claimed=calloc(count,1);
+    int*stack=(malloc)(count*sizeof(int));
+    if(!p->observation_pairs || !p->observation_claimed || !stack){(free)(stack);return False;}
+    size_t depth=0;
+    for(int i=0;i<p->stream_count;++i) {
+        p->observation_pairs[i]=-1;token_kind_t k=p->stream[i].tok.kind;
+        if(k==TokLParen || k==TokLBracket || k==TokLBrace)stack[depth++]=i;
+        else if(k==TokRParen || k==TokRBracket || k==TokRBrace) {
+            if(!depth)continue;
+            int j=stack[depth-1];token_kind_t open=p->stream[j].tok.kind;
+            if((k==TokRParen&&open==TokLParen)||(k==TokRBracket&&open==TokLBracket)||(k==TokRBrace&&open==TokLBrace)) {
+                --depth;p->observation_pairs[i]=j;p->observation_pairs[j]=i;
+            }
+        }
+    }
+    (free)(stack);return True;
+}
+static int parser_observation_keyword(parser_t*p,int end,token_kind_t key) {
+    for(int i=end;i>=0;--i) {
+        token_kind_t k=p->stream[i].tok.kind;
+        if(k==key && !p->observation_claimed[i])return i;
+        if((k==TokRParen || k==TokRBracket || k==TokRBrace) && p->observation_pairs[i]>=0)
+            i=p->observation_pairs[i];
+        else if(k==TokSemicolon && i!=end)return -1;
+    }
+    return -1;
+}
+static int parser_observation_child(node_t*n,int fallback) {
+    return n && n->observation_file_id_plus_one?(int)n->observation_token_begin:fallback;
+}
+static void parser_observation_spans(parser_t*p) {
+    for(size_t j=0;j<p->observation_node_count;++j) {
+        node_t*n=p->observation_nodes[j];int end=(int)n->observation_token_end;
+        if(end<0 || end>=p->stream_count)continue;
+        int start=end;token_kind_t key=TokEof;
+        switch(n->kind) {
+            case NodeModule: continue;
+            case NodeFnDecl:key=TokFn;break;
+            case NodeTypeDecl:key=TokType;break;
+            case NodeTestBlock:key=TokTest;break;
+            case NodeImpDecl:key=TokImp;break;
+            case NodeNewExpr:key=TokNew;break;
+            case NodeMovExpr:key=TokMov;break;
+            case NodeRemStmt:key=TokRem;break;
+            case NodeSizeofExpr:key=TokSizeof;break;
+            case NodeExpectExpr:key=TokExpect;break;
+            case NodeExpectEqExpr:key=TokExpectEq;break;
+            case NodeExpectNeqExpr:key=TokExpectNeq;break;
+            case NodeTestFailExpr:key=TokTestFail;break;
+            case NodeRetStmt:
+                if(n->as.ret_stmt.values.count)start=parser_observation_child(n->as.ret_stmt.values.items[0],start);
+                key=TokRet;break;
+            case NodeBreakStmt:key=TokBreak;break;
+            case NodeContinueStmt:key=TokContinue;break;
+            case NodePrintStmt:key=TokPrint;break;
+            case NodeIfStmt:key=TokIf;break;
+            case NodeForStmt:key=TokFor;break;
+            case NodeWhileStmt:key=TokWhile;break;
+            case NodeDoWhileStmt:key=TokDo;break;
+            case NodeInfLoop:key=TokInf;break;
+            case NodeDeferStmt:key=TokDefer;break;
+            case NodeSwitchStmt:key=TokSwitch;break;
+            case NodeMatchStmt:key=TokMatch;break;
+            case NodeComptimeAssert:key=TokComptimeAssert;break;
+            case NodeComptimeIf:key=TokComptimeIf;break;
+            case NodeSwitchCase:
+                start=(int)n->observation_token_begin;
+                if(n->as.switch_case.body)end=(int)n->as.switch_case.body->observation_token_end;
+                break;
+            case NodeMatchArm:
+                start=(int)n->observation_token_begin;
+                if(n->as.match_arm.body)end=(int)n->as.match_arm.body->observation_token_end;
+                break;
+            case NodeBlock:
+                if(p->stream[end].tok.kind==TokRBrace && p->observation_pairs[end]>=0)start=p->observation_pairs[end];
+                else if(n->as.block.stmts.count) {
+                    start=parser_observation_child(n->as.block.stmts.items[0],start);
+                    end=(int)n->as.block.stmts.items[n->as.block.stmts.count-1]->observation_token_end;
+                }
+                break;
+            case NodeVarDecl:
+                for(int i=end;i>=0;--i) {
+                    token_kind_t k=p->stream[i].tok.kind;
+                    /* A completed preceding block is a declaration boundary,
+                     * even on the same line. Only this declaration's own
+                     * initializer may contribute balanced closing braces. */
+                    if(k==TokRBrace) {
+                        node_t*init=n->as.var_decl.init;
+                        if(!init || i<(int)init->observation_token_begin ||
+                           i>(int)init->observation_token_end || p->observation_pairs[i]<0)break;
+                        i=p->observation_pairs[i];
+                    } else if((k==TokRParen || k==TokRBracket) && p->observation_pairs[i]>=0)
+                        i=p->observation_pairs[i];
+                    else if(i!=end && (k==TokSemicolon || k==TokLBrace || k==TokComma || k==TokLParen))break;
+                    start=i;
+                }
+                break;
+            case NodeCastExpr:
+                start=parser_observation_child(n->as.cast_expr.expr,start);
+                if(start>0 && p->stream[start-1].tok.kind==TokRParen && p->observation_pairs[start-1]>=0)
+                    start=p->observation_pairs[start-1];
+                break;
+            case NodeCompoundInit:
+                if(p->stream[end].tok.kind==TokRBrace && p->observation_pairs[end]>=0) {
+                    start=p->observation_pairs[end];if(start>0 && p->stream[start-1].tok.kind==TokDot)--start;
+                }
+                break;
+            case NodeInitIndex:
+                start=parser_observation_child(n->as.init_index.index,start);if(start>0)--start;break;
+            case NodeExprStmt:start=parser_observation_child(n->as.expr_stmt.expr,start);break;
+            case NodeBinaryExpr:start=parser_observation_child(n->as.binary.left,start);break;
+            case NodeAssignExpr:start=parser_observation_child(n->as.assign.target,start);break;
+            case NodeCompoundAssign:start=parser_observation_child(n->as.compound_assign.target,start);break;
+            case NodeTernaryExpr:start=parser_observation_child(n->as.ternary.cond,start);break;
+            case NodeIndexExpr:start=parser_observation_child(n->as.index_expr.object,start);break;
+            case NodeUnaryPrefixExpr:
+                start=parser_observation_child(n->as.unary.operand,start);if(start>0)--start;break;
+            case NodeUnaryPostfixExpr:start=parser_observation_child(n->as.unary.operand,start);break;
+            case NodeAddrOf:
+                start=parser_observation_child(n->as.addr_of.operand,start);if(start>0)--start;break;
+            case NodeCallExpr: case NodeMethodCall:
+                if(p->stream[end].tok.kind==TokRParen && p->observation_pairs[end]>=0) {
+                    start=p->observation_pairs[end]-1;
+                    if(start>=0 && p->stream[start].tok.kind==TokDot)--start;
+                    if(n->kind==NodeMethodCall)start=parser_observation_child(n->as.method_call.object,start);
+                }
+                break;
+            default:break;
+        }
+        if(key!=TokEof) {
+            int found=parser_observation_keyword(p,end,key);
+            if(found>=0){start=found;p->observation_claimed[start]=1;}
+            else if(n->kind==NodeRetStmt && n->as.ret_stmt.values.count)
+                end=(int)n->as.ret_stmt.values.items[n->as.ret_stmt.values.count-1]->observation_token_end;
+        }
+        if(start<0 || start>end)start=end;
+        token_t first=p->stream[start].tok,last=p->stream[end].tok;
+        n->observation_token_begin=(uint32_t)start;n->observation_token_end=(uint32_t)end;
+        n->observation_line=first.line;n->observation_col=(uint32_t)first.col;
+        usize_t end_line=last.line,end_col=last.col;
+        for(usize_t k=0;k+1<last.length;++k) {
+            if(last.start[k]=='\n'){++end_line;end_col=1;}else ++end_col;
+        }
+        n->observation_end_line=end_line;
+        n->observation_end_col=(uint32_t)end_col;
+    }
+}
+
 /* ── entry point: stream-based (preferred) ── */
 
-node_t *parse_from_stream(const pp_stream_t *stream) {
-    if (!stream || stream->count == 0) return Null;
+static node_t *parse_stream_entry(const pp_stream_t *stream, uint32_t file_id_plus_one,
+                                  uint32_t physical_line_count) {
+    if (!stream || stream->count <= 0) return Null;
 
     parser_t p;
     memset(&p, 0, sizeof(p));
     p.stream       = stream->tokens;
     p.stream_count = stream->count;
     p.stream_idx   = 0;
+    p.observation_file_id_plus_one = file_id_plus_one;
+    p.observation_physical_lines = physical_line_count;
     p.observation_origin = stream->tokens[0].tok.file;
     for (int i = 0; i < stream->count; ++i) {
         const pp_token_t *token = &stream->tokens[i];
         if (token->expansion) p.observation_expanded = True;
         if (token->tok.kind == TokEof) continue;
+        if (file_id_plus_one && (token->expansion || !token->tok.line ||
+            token->tok.line > physical_line_count || !token->tok.col ||
+            token->tok.col > UINT32_MAX || token->tok.length > UINT32_MAX - token->tok.col)) return Null;
         if (!token->tok.file || !p.observation_origin ||
             strcmp(token->tok.file, p.observation_origin))
             p.observation_origin = Null;
     }
+    if (file_id_plus_one && (!p.observation_origin || p.observation_expanded)) return Null;
+    if (file_id_plus_one && !parser_observation_pairs(&p)) {
+        (free)(p.observation_pairs); (free)(p.observation_claimed); return Null;
+    }
     p.had_error    = False;
     advance_parser(&p);
-    if (p.had_error) return Null; /* lexical failure; avoid unrelated syntax errors */
+    if (p.had_error) {
+        (free)(p.observation_nodes); (free)(p.observation_pairs); (free)(p.observation_claimed);
+        return Null; /* lexical failure; avoid unrelated syntax errors */
+    }
 
-    return run_parse(&p);
+    node_t *result = run_parse(&p);
+    if (file_id_plus_one && result) parser_observation_spans(&p);
+    (free)(p.observation_nodes); (free)(p.observation_pairs); (free)(p.observation_claimed);
+    return result;
 }
 
+node_t *parse_from_stream(const pp_stream_t *stream) {
+    return parse_stream_entry(stream, 0, 0);
+}
+node_t *parse_observed_from_stream(const pp_stream_t *stream,
+                                  uint32_t file_id_plus_one, uint32_t physical_line_count) {
+    if (!file_id_plus_one || file_id_plus_one > 256 || !physical_line_count ||
+        physical_line_count > 1000000) return Null;
+    return parse_stream_entry(stream, file_id_plus_one, physical_line_count);
+}
+#undef ast_set_observation_origin
 #undef make_node

@@ -5,6 +5,15 @@
 #include "../../src/runtime/observation_runtime.c"
 #include <assert.h>
 
+_Static_assert(STASHA_OBSERVATION_ABI_VERSION == 2u, "explicit v2 runtime ABI");
+_Static_assert(STASHA_OBSERVATION_SCHEMA_VERSION == 2u, "explicit v2 report schema");
+_Static_assert(STASHA_OBSERVATION_ALLOCATION_VERSION == 1u, "unchanged allocation metric");
+_Static_assert(STASHA_OBSERVATION_LINE_VERSION == 2u, "file-qualified line metric");
+_Static_assert(_Generic(&__stasha_obs_init_v2,
+    void (*)(const char *, const char *, const char *, const char *, const char *,
+             uint32_t, uint32_t, uint32_t, uint32_t): 1, default: 0),
+    "v2 initializer retains its physical parameter types");
+
 typedef struct {
     uintptr_t next_key, last_key;
     size_t last_size;
@@ -37,7 +46,7 @@ static int spy_rem(void *context, uintptr_t key) {
     return p->error_number;
 }
 static const obs_allocator allocator = { &allocator_spy, spy_new, spy_mov, spy_rem };
-static const char *const ids[5] = { "run01", "source01", "map01", "config01", "compiler01" };
+static const char *const ids[5] = { "run01", "input_graph01", "map01", "config01", "compiler01" };
 
 static void reset(uint32_t tests, uint32_t lines, uint32_t flags) {
     memset(&state, 0, sizeof(state));
@@ -127,6 +136,27 @@ static void test_suite_and_hits(void) {
     assert(obs_core_finish(&state, 0, 0));
     assert(!state.record_count && !state.total_bytes && state.endpoint);
     assert(state.started == 2 && state.completed == 2);
+}
+static void test_cross_test_attribution(void) {
+    /* File-qualified source sites and test ownership are manifest metadata;
+     * the ledger keeps their opaque IDs and the actual executing test. */
+    reset(2, 10, 3);
+    assert(obs_core_begin(&state, 0));
+    add(100, 8, 0);
+    assert(obs_core_end(&state, 0));
+    assert(obs_core_begin(&state, 1));
+    allocator_spy.next_key = 200;
+    assert(obs_core_mov(&state, &allocator, 100, 16, 3).key == 200);
+    add(300, 13, 5);
+    assert(obs_core_end(&state, 1));
+    assert(obs_core_finish(&state, 5, 0));
+    assert(state.record_count == 2 && state.total_bytes == 29);
+    assert(state.records[0].generation == 1 && state.records[0].alloc_site == 0);
+    assert(state.records[0].resize_site == 3 && state.records[0].origin_test == 0);
+    assert(state.records[1].generation == 2 && state.records[1].alloc_site == 5);
+    assert(state.records[1].resize_site == STASHA_OBSERVATION_NO_SITE);
+    assert(state.records[1].origin_test == 1 && state.records[1].bytes == 13);
+    assert(!allocator_spy.release_calls); /* no per-test subtraction/release */
 }
 static void test_invalid_release_is_pure(void) {
     /* Integers 101 and 999 never become pointers; spy must not be called. */
@@ -233,13 +263,56 @@ static void test_configuration_and_corruption(void) {
     memset(&state, 0, sizeof(state));
     assert(!obs_core_init(&state, ids, 3, STASHA_OBSERVATION_MAX_TESTS + 1, 1, 1));
     memset(&state, 0, sizeof(state));
-    const char *const bad_ids[5] = { "run\nwrong", "source", "map", "config", "compiler" };
+    const char *const bad_ids[5] = { "run\nwrong", "input_graph", "map", "config", "compiler" };
     assert(!obs_core_init(&state, bad_ids, 3, 1, 1, 1));
     start(); add(100, 8, 0); state.total_bytes = 0;
     assert(!obs_audit(&state));
     assert(state.reason == STASHA_OBSERVATION_CORRUPTED_LEDGER);
     start(); add(100, 8, 0); state.records[0].origin_test = 10;
     assert(!obs_audit(&state));
+}
+static void test_configuration_boundaries(void) {
+    const uint32_t invalid_counts[][3] = {
+        { STASHA_OBSERVATION_MAX_TESTS + 1u, 1u, 1u },
+        { 1u, STASHA_OBSERVATION_MAX_LINES + 1u, 1u },
+        { 1u, 1u, STASHA_OBSERVATION_MAX_SITES + 1u }
+    };
+    for (size_t i = 0; i < sizeof(invalid_counts) / sizeof(invalid_counts[0]); ++i) {
+        memset(&state, 0, sizeof(state));
+        assert(!obs_core_init(&state, ids, 3u, invalid_counts[i][0],
+                             invalid_counts[i][1], invalid_counts[i][2]));
+        assert(state.reason == STASHA_OBSERVATION_BAD_CONFIGURATION);
+        assert(!state.initialized);
+    }
+    memset(&state, 0, sizeof(state));
+    assert(!obs_core_init(&state, ids, 4u, 1u, 1u, 1u));
+    assert(state.reason == STASHA_OBSERVATION_BAD_CONFIGURATION);
+    memset(&state, 0, sizeof(state));
+    assert(obs_core_init(&state, ids, 3u, STASHA_OBSERVATION_MAX_TESTS,
+                        STASHA_OBSERVATION_MAX_LINES, STASHA_OBSERVATION_MAX_SITES));
+    assert(!obs_core_init(&state, ids, 3u, 1u, 1u, 1u));
+    assert(state.reason == STASHA_OBSERVATION_BAD_LIFECYCLE);
+
+    char maximum[STASHA_OBSERVATION_MAX_ID_BYTES + 1u];
+    char overlong[STASHA_OBSERVATION_MAX_ID_BYTES + 2u];
+    memset(maximum, 'a', sizeof(maximum) - 1u); maximum[sizeof(maximum) - 1u] = 0;
+    memset(overlong, 'b', sizeof(overlong) - 1u); overlong[sizeof(overlong) - 1u] = 0;
+    const char *const invalid_ids[] = { NULL, "", "two words", "line\nbreak", overlong };
+    for (unsigned field = 0; field < 5u; ++field) {
+        const char *candidate_ids[5];
+        memcpy(candidate_ids, ids, sizeof(candidate_ids));
+        candidate_ids[field] = maximum;
+        memset(&state, 0, sizeof(state));
+        assert(obs_core_init(&state, candidate_ids, 3u, 1u, 1u, 1u));
+        assert(strcmp(state.identities[field], maximum) == 0);
+        for (size_t i = 0; i < sizeof(invalid_ids) / sizeof(invalid_ids[0]); ++i) {
+            candidate_ids[field] = invalid_ids[i];
+            memset(&state, 0, sizeof(state));
+            assert(!obs_core_init(&state, candidate_ids, 3u, 1u, 1u, 1u));
+            assert(state.reason == STASHA_OBSERVATION_BAD_CONFIGURATION);
+            assert(!state.initialized);
+        }
+    }
 }
 
 typedef struct { char bytes[32768]; size_t length, fail_after; unsigned calls; } text_sink;
@@ -262,8 +335,8 @@ static void test_report_literal(void) {
     reset_sink(); obs_writer writer = { &sink, write_text, 0, 0 };
     assert(obs_emit_report(&state, &writer));
     const char expected[] =
-        "STASHA_OBSERVATION 1\nprofile native-sequential-leaf-v1\nruntime_abi 1\nmetric_versions 1 1\n"
-        "run run01\nsource source01\nmap map01\nconfig config01\ncompiler compiler01\n"
+        "STASHA_OBSERVATION 2\nprofile native-sequential-direct-source-v2\nruntime_abi 2\nmetric_versions 1 2\n"
+        "run run01\ninput_graph input_graph01\nmap map01\nconfig config01\ncompiler compiler01\n"
         "enabled 3\ninventory 1 10 8\nstate 1 0 1\nassertions 2 0\ntests 1 1\ntest 0 2\n"
         "hits 0102\nallocations 1 8\nallocation 1 8 0 4294967295 0\nEND\n";
     assert(strcmp(sink.bytes, expected) == 0);
@@ -286,6 +359,55 @@ static void test_report_literal(void) {
     reset_sink(); writer = (obs_writer){ &sink, write_text, 0, 0 };
     assert(obs_emit_report(&state, &writer));
     assert(strstr(sink.bytes, "hits -\nallocations 0 0\nEND\n") != NULL);
+}
+
+typedef struct { size_t bytes; unsigned calls; } counting_sink;
+static int count_text(void *context, const char *bytes, size_t count) {
+    counting_sink *out = context;
+    assert(bytes != NULL && count <= STASHA_OBSERVATION_MAX_REPORT_BYTES - out->bytes);
+    out->bytes += count;
+    ++out->calls;
+    return 1;
+}
+static void test_maximum_report_bounds(void) {
+    /* Construct only opaque integer records, never real allocations. */
+    char maximum_id[STASHA_OBSERVATION_MAX_ID_BYTES + 1u];
+    memset(maximum_id, 'f', sizeof(maximum_id) - 1u);
+    maximum_id[sizeof(maximum_id) - 1u] = 0;
+    const char *const maximum_ids[5] = {
+        maximum_id, maximum_id, maximum_id, maximum_id, maximum_id
+    };
+    memset(&state, 0, sizeof(state));
+    assert(obs_core_init(&state, maximum_ids, 3u, STASHA_OBSERVATION_MAX_TESTS,
+                        STASHA_OBSERVATION_MAX_LINES, STASHA_OBSERVATION_MAX_SITES));
+    for (uint32_t i = 0; i < STASHA_OBSERVATION_MAX_TESTS; ++i) {
+        assert(obs_core_begin(&state, i));
+        assert(obs_core_end(&state, i));
+    }
+    memset(state.hits, 0xff, sizeof(state.hits));
+    state.record_count = STASHA_OBSERVATION_MAX_RECORDS;
+    state.total_bytes = UINT64_MAX;
+    state.generation = UINT64_MAX;
+    for (uint32_t i = 0; i < state.record_count; ++i) {
+        state.records[i] = (obs_record){
+            (uintptr_t)i + 1u, UINT64_MAX - state.record_count + i + 1u,
+            i ? 0u : UINT64_MAX, STASHA_OBSERVATION_MAX_SITES - 1u,
+            STASHA_OBSERVATION_NO_SITE, STASHA_OBSERVATION_MAX_TESTS - 1u
+        };
+    }
+    assert(obs_core_finish(&state, UINT64_MAX, 0u));
+    counting_sink counter = { 0, 0 };
+    obs_writer writer = { &counter, count_text, 0, 0 };
+    assert(obs_emit_report(&state, &writer));
+    assert(writer.count == counter.bytes && counter.calls > state.record_count);
+    assert(writer.count < STASHA_OBSERVATION_MAX_REPORT_BYTES);
+    /* The configured bound is inclusive and stops before calling the sink. */
+    reset_sink();
+    writer = (obs_writer){ &sink, write_text, STASHA_OBSERVATION_MAX_REPORT_BYTES - 1u, 0 };
+    obs_write(&writer, "x", 1u);
+    assert(writer.count == STASHA_OBSERVATION_MAX_REPORT_BYTES && sink.calls == 1u);
+    obs_write(&writer, "y", 1u);
+    assert(writer.failed && sink.calls == 1u && sink.length == 1u);
 }
 
 typedef struct {
@@ -350,7 +472,7 @@ static void test_publication_controls(void) {
     assert(publication_spy.scripted_index == 4);
     assert(publication_spy.flags == (O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC));
     assert(publication_spy.mode == 0600);
-    assert(strncmp(sink.bytes, "STASHA_OBSERVATION 1\n", 21) == 0);
+    assert(strncmp(sink.bytes, "STASHA_OBSERVATION 2\n", 21) == 0);
     assert(strstr(sink.bytes, "state 1 0 1\n") != NULL);
     assert(strcmp(sink.bytes + sink.length - 4, "END\n") == 0);
     assert(obs_finish_publish(&state, 0, 0, &mock_io) == 1);
@@ -399,14 +521,17 @@ int main(void) {
     test_null_and_failure();
     test_resize_alias_reuse();
     test_suite_and_hits();
+    test_cross_test_attribution();
     test_invalid_release_is_pure();
     test_invalid_resize_is_pure();
     test_arithmetic_without_large_allocations();
     test_capacity_and_duplicates();
     test_lifecycle_and_manifest_bounds();
     test_configuration_and_corruption();
+    test_configuration_boundaries();
     test_report_literal();
+    test_maximum_report_bounds();
     test_publication_controls();
-    puts("observation runtime pure ledger tests: 12 groups passed");
+    puts("observation runtime pure ledger tests: 15 groups passed");
     return 0;
 }

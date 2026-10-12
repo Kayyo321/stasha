@@ -1,0 +1,10 @@
+mod root;
+imp util.calc;
+fn same(stack i32 x): i32 {
+    ret x + 100;
+}
+test 'same label' {
+    expect_eq.(same(1), 101);
+    expect_eq.(calc.same(1), 2);
+    expect_eq.(calc.work(), 7);
+}

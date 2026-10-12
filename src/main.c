@@ -1847,7 +1847,7 @@ typedef struct {
     /* When non-NULL, use this source text instead of reading input_path.
      * The caller owns and must free this buffer; compile_file() does NOT free it. */
     char            *source_override;
-    const sts_observation_config *observation;
+    sts_observation_config *observation;
     sts_observation_manifest *observation_manifest;
     int *observation_image_fd;
 } cfile_params_t;
@@ -1859,6 +1859,50 @@ typedef struct {
  * Leaves no temporary .o files behind on success or failure.
  * Returns Ok on success, Err on any failure.
  */
+/* Snapshot-only direct graph expansion. Ordinary imports remain untouched. */
+static result_t resolve_observation_sources(node_t *root,sts_observation_config *config) {
+#if defined(__linux__)
+    sts_observation_graph *g=config->graph;char error[256];
+    if(sts_observation_graph_declare(g,0,root->as.module.name,error,sizeof(error))){log_err("%s",error);return Err;}
+    if(codegen_observation_check_providers(root,config)!=Ok)return Err;
+    usize_t root_count=root->as.module.decls.count;
+    for(usize_t i=0;i<root_count;++i){
+        node_t *import=root->as.module.decls.items[i];if(import->kind!=NodeImpDecl)continue;
+        uint32_t id;
+        if(sts_observation_graph_add(g,import->as.imp_decl.module_name,(uint32_t)import->observation_line,import->observation_col,&id,error,sizeof(error))){
+            diag_set_file(config->source_path);diag_begin_error("%s",error);diag_span(DIAG_NODE(import),True,"imported here");diag_finish();return Err;
+        }
+        sts_observation_source *f=&g->files[id];usize_t before=get_error_count();
+        diag_set_file(f->canonical_path);
+        if(codegen_observation_check_source_file(f->bytes,f->canonical_path,0)!=Ok){
+            diag_set_file(config->source_path);diag_begin_error("observation import '%s' rejected",f->requested_module);diag_span(DIAG_NODE(import),True,"imported here");diag_finish();return Err;
+        }
+        pp_stream_t *stream=pp_process(f->bytes,f->canonical_path,Null,0);
+        node_t *module=stream?parse_observed_from_stream(stream,id+1,f->physical_line_count):Null;
+        pp_stream_free(stream);
+        int bad=!module||get_error_count()>before;
+        if(!bad&&codegen_observation_check_providers(module,config)!=Ok)bad=1;
+        if(!bad&&sts_observation_graph_declare(g,id,module->as.module.name,error,sizeof(error))){log_err("%s",error);bad=1;}
+        diag_set_file(config->source_path);
+        if(bad){diag_begin_error("observation import '%s' rejected",f->requested_module);diag_span(DIAG_NODE(import),True,"imported here");diag_finish();return Err;}
+        for(usize_t j=0;j<module->as.module.decls.count;++j){
+            node_t *d=module->as.module.decls.items[j];
+            d->module_name=ast_strdup(f->declared_module,strlen(f->declared_module));
+            node_list_push(&root->as.module.decls,d);
+        }
+    }
+    if(sts_observation_graph_freeze(g,error,sizeof(error))){log_err("%s",error);return Err;}
+    memcpy(config->input_graph_id,g->input_graph_id,sizeof(config->input_graph_id));
+    sts_observation_encoder fresh;sts_observation_encode_init(&fresh,STS_OBS_METADATA_LIMIT);
+    sts_observation_encode_text(&fresh,"stasha-observation-run-v2");sts_observation_encode_digest(&fresh,config->run_id);
+    sts_observation_encode_digest(&fresh,config->input_graph_id);sts_observation_encode_digest(&fresh,config->config_id);
+    if(fresh.failed)return Err;
+    sts_observation_digest_finish(&fresh.hash,config->run_id);return Ok;
+#else
+    (void)root;(void)config;return Err;
+#endif
+}
+
 static result_t compile_file_staged(const cfile_params_t *p) {
     usize_t errors_before = get_error_count();
     const char *effective_target = p->target_triple;
@@ -1888,7 +1932,7 @@ static result_t compile_file_staged(const cfile_params_t *p) {
     pp_macro_set_t **imp_macros = p->observation ? Null :
         gather_import_macro_sets(source, p->input_path, &imp_macro_count);
     pp_stream_t *pp  = pp_process(source, p->input_path, imp_macros, imp_macro_count);
-    node_t      *ast = pp ? parse_from_stream(pp) : Null;
+    node_t      *ast = pp ? (p->observation ? parse_observed_from_stream(pp,1,p->observation->source_line_count) : parse_from_stream(pp)) : Null;
     pp_stream_free(pp);
     free_pp_imp_streams();
 
@@ -1926,12 +1970,12 @@ static result_t compile_file_staged(const cfile_params_t *p) {
         }
     }
 
-    if (p->observation && codegen_observation_check_providers(ast, p->observation) != Ok) {
-        compile_cleanup();
-        return Err;
+    if(p->observation){
+        if(resolve_observation_sources(ast,p->observation)!=Ok){compile_cleanup();return Err;}
+    }else{
+        resolve_imports(ast,p->input_path);
+        process_cheader_decls(ast,p->input_path);
     }
-    resolve_imports(ast, p->input_path);
-    process_cheader_decls(ast, p->input_path);
     if (get_error_count() > errors_before || analyze_coroutines(ast) != Ok) {
         free_imp_sources();
         compile_cleanup();
@@ -3047,12 +3091,8 @@ int main(int argc, char **argv) {
         if (res == Ok && !sts_observation_manifest_valid(&observation, &observation_manifest)) {
             log_err("invalid or empty observation manifest"); res = Err;
         }
-        if (res == Ok) {
-            char current_source[129];
-            if (sts_observation_hash_file(observation.source_path, 1, current_source) ||
-                strcmp(current_source, observation.source_id)) {
-                log_err("observation source changed after compilation"); res = Err;
-            }
+        if(res==Ok&&sts_observation_metadata_preflight(&observation_run,&observation,&observation_manifest,observation_error,sizeof(observation_error))){
+            log_err("%s",observation_error);res=Err;
         }
         if (res == Ok) {
             char runtime_path[512], current_runtime[129];
@@ -3061,6 +3101,11 @@ int main(int argc, char **argv) {
                 sts_observation_hash_file(runtime_path, 1, current_runtime) ||
                 strcmp(current_runtime, observation_run.runtime_id)) {
                 log_err("observation runtime changed after compilation"); res = Err;
+            }
+        }
+        if (res == Ok) {
+            if(sts_observation_graph_revalidate(observation.graph,observation_error,sizeof(observation_error))){
+                log_err("%s",observation_error);res=Err;
             }
         }
         if (res == Ok) {

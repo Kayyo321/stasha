@@ -2077,6 +2077,8 @@ static LLVMValueRef gen_method_call(cg_t *cg, node_t *node) {
                 snprintf(mangled_sym, sizeof(mangled_sym), "%s__%s",
                          lib_ent->mod_prefix, method);
                 symbol_t *fn_sym = cg_lookup_symbol(cg, mangled_sym);
+                if (!cg_observation_selected_guard(cg, node, fn_sym))
+                    return LLVMConstInt(LLVMInt32TypeInContext(cg->ctx), 0, 0);
                 if (fn_sym) {
                     symbol_t selected_call_symbol = *fn_sym; /* survives preparation and actual lowering */
                     fn_sym = &selected_call_symbol;

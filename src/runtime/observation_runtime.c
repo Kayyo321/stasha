@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 _Static_assert(sizeof(size_t) == 8u && sizeof(uintptr_t) == 8u,
-               "observation ABI 1 requires a native LP64 host");
+               "observation ABI 2 requires a native LP64 host");
 
 /* This runtime deliberately has no constructor, destructor, signal handler or
  * atexit finalizer. Its sole successful endpoint is the generated test main.
@@ -420,7 +420,7 @@ static int obs_emit_report(obs_state *s, obs_writer *w) {
         STASHA_OBSERVATION_SCHEMA_VERSION, STASHA_OBSERVATION_PROFILE,
         STASHA_OBSERVATION_ABI_VERSION, STASHA_OBSERVATION_ALLOCATION_VERSION,
         STASHA_OBSERVATION_LINE_VERSION);
-    static const char *const names[5] = { "run", "source", "map", "config", "compiler" };
+    static const char *const names[5] = { "run", "input_graph", "map", "config", "compiler" };
     for (unsigned i = 0; i < 5u; ++i) obs_printf(w, "%s %s\n", names[i], s->identities[i]);
     obs_printf(w, "enabled %" PRIu32 "\ninventory %" PRIu32 " %" PRIu32 " %" PRIu32 "\n",
         s->enabled, s->test_count, s->line_count, s->site_count);
@@ -537,11 +537,11 @@ static _Noreturn void obs_abort(obs_state *s) {
     _Exit(1);
 }
 
-void __stasha_obs_init(const char *run, const char *source, const char *map,
+void __stasha_obs_init_v2(const char *run, const char *input_graph, const char *map,
                        const char *config, const char *compiler, uint32_t enabled,
                        uint32_t tests, uint32_t lines, uint32_t sites) {
     int error_number = errno;
-    const char *const ids[5] = { run, source, map, config, compiler };
+    const char *const ids[5] = { run, input_graph, map, config, compiler };
     if (!obs_core_init(&obs_global, ids, enabled, tests, lines, sites)) obs_abort(&obs_global);
     const char *path = getenv("STASHA_OBSERVATION_REPORT");
     size_t n = path ? strnlen(path, STASHA_OBSERVATION_MAX_PATH_BYTES + 1u) : 0;

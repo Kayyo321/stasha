@@ -29,17 +29,22 @@ close a fully measured support row or justify blanket default activation.
 
 ## Current admission profile
 
-The current design is limited to an explicit on-disk, single-file `stasha test`
-invocation on hosted native **Linux x86-64 GNU/glibc LP64**. It admits sequential,
+The v2 design is limited to an explicit on-disk root `stasha test`
+invocation with optional distinct direct ordinary leaf-source imports on hosted native **Linux x86-64 GNU/glibc LP64**. It admits sequential,
 directly named non-generic functions; primitive scalar/pointer values and fixed
 primitive nonpointer-element arrays; bounded ordinary control flow and defer;
 explicit `new`, two-argument `mov`, and `rem`; primitive assertions and printing;
 and selected compile-time/target conditionals. The detailed restrictions are in
 the [observation guide](../tests/observation/README.md#admitted-source-profile).
 
-Projects, imports, providers, other artifact modes, stdin overrides, additional
+Projects, transitive imports, explicit aliases, providers, other artifact modes, stdin overrides, additional
 libraries, and other targets are outside this profile. The source inventory
-rejects unsupported constructs even in uncalled functions. Admission is not a
+rejects unsupported constructs even in uncalled functions. The exact profile is `native-sequential-direct-source-v2`, with observer ABI and
+report/manifest schema 2, allocation metric 1 and line metric 2. Root imports are
+unconditional plain imports; leaf imports, duplicate modules/canonical files and
+ambiguous aliases are rejected. Imported tests receive their own lexical module
+context and identity. Requested entry-directory dependency lookup is preserved.
+Admission is not a
 qualification result: compiler builds, source review, IR review and component
 tests do not establish successful execution of a generated test image.
 
@@ -60,7 +65,8 @@ tests do not establish successful execution of a generated test image.
   Missing language-generated or provider allocation support is a gap, not an
   implied zero allocation count.
 - Coverage is **executable statement/control-line coverage**, deduplicated by
-  source line. Independently evaluated conditions, short-circuit operands and
+  `(file_id, source line)`. Global coverage uses the union of those pairs; file
+  percentages are never averaged. Independently evaluated conditions, short-circuit operands and
   conditional arms need their own anchors; defers hit when their bodies execute.
   Uncalled production functions remain in the pre-optimization denominator.
 - Test bodies and the replaced application `main` are excluded from production
@@ -89,7 +95,7 @@ proof of correct lowering or observation.
 | Initializers, slices and views | Cover compound/designated initialization, spread/range/merge, `make`, append/growth, copy and queries. Track actual backing storage; pointer/descriptor copies and interior views are not new allocations or proof of ownership. |
 | Errors, formatting and generated helpers | Classify heap versus stack/static buffers, propagation cleanup, hash/equality, type queries and rich assertions. Generated allocations need source attribution and matching release events. |
 | Generics, lambdas and variadics | Preserve template/specialization/instantiation origins; lifted and captured bodies; function pointers, callbacks, pipelines/trailing closures; raw/typed variadic ABI and state. Track actual environment storage, not an assumed heap allocation for every capture. |
-| Modules, macros and compile-time forms | Build immutable multi-file graphs, import deduplication, submodule and project test identities; retain macro definition/expansion origins and selected compile-time branches. Freeze separate source-line and specialization/expansion reporting rules. |
+| Modules, macros and compile-time forms | The bounded v2 profile adds immutable direct-source graphs, per-file coverage, owned test identities and rejection of repeated imports. General transitive imports, deduplication policy, submodule/project tests and macro definition/expansion origins remain open. Freeze separate source-line and specialization/expansion reporting rules. |
 | Zones and generated cleanup | Account for zone state, backing blocks, logical requests, bulk release and independent move-out allocations. Cover normal return, break/continue, error propagation, defer and nested destructor paths. |
 | Lifecycle and signals | Include startup/initialization and teardown, watcher tables/captures/handlers, reentrant dispatch and retained registrations. An early quit or crash cannot manufacture completed-suite status. |
 | Tasks, streams and threads | Account for coroutine frames, suspension/resumption, await/combinators, cancellation/drop and result ownership; thread job arguments, futures/results and TLS teardown. Require safe concurrent ledger/hit updates and a quiescent endpoint. |
@@ -143,7 +149,7 @@ through intermediate phases.
    outstanding allocations, exact line sets, thresholds at and around equality,
    test-only work, suite-wide cleanup, zero denominators, assertions and status.
    Review lowering and qualify conventional valid programs at O0–O3.
-3. **Generalize source identity.** Add imports/projects, owned macro/generic
+3. **Generalize source identity.** Qualify direct-source v2, then extend to projects, owned macro/generic
    origins, lifted bodies and stable IDs. Test same-line/file collisions, repeated
    imports/instantiations, uncalled bodies and optimization-invariant denominators.
 4. **Centralize generated allocation and cleanup.** Add reviewed emission/runtime

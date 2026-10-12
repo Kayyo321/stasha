@@ -5,11 +5,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define STASHA_OBSERVATION_ABI_VERSION 1u
-#define STASHA_OBSERVATION_SCHEMA_VERSION 1u
+#define STASHA_OBSERVATION_ABI_VERSION 2u
+#define STASHA_OBSERVATION_SCHEMA_VERSION 2u
 #define STASHA_OBSERVATION_ALLOCATION_VERSION 1u
-#define STASHA_OBSERVATION_LINE_VERSION 1u
-#define STASHA_OBSERVATION_PROFILE "native-sequential-leaf-v1"
+#define STASHA_OBSERVATION_LINE_VERSION 2u
+#define STASHA_OBSERVATION_PROFILE "native-sequential-direct-source-v2"
 #define STASHA_OBSERVATION_ALLOCATIONS 1u
 #define STASHA_OBSERVATION_COVERAGE 2u
 #define STASHA_OBSERVATION_MAX_TESTS 4096u
@@ -42,7 +42,10 @@ enum stasha_observation_reason {
 extern "C" {
 #endif
 
-void __stasha_obs_init(const char *run_id, const char *source_id,
+/* The second identity binds the complete frozen input graph, including a
+ * zero-import root graph. There is deliberately no v1 initialization alias:
+ * an old generated image must not silently enter this protocol. */
+void __stasha_obs_init_v2(const char *run_id, const char *input_graph_id,
     const char *map_id, const char *config_id, const char *compiler_id,
     uint32_t enabled_mask, uint32_t test_count, uint32_t line_count,
     uint32_t site_count);

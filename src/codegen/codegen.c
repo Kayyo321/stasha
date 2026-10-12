@@ -421,6 +421,8 @@ typedef struct {
     sts_observation_manifest *observation_manifest;
     LLVMValueRef observation_fns[8], observation_pass, observation_fail;
     uint8_t *observation_emitted;
+    node_t **observation_anchor_nodes;
+    boolean_t observation_inventory_error;
     boolean_t test_mode;            /* True when compiling in test mode */
     LLVMValueRef test_pass_count;   /* global i32 for test pass counter */
     LLVMValueRef test_fail_count;   /* global i32 for test fail counter */
@@ -483,6 +485,7 @@ typedef struct {
     const char *source_file;        /* absolute/relative path to the source file */
     LLVMDIBuilderRef di_builder;
     LLVMMetadataRef di_file;        /* DIFile for the source file */
+    LLVMMetadataRef observation_di_files[STS_OBS_FILE_LIMIT]; /* Context-owned, graph-ID indexed. */
     LLVMMetadataRef di_compile_unit;
     LLVMMetadataRef di_scope;       /* current scope: CU at top-level, SP inside functions */
     LLVMTargetDataRef di_data_layout; /* target data layout for size/offset queries */
@@ -600,6 +603,7 @@ static LLVMValueRef cg_observation_site_arg(cg_t *cg, node_t *node);
 static LLVMValueRef cg_observation_call(cg_t *cg, unsigned op, LLVMValueRef *args, unsigned count);
 static void cg_observation_assertion(cg_t *cg, boolean_t passed);
 static boolean_t cg_observation_call_guard(cg_t *cg, node_t *node);
+static boolean_t cg_observation_selected_guard(cg_t *cg, node_t *node, symbol_t *selected);
 static boolean_t cg_observation_expr_guard(cg_t *cg, node_t *node);
 
 /* gen_stmt forward declaration (emit_dtor_calls calls it for deferred stmts) */
@@ -731,7 +735,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         cg.crash_protection_disabled     = ast->as.module.crash_protection_disabled;
         cg.crash_tracking_disabled       = ast->as.module.crash_tracking_disabled;
     }
-    if (!cg_observation_prepare(&cg)) { (free)(cg.observation_emitted); return Err; }
+    if (!cg_observation_prepare(&cg)) { (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null; return Err; }
     cg.ctx    = LLVMContextCreate();
     cg.module = LLVMModuleCreateWithNameInContext(ast->as.module.name, cg.ctx);
     LLVMAddModuleFlag(cg.module, LLVMModuleFlagBehaviorError, "stasha.abi", 10,
@@ -765,6 +769,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         LLVMDisposeBuilder(cg.builder);
         LLVMDisposeModule(cg.module);
         LLVMContextDispose(cg.ctx);
+        (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null;
         return Err;
     }
     LLVMCodeGenOptLevel opt_level = map_opt_level(optimization_level);
@@ -782,6 +787,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         LLVMDisposeBuilder(cg.builder);
         LLVMDisposeModule(cg.module);
         LLVMContextDispose(cg.ctx);
+        (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null;
         return Err;
     }
 
@@ -814,11 +820,18 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
             dir[0] = '.'; dir[1] = '\0';
         }
 
+        const char *di_directory = dir;
+        size_t di_directory_length = strlen(dir);
+        if (cg.observation_config &&
+            !cg_observation_debug_path(&cg, &basename, &di_directory, &di_directory_length)) {
+            emit_result = Err;
+            goto cg_cleanup;
+        }
         cg.di_builder = LLVMCreateDIBuilder(cg.module);
         cg.di_file    = LLVMDIBuilderCreateFile(
             cg.di_builder,
             basename, strlen(basename),
-            dir,      strlen(dir));
+            di_directory, di_directory_length);
 
         cg.di_compile_unit = LLVMDIBuilderCreateCompileUnit(
             cg.di_builder,
@@ -837,6 +850,10 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
             /* SDK= */     "", 0);
 
         cg.di_scope = cg.di_compile_unit;
+        if (!cg_observation_debug_files(&cg)) {
+            emit_result = Err;
+            goto cg_cleanup;
+        }
 
         /* Required module-level flags. Windows-MSVC consumes CodeView
            (.pdb); everyone else consumes DWARF. */
@@ -1260,10 +1277,11 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
 
             /* ── DI: global variable expression ── */
             if (cg.debug_mode && cg.di_builder) {
+                if (!cg_observation_debug_select(&cg, decl)) { emit_result = Err; goto cg_cleanup; }
                 LLVMMetadataRef di_gtype = get_di_type(&cg, ti);
                 LLVMMetadataRef di_expr  =
                     LLVMDIBuilderCreateExpression(cg.di_builder, Null, 0);
-                boolean_t local_to_unit =
+                boolean_t local_to_unit = cg.observation_config ||
                     (decl->as.var_decl.linkage == LinkageInternal);
                 LLVMMetadataRef gv_expr =
                     LLVMDIBuilderCreateGlobalVariableExpression(
@@ -1709,6 +1727,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
 
         /* ── DI: create DISubprogram for this function ── */
         if (cg.debug_mode && cg.di_builder) {
+            if (!cg_observation_debug_select(&cg, decl)) { emit_result = Err; goto cg_cleanup; }
             usize_t nparam = decl->as.fn_decl.params.count;
             /* subroutine type: [return_type, param0_type, ...] */
             usize_t total_di = nparam + 1 + (is_instance ? 1 : 0);
@@ -1734,7 +1753,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
                 LLVMDIFlagZero);
             deallocate(di_pt_heap);
 
-            boolean_t is_local = (decl->as.fn_decl.linkage == LinkageInternal);
+            boolean_t is_local = cg.observation_config || (decl->as.fn_decl.linkage == LinkageInternal);
             LLVMMetadataRef di_sp = LLVMDIBuilderCreateFunction(
                 cg.di_builder,
                 cg.di_compile_unit,
@@ -1882,9 +1901,11 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         iface_factory_finalize_body(&cg, decl);
         iface_local_end(&cg, previous_local_plan);
 
-        /* Restore scope to compile unit after leaving the function. */
+        /* Restore ordinary scope; observed transitions must not retain a
+         * source function's instruction location in the next generated body. */
         if (cg.debug_mode)
             cg.di_scope = cg.di_compile_unit;
+        cg_observation_debug_clear(&cg);
     }
 
     /* Thread-pool wrappers were used by the legacy `async fn` dispatch.
@@ -2144,17 +2165,42 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
             if (decl->kind != NodeTestBlock) continue;
             if (cg_fh_skip_decl(&cg, decl->headers, decl->line)) continue;
             cg.current_fn = test_fns[ti];
+            mangle_module_prefix(decl->module_name ? decl->module_name : "",
+                                 cg.current_module_prefix, sizeof(cg.current_module_prefix));
+            cg.current_fn_linkage = LinkageInternal;
+            cg.current_fn_is_entry_main = False;
+            cg.current_fn_is_inline_method = False;
+            cg.current_struct_name = Null;
+            cg.current_fn_is_async_task = False;
+            memset(&cg.cur_coro, 0, sizeof(cg.cur_coro));
+            cg.break_target = cg.continue_target = Null;
+            cg.break_cleanup_depth = cg.continue_cleanup_depth = 0;
+            cg.emitting_defer = False;
+            cg.in_unsafe = 0;
+            cg.provenance_count = 0; /* local aliases belong to this test only */
+            cg.scalar_context_node = Null;
+            cg.scalar_context_type = cg.scalar_aggregate_element = NO_TYPE;
+            cg.hint_ret_type = Null;
+            cg.hint_slice_elem = NO_TYPE;
+            cg.hint_storage = StorageDefault;
+            cg.hint_var_flags = 0;
             cg.current_return_types = Null;
             cg.current_return_count = 0;
             cg.locals.count = 0;
             cg.dtor_depth = 0;
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, cg.current_fn, "entry");
             LLVMPositionBuilderAtEnd(cg.builder, entry);
+            if (!cg_observation_debug_test(&cg, decl, optimization_level)) {
+                if (test_count > 0) { deallocate(tf_heap); deallocate(tn_heap); }
+                emit_result = Err;
+                goto cg_cleanup;
+            }
             iface_local_plan_t *previous_local_plan = iface_local_begin(&cg, decl, decl->as.test_block.body);
         gen_block(&cg, decl->as.test_block.body);
         iface_local_end(&cg, previous_local_plan);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(cg.builder)))
                 LLVMBuildRetVoid(cg.builder);
+            cg_observation_debug_clear(&cg);
             ti++;
         }
 
@@ -2164,6 +2210,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
         }
         /* generate test main: calls each test, prints results */
         {
+            cg_observation_debug_clear(&cg);
             LLVMTypeRef main_type = LLVMFunctionType(LLVMInt32TypeInContext(cg.ctx), Null, 0, 0);
             LLVMValueRef main_fn = LLVMAddFunction(cg.module, "main", main_type);
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(cg.ctx, main_fn, "entry");
@@ -2244,6 +2291,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
     }
 
     /* ── @[[init]] / @[[exit]] lifecycle blocks → global_ctors/global_dtors ── */
+    cg_observation_debug_clear(&cg);
     LLVMValueRef crash_ctor_fn = Null;
     if (!cg.freestanding && !cg.crash_protection_disabled)
         crash_ctor_fn = cg_emit_crash_blocks(&cg,
@@ -2379,7 +2427,7 @@ result_t codegen_observed(node_t *ast, const char *obj_output, boolean_t test_mo
     }
 
 cg_cleanup:
-    (free)(cg.observation_emitted);
+    (free)(cg.observation_emitted); (free)(cg.observation_anchor_nodes); obs_diagnostic_graph=Null;
     iface_factory_dispose(&cg);
     /* Failed compilation must never leave an object that looks current. */
     if (emit_result != Ok || get_error_count() > errors_before) remove(obj_output);
@@ -2387,6 +2435,12 @@ cg_cleanup:
     LLVMDisposeMessage(triple);
     if (cg.di_data_layout) LLVMDisposeTargetData(cg.di_data_layout);
 
+    /* Observed debug admission can fail before normal DI finalization.  Its
+     * builder must be released while its module and context still exist. */
+    if (cg.observation_config && cg.di_builder) {
+        LLVMDisposeDIBuilder(cg.di_builder);
+        cg.di_builder = Null;
+    }
     LLVMDisposeBuilder(cg.builder);
     LLVMDisposeModule(cg.module);
     LLVMContextDispose(cg.ctx);

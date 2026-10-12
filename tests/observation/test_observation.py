@@ -16,6 +16,12 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import sys
+import importlib.util
+
+if not __debug__:
+    raise RuntimeError("qualification requires Python assertions enabled")
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -74,9 +80,97 @@ REJECTIONS = {
     "header": "@[[weak]] fn unused(void): i32 { ret 1; }",
 }
 
+# Conservative independently reviewed partition. Other source expectations stay
+# in REJECTIONS for the separate no-launch source/IR gate; they are not executed
+# or counted as passes by this native family.
+BENIGN_LEAF_REJECTIONS = {"exotic-binding-name", "long-binding-name", "wildcard-guard",
+    "asm", "unsafe", "unchecked", "variadic", "atomic", "macro", "import", "header"}
+NO_LAUNCH_LEAF_REJECTIONS = set(REJECTIONS) - BENIGN_LEAF_REJECTIONS
+
 
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+
+def load_family_module(name, relative):
+    path = ROOT / relative
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def pure_components(qualification, cc):
+    """This command plan is also exercised by the pure enrollment selftest."""
+    for name, sources in [
+        ("runtime-unit", [ROOT / "tests/observation/runtime_ledger_tests.c"]),
+        ("driver-unit", [ROOT / "tests/observation/test_driver.c", ROOT / "std/crypto/sha256_rt.c"]),
+        ("source-graph-unit", [ROOT / "tests/observation/test_source_graph.c", ROOT / "std/crypto/sha256_rt.c"]),
+    ]:
+        exe = qualification.artifacts / name
+        qualification.command(name + "-build", [*shlex.split(cc), "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", *map(str, sources), "-o", str(exe)])
+        qualification.command(name + "-run", [str(exe)])
+
+
+def validate_family_receipt(qualification, destination, family, runner, expected, levels):
+    # A child cannot choose an older or external successful receipt via LATEST.
+    latest = (destination / "LATEST").read_text().strip()
+    result_dir = Path(latest)
+    assert result_dir.is_absolute() and result_dir.parent == destination.resolve()
+    assert result_dir.name.startswith("run-") and not result_dir.is_symlink()
+    receipt_path = result_dir / "result.json"
+    data = json.loads(receipt_path.read_text())
+    assert data["schema"] == 2 and data["family"] == family and data["status"] == "pass"
+    assert data["failure"] is None
+    assert data["compiler_sha256"] == qualification.compiler_hash
+    assert data["runner_sha256"] == qualification.source_manifest[runner]
+    assert data["optimization_levels"] == levels
+    if family == "observed-source-imports": assert data["runtime_sha256"] == qualification.runtime_hash
+    assert data["source_manifest"] == qualification.source_manifest
+    assert data["source_manifest_sha256"] == sha(result_dir / "source-manifest.json")
+    assert json.loads((result_dir / "source-manifest.json").read_text()) == qualification.source_manifest
+    assert data["generated_manifest"] and data["generated_resolutions"]
+    for relative, digest in data["generated_manifest"].items():
+        path = result_dir / relative
+        assert not Path(relative).is_absolute() and ".." not in Path(relative).parts
+        assert sha(path) == digest and str(path.resolve()) == data["generated_resolutions"][relative]
+    assert json.loads((result_dir / "generated-manifest.json").read_text()) == data["generated_manifest"]
+    assert data["inventory"] == expected
+    names = [case["name"] for case in data["cases"]]
+    assert len(names) == len(set(names))
+    assert sorted(names) == sorted(name for cases in expected.values() for name in cases)
+    for stage, cases in expected.items():
+        assert data["counts"][stage] == len(cases)
+        assert sorted(case["name"] for case in data["cases"] if case["stage"] == stage) == sorted(cases)
+    assert all(case["status"] == "pass" for case in data["cases"])
+    assert data["runs"] and all(run["status"] == "pass" for run in data["runs"])
+    for case in data["cases"]:
+        if case["stage"] in ("ordinary_native", "observed_native"):
+            assert case["executions"] == 1
+    qualification.verify_inputs()
+    return {"family": family, "receipt": str(receipt_path), "receipt_sha256": sha(receipt_path),
+            "counts": data["counts"], "result": data}
+
+
+def dispatch_required_families(qualification, levels, cc):
+    """Mandatory hosted families: no optional/default skip or absent-pass path."""
+    qualification.verify_inputs()
+    ordinary = load_family_module("ordinary_imported_tests", "tests/scalars/test_imported_tests.py")
+    observed = load_family_module("observed_source_imports", "tests/observation/test_source_imports.py")
+    for family, runner, expected, extra in [
+        ("ordinary-imported-tests", "tests/scalars/test_imported_tests.py",
+         {"ordinary_native": ordinary.expected_cases(levels)}, []),
+        ("observed-source-imports", "tests/observation/test_source_imports.py",
+         observed.expected_cases(levels), ["--cc", cc]),
+    ]:
+        destination = qualification.artifacts / family
+        argv = [sys.executable, "-B", str(ROOT / runner), "--compiler", str(qualification.compiler),
+                "--opt", ",".join(map(str, levels)), "--artifacts", str(destination), *extra]
+        qualification.command(family, argv, timeout=1800)
+        receipt = validate_family_receipt(qualification, destination, family, runner, expected, levels)
+        qualification.family_receipts.append(receipt)
+    assert len(qualification.family_receipts) == 2
 
 
 class Qualification:
@@ -91,10 +185,11 @@ class Qualification:
         self.compiler_hash = sha(self.compiler)
         self.runtime = self.compiler.parent / "observation_runtime.a"
         self.runtime_hash = sha(self.runtime)
-        paths = set(ROOT.glob("src/**/*.c")) | set(ROOT.glob("src/**/*.h"))
-        paths |= set((ROOT / "tests/observation").glob("*.c")) | set(FIXTURES.glob("*.sts"))
-        paths |= {Path(__file__).resolve(), ROOT / "Makefile", ROOT / "std/crypto/sha256_rt.c", ROOT / "std/crypto/sha256_rt.h"}
-        self.source_manifest = {str(path.relative_to(ROOT)): sha(path) for path in sorted(paths)}
+        support = load_family_module("source_import_inventory", "tests/observation/test_source_imports.py")
+        self.manifest_reader = support.input_manifest
+        self.source_manifest = self.manifest_reader()
+        self.family_receipts = []
+        self.enrollment_selftest = None
         self.status = "running"
         self.failure = None
         (self.artifacts / "source-manifest.json").write_text(json.dumps(self.source_manifest, indent=2) + "\n")
@@ -102,31 +197,37 @@ class Qualification:
     def verify_inputs(self):
         assert sha(self.compiler) == self.compiler_hash, "compiler changed during qualification"
         assert sha(self.runtime) == self.runtime_hash, "runtime changed during qualification"
-        for relative, expected in self.source_manifest.items():
-            assert sha(ROOT / relative) == expected, f"source changed during qualification: {relative}"
+        assert self.manifest_reader() == self.source_manifest, "source inventory changed or disappeared"
+        assert json.loads((self.artifacts / "source-manifest.json").read_text()) == self.source_manifest, "recorded source inventory changed"
 
     def receipt(self):
         (self.artifacts / "result.json").write_text(json.dumps({"status": self.status, "failure": self.failure,
             "compiler_sha256": self.compiler_hash, "runtime_sha256": self.runtime_hash,
-            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "runs": self.records}, indent=2) + "\n")
+            "source_manifest_sha256": sha(self.artifacts / "source-manifest.json"), "required_families": self.family_receipts, "enrollment_selftest": self.enrollment_selftest, "separate_no_launch_controls": {"status": "NOT_RUN", "required": sorted(NO_LAUNCH_LEAF_REJECTIONS) + ["raw-call-fixture", *COMPILE_ONLY_CONTROLS], "required_count": len(NO_LAUNCH_LEAF_REJECTIONS) + 1 + len(COMPILE_ONLY_CONTROLS), "executed_count": 0}, "qualification_scope": "pure components, ordinary imported tests, observed direct-source positives, reviewed benign rejection-expected controls, preserved leaf positives; separate source/IR gate required", "runs": self.records}, indent=2) + "\n")
 
-    def command(self, name: str, argv: list[str], *, env=None, expected=0, cwd=None):
+    def command(self, name: str, argv: list[str], *, env=None, expected=0, cwd=None, timeout=60):
         dest = self.artifacts / name
         dest.mkdir(exist_ok=False)
         (dest / "command.json").write_text(json.dumps(argv, indent=2) + "\n")
+        record = {"name": name, "command": argv, "status": "running"}
+        self.records.append(record)
         self.verify_inputs()
         try:
-            result = subprocess.run(argv, cwd=cwd or ROOT, env=env, capture_output=True, timeout=60)
-        except subprocess.TimeoutExpired as error:
-            (dest / "stdout").write_bytes(error.stdout or b"")
-            (dest / "stderr").write_bytes(error.stderr or b"")
-            self.records.append({"name": name, "command": argv, "timeout": True})
+            result = subprocess.run(argv, cwd=cwd or ROOT, env=env, capture_output=True, timeout=timeout)
+        except BaseException as error:
+            record.update(status="fail", error=repr(error))
+            if isinstance(error, subprocess.TimeoutExpired):
+                record["timeout"] = True
+                (dest / "stdout").write_bytes(error.stdout or b"")
+                (dest / "stderr").write_bytes(error.stderr or b"")
+            (dest / "status.json").write_text(json.dumps(record) + "\n")
             raise
-        self.verify_inputs()
         (dest / "stdout").write_bytes(result.stdout)
         (dest / "stderr").write_bytes(result.stderr)
-        (dest / "status.json").write_text(json.dumps({"returncode": result.returncode, "expected": expected}) + "\n")
-        self.records.append({"name": name, "command": argv, "returncode": result.returncode})
+        record.update(returncode=result.returncode, expected=expected,
+                      status="pass" if result.returncode == expected else "fail")
+        (dest / "status.json").write_text(json.dumps(record) + "\n")
+        self.verify_inputs()
         assert result.returncode == expected, f"{name}: unexpected status {result.returncode}: {result.stderr.decode(errors='replace')}"
         return dest, result
 
@@ -149,7 +250,10 @@ class Qualification:
         shutil.copy2(evidence / "driver.json", dest / "driver.json")
         if (evidence / "report").exists():
             shutil.copy2(evidence / "report", dest / "report")
-        assert sha(source_path) == source_before and data["source_sha256"] == source_before
+        assert data["schema"] == 2 and data["profile"] == "native-sequential-direct-source-v2"
+        assert re.fullmatch(r"[0-9a-f]{64}", data["input_graph_sha256"])
+        assert len(data["files"]) == 1 and not data["edges"]
+        assert sha(source_path) == source_before and data["files"][0]["source_sha256"] == source_before
         assert data["runtime_sha256"] == self.runtime_hash
         assert data["compiler_sha256"] == self.compiler_hash
         assert data["run"] not in self.run_ids, f"{name}: stale run ID"
@@ -179,6 +283,8 @@ class Qualification:
         if assertions is not None: assert (data["assertions_passed"], data["assertions_failed"]) == assertions, name
         # Independent bitmap parsing verifies each source line rather than a child percentage.
         report = (dest / "report").read_text().splitlines()
+        assert report[:4] == ["STASHA_OBSERVATION 2", "profile native-sequential-direct-source-v2", "runtime_abi 2", "metric_versions 1 2"]
+        assert report[5] == "input_graph " + data["input_graph_sha256"]
         assert next(row for row in report if row.startswith("tests ")) == f"tests {tests} {tests}"
         assert [row for row in report if row.startswith("test ")] == [f"test {i} 2" for i in range(tests)]
         assert next(row for row in report if row.startswith("inventory ")) == f"inventory {tests} {len(data['lines'])} {len(data['sites'])}"
@@ -196,14 +302,16 @@ class Qualification:
         return path
 
     def run(self, levels, cc):
-        # Pure mocks: compile independently and never call invalid native allocators.
-        for name, sources in [
-            ("runtime-unit", [ROOT / "tests/observation/runtime_ledger_tests.c"]),
-            ("driver-unit", [ROOT / "tests/observation/test_driver.c", ROOT / "std/crypto/sha256_rt.c"]),
-        ]:
-            exe = self.artifacts / name
-            self.command(name + "-build", [*shlex.split(cc), "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", *map(str, sources), "-o", str(exe)])
-            self.command(name + "-run", [str(exe)])
+        pure_components(self, cc)
+        # This subprocess is Python-only and cannot recursively invoke this wrapper.
+        selftest_dir = self.artifacts / "wrapper-enrollment-selftest"
+        self.command("wrapper-enrollment-selftest", [sys.executable, "-B", str(ROOT / "tests/observation/test_source_imports.py"),
+                     "--selftest-only", "--artifacts", str(selftest_dir)])
+        selftest = json.loads((selftest_dir / "result.json").read_text())
+        assert selftest["status"] == "pass" and selftest["tests_run"] > 0 and selftest["native_executions"] == 0
+        self.enrollment_selftest = {"receipt": str(selftest_dir / "result.json"),
+                                   "receipt_sha256": sha(selftest_dir / "result.json"), "result": selftest}
+        dispatch_required_families(self, levels, cc)
         snapshots = []
         for opt in levels:
             suffix = f"-O{opt}"
@@ -269,11 +377,16 @@ class Qualification:
         _, ran = self.command("unflagged-run", [str(binary)])
         assert ran.stdout.count(b"OBSERVATION_ONCE\n") == 1
         for name, declarations in REJECTIONS.items():
+            if name not in BENIGN_LEAF_REJECTIONS: continue
             source = self.generated_source("reject-" + name, "mod reject;\n" + declarations + "\ntest 'must not run' { print.('UNSUPPORTED_RAN\\n'); }\n")
-            _, result = self.command("reject-" + name, [str(self.compiler), "test", str(source), "--warn-memleak", "-o", str(self.artifacts / (name + ".rejected"))], expected=1)
+            dest, result = self.command("reject-" + name, [str(self.compiler), "test", str(source), "--warn-memleak", "-o", str(self.artifacts / (name + ".rejected"))], expected=1)
             assert b"UNSUPPORTED_RAN\n" not in result.stdout
-            assert b"unsupported by observation profile" in result.stderr, (name, result.stderr)
-        for name, source in [("zero-tests", FIXTURES / "zero_tests.sts"), ("raw-call-fixture", FIXTURES / "unsupported.sts")]:
+            support = load_family_module("source_import_rejection_evidence", "tests/observation/test_source_imports.py")
+            support.validate_leaf_rejection_diagnostic(name, result.stderr)
+            support.retain_nonlaunch_evidence(dest, result)
+            assert not (self.artifacts / (name + ".rejected")).exists()
+            self.records[-1]["possibly_executed_on_erroneous_acceptance"] = True
+        for name, source in [("zero-tests", FIXTURES / "zero_tests.sts")]:
             self.command("reject-" + name, [str(self.compiler), "test", str(source), "--warn-memleak", "-o", str(self.artifacts / (name + ".rejected"))], expected=1)
         for name, flags in {
             "negative-bytes": ["--max-leaked-bytes", "-1"], "overflow-bytes": ["--max-leaked-bytes", "18446744073709551616"],
@@ -283,6 +396,15 @@ class Qualification:
         }.items():
             self.command("reject-option-" + name, [str(self.compiler), "test", str(FIXTURES / "coverage.sts"), *flags], expected=1)
         self.verify_inputs()
+        assert len(self.family_receipts) == 2 and self.enrollment_selftest is not None
+        assert sha(Path(self.enrollment_selftest["receipt"])) == self.enrollment_selftest["receipt_sha256"]
+        assert all(record["status"] == "pass" for record in self.records)
+        for child in self.family_receipts:
+            assert sha(Path(child["receipt"])) == child["receipt_sha256"], "child receipt changed"
+            directory = Path(child["receipt"]).parent
+            for relative, digest in child["result"]["generated_manifest"].items():
+                assert sha(directory / relative) == digest
+                assert str((directory / relative).resolve()) == child["result"]["generated_resolutions"][relative]
         self.status = "pass"
 
 
@@ -294,7 +416,7 @@ def main():
     parser.add_argument("--cc", default="cc")
     args = parser.parse_args()
     levels = [int(level) for level in args.opt.split(",")]
-    if not levels or any(level not in range(4) for level in levels): parser.error("--opt must list levels 0 through 3")
+    if not levels or len(levels) != len(set(levels)) or any(level not in range(4) for level in levels): parser.error("--opt must list levels 0 through 3")
     qualification = Qualification(args.compiler, args.artifacts)
     try:
         qualification.run(levels, args.cc)

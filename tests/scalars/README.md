@@ -198,3 +198,29 @@ symbol lookup. Imported globals/functions intentionally collide with root names;
 the test checks reads, assignment, compound/index assignment, address-of and
 export-name overrides. The K0 component harness separately tests the unchanged
 component built through static-library mode.
+
+
+## Ordinary imported test context
+
+```
+python3 tests/scalars/test_imported_tests.py --compiler ./bin/stasha --opt 0,1,2,3 \
+  --artifacts build/ordinary-imported-tests
+```
+
+This focused eight-case family checks generated tests in their owning lexical
+module: colliding root/leaf helper and global names, root tests after a leaf's
+last helper, imported tests with no helper, empty imported tests, sibling aliases,
+reversed import order, dependencies beside a symlinked requested entry, and fresh
+local-pointer provenance between prior helpers and separate test bodies. Pointer
+controls assert each allocation succeeds and release it without dereferencing it.
+Repeated labels remain separate tests, with literal marker order and assertion
+counts. It does not specify or change ordinary duplicate-import behavior.
+
+Each unflagged compilation must create a fresh image without executing tests or
+linking observer hooks. The runner then executes that image exactly once at each
+requested optimization level. Compiler/source/image identities, commands,
+outputs and exact required case counts are retained in a fresh terminal receipt.
+Missing sources, changed identities, absent images, unexpected output, timeout or
+missing cases fail. `--prepare` only writes sources and a nonterminal prepared
+inventory; it never qualifies execution. The observation wrapper permanently
+requires this family in addition to its observed-source tests.
